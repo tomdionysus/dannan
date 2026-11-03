@@ -12,6 +12,21 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
 
+## 2026-11-03, night -- core types and user types
+
+On `feature/user-types` (this commit), from Tom's decision (ACTIVE,
+Decisions): `RouteTable::is_core`; core types cannot be re-registered and
+keep their rules; an unregistered user type is allowed on either lane in
+any class, and its notifications reach the handler.
+`RouteTable.AnUnregisteredTypeHasTheDefaultRules` became
+`RouteTable.AnUnregisteredUserTypeIsNotPoliced` (its expectation changed
+with the rule, not deleted); added
+`RouteTable.CoreTypesAreDannansAndCannotBeRedefined` and
+`Session.AnUnregisteredUserNotificationReachesTheHandler`. The `build/`
+tree was regenerated: `/usr/local/bin/cmake`, which configured it, is
+gone; `/opt/local/bin/cmake` is the one now.
+**Gate: `dannan_tests` 208, `dagda_tests` 1, `dannan_interop_tests` 8.**
+
 ## 2026-11-03, night -- step 2: the sanitizers before 0.1.0
 
 On `feature/transport` (three commits), the release rule's sanitizer

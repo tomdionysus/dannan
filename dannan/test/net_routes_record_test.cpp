@@ -51,15 +51,32 @@ TEST(RouteTable, RetiredNumbersAreRefused) {
     EXPECT_THROW(routes.add(MessageType{retired}, {"x", Lanes::control, Frames::control_only, false}), std::invalid_argument);
 }
 
-// An unregistered type travels as protocol 23's default: the control lane,
-// the control frame, a request that expects a reply.
-TEST(RouteTable, AnUnregisteredTypeHasTheDefaultRules) {
+// Core types are Dannan's and keep Dannan's rules; every other number is a
+// user type, under the user's control (Tom, 2026-11-03). One nobody on this
+// node registered is not policed: it travels on either lane in any class and
+// goes to the user's handler, which may decline it, so a peer hosting
+// something this node does not is never cut off for it. (Was: protocol 23's
+// default, control lane and control frame only; superseded.)
+TEST(RouteTable, AnUnregisteredUserTypeIsNotPoliced) {
   const auto routes = RouteTable::with_dannan_types();
-  EXPECT_EQ(routes.find(MessageType{999}), nullptr);
+  EXPECT_FALSE(routes.is_core(MessageType{999}));
   EXPECT_TRUE(routes.allowed(MessageType{999}, Lane::control, FrameType::control));
-  EXPECT_FALSE(routes.allowed(MessageType{999}, Lane::control, FrameType::loader));
-  EXPECT_FALSE(routes.allowed(MessageType{999}, Lane::data, FrameType::control));
-  EXPECT_FALSE(routes.is_notification(MessageType{999}));
+  EXPECT_TRUE(routes.allowed(MessageType{999}, Lane::control, FrameType::loader));
+  EXPECT_TRUE(routes.allowed(MessageType{999}, Lane::data, FrameType::speculative));
+  EXPECT_FALSE(routes.allowed(MessageType{999}, Lane::probe, FrameType::control));
+}
+
+TEST(RouteTable, CoreTypesAreDannansAndCannotBeRedefined) {
+  auto routes = RouteTable::with_dannan_types();
+  for (const auto type :
+       {message::ping, message::members, message::session_retire, message::cancel_transfer, message::dial_request, message::ok, message::error})
+    EXPECT_TRUE(routes.is_core(type));
+  EXPECT_THROW(routes.add(message::ping, {"mine", Lanes::both, Frames::any, false}), std::invalid_argument);
+  routes.add(MessageType{4}, {"get_object", Lanes::data, Frames::not_control, false});
+  EXPECT_FALSE(routes.is_core(MessageType{4}));
+  // Core rules still hold.
+  EXPECT_FALSE(routes.allowed(message::members, Lane::data, FrameType::control));
+  EXPECT_FALSE(routes.allowed(message::ping, Lane::control, FrameType::loader));
 }
 
 TEST(RouteTable, LanesAndFramesAreEnforcedByRegistration) {

@@ -454,5 +454,25 @@ TEST(Session, ClosingFromAnotherThreadMidTransferIsSafe) {
   }
 }
 
+// A user type's notification is the user's: it reaches the handler whether or
+// not this node registered the type; Dannan decides nothing about it.
+TEST(Session, AnUnregisteredUserNotificationReachesTheHandler) {
+  Io io;
+  std::promise<Frame> arrived;
+  SessionHandlers handlers;
+  handlers.request = [&](Frame frame, Reply reply) {
+    EXPECT_FALSE(reply);
+    arrived.set_value(std::move(frame));
+  };
+  Pair pair(io, echo(), handlers);
+  pair.dialler->notify({MessageType{999}, Bytes{1, 2}, {}}, FrameType::speculative, io.context.get_executor());
+  auto future = arrived.get_future();
+  ASSERT_EQ(future.wait_for(5s), std::future_status::ready);
+  const auto frame = future.get();
+  EXPECT_EQ(frame.message.type, MessageType{999});
+  EXPECT_EQ(frame.message.payload, Bytes({1, 2}));
+  EXPECT_TRUE(pair.acceptor->usable());
+}
+
 }  // namespace
 }  // namespace dannan::net
