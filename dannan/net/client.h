@@ -79,14 +79,27 @@ struct ClientStats {
   // Sessions retired by reconciliation: a simultaneous dial's loser, or a
   // duplicate.
   uint64_t retired = 0;
+  // Lanes asked of inbound-incapable peers, and asked of this node.
+  uint64_t dial_requests_sent = 0;
+  uint64_t dial_requests_received = 0;
 };
 
 // Calls peers over two lanes each, CONTROL and DATA: a lane is dialled on
 // demand, reused, and shared both ways with the sessions peers opened to
 // this node. Concurrent cold callers share one dial. When both ends have
 // dialled, the session the lower node id dialled is kept and the other
-// retired, so the two ends agree without a word. All public members are
-// thread-safe; every completion is posted to the executor the caller passed.
+// retired, so the two ends agree without a word.
+//
+// A node that accepts no inbound connection (its record's inbound_capable
+// flag clear) is never dialled. Peers reach it over the sessions it opened;
+// a lane it has not opened is asked for with dial_request over its CONTROL
+// session, and the call waits for the reverse dial within the connect
+// timeout. Such a node keeps both lanes dialled to every maintained peer,
+// since only it can restore its own reachability.
+//
+// All public members are thread-safe; every completion is posted to the
+// executor the caller passed. `local` is called with the route table held,
+// so it must not call into the client.
 class Client {
  public:
   using Done = std::function<void(CallOutcome)>;
@@ -132,6 +145,22 @@ class Client {
   // reason it failed, empty on success.
   void probe(const Endpoint& endpoint, const identity::NodeId& expected, boost::asio::any_io_executor executor, std::function<void(std::string)> done);
 
+  // Teaches the client a peer's flags (inbound-capable or not) before a
+  // handshake has: membership calls it from the roster.
+  void note_peer(const membership::NodeRecord& peer);
+  // While this node is inbound-incapable, both lanes are kept dialled to
+  // every capable peer `peers` returns, checked each heartbeat.
+  void set_maintained_peers(std::function<std::vector<membership::NodeRecord>()> peers);
+  // A peer asked this node to dial `lane` to it; dialled at once, under the
+  // ordinary backoff, so a peer that keeps losing a lane cannot cause a
+  // redial loop.
+  void request_lane(const membership::NodeRecord& peer, Lane lane);
+  // Answers a dial_request notification from `peer` (the node routes the
+  // type here): ok, or 400 for a lane that is not CONTROL or DATA.
+  Message handle_dial_request(const membership::NodeRecord& peer, const Message& request);
+  // Closes this node's routes to `peer` on `lane`, both directions.
+  void close_route(const identity::NodeId& peer, Lane lane, const std::string& why);
+
   bool has_route(const identity::NodeId& peer, Lane lane) const;
   ClientStats stats() const;
   // The lane `type` travels on: DATA for a type registered only there.
@@ -157,6 +186,12 @@ class Client {
   };
   struct Dialling;
   struct Probe;
+  // Calls waiting for an inbound-incapable peer to dial a lane back.
+  struct ReverseWait {
+    std::vector<Call> calls;
+    std::shared_ptr<boost::asio::steady_timer> timer;
+    std::string backoff_key;
+  };
   struct Backoff {
     unsigned failures = 0;
     contract::TimePoint retry_after{};
@@ -184,6 +219,18 @@ class Client {
   void attempt(const std::shared_ptr<Probe>& probe);
   void answered(const std::shared_ptr<Probe>& probe, CallOutcome outcome);
   void retry(const std::shared_ptr<Probe>& probe);
+  // Lanes a peer asked for, and those an incapable node maintains. On the
+  // health strand.
+  void open_lanes();
+  // Dials `peer` on `lane` with no call waiting, unless a route, a dial or
+  // a backoff is already there.
+  void ensure_lane(const membership::NodeRecord& peer, Lane lane);
+  bool capable_locked(const identity::NodeId& peer) const DANNAN_REQUIRES(_mutex);
+  bool local_capable() const;
+  // Asks an incapable peer for `key`'s lane over `control`, and arms the
+  // wait for its reverse dial.
+  void ask_for_lane(const RouteKey& key, const std::shared_ptr<Session>& control, const std::shared_ptr<boost::asio::steady_timer>& timer);
+  void reverse_expired(const RouteKey& key, const std::shared_ptr<boost::asio::steady_timer>& timer);
 
   boost::asio::io_context& _io;
   ClientOptions _options;
@@ -203,6 +250,13 @@ class Client {
   std::map<std::string, Backoff> _backoff DANNAN_GUARDED_BY(_mutex);
   std::map<identity::NodeId, double> _latency_ms DANNAN_GUARDED_BY(_mutex);
   bool _health_started DANNAN_GUARDED_BY(_mutex) = false;
+  // Each peer's flags, from handshakes, calls and note_peer(); a peer not
+  // listed is taken as capable.
+  std::map<identity::NodeId, uint8_t> _peer_flags DANNAN_GUARDED_BY(_mutex);
+  std::map<RouteKey, membership::NodeRecord> _requested DANNAN_GUARDED_BY(_mutex);
+  std::function<std::vector<membership::NodeRecord>()> _maintained DANNAN_GUARDED_BY(_mutex);
+  std::map<RouteKey, ReverseWait> _reverse DANNAN_GUARDED_BY(_mutex);
+  std::set<std::shared_ptr<boost::asio::steady_timer>> _reverse_timers DANNAN_GUARDED_BY(_mutex);
   ClientStats _stats DANNAN_GUARDED_BY(_mutex);
   size_t _operations DANNAN_GUARDED_BY(_mutex) = 0;
   bool _stopped DANNAN_GUARDED_BY(_mutex) = false;

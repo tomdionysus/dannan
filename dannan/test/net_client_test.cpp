@@ -73,13 +73,15 @@ struct Node {
   test::Gate gate;
   std::atomic<int> hang_pings{0};
   std::atomic<int> heard{0};
+  std::atomic<bool> ignore_dial_requests{false};
   membership::NodeRecord self;
   std::unique_ptr<Server> server;
   std::unique_ptr<Client> client;
 
-  explicit Node(Io& io, ClientOptions tuning = {}, std::optional<identity::NodeId> id = std::nullopt) : io(io) {
-    self.id = id ? *id : identity::NodeId::random();
+  explicit Node(Io& io, ClientOptions tuning = {}, uint8_t flags = membership::flags_default) : io(io) {
+    self.id = identity::NodeId::random();
     self.host = "127.0.0.1";
+    self.flags = flags;
     const auto key = cluster_key();
     auto traffic = std::make_shared<TransportTraffic>();
     ServerOptions server_options;
@@ -89,7 +91,8 @@ struct Node {
     server_options.traffic = traffic;
     server = std::make_unique<Server>(
         io.context, "127.0.0.1", 0, server_options,
-        [this](const membership::NodeRecord&, FrameType, const Message& request) {
+        [this](const membership::NodeRecord& peer, FrameType, const Message& request) {
+          if (request.type == message::dial_request) return ignore_dial_requests ? Message{message::ok, {}, {}} : client->handle_dial_request(peer, request);
           if (request.type == slow) gate.enter_and_wait();
           if (request.type == sluggish) std::this_thread::sleep_for(300ms);
           if (request.type == news) ++heard;
@@ -444,6 +447,92 @@ TEST(Broadcast, NeverDials) {
   EXPECT_EQ(a.client->broadcast_notify({news, {}, {}}, FrameType::control), 0u);
   EXPECT_EQ(a.client->broadcast_best_effort({news, {}, {}}, FrameType::control), 0u);
   EXPECT_EQ(a.client->stats().dials, 0u);
+}
+
+constexpr uint8_t incapable = membership::flags_for(false, true);
+
+// A node that accepts no inbound connection is never dialled: with no
+// session of its own to ask over, a call to it fails at once.
+TEST(ReverseDial, AnIncapableNodeIsNeverDialled) {
+  Io io;
+  Node site(io, {}, incapable), hub(io);
+  const auto outcome = call(hub, site.self);
+  EXPECT_FALSE(outcome.reply);
+  EXPECT_NE(outcome.failure.find("accepts no inbound connections"), std::string::npos) << outcome.failure;
+  EXPECT_EQ(hub.client->stats().dials, 0u);
+  EXPECT_EQ(site.server->sessions(), 0u);
+}
+
+// CONTROL works both ways over the session the incapable node opened.
+TEST(ReverseDial, ControlTravelsBothWaysOverTheIncapableNodesSession) {
+  Io io;
+  Node site(io, {}, incapable), hub(io);
+  ASSERT_TRUE(call(site, hub.self).reply);
+  ASSERT_TRUE(eventually([&] { return hub.client->has_route(site.self.id, Lane::control); }));
+  const auto outcome = call(hub, site.self);
+  EXPECT_TRUE(outcome.reply) << outcome.failure;
+  EXPECT_EQ(hub.client->stats().dials, 0u);
+}
+
+// A DATA lane to an incapable node is asked for over its CONTROL session
+// (dial_request); it dials, and the call goes over the lane it opened.
+TEST(ReverseDial, ADataLaneIsAskedForAndDialledBack) {
+  Io io;
+  Node site(io, {}, incapable), hub(io);
+  ASSERT_TRUE(call(site, hub.self).reply);
+  ASSERT_TRUE(eventually([&] { return hub.client->has_route(site.self.id, Lane::control); }));
+  const auto outcome = call(hub, site.self, put_object, FrameType::foreground, Bytes(5000, 3));
+  ASSERT_TRUE(outcome.reply) << outcome.failure;
+  EXPECT_EQ(outcome.reply->payload, Bytes(5000, 3));
+  EXPECT_EQ(hub.client->stats().dials, 0u);
+  EXPECT_EQ(hub.client->stats().dial_requests_sent, 1u);
+  EXPECT_EQ(site.client->stats().dial_requests_received, 1u);
+  EXPECT_TRUE(site.client->has_route(hub.self.id, Lane::data));
+}
+
+// The wait for a reverse dial is bounded by the connect timeout.
+TEST(ReverseDial, AReverseDialThatNeverComesFailsWithinItsBound) {
+  Io io;
+  ClientOptions tuning;
+  tuning.connect_timeout = 300ms;
+  Node site(io, {}, incapable), hub(io, tuning);
+  site.ignore_dial_requests = true;
+  ASSERT_TRUE(call(site, hub.self).reply);
+  ASSERT_TRUE(eventually([&] { return hub.client->has_route(site.self.id, Lane::control); }));
+  const auto started = std::chrono::steady_clock::now();
+  const auto outcome = call(hub, site.self, put_object, FrameType::foreground, Bytes(10, 1));
+  const auto took = std::chrono::steady_clock::now() - started;
+  EXPECT_FALSE(outcome.reply);
+  EXPECT_NE(outcome.failure.find("did not arrive within 300 ms"), std::string::npos) << outcome.failure;
+  EXPECT_GE(took, 300ms);
+  EXPECT_LT(took, 2s);
+}
+
+// An incapable node keeps both lanes dialled to every maintained peer, and
+// redials a lane that is lost without being asked.
+TEST(ReverseDial, AnIncapableNodeKeepsBothLanesToItsMaintainedPeers) {
+  Io io;
+  ClientOptions tuning;
+  tuning.heartbeat = 100ms;
+  Node hub(io), site(io, tuning, incapable);
+  site.client->set_maintained_peers([&] { return std::vector<membership::NodeRecord>{hub.self}; });
+  EXPECT_TRUE(eventually([&] { return site.client->has_route(hub.self.id, Lane::control) && site.client->has_route(hub.self.id, Lane::data); }));
+  EXPECT_TRUE(eventually([&] { return hub.client->has_route(site.self.id, Lane::data); }));
+  site.client->close_route(hub.self.id, Lane::data, "severed by the test");
+  EXPECT_FALSE(site.client->has_route(hub.self.id, Lane::data));
+  EXPECT_TRUE(eventually([&] { return site.client->has_route(hub.self.id, Lane::data); }));
+  EXPECT_GE(site.client->stats().dials, 3u);
+}
+
+// A capable node needs no maintenance: peers reach it.
+TEST(ReverseDial, ACapableNodeMaintainsNothing) {
+  Io io;
+  ClientOptions tuning;
+  tuning.heartbeat = 50ms;
+  Node hub(io), other(io, tuning);
+  other.client->set_maintained_peers([&] { return std::vector<membership::NodeRecord>{hub.self}; });
+  std::this_thread::sleep_for(300ms);
+  EXPECT_EQ(other.client->stats().dials, 0u);
 }
 
 }  // namespace

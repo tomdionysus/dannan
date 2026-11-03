@@ -7,6 +7,28 @@ left green. `ACTIVE.md` is the plan and this is the record.
 
 None. Dannan has no code yet.
 
+## 2026-11-03, night -- step 2: reverse dial and maintained peers
+
+On `feature/transport` (this commit):
+
+- A node whose record clears `inbound_capable` is never dialled. A call
+  to it with no CONTROL session of its own fails at once ("accepts no
+  inbound connections and is not connected") and earns the dial backoff;
+  CONTROL travels both ways over the session it opened; a lane it has not
+  opened is asked for with `dial_request` (a u8 lane, protocol 23's
+  payload) over that session, the calls waiting for the reverse dial
+  within the connect timeout ("did not arrive within N ms"), placed as
+  soon as the server admits it. `handle_dial_request` answers the
+  notification (400 for a lane that is not CONTROL or DATA) and dials at
+  once under the backoff. An incapable node keeps both lanes dialled to
+  every capable maintained peer, checked each heartbeat, so a severed lane
+  comes back unasked; in reconciliation it keeps its own dials. Peer
+  flags come from handshakes, calls and `note_peer`. `close_route` closes
+  one peer's lane both ways.
+- The inventory's transport rows now name their Dannan cases.
+- **Gate: `dannan_tests` 205, `dagda_tests` 1, `dannan_interop_tests` 6,
+  all passed**; the transport cases 65 times over with no failure.
+
 ## 2026-11-03, night -- step 2: health, backoff, broadcasts; two session fixes
 
 On `feature/transport` (two commits):
