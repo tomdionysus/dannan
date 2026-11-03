@@ -202,7 +202,8 @@ struct Cluster {
   std::unique_ptr<Node> hub, a, b;
   bool forced_a, forced_b;
 
-  Cluster(bool relay, std::optional<PathClass> a_class, std::optional<PathClass> b_class) : forced_a(a_class.has_value()), forced_b(b_class.has_value()) {
+  Cluster(bool relay, std::optional<PathClass> a_class, std::optional<PathClass> b_class, std::chrono::milliseconds upgrade_every = std::chrono::minutes(1))
+      : forced_a(a_class.has_value()), forced_b(b_class.has_value()) {
     std::ofstream(dir.path() / "k") << "level zero";
     key = identity::load_cluster_key(dir.path() / "k");
     auto hub_config = config(dir.path() / "hub", key, {}, Inbound::yes);
@@ -212,8 +213,10 @@ struct Cluster {
     const std::vector<net::Endpoint> seed{{"127.0.0.1", hub->port()}};
     auto a_config = config(dir.path() / "a", key, seed, Inbound::no);
     a_config.path_class = a_class;
+    a_config.path_upgrade_every = upgrade_every;
     auto b_config = config(dir.path() / "b", key, seed, Inbound::no);
     b_config.path_class = b_class;
+    b_config.path_upgrade_every = upgrade_every;
     a = std::make_unique<Node>(io.context, a_config);
     b = std::make_unique<Node>(io.context, b_config);
     for (auto* node : {a.get(), b.get()}) {
@@ -291,6 +294,31 @@ TEST(LevelZero, TwoNodesMeetThroughARelayWhenAPunchCannotWork) {
   ASSERT_EQ(relay.circuits.size(), 2u);
   EXPECT_GT(relay.relayed_bytes, 0u);
   for (const auto& circuit : relay.circuits) EXPECT_GT(circuit.bytes, 0u);
+}
+
+// A relayed pair whose relay-only end becomes punchable moves up: the lower
+// id punches, both ends keep the punched session over the relayed one, and
+// the relayed one retires. Calls keep working throughout.
+TEST(LevelZero, ARelayedPairMovesUpToAPunch) {
+  Cluster cluster(true, PathClass::relay_only, PathClass::relay_only, 200ms);
+  ASSERT_TRUE(eventually([&] { return cluster.ready(); }));
+  ASSERT_TRUE(cluster.echo(*cluster.a, *cluster.b, false).reply);
+  const auto a = cluster.a->context().identity().id();
+  const auto b = cluster.b->context().identity().id();
+  ASSERT_EQ(cluster.a->context().nodes().path(b, net::Lane::control), net::Purpose::relayed);
+  // Both ends' NATs turn out punchable.
+  cluster.a->membership().set_path_class(PathClass::punchable);
+  cluster.b->membership().set_path_class(PathClass::punchable);
+  EXPECT_TRUE(eventually([&] {
+    return cluster.a->context().nodes().path(b, net::Lane::control) == net::Purpose::punched &&
+           cluster.b->context().nodes().path(a, net::Lane::control) == net::Purpose::punched;
+  }));
+  const auto lower = a < b ? cluster.a.get() : cluster.b.get();
+  EXPECT_GE(lower->diagnostics().paths.upgrades_made, 1u);
+  const auto outcome = cluster.echo(*cluster.a, *cluster.b, false);
+  ASSERT_TRUE(outcome.reply) << outcome.failure;
+  // The relay's circuit goes with the relayed session.
+  EXPECT_TRUE(eventually([&] { return cluster.hub->diagnostics().paths.circuits.empty(); }));
 }
 
 // No punch (one end relay only) and no relay: the call fails, saying why.

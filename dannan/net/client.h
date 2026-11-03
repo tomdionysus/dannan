@@ -173,6 +173,8 @@ class Client {
   // Why the route to `peer` on `lane` was opened (ordinary, punched or
   // relayed); nothing without a route.
   std::optional<Purpose> path_of(const identity::NodeId& peer, Lane lane) const;
+  // Every route whose session was opened for `purpose`, by peer and lane.
+  std::vector<std::pair<identity::NodeId, Lane>> routes_on(Purpose purpose) const;
   // A notification to `peer` over the route it has on `lane`; never dials.
   // False without a route, or when the session refuses it.
   bool send(const identity::NodeId& peer, Lane lane, const Message& message, sched::FrameType frame);

@@ -409,6 +409,30 @@ words, so a session does not re-derive it.
   frame only) for unknown numbers; no byte changes. Follows from it, Tom's
   question the same night: a handler reports whether it processed the
   message, failed, or does not recognise it.
+- (2026-11-03 night, Tom) **One stack, no duplicated code.** Dagda and
+  Lugh use Dannan as their network layer; Lugh uses Dagda as its
+  datastore. No code is duplicated between the three projects: what more
+  than one needs (crypto primitives, durable files, the thread-safety
+  contract, time sources, logging, the Status surface) lives once, in the
+  lowest project that needs it, and the others link it.
+- (2026-11-03 night, Tom) **Identical styles, conventions and layouts** in
+  all three: one `.clang-format`, one header block form, one naming scheme,
+  one repository layout (`<project>/<subsystem>/`, `<project>/include/`,
+  `<project>/test/`, `tools/`, `docs/`, `TODO/`), one branch and tag
+  scheme, one set of rules in `CLAUDE.md` and `CONTRIBUTING.md`.
+- (2026-11-03 night, Tom, in Lugh's session, as Lugh reported it) **Lugh
+  goes callback style**, Dannan's shape (deadline, caller's executor,
+  completion posted there): no completion-token wrappers are needed by
+  anyone now. **Lugh links Dannan now**, by FetchContent of this tree pinned
+  to `feature/wire-v1` at `785e393`, moving to a tag once one carries the
+  Context. Lugh adopts Dannan's conventions; its header is "Lugh - The
+  Directory".
+- (2026-11-03 night) **The stack has one document**:
+  `../dagda/TODO/2026-11-03-stack.md`, kept by the Dagda session, checked
+  by the Dannan and Lugh sessions. What each of Dannan, Dagda and Lugh owns,
+  the seams (the scope source Dannan declares and Lugh installs, Lugh's two
+  domains, one process per node, node revocation) and what is proposed for
+  Tom are there, not restated here.
 - (2026-11-03 evening, this plan) **0.91.3's reply rule is a transport
   behaviour Dannan keeps.** A reply to an admitted request is never
   dropped for capacity: refused by the outbound limits or the memory
@@ -722,6 +746,16 @@ and asserting the same gates; then on the chaos cluster when there is one
 (Waiting on Tom, 2).
 
 ### 10. Identity (step 10)
+
+Requirements from Lugh (2026-11-03 night), part of the step: a single
+node revoked and refused at once (proposed: a CA-signed, grow-only
+revocation record, gossiped and persisted like an identity reset, refused
+at every handshake and its sessions closed); and a node's private key held
+as Lugh holds its master key (a TPM-sealed systemd credential where there
+is one, locked memory, never on disk in clear), since Dagda wraps domain
+keys, Lugh's among them, to node certificates. And the scope seam:
+`contract::ScopeSource` declared here, `Identity::verify` over it, Lugh
+installing the source (the stack document).
 
 AthenaSIP's `cluster_ca.cpp` written into `identity/` in Dannan's style;
 Macha's shared cluster key becomes a one-class CA; `SecureChannel` keys

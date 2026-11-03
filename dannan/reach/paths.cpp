@@ -953,6 +953,38 @@ void Paths::sweep() {
     const RelayClose close{circuit, "the relay lost an end"};
     for (const auto& end : {c.a, c.b}) (void)_client.send(end, net::Lane::control, {m::relay_close, encode(close), {}}, sched::FrameType::control);
   }
+  // Moving up: a relayed pair whose ends can now both be punched.
+  const auto relayed = _client.routes_on(net::Purpose::relayed);
+  if (relayed.empty()) return;
+  const auto self = _self();
+  if (self.path_class == membership::PathClass::relay_only) return;
+  const auto now = std::chrono::steady_clock::now();
+  std::vector<std::pair<NodeRecord, net::Lane>> due;
+  for (const auto& [peer_id, lane] : relayed) {
+    if (!(self.id < peer_id)) continue;
+    const auto peer = known(peer_id);
+    if (!peer || peer->path_class == membership::PathClass::relay_only) continue;
+    contract::Lock lock(_mutex);
+    if (_stopped) return;
+    auto& after = _upgrade_after[{peer_id, lane}];
+    if (now < after) continue;
+    after = now + _config.upgrade_every;
+    due.emplace_back(*peer, lane);
+  }
+  for (auto& [peer, lane] : due) {
+    {
+      contract::Lock lock(_mutex);
+      if (_stopped) return;
+      ++_stats.upgrades_tried;
+      _queue.push_back([this, peer, lane] {
+        if (try_punch(_self(), peer, lane).empty()) {
+          contract::Lock lock(_mutex);
+          ++_stats.upgrades_made;
+        }
+      });
+    }
+    _wake.notify_one();
+  }
 }
 
 PathStats Paths::stats() const {

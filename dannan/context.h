@@ -30,6 +30,7 @@
 #include "dannan/sched/retained_memory.h"
 #include "dannan/status/activity.h"
 #include "dannan/status/events.h"
+#include "dannan/status/log.h"
 #include "dannan/status/observation.h"
 #include "dannan/status/readiness.h"
 #include "dannan/status/surface.h"
@@ -230,6 +231,9 @@ class Context {
   virtual Telemetry& telemetry() = 0;
   // What the hosted system publishes, and its counters, for Status.
   virtual status::Surface& status() = 0;
+  // A logger on the node's one sink under `scope`, the hosted system's own
+  // short name ("dagda", "lugh.oauth"). There is no process-wide logger.
+  virtual status::ScopedLogger logger(std::string scope) const = 0;
   // Monotonic counts per kind; topology is Dannan's.
   virtual status::NodeEvents& events() = 0;
   // The planes a hosted system declares and reports ready.

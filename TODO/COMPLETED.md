@@ -12,6 +12,24 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
 
+## 2026-11-03, night -- level 0 moves up; a logger through the Context
+
+On `feature/wire-v1` (this commit):
+
+- When two sessions compete for one route, both ends keep the better path
+  (ordinary over punched over relayed), then the lower session id;
+  reconciliation of an outbound and an inbound session does the same. The
+  path sweep has the lower id of a relayed pair whose ends are both
+  punchable try a punch every `path_upgrade_every`; the punched session
+  replaces the relayed one, which retires, and its circuit closes.
+- The connectivity loop ticks at least every heartbeat, so the sweep runs
+  even when classification is an hour away.
+- `Context::logger(scope)`: a hosted system logs on the node's one sink
+  (`NodeConfig::log`) under its own scope.
+- The stack is described once, in `../dagda/TODO/2026-11-03-stack.md`.
+- **Gate: `dannan_tests` 325, `dagda_tests` 1**; node, client, reverse
+  dial, two-process and level 0 cases 10 times.
+
 ## 2026-11-03, night -- level 0: path classes, punch and relay
 
 On `feature/wire-v1` (this commit). Wire v1 sections 5 and 6, as amended

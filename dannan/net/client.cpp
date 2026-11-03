@@ -79,6 +79,30 @@ struct Watchdog : std::enable_shared_from_this<Watchdog> {
   }
 };
 
+// How good a session's path is: direct (or reverse dialled) over punched
+// over relayed.
+int path_rank(Purpose purpose) {
+  switch (purpose) {
+    case Purpose::ordinary:
+      return 2;
+    case Purpose::punched:
+      return 1;
+    case Purpose::relayed:
+      return 0;
+  }
+  return 0;
+}
+
+// Which of two sessions on one route both ends keep: the better path, then
+// the lower session id. Both ends see the same purposes and ids, so they
+// agree without a word.
+bool preferred(const Session& a, const Session& b) {
+  const auto ra = path_rank(a.established().purpose);
+  const auto rb = path_rank(b.established().purpose);
+  if (ra != rb) return ra > rb;
+  return a.established().keys.session_id < b.established().keys.session_id;
+}
+
 }  // namespace
 
 // One dial: resolve, connect, handshake, all on one strand so the timeout's
@@ -653,8 +677,8 @@ void Client::dialled(const std::string& key, const Target& target, Lane lane, st
       auto& slot = _outbound[route_key];
       if (slot && slot->usable() && slot != session) {
         // Two of this end's dials to one peer and lane: both ends keep the
-        // one with the lower session id.
-        if (session->established().keys.session_id < slot->established().keys.session_id) {
+        // one with the better path, then the lower session id.
+        if (preferred(*session, *slot)) {
           retire.push_back(slot);
           slot = session;
         } else {
@@ -698,8 +722,8 @@ void Client::admit(const std::shared_ptr<Session>& session) {
     auto& slot = _inbound[key];
     if (slot && slot != session && slot->usable()) {
       // Two sessions from one peer on one lane: both ends keep the one with
-      // the lower session id.
-      if (session->established().keys.session_id < slot->established().keys.session_id) {
+      // the better path, then the lower session id.
+      if (preferred(*session, *slot)) {
         retire.push_back(slot);
         slot = session;
       } else {
@@ -730,6 +754,20 @@ void Client::reconcile_locked(const RouteKey& key, Retire& retire) {
   const auto inbound = _inbound.find(key);
   if (outbound == _outbound.end() || !outbound->second->usable()) return;
   if (inbound == _inbound.end() || !inbound->second->usable()) return;
+  // A better path wins whoever dialled it: a punch replacing a relay.
+  const auto out_rank = path_rank(outbound->second->established().purpose);
+  const auto in_rank = path_rank(inbound->second->established().purpose);
+  if (out_rank != in_rank) {
+    if (out_rank > in_rank) {
+      retire.push_back(inbound->second);
+      _inbound.erase(inbound);
+    } else {
+      retire.push_back(outbound->second);
+      _outbound.erase(outbound);
+    }
+    ++_stats.retired;
+    return;
+  }
   // Both ends dialled: both keep the session the lower node id dialled. An
   // incapable node keeps its own when the peer is capable: nothing can
   // replace it from the other side. Two incapable nodes, whose sessions
@@ -863,7 +901,7 @@ void Client::install_dialled(const std::shared_ptr<Session>& session) {
       _peer_capabilities[peer.id] = peer.capabilities;
       auto& slot = _outbound[key];
       if (slot && slot->usable() && slot != session) {
-        if (session->established().keys.session_id < slot->established().keys.session_id) {
+        if (preferred(*session, *slot)) {
           retire.push_back(slot);
           slot = session;
         } else {
@@ -898,6 +936,15 @@ std::optional<Purpose> Client::path_of(const identity::NodeId& peer, Lane lane) 
     if (found != routes->end() && found->second->usable()) return found->second->established().purpose;
   }
   return std::nullopt;
+}
+
+std::vector<std::pair<identity::NodeId, Lane>> Client::routes_on(Purpose purpose) const {
+  contract::Lock lock(_mutex);
+  std::set<RouteKey> out;
+  for (const auto* routes : {&_outbound, &_inbound})
+    for (const auto& [key, session] : *routes)
+      if (session->usable() && session->established().purpose == purpose) out.insert(key);
+  return {out.begin(), out.end()};
 }
 
 bool Client::send(const identity::NodeId& peer, Lane lane, const Message& message, sched::FrameType frame) {
