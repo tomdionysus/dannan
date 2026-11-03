@@ -10,9 +10,11 @@
 # "dannan/<subsystem>/x.h".
 add_library(dannan SHARED
   contract/thread_safety.cpp
+  identity/argon2.cpp
   identity/cluster_key.cpp
   identity/crypto.cpp
   identity/durable_file.cpp
+  identity/key_custody.cpp
   identity/node_id.cpp
   identity/node_identity.cpp
   identity/secure_memory.cpp

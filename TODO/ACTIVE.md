@@ -70,7 +70,8 @@ punchable, one behind a randomising NAT, one behind two NATs; the runner
 `test/compose/scenario.py` checks classes, paths, echoes on both lanes, a
 healed partition and a relay failover) and passes (`COMPLETED.md`).
 Next: the stack's foundations (below, "Foundations for the stack":
-secure memory and signing done; node key custody, fuzz targets). Left of section 6's rules, as work:
+secure memory, signing, Argon2id and node key custody done; the node
+opening its custody, fuzz targets). Left of section 6's rules, as work:
 a relayed or punched pair moving up a class while it runs, the relay's
 DATA budget (only a circuit cap now), and placement told a peer's path
 class. Identity (step 10) waits; the port steps wait
@@ -762,8 +763,8 @@ their copies:
    handshake, frame header, assembler, node record, telemetry, the level 0
    payloads.
 
-Lugh keeps what only Lugh needs: HMAC-SHA1, Argon2id, base32, base64url,
-JOSE.
+Lugh keeps what only Lugh needs: HMAC-SHA1, base32, base64url, JOSE.
+Argon2id moved here: custody stretches a passphrase with it too.
 
 ### 10. Identity (step 10)
 

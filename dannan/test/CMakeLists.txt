@@ -18,6 +18,7 @@ add_executable(dannan_tests
   fixtures_test.cpp
   identity_crypto_test.cpp
   identity_durable_file_test.cpp
+  identity_key_custody_test.cpp
   identity_node_identity_test.cpp
   identity_secure_memory_test.cpp
   identity_signing_test.cpp
