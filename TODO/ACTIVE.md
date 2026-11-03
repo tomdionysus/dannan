@@ -132,22 +132,8 @@ first.
 7. **The design doc's "starts in-tree" paragraph** (Repository, build,
    versioning), which Tom's decision supersedes: his edit of the Claude
    Doc, after which the rendering is re-made.
-8. **What a frame of a type this node does not host should do**
-   (found by the two-process test, 2026-11-03). Protocol 23's rule, in
-   Macha and in Dannan, is per type: a type the receiver does not know may
-   travel only in the control frame, and a frame that breaks its type's
-   rule ends the session. A Macha node sends its metadata traffic to every
-   peer in any frame class (`get_metadata_heads` as speculative, say), so
-   a node that has not registered Macha's types loses the whole session to
-   it. Within Macha's own cluster nothing changes once Macha registers its
-   types (step 3), and `dannan-node` registers them as Macha will. It
-   matters when nodes that host different systems share a cluster.
-   Recommendation: keep the strict check for registered types; for a type
-   the node does not host, accept any frame class on the CONTROL lane and
-   answer 501 (a notification is dropped), so a peer is never cut off for
-   traffic this node will simply decline. That accepts more than Macha
-   0.91.2 does for unknown numbers, and changes no byte. Until Tom
-   decides, the strict rule stands.
+8. Settled (Tom, 2026-11-03): core message types are Dannan's; the rest
+   are user-definable and under the user's control. See Decisions.
 
 ## How to prove it
 
@@ -360,6 +346,17 @@ words, so a session does not re-derive it.
   reaping). Dannan is new code: a session count in the server's work
   stats (kept out of the Status JSON) and a test-only hook on the client's
   route table are part of the design, not a retrofit.
+- (2026-11-03 night, Tom) **Core message types, and user types under the
+  user's control.** Dannan's own types (`with_dannan_types`) are core:
+  their rules are Dannan's and cannot be redefined. Every other number is
+  a user type: its lanes, classes, notification flag and handling are the
+  registrant's. A user type nobody on this node registered is not
+  policed (either lane, any class) and goes to the user's handler, a
+  notification included, so a peer is never cut off for traffic this node
+  does not host. Supersedes protocol 23's default (control lane, control
+  frame only) for unknown numbers; no byte changes. Follows from it, Tom's
+  question the same night: a handler reports whether it processed the
+  message, failed, or does not recognise it.
 - (2026-11-03 evening, this plan) **0.91.3's reply rule is a transport
   behaviour Dannan keeps.** A reply to an admitted request is never
   dropped for capacity: refused by the outbound limits or the memory

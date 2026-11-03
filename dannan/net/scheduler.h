@@ -49,6 +49,9 @@ struct ServerLimits {
 
 struct Timing {
   uint64_t requests = 0;
+  // Of those, what the handler said: it failed, or did not recognise them.
+  uint64_t failed = 0;
+  uint64_t unrecognised = 0;
   uint64_t queue_wait_us_total = 0;
   uint64_t queue_wait_us_max = 0;
   uint64_t handler_us_total = 0;
@@ -71,8 +74,31 @@ struct WorkStats {
   std::map<MessageType, Timing> message_timings;
 };
 
-// Answers a request on a worker. May block; an exception answers 500.
-using RequestHandler = std::function<Message(const membership::NodeRecord& peer, sched::FrameType frame, const Message& request)>;
+// What a handler did with a message. Processed: the reply (ignored for a
+// notification). Failed: the refusal Dannan sends. Unrecognised: not this
+// handler's type; Dannan answers 501 itself. Each is counted per type.
+class Handled {
+ public:
+  enum class Outcome : uint8_t { processed, failed, unrecognised };
+
+  static Handled processed(Message reply = {message::ok, {}, {}}) { return Handled(Outcome::processed, std::move(reply)); }
+  static Handled failed(uint16_t status, std::string_view code, std::string_view why) { return Handled(Outcome::failed, error_reply(status, code, why)); }
+  static Handled unrecognised() { return Handled(Outcome::unrecognised, {}); }
+
+  Outcome outcome() const noexcept { return _outcome; }
+  // The message to send back: the reply, or the refusal.
+  const Message& reply() const noexcept { return _reply; }
+  Message take_reply() noexcept { return std::move(_reply); }
+
+ private:
+  Handled(Outcome outcome, Message reply) : _outcome(outcome), _reply(std::move(reply)) {}
+  Outcome _outcome;
+  Message _reply;
+};
+
+// Handles a request or notification on a worker and says what it did. May
+// block; an exception is a failure, answered 500.
+using RequestHandler = std::function<Handled(const membership::NodeRecord& peer, sched::FrameType frame, const Message& request)>;
 
 // Queues peers' requests by class and runs them on bounded per-class
 // workers. A request that cannot be queued is answered at once with a 503

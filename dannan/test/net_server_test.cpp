@@ -112,7 +112,7 @@ CallOutcome call(Io& io, Session& session, MessageType type) {
 
 RequestHandler members_reply() {
   return [](const membership::NodeRecord&, FrameType, const Message& request) {
-    return Message{request.type == message::members ? message::members_reply : message::ok, {}, {}};
+    return Handled::processed({request.type == message::members ? message::members_reply : message::ok, {}, {}});
   };
 }
 

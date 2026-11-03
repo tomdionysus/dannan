@@ -92,12 +92,12 @@ struct Node {
     server = std::make_unique<Server>(
         io.context, "127.0.0.1", 0, server_options,
         [this](const membership::NodeRecord& peer, FrameType, const Message& request) {
-          if (request.type == message::dial_request) return ignore_dial_requests ? Message{message::ok, {}, {}} : client->handle_dial_request(peer, request);
+          if (request.type == message::dial_request) return ignore_dial_requests ? Handled::processed() : client->handle_dial_request(peer, request);
           if (request.type == slow) gate.enter_and_wait();
           if (request.type == sluggish) std::this_thread::sleep_for(300ms);
           if (request.type == news) ++heard;
           if (request.type == message::ping && hang_pings.fetch_sub(1) > 0) gate.enter_and_wait();
-          return Message{message::ok, request.payload, {}};
+          return Handled::processed({message::ok, request.payload, {}});
         },
         [this](const std::shared_ptr<Session>& session) { client->admit(session); });
     ClientOptions options = std::move(tuning);
