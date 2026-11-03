@@ -12,6 +12,120 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
 
+## 2026-11-03, night -- step 4c: supervision
+
+On `feature/control-plane` (this commit):
+
+- `supervise::Supervisor`: plugins from a directory (a missing one loads
+  none; a library without the entry symbol is not a plugin and is
+  unloaded untouched), the build identity checked before any call in and
+  a mismatch disabled with its reason; declining is `unavailable` and
+  never retried; a throw in construction or start, or a fault reported
+  later through the sink (first reason wins, none after stopping), tears
+  the instance down and retries under `sched::RetryPolicy` until it is
+  disabled; stop runs the subsystem's stop, which may write; builtins
+  supervised alike; a blocking construction cancelled through its stop
+  token. The entry symbol and build identity are the hosted system's
+  options, so Macha keeps `macha_subsystem_entry` and its identity; the
+  context it passes is opaque to Dannan.
+- `supervise::SupervisedThreads` (service loops with backoff doubling to
+  a ceiling, once, escalating; statuses by name), `supervise::Registry`
+  (by name and type; a faulted instance withdraws only itself),
+  `StartupProgress` and `StartupStallGate`. Macha's process globals
+  (thread statuses, startup progress) are objects injected per node here.
+- Seven test plugins built as modules, one behaviour each.
+- **Gate: `dannan_tests` 286, `dagda_tests` 1, `dannan_interop_tests` 12**;
+  the threaded supervision cases 30 times over.
+
+## 2026-11-03, night -- step 4b, part 2: reach v0
+
+On `feature/control-plane` (this commit):
+
+- `reach::InboundResolver`: configured is final; `automatic` starts from
+  protocol 23's `connectivity/inbound.bin` (`MACHINB1`) or as capable;
+  sticky (two failed dial-backs in a row to turn incapable, one success
+  back), re-probed after 1 h capable or 10 min incapable, persisted on
+  every answer; a corrupt file is ignored. `refuse_impossible_cluster`
+  with Macha's reasons.
+- `reach::DialBackResponder` and the dial-back codec (protocol 23's 44 and
+  120): a fresh connection that must authenticate as the asker, one per
+  asking peer per interval (429 inside it), 400 without an address.
+- `reach::PublicConnectivity`: a UPnP mapping made, verified and owned
+  (removed on exit), else the external address, else the configured
+  endpoint; the self-probe; every status code Macha names; the work lock
+  before the status lock so Status never waits. Gateway, lookup and probe
+  injected.
+- Written by hand rather than taking Macha's miniupnpc and libcurl:
+  `reach::UpnpGateway` (SSDP, the device description, the WAN connection
+  service's SOAP actions over a small HTTP client) and
+  `checkip_external_ip` (HTTPS over Asio's SSL with the certificate and
+  host name verified). OpenSSL's SSL component is now linked (Asio's TLS);
+  no new dependency. Tested against a fake IGD on loopback and by their
+  pure parsers; no case touches a real network.
+- **Gate: `dannan_tests` 274, `dagda_tests` 1, `dannan_interop_tests` 12.**
+
+## 2026-11-03, night -- step 4b, part 1: identity v1 and status
+
+On `feature/control-plane` (this commit):
+
+- `identity::StateLock` (an exclusive flock on `.macha.lock`, the name
+  protocol 23's so Macha and a Dannan node on one path exclude each
+  other), `load_or_create_node_id` (`node-id`, owner-only, durable) and
+  `NodeIdentity` (key, id, a fresh durability epoch per process). Macha's
+  storage-layout marker stays Macha's (the store's).
+- `status::Telemetry`: protocol 23's tagged TEL3 record as ordered fields;
+  Dannan fills the core fields (identity, the record's figures, process
+  figures, peers, transport counts, traffic with rates over the interval)
+  and the hosted system adds its own through a callback; a layout orders
+  them (`protocol23_layout`, core and hosted interleaved). Unknown fields
+  are kept as they came; core widths and the phase are checked.
+  `TelemetryStore`: per-node ordering (sequence within a boot, a new boot
+  unless over a minute older), identity resets, `recent`, `views`, the
+  persisted set (at most 1024, a corrupt file ignored). Time injected.
+- `status::ActivityClocks` (presence per work class, bytes per frame,
+  lock-free), `status::NodeEvents` (monotonic counts; `topology` is
+  Dannan's, a hosted system names its own kinds, at most 32),
+  `status::Surface` (the design's Status noun: `publish`, `counter`,
+  `snapshot`), and observations (log-linear histograms, a bounded
+  registry injected per node rather than a process global, one JSON line
+  per window and event, a rotated log, a recorder thread).
+- Interop: `Interop.TelemetryRecordsCrossBothWaysByteForByte` (a full
+  Macha record decodes and re-encodes to the same bytes; one Dannan builds
+  in the layout equals Macha's) and `Interop.ObservationLinesAreMachas`
+  (windows, events and route labels, escapes included).
+- **Gate: `dannan_tests` 256, `dagda_tests` 1, `dannan_interop_tests` 12.**
+
+## 2026-11-03, night -- step 4a: membership and placement
+
+On `feature/control-plane` (this commit):
+
+- `contract::WallClock` beside the steady `TimeSource` (wall dates
+  recorded and gossiped, never deadlines), with `test::SteppedWall`.
+- `membership::IdentityReset` (key, endpoint and node matching, protocol
+  23's `MACHIDR1` gossip codec) and `membership::Membership`: direct
+  liveness counts and gossip does not; the newer record wins and a
+  direct observation of an older one only refreshes liveness; forgetting
+  at the horizon (never under twice `dead_after`) with old gossip unable
+  to teach a node back; the roster persisted as `MACHMEM4` (1 to 3 read),
+  encoded under the roster lock and written after it in sequence order;
+  identity resets applied, persisted as tombstones and honoured on load;
+  flags with unknown nodes capable; `all_known_reachable`. Time injected
+  throughout.
+- `placement`: rendezvous, capacity placement over the 2^32 shard space
+  (water level, quotas, systematic sample, failure domains, weighted
+  fallbacks; protocol 23's salts by default, a hosted system may pass its
+  own), logical capacity, commit-replica order, the extent candidate
+  filter.
+- Interop: `Interop.TheRosterFileIsSharedWithMacha` (Dannan's roster
+  loads in Macha's `Membership` and Macha's in Dannan's) and
+  `Interop.PlacementDecidesAsMachasDoes` (400 random rosters, 20 keys
+  each, 0 to 4 copies: the same owners and fallbacks in the same order,
+  the same logical capacity and commit order).
+- Not here, step 5's: the gossip exchange and bootstrap seeds, publishing
+  the node's figures, propagating resets to peers and the client's
+  invalidation of a reset association.
+- **Gate: `dannan_tests` 230, `dagda_tests` 1, `dannan_interop_tests` 10.**
+
 ## 2026-11-03, night -- a handler says what it did
 
 On `feature/user-types` (this commit), from Tom's question: a handler

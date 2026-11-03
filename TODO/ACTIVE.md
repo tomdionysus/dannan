@@ -54,13 +54,11 @@ has every milestone with its gate). `develop` holds the same tree;
 1, `dannan_interop_tests` 8 (the configure line is under "How to prove
 it").
 
-Next is step 3, the first port step, in `../macha` on
-`feature/dannan-port-transport` (its section below). Before touching that
-tree: tell the Macha session (another Claude session on this machine),
-and check "Waiting on Tom": item 1 (the suite counts on fi-1) is the
-port gate's baseline, and item 8 (a frame of a type the node does not
-host) is a design point the port does not wait on, since Macha registers
-all its types.
+Step 4a (membership and placement) is done on `feature/control-plane`
+(`COMPLETED.md`, gate 230 + 1 + 10). Steps 4b (identity v1, status, reach v0) and 4c (supervision) are done
+too: step 4 is whole (gate 286 + 1 + 12). Next: step 5, the node and
+`dannan::Context`; the port steps wait for the Macha agent and Dagda is
+another project (Decisions, 2026-11-03 night).
 
 Read in this order: this file to the end of Standing rules;
 `2026-11-02-dannan-plan.md` whole; the inventory; the head of
@@ -346,6 +344,12 @@ words, so a session does not re-derive it.
   reaping). Dannan is new code: a session count in the server's work
   stats (kept out of the Status JSON) and a test-only hook on the client's
   route table are part of the design, not a retrofit.
+- (2026-11-03 night, Tom) **Dagda is its own project, with its own agent.**
+  Steps 7 and 8 leave this plan; the `dagda/` stub here goes when that
+  project starts. **Macha is not moving yet:** the port steps (3, 6) are
+  the main Macha agent's, later. This plan finishes Dannan's own code:
+  steps 4 and 5, then Dannan's part of 9 and 10. Dannan's API is not
+  stable and nothing uses it yet: change it freely.
 - (2026-11-03 night, Tom) **Core message types, and user types under the
   user's control.** Dannan's own types (`with_dannan_types`) are core:
   their rules are Dannan's and cannot be redefined. Every other number is

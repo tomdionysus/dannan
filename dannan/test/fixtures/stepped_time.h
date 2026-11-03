@@ -33,4 +33,15 @@ class SteppedTime final : public contract::TimeSource {
   mutable std::atomic<uint64_t> _reads{0};
 };
 
+// A WallClock that stands still until advance() moves it.
+class SteppedWall final : public contract::WallClock {
+ public:
+  explicit SteppedWall(uint64_t start_ms = 1793700000000ull) : _now(start_ms) {}
+  void advance(std::chrono::milliseconds by) noexcept { _now.fetch_add(static_cast<uint64_t>(by.count())); }
+  uint64_t unix_ms() const noexcept override { return _now.load(); }
+
+ private:
+  std::atomic<uint64_t> _now;
+};
+
 }  // namespace dannan::test
