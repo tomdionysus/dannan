@@ -62,6 +62,8 @@ struct NodeConfig {
   std::chrono::milliseconds punch_window{3000};
   // How often a relayed pair tries to move up to a punched path.
   std::chrono::milliseconds path_upgrade_every{60000};
+  // As a relay: DATA circuits at once (CONTROL circuits are unconditional).
+  size_t relay_data_circuits = 32;
   // What recovers before the node is ready, by name.
   std::vector<std::string> planes;
   std::string version;

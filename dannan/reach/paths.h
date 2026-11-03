@@ -137,9 +137,12 @@ struct PathsConfig {
   std::chrono::milliseconds connect_timeout{2500};
   // How long both ends keep trying a simultaneous open.
   std::chrono::milliseconds punch_window{3000};
-  // Whether this node forwards circuits for others, and how many at once.
+  // Whether this node forwards circuits for others. CONTROL circuits are
+  // unconditional (a member must always be able to gossip, commit and hold
+  // leases); DATA circuits are budgeted: at most this many at once, the
+  // rest refused, and every byte counted per circuit in Status.
   bool relay = false;
-  size_t max_circuits = 256;
+  size_t max_data_circuits = 32;
   // A forced path class (tests and the compose bed); nothing: classified.
   std::optional<membership::PathClass> forced_class;
   // How often a relayed pair whose ends are both punchable tries a punch
@@ -166,6 +169,8 @@ struct PathStats {
   uint64_t upgrades_tried = 0;
   uint64_t upgrades_made = 0;
   uint64_t circuits_relayed = 0;
+  // DATA circuits refused past the budget.
+  uint64_t data_circuits_refused = 0;
   uint64_t relayed_bytes = 0;
   std::vector<CircuitStats> circuits;
 };

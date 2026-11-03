@@ -117,6 +117,12 @@ class Secret {
   SecureBytes _bytes;
 };
 
+// How many secure allocations (SecureBytes, SecureBuffer, everything on
+// SecureAllocator) could not be locked into RAM since the process started:
+// their pages may be swapped. A node says so once, at start, after loading
+// its keys (RLIMIT_MEMLOCK is the usual cause). Thread-safe.
+uint64_t unlocked_secure_allocations() noexcept;
+
 // What harden_process() managed.
 struct Hardening {
   bool core_dumps_disabled = false;
