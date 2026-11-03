@@ -77,6 +77,7 @@ refused. Nothing is negotiated down below a node's own minimum.
 ```
 id node   string host   u16 port   string failure_domain
 u64 seen_unix_ms
+id incarnation            the node's process: a new one is a restart (added 2026-11-03 night)
 u32 capabilities          bit 0 inbound (dialable at host:port)
                           bit 1 relay   (forwards for others)
 u8  path_class            0 public, 1 punchable, 2 relay_only

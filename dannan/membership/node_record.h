@@ -58,6 +58,10 @@ struct NodeRecord {
   uint16_t port = 0;
   std::string failure_domain;
   uint64_t seen_unix_ms = 0;
+  // The node's process (its durability epoch): a new one is a restart, not
+  // a reconnect. Unordered: it says "the same process or not", never which
+  // is newer.
+  identity::NodeId incarnation;
   uint32_t capabilities = capabilities_default;
   PathClass path_class = PathClass::public_path;
   std::vector<Candidate> candidates;

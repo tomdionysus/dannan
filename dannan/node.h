@@ -198,6 +198,10 @@ class Node final : public Context {
   void telemetry_loop(std::stop_token stop);
   void connectivity_loop(std::stop_token stop);
   void apply_inbound(bool capable);
+  // The roster changed, or may have: tells the watchers what changed since
+  // they were last told, and counts a topology event (with `quiet`, only
+  // when something did change: a node that went silent past dead_after).
+  void topology_changed(bool quiet = false);
   // Learns this node's path class and candidates; when to do it again.
   std::chrono::milliseconds classify();
   // Waits on the loops' wake until `due` or stop.
@@ -239,6 +243,17 @@ class Node final : public Context {
   std::unique_ptr<reach::Paths> _paths;
   // Channels; shared, since its completions hold it weakly.
   std::shared_ptr<net::Fanout> _fanout;
+
+  struct Watcher {
+    boost::asio::any_io_executor executor;
+    std::function<void(RosterChange)> handler;
+  };
+  // The roster watchers and the active roster they were last told of.
+  // Lock order: taken with no other lock held; the roster is read under it.
+  mutable contract::Mutex _watch_mutex;
+  std::map<uint64_t, Watcher> _watchers DANNAN_GUARDED_BY(_watch_mutex);
+  std::map<identity::NodeId, membership::NodeRecord> _told DANNAN_GUARDED_BY(_watch_mutex);
+  uint64_t _next_watcher DANNAN_GUARDED_BY(_watch_mutex) = 1;
   std::unique_ptr<reach::PublicConnectivity> _connectivity;
   std::unique_ptr<reach::DialBackResponder> _dial_back;
 

@@ -77,6 +77,20 @@ TEST(Secret, CannotBeLoggedOrCopied) {
   EXPECT_TRUE(std::equal(key.begin(), key.end(), secret.reveal().begin()));
 }
 
+// An empty Secret maps nothing, for a struct or result that holds one before
+// it has a value; from an empty span is the same.
+TEST(Secret, CanBeEmpty) {
+  const Secret none;
+  EXPECT_EQ(none.size(), 0u);
+  EXPECT_TRUE(none.reveal().empty());
+  EXPECT_FALSE(none.locked());
+  EXPECT_TRUE(none == Secret(std::span<const uint8_t>{}));
+  static_assert(std::is_nothrow_default_constructible_v<Secret>);
+  Secret later;
+  later = Secret::random(16);
+  EXPECT_EQ(later.size(), 16u);
+}
+
 TEST(Secret, ComparesInConstantTime) {
   const std::array<uint8_t, 3> a{1, 2, 3};
   const std::array<uint8_t, 3> b{1, 2, 4};

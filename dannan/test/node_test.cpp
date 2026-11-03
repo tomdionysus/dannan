@@ -382,6 +382,36 @@ TEST(Node, ChannelsReachSubscribersAcrossTheCluster) {
   EXPECT_EQ(sequence, (std::vector<uint64_t>{1, 2, 3}));
 }
 
+// The roster's changes as a feed: a watcher hears a node join, change (an
+// advert; a restart is a new incarnation), and leave once it has been
+// silent for dead_after.
+TEST(Node, AWatcherHearsTheRosterChange) {
+  Pair pair;
+  std::mutex mutex;
+  std::vector<RosterChange> heard;
+  const auto strand = asio::make_strand(pair.io.context);
+  pair.a->context().nodes().watch(strand, [&](RosterChange change) {
+    std::lock_guard lock(mutex);
+    heard.push_back(std::move(change));
+  });
+  const auto has = [&](RosterChange::Kind kind, const std::function<bool(const membership::NodeRecord&)>& also = {}) {
+    std::lock_guard lock(mutex);
+    return std::any_of(heard.begin(), heard.end(), [&](const RosterChange& c) { return c.kind == kind && (!also || also(c.node)); });
+  };
+  pair.b->start();
+  const auto b = pair.b->context().identity().id();
+  const auto epoch = pair.b->context().identity().durability_epoch();
+  ASSERT_TRUE(eventually([&] { return has(RosterChange::Kind::joined, [&](const auto& n) { return n.id == b; }); }));
+  EXPECT_TRUE(has(RosterChange::Kind::joined, [&](const auto& n) { return n.id == b && n.incarnation == epoch; }));
+  pair.b->context().nodes().advertise("role", net::Bytes{1});
+  EXPECT_TRUE(eventually([&] { return has(RosterChange::Kind::changed, [&](const auto& n) { return n.id == b && n.advert("role"); }); }));
+  pair.b->stop();
+  EXPECT_TRUE(eventually([&] { return has(RosterChange::Kind::left, [&](const auto& n) { return n.id == b; }); }));
+  // A watcher that comes later is told of the roster as it stands.
+  pair.a->context().nodes().watch(strand, [&](RosterChange) {});
+  EXPECT_STREQ(roster_change_name(RosterChange::Kind::left), "left");
+}
+
 // The three broadcasts reach every CONTROL route; none dials.
 TEST(Node, TheThreeBroadcastsReachPeers) {
   std::atomic<int> heard{0};
