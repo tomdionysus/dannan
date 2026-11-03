@@ -119,6 +119,7 @@ Lane Client::lane_for(MessageType type) const {
 }
 
 void Client::call(const membership::NodeRecord& peer, MessageType type, Bytes payload, sched::FrameType frame, asio::any_io_executor executor, Done done) {
+  note_peer(peer);
   call(Target{peer.id, {peer.host, peer.port}}, Call{type, std::move(payload), frame, std::move(executor), std::move(done)});
 }
 
@@ -128,8 +129,12 @@ void Client::call(const Endpoint& endpoint, MessageType type, Bytes payload, sch
 
 void Client::call(Target target, Call call) {
   const auto lane = lane_for(call.type);
+  const auto backoff_key = address_of(target.endpoint) + "/" + lane_name(lane);
   std::shared_ptr<Session> route;
+  std::shared_ptr<Session> ask_over;
+  std::shared_ptr<asio::steady_timer> timer;
   std::string key;
+  std::string refused;
   bool first = false;
   {
     contract::Lock lock(_mutex);
@@ -140,22 +145,209 @@ void Client::call(Target target, Call call) {
     if (target.id) route = route_locked(*target.id, lane);
     if (route) {
       ++_stats.reused;
-    } else {
+    } else if (const auto backoff = _backoff.find(backoff_key); backoff != _backoff.end() && _options.time->now() < backoff->second.retry_after) {
       // Backoff governs new dials, never a route the peer opened.
-      if (const auto backoff = _backoff.find(address_of(target.endpoint) + "/" + lane_name(lane));
-          backoff != _backoff.end() && _options.time->now() < backoff->second.retry_after)
-        return fail(call, "peer " + address_of(target.endpoint) + " in retry backoff");
+      return fail(call, "peer " + address_of(target.endpoint) + " in retry backoff");
+    } else if (target.id && !capable_locked(*target.id)) {
+      // Never dialled: asked, over its own CONTROL session, to dial back.
+      const RouteKey wanted{*target.id, lane};
+      ask_over = route_locked(*target.id, Lane::control);
+      if (!ask_over) {
+        refused = "peer " + to_string(*target.id) + " accepts no inbound connections and is not connected";
+      } else {
+        auto [wait, fresh] = _reverse.try_emplace(wanted);
+        wait->second.calls.push_back(std::move(call));
+        if (fresh) {
+          timer = std::make_shared<asio::steady_timer>(_health_strand);
+          wait->second.timer = timer;
+          wait->second.backoff_key = backoff_key;
+          ++_operations;
+          ++_stats.dial_requests_sent;
+        }
+      }
+    } else {
       key = (target.id ? to_string(*target.id) : address_of(target.endpoint)) + "/" + lane_name(lane);
-      auto& waiting = _dials[key];
-      first = waiting.empty();
-      waiting.push_back(std::move(call));
+      auto [waiting, fresh] = _dials.try_emplace(key);
+      waiting->second.push_back(std::move(call));
+      first = fresh;
       if (first) ++_stats.dials;
     }
   }
   if (route) return place(route, std::move(call));
+  if (!refused.empty()) {
+    // The backoff a refused dial earns, so a retrying caller does not ask
+    // over the wire on every attempt.
+    observe_dial(backoff_key, false);
+    return fail(call, refused);
+  }
+  if (timer) return ask_for_lane({*target.id, lane}, ask_over, timer);
   if (first)
     dial(target, lane,
          [this, key, target, lane](std::shared_ptr<Session> session, std::string why) { dialled(key, target, lane, std::move(session), std::move(why)); });
+}
+
+void Client::ask_for_lane(const RouteKey& key, const std::shared_ptr<Session>& control, const std::shared_ptr<asio::steady_timer>& timer) {
+  // Armed before the request goes, so the route arriving can always cancel
+  // it: the strand runs the two in order.
+  asio::post(_health_strand, [this, key, timer] {
+    bool stopped;
+    {
+      contract::Lock lock(_mutex);
+      stopped = _stopped;
+      if (!stopped) _reverse_timers.insert(timer);
+    }
+    if (stopped) return end_operation();
+    timer->expires_after(_options.connect_timeout);
+    timer->async_wait([this, key, timer](const boost::system::error_code&) { reverse_expired(key, timer); });
+  });
+  Writer writer;
+  writer.u8(static_cast<uint8_t>(key.second));
+  const Message request{message::dial_request, writer.take(), {}};
+  bool sent = control->try_notify(request, sched::FrameType::control);
+  if (!sent) {
+    try {
+      control->notify(request, sched::FrameType::control, _io.get_executor());
+      sent = true;
+    } catch (const OutboundRefused&) {
+    }
+  }
+  if (sent) return;
+  std::vector<Call> calls;
+  std::string backoff_key;
+  {
+    contract::Lock lock(_mutex);
+    if (const auto found = _reverse.find(key); found != _reverse.end() && found->second.timer == timer) {
+      calls = std::move(found->second.calls);
+      backoff_key = found->second.backoff_key;
+      _reverse.erase(found);
+    }
+  }
+  asio::post(_health_strand, [timer] { timer->cancel(); });
+  if (calls.empty()) return;
+  observe_dial(backoff_key, false);
+  for (auto& call : calls) fail(call, "peer " + to_string(key.first) + " accepts no inbound connections and the dial request was not queued");
+}
+
+void Client::reverse_expired(const RouteKey& key, const std::shared_ptr<asio::steady_timer>& timer) {
+  std::vector<Call> calls;
+  std::string backoff_key;
+  {
+    contract::Lock lock(_mutex);
+    _reverse_timers.erase(timer);
+    if (const auto found = _reverse.find(key); found != _reverse.end() && found->second.timer == timer) {
+      calls = std::move(found->second.calls);
+      backoff_key = found->second.backoff_key;
+      _reverse.erase(found);
+    }
+  }
+  if (!calls.empty()) {
+    observe_dial(backoff_key, false);
+    for (auto& call : calls)
+      fail(call, "peer " + to_string(key.first) + " accepts no inbound connections; its reverse dial for the " + lane_name(key.second) +
+                     " lane did not arrive within " + std::to_string(_options.connect_timeout.count()) + " ms");
+  }
+  end_operation();
+}
+
+bool Client::capable_locked(const identity::NodeId& peer) const {
+  const auto found = _peer_flags.find(peer);
+  return found == _peer_flags.end() || (found->second & membership::flag_inbound_capable) != 0;
+}
+
+bool Client::local_capable() const { return _options.local().inbound_capable(); }
+
+void Client::note_peer(const membership::NodeRecord& peer) {
+  if (peer.id == identity::NodeId{}) return;
+  contract::Lock lock(_mutex);
+  _peer_flags[peer.id] = peer.flags;
+}
+
+void Client::set_maintained_peers(std::function<std::vector<membership::NodeRecord>()> peers) {
+  contract::Lock lock(_mutex);
+  _maintained = std::move(peers);
+}
+
+void Client::request_lane(const membership::NodeRecord& peer, Lane lane) {
+  if (peer.id == identity::NodeId{} || peer.host.empty() || !peer.port) return;
+  {
+    contract::Lock lock(_mutex);
+    if (_stopped) return;
+    _peer_flags[peer.id] = peer.flags;
+    _requested[{peer.id, lane}] = peer;
+    ++_stats.dial_requests_received;
+    ++_operations;
+  }
+  asio::post(_health_strand, [this] {
+    open_lanes();
+    end_operation();
+  });
+}
+
+Message Client::handle_dial_request(const membership::NodeRecord& peer, const Message& request) {
+  try {
+    Reader reader(request.payload);
+    const auto lane = static_cast<Lane>(reader.u8());
+    reader.finish();
+    if (lane != Lane::control && lane != Lane::data) return error_reply(400, "invalid_request", "invalid transport lane");
+    request_lane(peer, lane);
+    return {message::ok, {}, {}};
+  } catch (const DecodeError& error) {
+    return error_reply(400, "invalid_request", error.what());
+  }
+}
+
+void Client::open_lanes() {
+  std::vector<std::pair<membership::NodeRecord, Lane>> wanted;
+  std::function<std::vector<membership::NodeRecord>()> maintained;
+  {
+    contract::Lock lock(_mutex);
+    if (_stopped) return;
+    for (auto& [key, peer] : _requested) wanted.emplace_back(peer, key.second);
+    _requested.clear();
+    maintained = _maintained;
+  }
+  // An incapable node keeps both lanes open to every capable peer itself;
+  // dial_request only covers the gap until the next pass.
+  if (maintained && !local_capable()) {
+    for (const auto& peer : maintained()) {
+      wanted.emplace_back(peer, Lane::control);
+      wanted.emplace_back(peer, Lane::data);
+    }
+  }
+  for (const auto& [peer, lane] : wanted) {
+    // Two incapable nodes have no path to each other.
+    if (peer.inbound_capable()) ensure_lane(peer, lane);
+  }
+}
+
+void Client::ensure_lane(const membership::NodeRecord& peer, Lane lane) {
+  const Target target{peer.id, {peer.host, peer.port}};
+  const auto key = to_string(peer.id) + "/" + lane_name(lane);
+  {
+    contract::Lock lock(_mutex);
+    if (_stopped || route_locked(peer.id, lane)) return;
+    if (const auto backoff = _backoff.find(address_of(target.endpoint) + "/" + lane_name(lane));
+        backoff != _backoff.end() && _options.time->now() < backoff->second.retry_after)
+      return;
+    if (!_dials.try_emplace(key).second) return;
+    ++_stats.dials;
+  }
+  dial(target, lane,
+       [this, key, target, lane](std::shared_ptr<Session> session, std::string why) { dialled(key, target, lane, std::move(session), std::move(why)); });
+}
+
+void Client::close_route(const identity::NodeId& peer, Lane lane, const std::string& why) {
+  std::vector<std::shared_ptr<Session>> routes;
+  {
+    contract::Lock lock(_mutex);
+    for (auto* table : {&_outbound, &_inbound}) {
+      if (const auto found = table->find({peer, lane}); found != table->end()) {
+        routes.push_back(found->second);
+        table->erase(found);
+      }
+    }
+  }
+  for (auto& session : routes) session->close(why);
 }
 
 void Client::fail(Call& call, std::string why) {
@@ -293,6 +485,7 @@ void Client::dialled(const std::string& key, const Target& target, Lane lane, st
     if (session && !stopped) {
       const RouteKey route_key{session->peer().id, lane};
       _endpoint_ids[target.endpoint] = route_key.first;
+      _peer_flags[route_key.first] = session->peer().flags;
       auto& slot = _outbound[route_key];
       if (slot && slot->usable() && slot != session) {
         // Two of this end's dials to one peer and lane: both ends keep the
@@ -329,10 +522,14 @@ void Client::admit(const std::shared_ptr<Session>& session) {
   const auto& peer = session->peer();
   const RouteKey key{peer.id, session->lane()};
   Retire retire;
+  std::vector<Call> waiting;
+  std::shared_ptr<asio::steady_timer> timer;
+  std::shared_ptr<Session> route;
   {
     contract::Lock lock(_mutex);
     if (_stopped) return;
     if (peer.port) _endpoint_ids[{peer.host, peer.port}] = peer.id;
+    _peer_flags[peer.id] = peer.flags;
     auto& slot = _inbound[key];
     if (slot && slot != session && slot->usable()) {
       // Two sessions from one peer on one lane: both ends keep the one with
@@ -348,8 +545,19 @@ void Client::admit(const std::shared_ptr<Session>& session) {
       slot = session;
     }
     reconcile_locked(key, retire);
+    // A reverse dial some calls were waiting for.
+    if (const auto found = _reverse.find(key); found != _reverse.end()) {
+      route = route_locked(key.first, key.second);
+      if (route) {
+        waiting = std::move(found->second.calls);
+        timer = found->second.timer;
+        _reverse.erase(found);
+      }
+    }
   }
   for (auto& loser : retire) loser->retire();
+  if (timer) asio::post(_health_strand, [timer] { timer->cancel(); });
+  for (auto& call : waiting) place(route, std::move(call));
 }
 
 void Client::reconcile_locked(const RouteKey& key, Retire& retire) {
@@ -357,8 +565,10 @@ void Client::reconcile_locked(const RouteKey& key, Retire& retire) {
   const auto inbound = _inbound.find(key);
   if (outbound == _outbound.end() || !outbound->second->usable()) return;
   if (inbound == _inbound.end() || !inbound->second->usable()) return;
-  // Both ends dialled: both keep the session the lower node id dialled.
-  if (_self < key.first) {
+  // Both ends dialled: both keep the session the lower node id dialled. An
+  // incapable node keeps its own: nothing can replace them from the other
+  // side.
+  if (_self < key.first || !local_capable()) {
     retire.push_back(inbound->second);
     _inbound.erase(inbound);
   } else {
@@ -514,6 +724,7 @@ void Client::arm_heartbeat() {
       stopped = _stopped;
     }
     if (error || stopped) return end_operation();
+    open_lanes();
     health_pass();
     arm_heartbeat();
   });
@@ -607,9 +818,13 @@ void Client::stop() {
   std::vector<std::shared_ptr<Session>> routes;
   std::vector<std::shared_ptr<Dialling>> dialling;
   std::map<std::string, std::vector<Call>> waiting;
+  std::map<RouteKey, ReverseWait> reverse;
+  std::vector<std::shared_ptr<asio::steady_timer>> timers;
   {
     contract::Lock lock(_mutex);
     _stopped = true;
+    reverse.swap(_reverse);
+    timers.assign(_reverse_timers.begin(), _reverse_timers.end());
     for (auto* table : {&_outbound, &_inbound}) {
       for (auto& [_, session] : *table) routes.push_back(session);
       table->clear();
@@ -622,6 +837,9 @@ void Client::stop() {
   for (auto& attempt : dialling) asio::post(attempt->strand, [attempt] { attempt->abort(); });
   for (auto& [_, calls] : waiting)
     for (auto& call : calls) fail(call, "client stopped");
+  for (auto& [_, wait] : reverse)
+    for (auto& call : wait.calls) fail(call, "client stopped");
+  for (auto& timer : timers) asio::post(_health_strand, [timer] { timer->cancel(); });
   contract::Lock lock(_mutex);
   _idle.wait(lock.native(), [&]() DANNAN_REQUIRES(_mutex) { return _operations == 0; });
 }
