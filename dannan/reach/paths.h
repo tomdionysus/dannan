@@ -142,6 +142,9 @@ struct PathsConfig {
   size_t max_circuits = 256;
   // A forced path class (tests and the compose bed); nothing: classified.
   std::optional<membership::PathClass> forced_class;
+  // How often a relayed pair whose ends are both punchable tries a punch
+  // to move up a class (wire v1, section 5).
+  std::chrono::milliseconds upgrade_every{60000};
 };
 
 // Relayed bytes for one circuit, for Status.
@@ -159,6 +162,9 @@ struct PathStats {
   uint64_t relays_tried = 0;
   uint64_t relays_made = 0;
   uint64_t punches_brokered = 0;
+  // Relayed pairs that tried to move up to a punched path, and did.
+  uint64_t upgrades_tried = 0;
+  uint64_t upgrades_made = 0;
   uint64_t circuits_relayed = 0;
   uint64_t relayed_bytes = 0;
   std::vector<CircuitStats> circuits;
@@ -196,7 +202,10 @@ class Paths {
   // Probes up to two public peers from one local port and classifies this
   // node; waits on the network. Nothing when there is no public peer to ask.
   std::optional<Observation> observe();
-  // Drops circuits an end of which has no route left, telling the other.
+  // Drops circuits an end of which has no route left, telling the other;
+  // and, at most every upgrade interval per pair, tries to move each relayed
+  // pair whose ends are both punchable up to a punch. The lower node id of a
+  // pair tries, so the two ends do not punch twice. Waits on nothing.
   void sweep();
   PathStats stats() const;
 
@@ -246,6 +255,8 @@ class Paths {
   std::map<uint64_t, Circuit> _circuits DANNAN_GUARDED_BY(_mutex);
   // As an end: this node's pumps, by circuit.
   std::map<uint64_t, std::shared_ptr<Pump>> _ends DANNAN_GUARDED_BY(_mutex);
+  // When each relayed pair may next try to move up.
+  std::map<std::pair<identity::NodeId, net::Lane>, std::chrono::steady_clock::time_point> _upgrade_after DANNAN_GUARDED_BY(_mutex);
   PathStats _stats DANNAN_GUARDED_BY(_mutex);
   std::vector<std::jthread> _workers;
 };

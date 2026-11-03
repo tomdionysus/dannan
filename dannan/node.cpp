@@ -284,6 +284,7 @@ Node::Node(asio::io_context& io, NodeConfig config)
       _faults(std::make_unique<FaultsNoun>(*this)),
       _time(std::make_unique<TimeNoun>(*this)),
       _telemetry_noun(std::make_unique<TelemetryNoun>(*this)) {
+  if (!_config.log) _config.log = std::make_shared<status::ConsoleSink>();
   // Tombstones loaded with the roster fence telemetry before anything runs.
   for (const auto& reset : _members.identity_resets()) _telemetry.apply_identity_reset(reset);
 }
@@ -348,6 +349,7 @@ void Node::start() {
   paths.punch_window = _config.punch_window;
   paths.relay = _config.relay;
   paths.forced_class = _config.path_class;
+  paths.upgrade_every = _config.path_upgrade_every;
   _paths = std::make_unique<reach::Paths>(
       _io, paths, *_client, [this] { return _members.self(); }, [this] { return _members.active(); },
       [this](const NodeRecord& peer, net::MessageType type, net::Bytes payload, std::chrono::milliseconds deadline) {
@@ -659,7 +661,8 @@ std::chrono::milliseconds Node::classify() {
   bool changed = false;
   auto again = _config.heartbeat;
   if (_config.path_class) {
-    changed = _members.set_path_class(*_config.path_class);
+    // Forced at start, and left alone.
+    return _config.reprobe_while_incapable;
   } else if (self.inbound_capable()) {
     // Dialable where it advertises: that is its one candidate, confirmed by
     // the dial-back or the operator.
@@ -692,7 +695,9 @@ void Node::connectivity_loop(std::stop_token stop) {
   auto next = _config.time->now();
   auto next_class = next;
   while (!stop.stop_requested()) {
-    sleep_until(stop, automatic ? std::min(next, next_class) : next_class);
+    // At least every heartbeat: the sweep runs on every tick.
+    const auto tick = _config.time->now() + _config.heartbeat;
+    sleep_until(stop, std::min(automatic ? std::min(next, next_class) : next_class, tick));
     if (stop.stop_requested()) return;
     // Level 0: this node's path class and candidates, and the circuits
     // through it that have lost an end.

@@ -235,6 +235,30 @@ TEST(Node, StoppingIsPromptAndCallsFailAfter) {
   EXPECT_FALSE(done.get_future().get().reply);
 }
 
+// A hosted system logs through the node's one sink, under its own scope.
+TEST(Node, AHostedSystemLogsThroughTheNodesSink) {
+  struct Recording final : status::LogSink {
+    std::mutex mutex;
+    std::vector<std::string> lines;
+    bool enabled(status::LogLevel level) const noexcept override { return level >= status::LogLevel::info; }
+    void write(status::LogLevel, std::string_view scope, std::string_view message) override {
+      std::lock_guard lock(mutex);
+      lines.push_back(std::string(scope) + ": " + std::string(message));
+    }
+  };
+  auto sink = std::make_shared<Recording>();
+  Io io;
+  test::TempDir dir;
+  auto node_config = config(dir.path() / "a", cluster_key(dir.path()));
+  node_config.log = sink;
+  Node node(io.context, node_config);
+  const auto logger = node.context().logger("lugh");
+  logger.info("signed in");
+  logger.child("oauth").warn("token refused");
+  logger.debug("not written");
+  EXPECT_EQ(sink->lines, (std::vector<std::string>{"lugh: signed in", "lugh.oauth: token refused"}));
+}
+
 TEST(Node, ReportsItsContextVersion) {
   Pair pair;
   EXPECT_EQ(pair.a->context().version(), context_version);

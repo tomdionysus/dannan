@@ -57,6 +57,8 @@ struct NodeConfig {
   // trying.
   std::optional<membership::PathClass> path_class;
   std::chrono::milliseconds punch_window{3000};
+  // How often a relayed pair tries to move up to a punched path.
+  std::chrono::milliseconds path_upgrade_every{60000};
   // What recovers before the node is ready, by name.
   std::vector<std::string> planes;
   std::string version;
@@ -88,6 +90,10 @@ struct NodeConfig {
   std::shared_ptr<reach::Gateway> gateway;
   reach::ExternalIpLookup external_ip;
   reach::SelfProbe self_probe;
+
+  // The node's one log sink, handed to every component and, through the
+  // Context, to the hosted system.
+  std::shared_ptr<status::LogSink> log = std::make_shared<status::ConsoleSink>();
 
   const contract::TimeSource* time = &contract::steady_time_source();
   const contract::WallClock* wall = &contract::system_wall_clock();
@@ -159,6 +165,7 @@ class Node final : public Context {
   Time& time() override;
   Telemetry& telemetry() override;
   status::Surface& status() override { return _surface; }
+  status::ScopedLogger logger(std::string scope) const override { return {_config.log, std::move(scope)}; }
   status::NodeEvents& events() override { return _events; }
   status::Readiness& readiness() override { return _readiness; }
   status::ActivityClocks& activity() override { return _activity; }
