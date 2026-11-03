@@ -71,10 +71,10 @@ punchable, one behind a randomising NAT, one behind two NATs; the runner
 healed partition and a relay failover) and has not run yet: the Docker
 daemon was not running, and starting Docker Desktop is outside this
 tree. Next: run it (`python3 test/compose/scenario.py` from the root,
-Docker running) and fix what it finds. Left of section 6's rules, for
-Tom's call: a relayed or punched pair moving up a class while it runs,
-the relay's DATA budget (only a circuit cap now), and placement told a
-peer's path class. Identity (step 10) waits; the port steps wait
+Docker running) and fix what it finds. Left of section 6's rules, as work:
+a relayed or punched pair moving up a class while it runs, the relay's
+DATA budget (only a circuit cap now), and placement told a peer's path
+class. Identity (step 10) waits; the port steps wait
 for the Macha agent and Dagda is another project (Decisions, 2026-11-03
 night).
 
