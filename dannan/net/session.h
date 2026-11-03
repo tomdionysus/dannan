@@ -166,7 +166,7 @@ class Session : public std::enable_shared_from_this<Session> {
   // Called on the strand when the connection breaks.
   void fail(const std::string& why);
   // Marks the session closed and fails every waiting call; false if it
-  // already was.
+  // already was. Any thread; the queue is abandoned later, by shut().
   bool mark_closed(const std::string& why);
   // On the strand: ends the socket and tells the owner.
   void shut(const std::string& why);
