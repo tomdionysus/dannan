@@ -7,6 +7,37 @@ left green. `ACTIVE.md` is the plan and this is the record.
 
 None. Dannan has no code yet.
 
+## 2026-11-03, night -- step 2: the sanitizers before 0.1.0
+
+On `feature/transport` (three commits), the release rule's sanitizer
+runs, in `build-asan/` (ASan and UBSan, all three suites) and
+`build-tsan/` (TSan, `dannan_tests` and `dagda_tests`; Macha's core is
+not instrumented, so the interop suite is not run under it):
+
+- **ASan found a real use-after-free:** `Client::stop()` posted the
+  heartbeat's cancel to the health strand uncounted, so when the
+  heartbeat ended its own operation first, `stop()` returned and the
+  client was destroyed before the cancel ran. `Server::stop()` posted
+  its acceptor close the same way. Both are now counted operations, and
+  the acceptor lives on a strand so its handler and the close never run
+  at once. Fixed in their own commit.
+- **ASan found a test mistake:** `Codec.ATruncatedInputIsRefused` read
+  through a `Reader` over a temporary. `Reader(Bytes&&)` is now deleted,
+  so the mistake no longer compiles anywhere; nothing else in the tree
+  made it.
+- Environment, not code: ASan runs with `detect_container_overflow=0`,
+  since MacPorts' gtest (libc++ 19 headers, uninstrumented) and Apple
+  clang 17's instrumented code disagree on container annotations and the
+  report fires inside gtest's own test registration. TSan runs with
+  `dannan/test/tsan-suppressions.txt`, which suppresses only Asio's kqueue
+  reactor publishing descriptor state through kevent(2), an ordering TSan
+  cannot see.
+- Results: ASan and UBSan, `dannan_tests` 206 three times over,
+  `dagda_tests` 1, `dannan_interop_tests` 8, all clean; TSan,
+  `dannan_tests` 206 three times over and `dagda_tests` 1, no reports.
+- **Gate: `dannan_tests` 206, `dagda_tests` 1, `dannan_interop_tests` 8,
+  all passed.**
+
 ## 2026-11-03, night -- step 2: a session's frames, byte for byte with Macha's
 
 On `feature/transport` (this commit):

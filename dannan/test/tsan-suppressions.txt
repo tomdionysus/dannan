@@ -1,0 +1,9 @@
+# ThreadSanitizer suppressions for the sanitizer runs before a release:
+#   TSAN_OPTIONS=suppressions=$PWD/dannan/test/tsan-suppressions.txt
+#
+# Asio's kqueue reactor publishes a descriptor's state to the reactor thread
+# through kevent(2): the state is written, registered with the kernel, and
+# read when the kernel hands the pointer back. The system call orders the two
+# and TSan cannot see it. Only the reactor's own internals are suppressed.
+race:boost::asio::detail::kqueue_reactor::run
+race:boost::asio::detail::kqueue_reactor::allocate_descriptor_state
