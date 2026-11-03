@@ -55,12 +55,15 @@ has every milestone with its gate). `develop` holds the same tree;
 it").
 
 Step 4a (membership and placement) is done on `feature/control-plane`
-(`COMPLETED.md`, gate 230 + 1 + 10). Steps 4 and 5 are done (`develop`; gate 298 + 1 + 13): the control
-plane, and the node with `dannan::Context` v1. Dannan now has its own wire
-from version 1 (Decisions, 2026-11-03 night). Waiting on Tom: approval of
+(`COMPLETED.md`, gate 230 + 1 + 10). Steps 4 and 5 are done (gate 305 + 1 + 13): the control plane, and the
+node with `dannan::Context`, closed against Macha's every use of its
+network layer (`TODO/2026-11-03-macha-on-context-audit.md`; the advert
+map waits for the wire). Dannan has its own wire from version 1
+(Decisions). Waiting on Tom: approval of
 `TODO/2026-11-03-dannan-wire-v1.md` (the v1 wire and level 0). Then: wire
-v1 in code, level 0 (`reach/`: candidates, path classes, punch, relay),
-and the Docker compose test bed. Identity (step 10) waits; the port steps wait for the Macha agent and Dagda is
+v1 in code with the advert map, level 0 (`reach/`: candidates, path
+classes, punch, relay), and the Docker compose test bed. Identity (step
+10) waits; the port steps wait for the Macha agent and Dagda is
 another project (Decisions, 2026-11-03 night).
 
 Read in this order: this file to the end of Standing rules;
@@ -347,6 +350,13 @@ words, so a session does not re-derive it.
   reaping). Dannan is new code: a session count in the server's work
   stats (kept out of the Status JSON) and a test-only hook on the client's
   route table are part of the design, not a retrofit.
+- (2026-11-03 night, Tom) **Macha is the first customer. The design is not
+  complete until Macha can be refactored to use it.** Every call Macha
+  makes into its network layer must map to a `dannan::Context` operation
+  before step 5 counts as done; the audit is
+  `TODO/2026-11-03-macha-on-context-audit.md`, and its gaps are work, not
+  questions. Macha's move to the new wire is a flag day (no protocol 23
+  mode), noted for the Macha agent.
 - (2026-11-03 night, Tom) **Dannan is a new project with its own wire,
   versioned from 1.** It is not an extension of Macha; Macha is refactored
   to use it. This supersedes "the one rule"'s byte-for-byte protocol 23 and

@@ -46,6 +46,35 @@ struct InboundHandlers {
   std::function<void(const identity::NodeId& peer, uint64_t request_id)> cancelled;
 };
 
+// A call placed through the client: control over it while it is pending.
+// Thread-safe; every operation waits on nothing.
+class CallHandle {
+ public:
+  // Completes the call at once as cancelled and tells the peer; before the
+  // dial finished, the call is never placed.
+  void cancel();
+  // Cancels and ends the session it is on: the peer's job may finish, its
+  // reply is dropped.
+  void abort();
+  void promote(sched::FrameType frame);
+  // How long the call has gone without a byte of its reply; max() while it
+  // is not placed, and once it is done.
+  std::chrono::milliseconds idle_for() const;
+
+ private:
+  friend class Client;
+  void placed(const std::shared_ptr<Session>& session, uint64_t request_id);
+  // True if cancelled before placement, so the caller fails the call.
+  bool cancelled_before_placement() const;
+
+  mutable contract::Mutex _mutex;
+  std::weak_ptr<Session> _session DANNAN_GUARDED_BY(_mutex);
+  uint64_t _id DANNAN_GUARDED_BY(_mutex) = 0;
+  bool _cancelled DANNAN_GUARDED_BY(_mutex) = false;
+  bool _aborted DANNAN_GUARDED_BY(_mutex) = false;
+  std::optional<sched::FrameType> _promoted DANNAN_GUARDED_BY(_mutex);
+};
+
 struct ClientOptions {
   identity::ClusterKey key;
   // The node's current record, read at each dial.
@@ -74,6 +103,9 @@ struct ClientOptions {
   // Told of each session this client dials, with the peer's record as its
   // handshake carried it: a direct observation.
   std::function<void(const membership::NodeRecord&)> established;
+  // Tests only: consulted before every dial; a non-empty answer is the
+  // reason the dial fails, as if the network refused it.
+  std::function<std::string(const Endpoint&, Lane)> dial_hook;
 };
 
 struct ClientStats {
@@ -116,10 +148,13 @@ class Client {
 
   // Calls `peer` on the lane its type travels on, dialling the peer's
   // advertised address if no route exists; a dial that reaches another node
-  // fails. `done` is posted to `executor` exactly once. Waits on nothing.
-  void call(const membership::NodeRecord& peer, MessageType type, Bytes payload, sched::FrameType frame, boost::asio::any_io_executor executor, Done done);
+  // fails. `done` is posted to `executor` exactly once. The handle controls
+  // the call while it is pending. Waits on nothing.
+  std::shared_ptr<CallHandle> call(const membership::NodeRecord& peer, MessageType type, Bytes payload, sched::FrameType frame,
+                                   boost::asio::any_io_executor executor, Done done);
   // As above, to an address whose node is not known yet (a bootstrap).
-  void call(const Endpoint& endpoint, MessageType type, Bytes payload, sched::FrameType frame, boost::asio::any_io_executor executor, Done done);
+  std::shared_ptr<CallHandle> call(const Endpoint& endpoint, MessageType type, Bytes payload, sched::FrameType frame, boost::asio::any_io_executor executor,
+                                   Done done);
 
   // A session a peer opened to this node, from the server: a route back.
   void admit(const std::shared_ptr<Session>& session);
@@ -192,6 +227,7 @@ class Client {
     // Times this call has been re-routed off a session that retired or
     // closed under it.
     int reroutes = 0;
+    std::shared_ptr<CallHandle> handle;
   };
   struct Target {
     std::optional<identity::NodeId> id;

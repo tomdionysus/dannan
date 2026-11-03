@@ -12,6 +12,34 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
 
+## 2026-11-03, night -- step 5, part 2: the Context closed against Macha's use
+
+On `feature/wire-v1` (this commit). Tom: Macha is the first customer; the
+design is not complete until Macha can be refactored to use it.
+`TODO/2026-11-03-macha-on-context-audit.md` lists every call Macha makes
+into its network layer and what it maps to; this closes every gap that
+does not depend on the v1 wire:
+
+- `Routes`: types' wire rules registered before start (`add`), handlers
+  bound and unbound at any time (`bind`, `unbind`; unbind waits for calls
+  in flight, the handler lock held shared across each call); `call`
+  returns a `net::CallHandle` (cancel, abort, promote, idle_for, before or
+  after placement); `call_and_wait` for a worker thread, bounded by its
+  deadline; `CallOutcome::peer` says who answered.
+- `Channels`: all three broadcasts.
+- `Nodes`: `snapshot`, `all_known_reachable`, `latencies`, identity
+  resets (held, applied, propagated with a deadline).
+- A `Telemetry` noun (local, all, views, persisted, persist, refresh);
+  `readiness()`, `activity()` (the node notes each request's class),
+  `observations()`, `threads()` and `diagnostics()` on the Context.
+- `Node::cancel_outbound_calls`, so a worker blocked in a call is released
+  before it is joined; `ClientOptions::dial_hook`, a test's seam to refuse
+  a dial.
+- Left for the v1 wire: the record's advert map (`advertise`), and so the
+  store's figures and generation announcements.
+- **Gate: `dannan_tests` 305, `dagda_tests` 1, `dannan_interop_tests` 13**;
+  node and client cases 20 times over.
+
 ## 2026-11-03, night -- step 5: the node and dannan::Context
 
 On `feature/node` (three commits):

@@ -283,7 +283,7 @@ TEST(TwoProcess, ADannanNodeJoinsAMachaClusterAsABareMember) {
       for (const auto& member : node.context().nodes().active())
         if (member.port == macha.port) macha_id = member.id;
       if (macha_id) {
-        for (const auto& record : node.telemetry().all())
+        for (const auto& record : node.context().telemetry().all())
           if (record.node_id() == *macha_id) telemetry = true;
       }
       status = macha.status_nodes();

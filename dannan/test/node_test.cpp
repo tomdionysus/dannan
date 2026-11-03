@@ -19,6 +19,7 @@
 #include <future>
 #include <thread>
 
+#include "dannan/test/fixtures/gate.h"
 #include "dannan/test/fixtures/temp_dir.h"
 
 namespace dannan {
@@ -109,7 +110,7 @@ TEST(Node, TwoNodesFormOneCluster) {
   EXPECT_TRUE(eventually([&] { return knows(*pair.a, b) && knows(*pair.b, a); }));
   EXPECT_TRUE(pair.a->context().nodes().directly_reachable(b));
   EXPECT_TRUE(eventually([&] {
-    const auto all = pair.a->telemetry().all();
+    const auto all = pair.a->context().telemetry().all();
     return std::any_of(all.begin(), all.end(), [&](const status::Telemetry& t) { return t.node_id() == b && t.text(status::field::version) == "0.1.0-test"; });
   }));
   EXPECT_TRUE(eventually([&] { return pair.b->context().nodes().latency(a).has_value(); }));
@@ -181,10 +182,10 @@ TEST(Node, ThePhaseFollowsTheDeclaredPlanes) {
   Pair pair([](NodeConfig& c) { c.planes = {"metadata"}; });
   pair.b->start();
   EXPECT_EQ(pair.b->readiness().phase(), status::Phase::recovering);
-  EXPECT_TRUE(eventually([&] { return pair.b->telemetry().local() && pair.b->telemetry().local()->phase() == status::Phase::recovering; }));
+  EXPECT_TRUE(eventually([&] { return pair.b->context().telemetry().local() && pair.b->context().telemetry().local()->phase() == status::Phase::recovering; }));
   pair.b->readiness().ready("metadata");
   EXPECT_EQ(pair.b->readiness().phase(), status::Phase::ready);
-  EXPECT_TRUE(eventually([&] { return pair.b->telemetry().local()->phase() == status::Phase::ready; }));
+  EXPECT_TRUE(eventually([&] { return pair.b->context().telemetry().local()->phase() == status::Phase::ready; }));
 }
 
 // A reset made on one node reaches its peers.
@@ -198,7 +199,7 @@ TEST(Node, AnIdentityResetPropagates) {
   reset.epoch = 1;
   reset.reset_unix_ms = 1;
   reset.reason = "disk replaced";
-  pair.a->propagate_identity_reset(reset);
+  pair.a->propagate_identity_reset(reset, 5s);
   EXPECT_TRUE(eventually([&] { return !pair.b->membership().identity_resets().empty(); }));
 }
 
@@ -237,6 +238,119 @@ TEST(Node, StoppingIsPromptAndCallsFailAfter) {
 TEST(Node, ReportsItsContextVersion) {
   Pair pair;
   EXPECT_EQ(pair.a->context().version(), context_version);
+}
+
+constexpr net::MessageType echo_type{310};
+constexpr net::MessageType news_type{311};
+
+// Routes are bound and unbound while the node runs, as a subsystem starts
+// and stops; an unbound type answers 501; unbinding waits for calls in
+// flight on it.
+TEST(Node, RoutesBindAndUnbindWhileRunning) {
+  Pair pair({}, [](Node& a) { a.context().routes().add(echo_type, {"echo", net::Lanes::control, net::Frames::control_only, false}); });
+  pair.b->start();
+  const auto a = pair.a->context().nodes().self();
+  auto outcome = pair.b->context().routes().call_and_wait(a, echo_type, {1}, FrameType::control, 5s);
+  ASSERT_TRUE(outcome.reply);
+  EXPECT_EQ(net::refusal_of(*outcome.reply)->status, 501);
+  test::Gate gate;
+  test::GateOpener opener(gate);
+  pair.a->context().routes().bind(echo_type, [&](const membership::NodeRecord&, FrameType, const net::Message& request) {
+    gate.enter_and_wait();
+    return net::Handled::processed({net::message::ok, request.payload, {}});
+  });
+  auto done = std::make_shared<std::promise<net::CallOutcome>>();
+  pair.b->context().routes().call(a, echo_type, {2}, FrameType::control, 5s, pair.io.context.get_executor(),
+                                  [done](net::CallOutcome o) { done->set_value(std::move(o)); });
+  ASSERT_TRUE(gate.wait_for_entries(1));
+  std::atomic<bool> unbound{false};
+  std::thread unbinder([&] {
+    pair.a->context().routes().unbind(echo_type);
+    unbound = true;
+  });
+  std::this_thread::sleep_for(100ms);
+  EXPECT_FALSE(unbound.load());
+  gate.open();
+  unbinder.join();
+  EXPECT_EQ(done->get_future().get().reply->payload, net::Bytes{2});
+  outcome = pair.b->context().routes().call_and_wait(a, echo_type, {3}, FrameType::control, 5s);
+  EXPECT_EQ(net::refusal_of(*outcome.reply)->status, 501);
+  EXPECT_EQ(outcome.peer.id, a.id);
+}
+
+// The three broadcasts reach every CONTROL route; none dials.
+TEST(Node, TheThreeBroadcastsReachPeers) {
+  std::atomic<int> heard{0};
+  Pair pair({}, [&](Node& a) {
+    a.context().routes().add(news_type, {"news", net::Lanes::control, net::Frames::any, true},
+                             [&](const membership::NodeRecord&, FrameType, const net::Message&) {
+                               ++heard;
+                               return net::Handled::processed();
+                             });
+  });
+  pair.b->start();
+  const auto a_id = pair.a->context().identity().id();
+  ASSERT_TRUE(eventually([&] { return knows(*pair.b, a_id) && pair.b->client_stats()->reused > 0; }));
+  auto& channels = pair.b->context().channels();
+  EXPECT_EQ(channels.broadcast({news_type, {}, {}}), 1u);
+  EXPECT_EQ(channels.notify({news_type, {}, {}}, FrameType::speculative), 1u);
+  EXPECT_TRUE(eventually([&] { return channels.broadcast_best_effort({news_type, {}, {}}, FrameType::speculative) == 1; }));
+  EXPECT_TRUE(eventually([&] { return heard.load() == 3; }));
+}
+
+// What Macha's Status page and its facade read, through the Context.
+TEST(Node, ExposesTelemetryReadinessDiagnosticsActivityAndObservations) {
+  Pair pair;
+  pair.b->start();
+  const auto a_id = pair.a->context().identity().id();
+  const auto b_id = pair.b->context().identity().id();
+  EXPECT_TRUE(eventually([&] { return knows(*pair.a, b_id) && knows(*pair.b, a_id); }));
+  auto& telemetry = pair.a->context().telemetry();
+  EXPECT_TRUE(eventually([&] {
+    const auto views = telemetry.views(5s);
+    return std::any_of(views.begin(), views.end(), [&](const status::TelemetryView& v) { return v.telemetry.node_id() == b_id && v.fresh; });
+  }));
+  telemetry.persist();
+  EXPECT_FALSE(telemetry.persisted().empty());
+  const auto snapshot = pair.a->context().nodes().snapshot();
+  EXPECT_EQ(snapshot.all.size(), 2u);
+  EXPECT_EQ(snapshot.active.size(), 2u);
+  EXPECT_TRUE(pair.a->context().nodes().all_known_reachable());
+  EXPECT_TRUE(eventually([&] { return !pair.a->context().nodes().latencies().empty(); }));
+  EXPECT_TRUE(pair.a->context().nodes().identity_resets().empty());
+  const auto diagnostics = pair.a->context().diagnostics();
+  EXPECT_GT(diagnostics.started_unix_ms, 0u);
+  EXPECT_EQ(diagnostics.inbound.source, "configured");
+  EXPECT_GT(diagnostics.traffic.in_bytes[1] + diagnostics.traffic.out_bytes[1], 0u);
+  EXPECT_GE(diagnostics.work.message_timings.size(), 1u);
+  EXPECT_FALSE(diagnostics.threads.empty());
+  EXPECT_TRUE(pair.a->context().readiness().control_plane_online());
+  EXPECT_LT(pair.a->context().activity().idle_for(sched::WorkClass::control), 1h);
+  pair.a->context().observations().add("fs.requests", 2);
+  EXPECT_EQ(pair.a->context().observations().snapshot().counters.at("fs.requests"), 2u);
+}
+
+// A worker blocked in a call is released before it is joined: outbound
+// calls are cancelled first, the rest of the node after.
+TEST(Node, CancellingOutboundCallsReleasesAWaitingWorker) {
+  constexpr net::MessageType slow{312};
+  std::promise<void> release;
+  auto released = release.get_future().share();
+  Pair pair({}, [&](Node& a) {
+    a.context().routes().add(slow, {"slow", net::Lanes::control, net::Frames::control_only, false},
+                             [released](const membership::NodeRecord&, FrameType, const net::Message&) {
+                               released.wait();
+                               return net::Handled::processed();
+                             });
+  });
+  pair.b->start();
+  std::thread worker([&] { (void)pair.b->context().routes().call_and_wait(pair.a->context().nodes().self(), slow, {}, FrameType::control, 30s); });
+  std::this_thread::sleep_for(200ms);
+  pair.b->cancel_outbound_calls();
+  const auto started = std::chrono::steady_clock::now();
+  worker.join();
+  EXPECT_LT(std::chrono::steady_clock::now() - started, 3s);
+  release.set_value();
 }
 
 }  // namespace

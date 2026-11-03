@@ -11,6 +11,8 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <map>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -20,10 +22,18 @@
 #include "dannan/membership/node_record.h"
 #include "dannan/net/client.h"
 #include "dannan/net/scheduler.h"
+#include "dannan/net/server.h"
 #include "dannan/placement/placement.h"
+#include "dannan/reach/connectivity.h"
+#include "dannan/reach/inbound.h"
 #include "dannan/sched/retained_memory.h"
+#include "dannan/status/activity.h"
 #include "dannan/status/events.h"
+#include "dannan/status/observation.h"
+#include "dannan/status/readiness.h"
 #include "dannan/status/surface.h"
+#include "dannan/status/telemetry.h"
+#include "dannan/supervise/supervised.h"
 
 // What a hosted system receives at start, and the only way it touches the
 // network: the design's nouns (Nodes, Routes, Channels, Identity, Budget,
@@ -38,7 +48,13 @@ namespace dannan {
 // against, and a mismatch is refused.
 inline constexpr uint32_t context_version = 1;
 
-// The cluster as this node knows it. Reads of local state; wait on nothing.
+struct RosterSnapshot {
+  std::vector<membership::NodeRecord> all;
+  std::vector<membership::NodeRecord> active;
+};
+
+// The cluster as this node knows it. Reads of local state wait on nothing;
+// propagate_identity_reset waits on peers, each within the deadline.
 class Nodes {
  public:
   virtual ~Nodes() = default;
@@ -46,11 +62,22 @@ class Nodes {
   // Every known node, self first; and those heard of within dead_after.
   virtual std::vector<membership::NodeRecord> roster() const = 0;
   virtual std::vector<membership::NodeRecord> active() const = 0;
+  // Both, from one reading.
+  virtual RosterSnapshot snapshot() const = 0;
   // Authenticated directly within dead_after; gossip never counts.
   virtual bool directly_reachable(const identity::NodeId& node) const = 0;
+  // Every known node directly reachable, pairs that cannot meet excepted.
+  virtual bool all_known_reachable() const = 0;
   virtual bool inbound_capable(const identity::NodeId& node) const = 0;
   // The smoothed CONTROL round trip, from health pings only.
   virtual std::optional<std::chrono::milliseconds> latency(const identity::NodeId& node) const = 0;
+  virtual std::map<identity::NodeId, std::chrono::milliseconds> latencies() const = 0;
+  // Identity association resets: held, applied here (roster, telemetry,
+  // routes), and propagated to every active peer, each asked within
+  // `deadline`, their answers applied too.
+  virtual std::vector<membership::IdentityReset> identity_resets() const = 0;
+  virtual bool apply_identity_reset(const membership::IdentityReset& reset) = 0;
+  virtual void propagate_identity_reset(const membership::IdentityReset& reset, std::chrono::milliseconds deadline) = 0;
   // Ordered candidates for `key` over the active roster: the first `copies`
   // preferred, the rest fallbacks; `extents_only` keeps nodes that host
   // extents.
@@ -58,32 +85,76 @@ class Nodes {
                                                         const placement::Salts& salts = {}) const = 0;
 };
 
-// Message types and calls. A hosted system registers its own types before
-// the node starts; Dannan's core types are not its to take.
+// Message types and calls. A hosted system registers its types (their wire
+// rules) before the node starts; Dannan's core types are not its to take.
+// Handlers are bound and unbound at any time, as a subsystem starts and
+// stops; a type with no handler is answered 501.
 class Routes {
  public:
   using Done = net::Client::Done;
   virtual ~Routes() = default;
-  // Throws std::logic_error after start or for a core type, and
-  // std::invalid_argument for a number taken or retired.
-  virtual void add(net::MessageType type, net::Registration registration, net::RequestHandler handler) = 0;
+  // Registers a type's wire rules and, if given, its handler. Throws
+  // std::logic_error after start or for a core type, std::invalid_argument
+  // for a number taken or retired.
+  virtual void add(net::MessageType type, net::Registration registration, net::RequestHandler handler = {}) = 0;
+  // Binds the handler for a registered type; replaces one bound.
+  virtual void bind(net::MessageType type, net::RequestHandler handler) = 0;
+  // Unbinds it. Waits for the handler's calls in flight to return.
+  virtual void unbind(net::MessageType type) = 0;
   // Calls `peer`, dialling if need be; `done` is posted to `executor` once:
-  // the reply, or why none came, at the latest when `deadline` passes.
-  // Waits on nothing.
-  virtual void call(const membership::NodeRecord& peer, net::MessageType type, net::Bytes payload, sched::FrameType frame, std::chrono::milliseconds deadline,
-                    boost::asio::any_io_executor executor, Done done) = 0;
-  virtual void call(const net::Endpoint& endpoint, net::MessageType type, net::Bytes payload, sched::FrameType frame, std::chrono::milliseconds deadline,
-                    boost::asio::any_io_executor executor, Done done) = 0;
+  // the reply, or why none came, at the latest when `deadline` passes. The
+  // handle controls the call meanwhile. Waits on nothing.
+  virtual std::shared_ptr<net::CallHandle> call(const membership::NodeRecord& peer, net::MessageType type, net::Bytes payload, sched::FrameType frame,
+                                                std::chrono::milliseconds deadline, boost::asio::any_io_executor executor, Done done) = 0;
+  virtual std::shared_ptr<net::CallHandle> call(const net::Endpoint& endpoint, net::MessageType type, net::Bytes payload, sched::FrameType frame,
+                                                std::chrono::milliseconds deadline, boost::asio::any_io_executor executor, Done done) = 0;
+  // The same call, waited for: the outcome, at the latest when `deadline`
+  // passes. Waits on the peer. Never from one of the io context's threads.
+  virtual net::CallOutcome call_and_wait(const membership::NodeRecord& peer, net::MessageType type, net::Bytes payload, sched::FrameType frame,
+                                         std::chrono::milliseconds deadline) = 0;
+  virtual net::CallOutcome call_and_wait(const net::Endpoint& endpoint, net::MessageType type, net::Bytes payload, sched::FrameType frame,
+                                         std::chrono::milliseconds deadline) = 0;
 };
 
-// Channels v1: a notification to every peer over CONTROL, best effort and
-// never waiting on a peer; bulk transfer is a Routes call on a DATA-lane
-// type.
+// Channels v1: a notification to every peer over CONTROL; bulk transfer is
+// a Routes call on a DATA-lane type. Each returns how many peers' queues
+// took it; none dials.
 class Channels {
  public:
   virtual ~Channels() = default;
-  // How many peers' queues took it. Waits for the route table, never a peer.
+  // In the control class, queued behind whatever is there; waits for a
+  // queue that is full, never for a peer.
+  virtual size_t broadcast(const net::Message& message) = 0;
+  // Only where it adds no delay; sends nothing while the route table is
+  // busy, so a hot path never waits.
+  virtual size_t broadcast_best_effort(const net::Message& message, sched::FrameType frame) = 0;
+  // As best effort, but waits for the route table.
   virtual size_t notify(const net::Message& message, sched::FrameType frame) = 0;
+};
+
+// Every node's latest telemetry, this node's included. Reads wait on
+// nothing; persist waits on the file.
+class Telemetry {
+ public:
+  virtual ~Telemetry() = default;
+  virtual std::optional<status::Telemetry> local() const = 0;
+  virtual std::vector<status::Telemetry> all() const = 0;
+  virtual std::vector<status::TelemetryView> views(std::chrono::milliseconds fresh_for) const = 0;
+  virtual std::vector<status::Telemetry> persisted() const = 0;
+  virtual void persist() = 0;
+  // Asks for the local record to be refreshed and gossiped now.
+  virtual void refresh() = 0;
+};
+
+// What a Status page reads of the node, in one snapshot.
+struct Diagnostics {
+  uint64_t started_unix_ms = 0;
+  std::optional<reach::PublicConnectivityStatus> connectivity;
+  reach::InboundState inbound;
+  net::ClientStats client;
+  net::WorkStats work;
+  status::TrafficTotals traffic;
+  std::vector<supervise::SupervisedThreadStatus> threads;
 };
 
 // Who this node is.
@@ -142,10 +213,20 @@ class Context {
   virtual Budget& budget() = 0;
   virtual Faults& faults() = 0;
   virtual Time& time() = 0;
+  virtual Telemetry& telemetry() = 0;
   // What the hosted system publishes, and its counters, for Status.
   virtual status::Surface& status() = 0;
   // Monotonic counts per kind; topology is Dannan's.
   virtual status::NodeEvents& events() = 0;
+  // The planes a hosted system declares and reports ready.
+  virtual status::Readiness& readiness() = 0;
+  // When work of each class was last present; the node notes each request.
+  virtual status::ActivityClocks& activity() = 0;
+  // Measurement probes, written to the node's observation log.
+  virtual status::Observations& observations() = 0;
+  // The node's thread bodies, and the hosted system's, under one record.
+  virtual supervise::SupervisedThreads& threads() = 0;
+  virtual Diagnostics diagnostics() const = 0;
 };
 
 }  // namespace dannan
