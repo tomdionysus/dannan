@@ -23,7 +23,8 @@
 //               [--advertise HOST] [--bootstrap HOST:PORT]...
 //               [--inbound yes|no|auto] [--relay] [--name NAME]
 //               [--domain NAME] [--heartbeat-ms N] [--status-ms N]
-//               [--echo-ms N] [--seconds N]
+//               [--echo-ms N] [--reprobe-ms N] [--punch-ms N]
+//               [--path-class public|punchable|relay_only] [--seconds N]
 
 #include <signal.h>
 
@@ -89,6 +90,9 @@ struct Options {
   std::chrono::milliseconds heartbeat{1000};
   std::chrono::milliseconds status{1000};
   std::chrono::milliseconds echo{0};
+  std::chrono::milliseconds reprobe{0};
+  std::chrono::milliseconds punch{0};
+  std::optional<membership::PathClass> path_class;
   int seconds = 0;
 };
 
@@ -140,7 +144,21 @@ Options parse(int argc, char** argv) {
       out.status = std::chrono::milliseconds(std::stoi(value()));
     else if (option == "--echo-ms")
       out.echo = std::chrono::milliseconds(std::stoi(value()));
-    else if (option == "--seconds")
+    else if (option == "--reprobe-ms")
+      out.reprobe = std::chrono::milliseconds(std::stoi(value()));
+    else if (option == "--punch-ms")
+      out.punch = std::chrono::milliseconds(std::stoi(value()));
+    else if (option == "--path-class") {
+      const auto name = value();
+      if (name == "public")
+        out.path_class = membership::PathClass::public_path;
+      else if (name == "punchable")
+        out.path_class = membership::PathClass::punchable;
+      else if (name == "relay_only")
+        out.path_class = membership::PathClass::relay_only;
+      else
+        throw std::runtime_error("--path-class is public, punchable or relay_only");
+    } else if (option == "--seconds")
       out.seconds = std::stoi(value());
     else
       throw std::runtime_error("unknown option " + option);
@@ -202,6 +220,12 @@ std::string status_json(Node& node, EchoResults& results) {
     out << (first ? "" : ",") << "{\"record\":" << record_json(peer)
         << ",\"direct\":" << (node.context().nodes().directly_reachable(peer.id) ? "true" : "false");
     if (const auto latency = node.context().nodes().latency(peer.id)) out << ",\"latency_ms\":" << latency->count();
+    out << ",\"path\":{";
+    for (const auto lane : {net::Lane::control, net::Lane::data}) {
+      const auto path = node.context().nodes().path(peer.id, lane);
+      out << (lane == net::Lane::control ? "" : ",") << quoted(net::lane_name(lane)) << ":" << quoted(path ? net::purpose_name(*path) : "none");
+    }
+    out << "}";
     out << ",\"echo\":{";
     if (const auto found = results.by_peer.find(peer.id); found != results.by_peer.end()) {
       bool first_lane = true;
@@ -213,7 +237,11 @@ std::string status_json(Node& node, EchoResults& results) {
     out << "}}";
     first = false;
   }
-  out << "]}";
+  out << "]";
+  const auto paths = node.diagnostics().paths;
+  out << ",\"level0\":{\"punches_tried\":" << paths.punches_tried << ",\"punches_made\":" << paths.punches_made << ",\"relays_tried\":" << paths.relays_tried
+      << ",\"relays_made\":" << paths.relays_made << ",\"punches_brokered\":" << paths.punches_brokered << ",\"circuits_relayed\":" << paths.circuits_relayed
+      << ",\"relayed_bytes\":" << paths.relayed_bytes << ",\"circuits\":" << paths.circuits.size() << "}}";
   return out.str();
 }
 
@@ -253,6 +281,9 @@ int main(int argc, char** argv) {
     config.dead_after = options.heartbeat * 6;
     config.telemetry_interval = options.heartbeat;
     config.version = "dannan-node";
+    if (options.reprobe.count() > 0) config.reprobe_while_incapable = options.reprobe;
+    if (options.punch.count() > 0) config.punch_window = options.punch;
+    config.path_class = options.path_class;
     Node node(io, config);
     const auto answer = [](const membership::NodeRecord&, sched::FrameType, const net::Message& request) {
       return net::Handled::processed({net::message::ok, request.payload, {}});
