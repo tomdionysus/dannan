@@ -7,6 +7,43 @@ left green. `ACTIVE.md` is the plan and this is the record.
 
 None. Dannan has no code yet.
 
+## 2026-11-03, night -- step 2: health, backoff, broadcasts; two session fixes
+
+On `feature/transport` (two commits):
+
+- Health (`Client::start`): every heartbeat each peer with a route is
+  pinged on each lane it has (a DATA lane probed, never dialled to be);
+  a hung ping is abandoned after a third of `dead_after` and retried
+  ("ping made no progress for N ms"); a CONTROL route with no answer for
+  `dead_after` is closed ("liveness failure: ..."), exactly that route;
+  an answer is proof of life however late. The round trip is smoothed
+  (0.8/0.2) from CONTROL pings only, and `alive` is told of each peer
+  that answers.
+- Per-peer dial backoff by address and lane, 250 ms doubling to 4 s,
+  cleared by a successful dial; it governs new dials only, never a route
+  the peer opened. Duplicate dials of this end now keep the lower
+  session id, as the peer does.
+- The three broadcasts: `broadcast` (every CONTROL route, whichever end
+  dialled it), `broadcast_best_effort` (skips while the route table is
+  busy; proven with `hold_routes_for_test`, the seam the decisions name)
+  and `broadcast_notify` (waits for the table); none dials, and the last
+  two queue only where `Session::try_notify` adds no delay (64 KiB behind
+  at most 1 MiB, larger behind nothing). The server's `WorkStats` now
+  carry the session count (the other seam).
+- **Product bugs the soak found, fixed in their own commit:** closing a
+  session from another thread (the new liveness close) abandoned its
+  outbound queue at once, while the writer on the strand was sealing a
+  fragment of it outside the lock: a use-after-free that aborted about
+  one run in fifteen. The queue is now dropped by `shut()` on the strand;
+  `close()` still refuses new work and fails pending calls at once. And a
+  session now sets `SO_NOSIGPIPE` itself, so a peer that goes away never
+  ends the process, whatever socket it was given (the socketpair the
+  regression case uses had none). `Session.ClosingFromAnotherThreadMidTransferIsSafe`
+  is the regression case, 100 times over.
+- **Gate: `dannan_tests` 199, `dagda_tests` 1, `dannan_interop_tests` 6,
+  all passed**; the transport cases 30 times over and the client and
+  server cases 80 times over with no failure.
+
 ## 2026-11-03, night -- step 2: retirement and the client's routes
 
 On `feature/transport` (two commits):

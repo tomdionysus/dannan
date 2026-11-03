@@ -70,7 +70,7 @@ class Server {
   uint16_t bound_port() const noexcept { return _bound_port; }
   size_t sessions() const;
   size_t pre_auth() const;
-  WorkStats work_stats() const { return _scheduler.stats(); }
+  WorkStats work_stats() const;
   // Where the node's client sends requests that arrive on the sessions it
   // dialled, so every request is served by the same workers.
   RequestScheduler& scheduler() noexcept { return _scheduler; }

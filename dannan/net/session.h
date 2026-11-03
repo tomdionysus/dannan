@@ -99,6 +99,9 @@ struct SessionOptions {
   size_t max_message_bytes = 128ull * 1024 * 1024;
 };
 
+inline constexpr size_t max_try_notify_payload = 64 * 1024;
+inline constexpr size_t max_try_notify_backlog = 1024 * 1024;
+
 // One authenticated connection to a peer, on one lane, on Asio: a reader and
 // a writer on the session's strand, the outbound queue choosing frame by
 // frame, calls with their replies, notifications and transfer controls. All
@@ -123,6 +126,12 @@ class Session : public std::enable_shared_from_this<Session> {
   // whether it was written. Throws OutboundRefused when the queue will not
   // take it.
   void notify(Message message, sched::FrameType frame, boost::asio::any_io_executor executor, std::function<void(bool)> sent = {});
+  // Queues a notification only if it adds no delay ahead of other work: a
+  // small one (max_try_notify_payload) may wait behind a backlog of at most
+  // max_try_notify_backlog bytes, a larger one only behind nothing. Size
+  // decides, not class: telemetry rides speculative and must survive a busy
+  // writer, which still sends more urgent frames first. False if not queued.
+  bool try_notify(Message message, sched::FrameType frame);
   // Cancels a call: it completes at once as cancelled, the peer is told,
   // and a late reply is dropped.
   void cancel(uint64_t request_id);

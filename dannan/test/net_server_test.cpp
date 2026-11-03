@@ -153,8 +153,10 @@ TEST(Server, ReapsSessionsThatEnd) {
     sessions.push_back(dialled.session);
   }
   EXPECT_TRUE(eventually([&] { return server.sessions() == 3; }));
+  EXPECT_EQ(server.work_stats().sessions, 3u);
   for (auto& session : sessions) session->close("done");
   EXPECT_TRUE(eventually([&] { return server.sessions() == 0; }));
+  EXPECT_EQ(server.work_stats().sessions, 0u);
   server.stop();
 }
 

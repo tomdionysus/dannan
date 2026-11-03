@@ -64,6 +64,9 @@ struct WorkStats {
   size_t control_pending_bytes = 0;
   size_t data_pending_bytes = 0;
   uint64_t rejected = 0;
+  // Sessions the server holds, filled by the server: proof that finished
+  // ones are reaped. Not part of Status.
+  size_t sessions = 0;
   std::map<sched::FrameType, Timing> frame_timings;
   std::map<MessageType, Timing> message_timings;
 };

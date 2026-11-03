@@ -206,6 +206,12 @@ size_t Server::sessions() const {
   return _sessions.size();
 }
 
+WorkStats Server::work_stats() const {
+  auto stats = _scheduler.stats();
+  stats.sessions = sessions();
+  return stats;
+}
+
 size_t Server::pre_auth() const {
   contract::Lock lock(_mutex);
   return _handshaking.size();

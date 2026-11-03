@@ -251,6 +251,22 @@ void Session::notify(Message message, sched::FrameType frame, asio::any_io_execu
   kick_writer();
 }
 
+bool Session::try_notify(Message message, sched::FrameType frame) {
+  {
+    contract::Lock lock(_mutex);
+    if (_closed || _retiring || !_routes->allowed(message.type, _established.lane, frame)) return false;
+    const bool small = message.payload.size() <= max_try_notify_payload;
+    if (_queue.size() && (!small || _queue.bytes() > max_try_notify_backlog)) return false;
+    try {
+      (void)_queue.push(0, frame, std::move(message), false);
+    } catch (const OutboundRefused&) {
+      return false;
+    }
+  }
+  kick_writer();
+  return true;
+}
+
 void Session::cancel(uint64_t request_id) {
   std::optional<Pending> pending;
   {
