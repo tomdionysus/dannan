@@ -35,8 +35,8 @@ RouteTable RouteTable::with_dannan_types() {
   using enum Lanes;
   using enum Frames;
   // ping rides both lanes, so a DATA lane's dead NAT mapping is noticed.
-  table.add(message::ping, {"ping", both, control_only, false});
-  table.add(message::members, {"members", control, control_only, false});
+  table.add(message::ping, {"ping", both, control_only, false, true});
+  table.add(message::members, {"members", control, control_only, false, true});
   // A session's own transport controls, on either lane.
   table.add(message::session_retire, {"session_retire", both, control_only, false});
   table.add(message::promote_read_ahead, {"promote_read_ahead", both, control_only, false});
@@ -92,6 +92,16 @@ bool RouteTable::allowed(MessageType type, Lane lane, sched::FrameType frame) co
 bool RouteTable::is_notification(MessageType type) const noexcept {
   const auto* registration = find(type);
   return registration && registration->notification;
+}
+
+bool RouteTable::is_fast_control(MessageType type) const noexcept {
+  const auto* registration = find(type);
+  return registration && registration->fast_control;
+}
+
+bool RouteTable::is_ordered(MessageType type) const noexcept {
+  const auto* registration = find(type);
+  return registration && registration->ordered;
 }
 
 std::string RouteTable::name(MessageType type) const {

@@ -45,12 +45,6 @@ std::optional<sched::FrameType> promotion_of(MessageType type) {
 
 }  // namespace
 
-void Reply::operator()(Message message) {
-  if (!_request_id) return;
-  const auto id = std::exchange(_request_id, 0);
-  if (auto session = _session.lock()) session->queue_reply(id, _frame, std::move(message));
-}
-
 std::shared_ptr<Session> Session::create(Socket socket, Established established, Role role, std::shared_ptr<const RouteTable> routes, SessionHandlers handlers,
                                          SessionOptions options) {
   return std::shared_ptr<Session>(new Session(std::move(socket), std::move(established), role, std::move(routes), std::move(handlers), options));
@@ -168,7 +162,9 @@ void Session::deliver(Frame frame) {
   if (!_handlers.request) return queue_reply(id, class_of, error_reply(501, "not_implemented", "no handler on this session"));
   // A handler that throws answers its request; it never ends the session.
   try {
-    _handlers.request(std::move(frame), Reply(weak_from_this(), id, class_of));
+    _handlers.request(std::move(frame), Reply([weak = weak_from_this(), id, class_of](Message message) {
+                        if (auto self = weak.lock()) self->queue_reply(id, class_of, std::move(message));
+                      }));
   } catch (const std::exception& failure) {
     queue_reply(id, class_of, error_reply(500, "internal_error", failure.what()));
   } catch (...) {
