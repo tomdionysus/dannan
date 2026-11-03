@@ -10,6 +10,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <span>
 #include <stdexcept>
@@ -140,6 +141,10 @@ class FrameSealer {
   // lane in this class.
   Bytes seal(uint64_t request_id, sched::FrameType frame, MessageType type, bool first, bool last, std::span<const uint8_t> payload);
   uint64_t counter() const noexcept { return _counter; }
+  // Tests only: frames are sealed under the nonces `nonces` gives instead of
+  // fresh random ones, so a frame can be compared byte for byte with
+  // another implementation's.
+  void use_nonces_for_test(std::function<std::array<uint8_t, 12>()> nonces) { _nonces = std::move(nonces); }
 
  private:
   std::array<uint8_t, 32> _key;
@@ -147,6 +152,7 @@ class FrameSealer {
   size_t _max_frame;
   std::shared_ptr<const RouteTable> _routes;
   uint64_t _counter = 0;
+  std::function<std::array<uint8_t, 12>()> _nonces;
 };
 
 // Opens the other direction's frames, header first, so a bad frame is

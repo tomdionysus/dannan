@@ -60,6 +60,10 @@ std::array<uint8_t, 32> hmac_sha256(std::span<const uint8_t> key, std::span<cons
 std::array<uint8_t, 32> hkdf_sha256(std::span<const uint8_t> key, std::span<const uint8_t> salt, std::span<const uint8_t> info);
 // AES-256-GCM with a fresh random 12-byte nonce and a 16-byte tag.
 SealedData aes_gcm_seal(std::span<const uint8_t, 32> key, std::span<const uint8_t> plaintext, std::span<const uint8_t> associated = {});
+// As above under the nonce given. A nonce must never be used twice with one
+// key: this exists to reproduce another implementation's frame in a test.
+SealedData aes_gcm_seal(std::span<const uint8_t, 32> key, std::span<const uint8_t, 12> nonce, std::span<const uint8_t> plaintext,
+                        std::span<const uint8_t> associated = {});
 Bytes aes_gcm_open(std::span<const uint8_t, 32> key, std::span<const uint8_t, 12> nonce, std::span<const uint8_t, 16> tag, std::span<const uint8_t> ciphertext,
                    std::span<const uint8_t> associated = {});
 X25519KeyPair x25519_generate();

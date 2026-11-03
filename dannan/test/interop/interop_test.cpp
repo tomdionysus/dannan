@@ -357,5 +357,61 @@ TEST(Interop, DannansSessionAnswersAndCallsAMachaPeer) {
   runner.join();
 }
 
+// A capture of one session: every frame Macha's channel writes is the frame
+// Dannan's sealer writes for the same fragment, byte for byte, given the
+// nonce (the one random part of a frame, read from Macha's).
+TEST(Interop, DannansFramesAreMachasByteForByte) {
+  Keys keys;
+  Socketpair pair;
+  auto server_node = theirs_of(ours_sample());
+  macha::SecureChannel server(pair.theirs, keys.theirs, server_node, 65536);
+  std::thread server_side([&] { (void)server.server_handshake("127.0.0.9"); });
+  net::ClientHandshake client(keys.ours, ours_sample(), 16384, net::Lane::control);
+  write_all(pair.ours, client.hello_blob());
+  const auto established = client.finish(read_blob(pair.ours));
+  server_side.join();
+
+  // Dannan sealing as the server: its sending key is the client's receiving one.
+  auto as_server = established;
+  as_server.keys.tx = established.keys.rx;
+  net::FrameSealer sealer(as_server, routes());
+  std::array<uint8_t, 12> next_nonce{};
+  sealer.use_nonces_for_test([&] { return next_nonce; });
+
+  struct Sent {
+    uint64_t request_id;
+    macha::FrameType theirs;
+    sched::FrameType ours;
+    uint16_t type;
+    bool first;
+    bool last;
+    net::Bytes payload;
+  };
+  const std::vector<Sent> sent{
+      {3, macha::FrameType::control, sched::FrameType::control, 102, true, true, net::Bytes{4, 5}},
+      {0, macha::FrameType::speculative, sched::FrameType::speculative, 24, true, true, net::Bytes(3000, 7)},
+      {5, macha::FrameType::control, sched::FrameType::control, 100, true, false, net::Bytes(16384, 1)},
+      {5, macha::FrameType::control, sched::FrameType::control, 100, false, true, net::Bytes(10, 2)},
+      {9, macha::FrameType::loader, sched::FrameType::loader, 101, true, true, net::Bytes{}},
+      {0, macha::FrameType::control, sched::FrameType::control, 12, true, true, net::Bytes{}},
+  };
+  std::thread sender([&] {
+    for (const auto& frame : sent)
+      server.send_fragment(frame.request_id, frame.theirs, static_cast<macha::MessageType>(frame.type), frame.first, frame.last, frame.payload);
+  });
+  for (const auto& frame : sent) {
+    auto captured = read_exact(pair.ours, net::frame_header_size);
+    net::Reader header(captured);
+    header.view(8);
+    const auto size = header.u32();
+    const auto rest = read_exact(pair.ours, 12 + 16 + size);
+    captured.insert(captured.end(), rest.begin(), rest.end());
+    std::copy(rest.begin(), rest.begin() + 12, next_nonce.begin());
+    const auto ours = sealer.seal(frame.request_id, frame.ours, net::MessageType{frame.type}, frame.first, frame.last, frame.payload);
+    EXPECT_EQ(ours, captured) << "type " << frame.type << " request " << frame.request_id;
+  }
+  sender.join();
+  ::shutdown(pair.ours, SHUT_RDWR);
+}
 }  // namespace
 }  // namespace dannan
