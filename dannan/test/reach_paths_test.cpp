@@ -202,12 +202,14 @@ struct Cluster {
   std::unique_ptr<Node> hub, a, b;
   bool forced_a, forced_b;
 
-  Cluster(bool relay, std::optional<PathClass> a_class, std::optional<PathClass> b_class, std::chrono::milliseconds upgrade_every = std::chrono::minutes(1))
+  Cluster(bool relay, std::optional<PathClass> a_class, std::optional<PathClass> b_class, std::chrono::milliseconds upgrade_every = std::chrono::minutes(1),
+          size_t relay_data_circuits = 32)
       : forced_a(a_class.has_value()), forced_b(b_class.has_value()) {
     std::ofstream(dir.path() / "k") << "level zero";
     key = identity::load_cluster_key(dir.path() / "k");
     auto hub_config = config(dir.path() / "hub", key, {}, Inbound::yes);
     hub_config.relay = relay;
+    hub_config.relay_data_circuits = relay_data_circuits;
     hub = std::make_unique<Node>(io.context, hub_config);
     hub->start();
     const std::vector<net::Endpoint> seed{{"127.0.0.1", hub->port()}};
@@ -319,6 +321,19 @@ TEST(LevelZero, ARelayedPairMovesUpToAPunch) {
   ASSERT_TRUE(outcome.reply) << outcome.failure;
   // The relay's circuit goes with the relayed session.
   EXPECT_TRUE(eventually([&] { return cluster.hub->diagnostics().paths.circuits.empty(); }));
+}
+
+// The relay's DATA budget: past it a DATA circuit is refused, while CONTROL
+// circuits are unconditional.
+TEST(LevelZero, ARelayRefusesDataPastItsBudgetButNeverControl) {
+  Cluster cluster(true, PathClass::relay_only, std::nullopt, std::chrono::minutes(1), 0);
+  ASSERT_TRUE(eventually([&] { return cluster.ready(); }));
+  const auto control = cluster.echo(*cluster.a, *cluster.b, false);
+  ASSERT_TRUE(control.reply) << control.failure;
+  const auto data = cluster.echo(*cluster.a, *cluster.b, true);
+  ASSERT_FALSE(data.reply);
+  EXPECT_NE(data.failure.find("DATA budget"), std::string::npos) << data.failure;
+  EXPECT_GE(cluster.hub->diagnostics().paths.data_circuits_refused, 1u);
 }
 
 // No punch (one end relay only) and no relay: the call fails, saying why.
