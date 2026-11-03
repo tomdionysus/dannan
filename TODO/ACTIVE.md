@@ -71,7 +71,7 @@ punchable, one behind a randomising NAT, one behind two NATs; the runner
 healed partition and a relay failover) and passes (`COMPLETED.md`).
 Next: the stack's foundations (below, "Foundations for the stack":
 secure memory, signing, Argon2id, node key custody, channels and the
-roster feed done; the node opening its custody, fuzz targets). Left of section 6's rules, as work:
+roster feed and the node's custody done; fuzz targets next). Left of section 6's rules, as work:
 a relayed or punched pair moving up a class while it runs, the relay's
 DATA budget (only a circuit cap now), and placement told a peer's path
 class. Identity (step 10) waits; the port steps wait

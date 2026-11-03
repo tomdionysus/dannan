@@ -260,6 +260,41 @@ TEST(Node, AHostedSystemLogsThroughTheNodesSink) {
   EXPECT_EQ(sink->lines, (std::vector<std::string>{"lugh: signed in", "lugh.oauth: token refused"}));
 }
 
+// A node with key custody opens it at start: its public key, signatures
+// by it, and node-local keys reach the hosted system through the Context;
+// without custody those refuse. The cluster-wide derived key is in secure
+// memory and the same on every node.
+TEST(Node, OpensItsKeyCustody) {
+  Io io;
+  test::TempDir dir;
+  const auto key = cluster_key(dir.path());
+  const auto source = identity::KeySource::typed_passphrase(
+      [] {
+        const std::string p = "node passphrase";
+        return identity::Secret(std::span(reinterpret_cast<const uint8_t*>(p.data()), p.size()));
+      },
+      identity::Argon2Costs{1024, 1, 1});
+  (void)identity::KeyCustody::create(dir.path() / "a", source);
+  auto with = config(dir.path() / "a", key);
+  with.custody = source;
+  Node a(io.context, with);
+  Node b(io.context, config(dir.path() / "b", key));
+  const auto& identity = a.context().identity();
+  ASSERT_TRUE(identity.has_custody());
+  const net::Bytes message{1, 2, 3};
+  EXPECT_TRUE(identity::verify(identity::SigningAlgorithm::es256, identity.node_public_key(), message, identity.sign(message)));
+  EXPECT_EQ(identity.derive_local("dagda/node-local/1").size(), 32u);
+  EXPECT_FALSE(b.context().identity().has_custody());
+  EXPECT_TRUE(b.context().identity().node_public_key().empty());
+  EXPECT_THROW(b.context().identity().sign(message), std::logic_error);
+  EXPECT_THROW(b.context().identity().derive_local("x"), std::logic_error);
+  EXPECT_TRUE(a.context().identity().derive_key("lir/1") == b.context().identity().derive_key("lir/1"));
+  // Custody named but never made: the node refuses to start, saying so.
+  auto missing = config(dir.path() / "c", key);
+  missing.custody = source;
+  EXPECT_THROW(Node(io.context, missing), std::runtime_error);
+}
+
 TEST(Node, ReportsItsContextVersion) {
   Pair pair;
   EXPECT_EQ(pair.a->context().version(), context_version);
