@@ -47,18 +47,26 @@ configure line for Macha is in `COMPLETED.md`).
 
 ## Resume here (2026-11-03, evening)
 
-Written for a session starting from nothing. The repository has no
-commits. The next session is **step 0**, the first commit and the build
-skeleton, then **step 1**, the vocabulary. In order:
-
-1. Commit this plan and the project files on `main`, branch `develop`
-   (Waiting on Tom, 4: the first commit is Tom's to ask for).
-2. GoogleTest from MacPorts (Waiting on Tom, 6).
-3. Step 0 (Next, 0): CMake with the two libraries and two test binaries,
-   Boost.Asio and OpenSSL from `/opt/local`, `docs/principles-and-laws.md`,
-   the test fixtures, `--version`.
-4. Step 1 (Next, 1): the vocabulary, each inventory row it covers written
-   as a GoogleTest case first and watched to fail.
+Written for a session starting from nothing. Steps 0 and 1 are
+done (`COMPLETED.md`): the skeleton, then the vocabulary, gate 78 + 1.
+Step 2, the transport on Asio (Next, 2), is under
+way on `feature/transport` off `develop`: crypto, the cluster key, the
+node record, the open route table and the sans-I/O channel are done and
+proven byte for byte against Macha 0.91.2 (`dannan_interop_tests`, built
+against a pinned export: `COMPLETED.md` has how). Reassembly, the outbound
+queue, the Asio session with retirement, the request scheduler, the
+server and the client's routes (dial on demand and reuse, shared cold
+dials, reconciliation, the no-progress deadline, the probe dial), health
+with backoff, the three broadcasts, and reverse dial with maintained
+peers are done too (`COMPLETED.md`, gate 205 + 1 + 6). The two-process
+test passes too (`dannan_interop_tests`, 7). The frame capture
+is done too (`Interop.DannansFramesAreMachasByteForByte`, gate 206 + 1 +
+8), and the sanitizers ran clean after two fixes (`COMPLETED.md`): step
+2's gate is whole. Next: merge `feature/transport` to `develop`,
+`develop` to `main`, tag `0.1.0`, then step 3 in `../macha` (tell the Macha
+session first). Waiting on Tom, item 8, does not block it. Each from the transport table's rows with Macha's
+`tests/test_rpc_cluster.cpp` cases as the model; then the two-process
+test against the Macha binary.
 
 Read in this order: this file to the end of Standing rules;
 `2026-11-02-dannan-plan.md` whole; the inventory; the head of
@@ -117,21 +125,35 @@ first.
    is flaky on macOS at the baseline (1 run in 5), and
    `maintenance_trace/test_trace_backend_offline_and_back` on macnessa
    (Macha session, 1 in 3). Both are with the Macha session.
-4. **The first commit of this repository**: `main` with the plan,
-   `CLAUDE.md`, `CONTRIBUTING.md`, `.clang-format`, `.gitignore` and
-   `basemind.toml`; `develop` branched from it. Ready; not done, because
-   a commit is asked for, never assumed.
+4. Settled: the first commit is `2a923f5` on `main`; `develop` branched.
+   `CLAUDE.md` stays uncommitted (Tom's global gitignore excludes it).
+   Tom (2026-11-03): commit at each completed milestone without asking;
+   no attribution lines, ever.
 5. Settled: Tom had the Macha session delete the morning's leftovers in
    `../macha` (the goldens branch, the two-process script, the 0.91.2
    worktree and its runs). The goldens are rewritten at step 3 as part of
    the port gate; the two-process test is written here at step 2.
-6. **GoogleTest from MacPorts** (`sudo port install gtest`, 1.18.0;
-   the port is `gtest`, not `googletest`), and Homebrew's `googletest`
-   unlinked (`brew unlink googletest`): its headers are at
-   `/usr/local/include/gtest` today and would be found first.
+6. Settled: GoogleTest 1.18.0 from MacPorts (`gtest`), the only one on
+   the laptop.
 7. **The design doc's "starts in-tree" paragraph** (Repository, build,
    versioning), which Tom's decision supersedes: his edit of the Claude
    Doc, after which the rendering is re-made.
+8. **What a frame of a type this node does not host should do**
+   (found by the two-process test, 2026-11-03). Protocol 23's rule, in
+   Macha and in Dannan, is per type: a type the receiver does not know may
+   travel only in the control frame, and a frame that breaks its type's
+   rule ends the session. A Macha node sends its metadata traffic to every
+   peer in any frame class (`get_metadata_heads` as speculative, say), so
+   a node that has not registered Macha's types loses the whole session to
+   it. Within Macha's own cluster nothing changes once Macha registers its
+   types (step 3), and `dannan-node` registers them as Macha will. It
+   matters when nodes that host different systems share a cluster.
+   Recommendation: keep the strict check for registered types; for a type
+   the node does not host, accept any frame class on the CONTROL lane and
+   answer 501 (a notification is dropped), so a peer is never cut off for
+   traffic this node will simply decline. That accepts more than Macha
+   0.91.2 does for unknown numbers, and changes no byte. Until Tom
+   decides, the strict rule stands.
 
 ## How to prove it
 
@@ -141,7 +163,10 @@ Two gates, and both are run.
 `dagda_tests` (`-DDANNAN_BUILD_TESTING=ON`, run the binaries), counts
 recorded in `COMPLETED.md` and never lower; a test is never deleted; time
 is injected and nothing sleeps; sanitizers before a release and to hunt a
-bug that cannot be pinned any other way. At every step that speaks the
+bug that cannot be pinned any other way (`build-asan/` with
+`ASAN_OPTIONS=detect_container_overflow=0`, `build-tsan/` with
+`TSAN_OPTIONS=suppressions=$PWD/dannan/test/tsan-suppressions.txt`; the
+flags are in `COMPLETED.md`'s 0.1.0 entries). At every step that speaks the
 wire, the two-process test: a Dannan node (a small executable built here)
 against the Macha binary over loopback, both ways round, in whatever form
 the step can prove (step 2: handshake, membership, telemetry, both lanes;
@@ -162,10 +187,17 @@ Macha:  cmake -S . -B build-macports ... (COMPLETED.md has the line)
         cmake --build build-macports -j8
         sh ./run-tests.sh build-macports
 Dannan: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DDANNAN_BUILD_TESTING=ON \
-          -DCMAKE_PREFIX_PATH="/opt/local/libexec/boost/1.88;/opt/local"
+          -DDANNAN_WARNINGS_AS_ERRORS=ON \
+          -DCMAKE_PREFIX_PATH="/opt/local/libexec/boost/1.88;/opt/local" \
+          -DDANNAN_MACHA_INTEROP_DIR=$PWD/build/interop/macha-0.91.2 \
+          -DDANNAN_MACHA_BINARY=$PWD/../macha/build-macports/macha
         cmake --build build -j8
-        ./build/dannan_tests && ./build/dagda_tests
+        ./build/dannan_tests && ./build/dagda_tests && ./build/dannan_interop_tests
 ```
+
+`dannan_interop_tests` holds the in-process byte-for-byte cases (against
+the pinned 0.91.2 export) and, with `DANNAN_MACHA_BINARY`, the two-process
+test (that binary and `dannan-node`, about 5 s).
 
 For AthenaSIP (step 11): `./build-tests/athenasip_tests` with Redis and
 MQTT set, then `test/e2e/cluster.sh` with the second node behind CGNAT and
@@ -342,6 +374,17 @@ words, so a session does not re-derive it.
   connection closes, which answers every pending call. In the inventory's
   transport table.
 
+- (2026-11-03 evening, this plan; step 2's open design points) **How a
+  request is executed is a property of its type's registration**, beside
+  its lanes and classes: `fast_control` (answered by the small pool that
+  never queues behind storage-backed control work; Dannan's `ping` and
+  `members`) and `ordered` (one job per peer at a time, in arrival order,
+  across a small bounded pool; Macha registers its three metadata
+  mutations so). The server's per-class queue byte bounds and worker
+  counts are Dannan's, as `ServerLimits`; the ordered class's job and
+  byte bounds are the registering hosted system's to size, defaulting to
+  Macha's.
+
 ## Standing rules
 
 ### Style
@@ -438,8 +481,8 @@ under Waiting on Tom.
 - [x] `CLAUDE.md`, `CONTRIBUTING.md`, `.clang-format`, `basemind.toml`,
       `.gitignore`; a "Dannan extraction" section in Macha's
       `TODO/ACTIVE.md`.
-- [ ] The first commit on `main`; `develop` branched (Waiting on Tom, 4).
-- [ ] The build skeleton: `CMakeLists.txt` with `project(dannan VERSION
+- [x] The first commit on `main` (`2a923f5`); `develop` branched.
+- [x] The build skeleton (2026-11-03): `CMakeLists.txt` with `project(dannan VERSION
       0.1.0)`, two shared libraries `dannan` and `dagda`, GoogleTest
       binaries `dannan_tests` and `dagda_tests` behind
       `-DDANNAN_BUILD_TESTING=ON`, `-DDANNAN_WARNINGS_AS_ERRORS=ON`, Boost
@@ -450,14 +493,15 @@ under Waiting on Tom.
       `dagda/` with `domain/`, `store/`, `ledger/`, `heads/`, `lease/`,
       `contract/`, `test/`); `--version` from a tiny `dannan-version`
       executable or a test, agreeing with the tag.
-- [ ] `docs/principles-and-laws.md`: a verbatim copy of Macha's, with one
+- [x] `docs/principles-and-laws.md`: a verbatim copy of Macha's, with one
       provenance line; cited by number from here on.
-- [ ] The test fixtures under `dannan/test/`: an in-process cluster of
-      Dannan nodes, a gate, a stepped time source, a free-port allocator
-      with per-case port blocks, and the forked-process isolation Macha's
-      runner gives, as a fixture where a case needs it.
+- [x] The first test fixtures under `dannan/test/fixtures/`: the gate and
+      the free-port allocator (2026-11-03). Arriving with the steps that
+      give them something to stand on: the stepped time source (step 1,
+      with `TimeSource`), the in-process cluster of Dannan nodes (step 2,
+      with the transport), forked-process isolation where a case needs it.
 
-### 1. The vocabulary (step 1)
+### 1. The vocabulary (step 1) - done 2026-11-03
 
 What the transport stands on, each small and specified: `sched/` (the
 work classes `control`, `foreground`, `read_ahead`, `loader`,
