@@ -5,7 +5,12 @@ left green. `ACTIVE.md` is the plan and this is the record.
 
 ## Releases
 
-None. Dannan has no code yet.
+- **0.1.0** (2026-11-03, `main` at `bafb91e`, tag `0.1.0`): step 1's
+  vocabulary and step 2's transport on Asio, protocol 23 byte for byte
+  with Macha (in process against the pinned 0.91.2 export, and two
+  processes against Macha's binary). Gate `dannan_tests` 206,
+  `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
+  Not pushed.
 
 ## 2026-11-03, night -- step 2: the sanitizers before 0.1.0
 
