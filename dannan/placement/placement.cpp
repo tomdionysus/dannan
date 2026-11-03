@@ -242,6 +242,22 @@ std::vector<NodeRecord> rendezvous(std::span<const uint8_t> key, const std::vect
 std::vector<NodeRecord> by_capacity(std::span<const uint8_t> key, const std::vector<NodeRecord>& nodes, size_t count, const Scheme& scheme) {
   if (scheme.fallback_salt.empty() || scheme.extra_domain_salt.empty()) throw std::invalid_argument("a placement scheme names both its salts");
   if (nodes.empty() || !count) return {};
+  if (scheme.demote_relay_only) {
+    std::vector<NodeRecord> reachable;
+    std::vector<NodeRecord> relayed;
+    for (const auto& node : nodes) (node.path_class == membership::PathClass::relay_only ? relayed : reachable).push_back(node);
+    if (!relayed.empty() && reachable.size() >= std::min(count, nodes.size())) {
+      auto plain = scheme;
+      plain.demote_relay_only = false;
+      auto out = by_capacity(key, reachable, count, plain);
+      const auto preferred = std::min(count, out.size());
+      // The relay-only nodes lead the fallbacks, in their own placement
+      // order, so a full or offline owner still spills to them first.
+      auto spill = by_capacity(key, relayed, relayed.size(), plain);
+      out.insert(out.begin() + static_cast<std::ptrdiff_t>(preferred), spill.begin(), spill.end());
+      return out;
+    }
+  }
   const auto& advert = scheme.capacity_advert;
   count = std::min(count, nodes.size());
   if (count == 1) {

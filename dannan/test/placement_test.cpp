@@ -16,6 +16,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <map>
 #include <random>
 #include <set>
@@ -148,6 +149,31 @@ TEST(Placement, CapacityComesFromTheNamedAdvert) {
   EXPECT_EQ(capacity_of(node(1, 50), "other"), 0u);
   EXPECT_EQ(capacity_of(node(1, 50), ""), 0u);
   EXPECT_EQ(logical_capacity({node(1, 10), node(2, 20)}, 1, "other"), 0u);
+}
+
+// Told of level 0, bulk placement keeps relay-only nodes out of the
+// preferred owners while enough others can be, and spills to them first;
+// with too few others they are owners as before.
+TEST(Placement, ARelayOnlyNodeIsNotAPreferredOwnerWhenAsked) {
+  std::vector<NodeRecord> nodes{node(1, 100, "a"), node(2, 100, "b"), node(3, 100, "c"), node(4, 1000, "d")};
+  nodes[3].path_class = membership::PathClass::relay_only;
+  auto told = scheme;
+  told.demote_relay_only = true;
+  bool owned_before = false;
+  for (uint32_t k = 0; k < 300; ++k) {
+    const auto plain = by_capacity(key_of(k), nodes, 2, scheme);
+    owned_before = owned_before || plain[0].id == nodes[3].id || plain[1].id == nodes[3].id;
+    const auto placed = by_capacity(key_of(k), nodes, 2, told);
+    ASSERT_EQ(placed.size(), nodes.size());
+    EXPECT_NE(placed[0].id, nodes[3].id);
+    EXPECT_NE(placed[1].id, nodes[3].id);
+    EXPECT_EQ(placed[2].id, nodes[3].id);
+  }
+  EXPECT_TRUE(owned_before);  // without being told, it is an owner for some keys
+  // Four copies of four nodes: everyone is an owner regardless.
+  EXPECT_EQ(by_capacity(key_of(1), nodes, 4, told).size(), 4u);
+  const auto all = by_capacity(key_of(1), nodes, 4, told);
+  EXPECT_TRUE(std::any_of(all.begin(), all.end(), [&](const NodeRecord& n) { return n.id == nodes[3].id; }));
 }
 
 // There are no default salts: a hosted system names its own.

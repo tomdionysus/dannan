@@ -12,6 +12,19 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
 
+## 2026-11-03, night -- level 0's last rules: placement and the relay budget
+
+- `placement::Scheme::demote_relay_only`: bulk placement told of level 0
+  keeps relay-only nodes out of the preferred owners while enough others
+  can be, and spills to them first; off by default, so level 0 does not
+  leak into placement unless asked.
+- The relay: CONTROL circuits unconditional (the old cap on all circuits
+  could refuse a member its control path); DATA circuits budgeted
+  (`NodeConfig::relay_data_circuits`, default 32), refused past it and
+  counted (`data_circuits_refused`), every byte counted per circuit.
+- Level 0's rules from the plan are all in code now.
+- **Gate: `dannan_tests` 370, `dagda_tests` 1.**
+
 ## 2026-11-03, night -- counting unlocked key memory
 
 `identity::unlocked_secure_allocations()`: how many secure allocations

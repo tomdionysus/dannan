@@ -414,6 +414,7 @@ void Node::start() {
   paths.relay = _config.relay;
   paths.forced_class = _config.path_class;
   paths.upgrade_every = _config.path_upgrade_every;
+  paths.max_data_circuits = _config.relay_data_circuits;
   _paths = std::make_unique<reach::Paths>(
       _io, paths, *_client, [this] { return _members.self(); }, [this] { return _members.active(); },
       [this](const NodeRecord& peer, net::MessageType type, net::Bytes payload, std::chrono::milliseconds deadline) {
