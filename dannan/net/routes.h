@@ -76,7 +76,9 @@ struct Registration {
 // session, then only read: a session checks every frame against it.
 class RouteTable {
  public:
-  // A table holding Dannan's own types.
+  // A table holding Dannan's core types, which keep Dannan's rules. Every
+  // other number is a user type, registered by a hosted system with its own
+  // rules, or not registered on this node at all.
   static RouteTable with_dannan_types();
 
   // Registers `type`. Throws std::invalid_argument if the number is taken or
@@ -85,9 +87,13 @@ class RouteTable {
 
   // The registration, or null for a type nobody registered.
   const Registration* find(MessageType type) const noexcept;
-  // Whether `type` may arrive on `lane` in `frame`. An unregistered type has
-  // protocol 23's default: the control lane and the control frame.
+  // Whether `type` may travel on `lane` in `frame`: a core or registered
+  // type by its registration; a user type nobody registered here is not
+  // policed (any class, either lane), since it is the user's to accept or
+  // decline. Nothing travels on the probe lane.
   bool allowed(MessageType type, Lane lane, sched::FrameType frame) const noexcept;
+  // One of Dannan's own types.
+  bool is_core(MessageType type) const noexcept;
   bool is_notification(MessageType type) const noexcept;
   bool is_fast_control(MessageType type) const noexcept;
   bool is_ordered(MessageType type) const noexcept;
@@ -96,6 +102,7 @@ class RouteTable {
 
  private:
   std::map<MessageType, Registration> _types;
+  std::set<MessageType> _core;
 };
 
 }  // namespace dannan::net

@@ -55,6 +55,7 @@ RouteTable RouteTable::with_dannan_types() {
   table.add(message::telemetry_reply, {"telemetry_reply", control, any, false});
   table.add(message::identity_resets_reply, {"identity_resets_reply", control, control_only, false});
   table.add(message::dial_back_probe_reply, {"dial_back_probe_reply", control, control_only, false});
+  for (const auto& [type, _] : table._types) table._core.insert(type);
   return table;
 }
 
@@ -74,8 +75,9 @@ const Registration* RouteTable::find(MessageType type) const noexcept {
 bool RouteTable::allowed(MessageType type, Lane lane, sched::FrameType frame) const noexcept {
   if (lane == Lane::probe) return false;
   const auto* registration = find(type);
-  const auto lanes = registration ? registration->lanes : Lanes::control;
-  const auto frames = registration ? registration->frames : Frames::control_only;
+  if (!registration) return true;
+  const auto lanes = registration->lanes;
+  const auto frames = registration->frames;
   const bool lane_ok = lanes == Lanes::both || (lanes == Lanes::control && lane == Lane::control) || (lanes == Lanes::data && lane == Lane::data);
   if (!lane_ok) return false;
   switch (frames) {
@@ -88,6 +90,8 @@ bool RouteTable::allowed(MessageType type, Lane lane, sched::FrameType frame) co
   }
   return false;
 }
+
+bool RouteTable::is_core(MessageType type) const noexcept { return _core.contains(type); }
 
 bool RouteTable::is_notification(MessageType type) const noexcept {
   const auto* registration = find(type);

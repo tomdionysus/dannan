@@ -283,16 +283,16 @@ void Client::request_lane(const membership::NodeRecord& peer, Lane lane) {
   });
 }
 
-Message Client::handle_dial_request(const membership::NodeRecord& peer, const Message& request) {
+Handled Client::handle_dial_request(const membership::NodeRecord& peer, const Message& request) {
   try {
     Reader reader(request.payload);
     const auto lane = static_cast<Lane>(reader.u8());
     reader.finish();
-    if (lane != Lane::control && lane != Lane::data) return error_reply(400, "invalid_request", "invalid transport lane");
+    if (lane != Lane::control && lane != Lane::data) return Handled::failed(400, "invalid_request", "invalid transport lane");
     request_lane(peer, lane);
-    return {message::ok, {}, {}};
+    return Handled::processed();
   } catch (const DecodeError& error) {
-    return error_reply(400, "invalid_request", error.what());
+    return Handled::failed(400, "invalid_request", error.what());
   }
 }
 

@@ -25,6 +25,7 @@
 
 #include "dannan/contract/thread_safety.h"
 #include "dannan/identity/cluster_key.h"
+#include "dannan/net/scheduler.h"
 #include "dannan/net/session.h"
 
 namespace dannan::net {
@@ -155,9 +156,10 @@ class Client {
   // ordinary backoff, so a peer that keeps losing a lane cannot cause a
   // redial loop.
   void request_lane(const membership::NodeRecord& peer, Lane lane);
-  // Answers a dial_request notification from `peer` (the node routes the
-  // type here): ok, or 400 for a lane that is not CONTROL or DATA.
-  Message handle_dial_request(const membership::NodeRecord& peer, const Message& request);
+  // Handles a dial_request notification from `peer` (the node routes the
+  // type here): processed, or failed with 400 for a lane that is not
+  // CONTROL or DATA.
+  Handled handle_dial_request(const membership::NodeRecord& peer, const Message& request);
   // Closes this node's routes to `peer` on `lane`, both directions.
   void close_route(const identity::NodeId& peer, Lane lane, const std::string& why);
 
