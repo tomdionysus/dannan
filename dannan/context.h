@@ -78,11 +78,18 @@ class Nodes {
   virtual std::vector<membership::IdentityReset> identity_resets() const = 0;
   virtual bool apply_identity_reset(const membership::IdentityReset& reset) = 0;
   virtual void propagate_identity_reset(const membership::IdentityReset& reset, std::chrono::milliseconds deadline) = 0;
-  // Ordered candidates for `key` over the active roster: the first `copies`
-  // preferred, the rest fallbacks; `extents_only` keeps nodes that host
-  // extents.
-  virtual std::vector<membership::NodeRecord> placement(std::span<const uint8_t> key, size_t copies, bool extents_only = false,
-                                                        const placement::Salts& salts = {}) const = 0;
+  // Ordered candidates for `key` over the active roster under the hosted
+  // system's scheme: the first `copies` preferred, the rest fallbacks. With
+  // `only_advertising`, only nodes carrying that advert are candidates.
+  // Throws std::invalid_argument for a scheme without its salts.
+  virtual std::vector<membership::NodeRecord> placement(std::span<const uint8_t> key, size_t copies, const placement::Scheme& scheme,
+                                                        const std::string& only_advertising = {}) const = 0;
+  // This node's adverts: the hosted system's figures, carried in its record
+  // and gossiped with it; Dannan never reads them unless a caller names
+  // one. A change makes the record newer. Throws std::invalid_argument for
+  // an empty key or one over 256 bytes, a value over 1 KiB, or a 65th.
+  virtual void advertise(const std::string& key, net::Bytes value) = 0;
+  virtual void withdraw(const std::string& key) = 0;
 };
 
 // Message types and calls. A hosted system registers its types (their wire

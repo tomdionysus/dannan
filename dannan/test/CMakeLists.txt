@@ -41,6 +41,7 @@ add_executable(dannan_tests
   status_surface_test.cpp
   status_telemetry_test.cpp
   supervise_test.cpp
+  two_process_test.cpp
   version_test.cpp
 )
 target_link_libraries(dannan_tests PRIVATE dannan dannan_test_fixtures GTest::gtest_main dannan_warnings)
@@ -60,3 +61,7 @@ foreach(kind running writes_on_stop declining faulting faulting_after_start mism
   add_dependencies(dannan_tests dannan_test_plugin_${kind})
 endforeach()
 target_compile_definitions(dannan_tests PRIVATE DANNAN_TEST_PLUGIN_DIR="${DANNAN_TEST_PLUGIN_DIR}")
+
+# The two-process test runs dannan-node as a child.
+target_compile_definitions(dannan_tests PRIVATE DANNAN_NODE_BINARY="$<TARGET_FILE:dannan-node>")
+add_dependencies(dannan_tests dannan-node)

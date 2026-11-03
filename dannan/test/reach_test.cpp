@@ -58,7 +58,7 @@ TEST(InboundResolution, ConfiguredIsFinalAndAutoStartsFromWhatWasPersisted) {
   EXPECT_EQ(corrupt.state().source, "default");
 }
 
-// The persisted file: MACHINB1, the answer, when it was decided, by whom.
+// The persisted file: DNNINB01, the answer, when it was decided, by whom.
 TEST(InboundResolution, PersistsProtocol23sFile) {
   test::TempDir dir;
   test::SteppedWall wall;
@@ -67,7 +67,7 @@ TEST(InboundResolution, PersistsProtocol23sFile) {
   std::ifstream input(dir.path() / "connectivity" / "inbound.bin", std::ios::binary);
   const std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(input)), {});
   net::Writer expected;
-  for (const char c : std::string("MACHINB1")) expected.u8(static_cast<uint8_t>(c));
+  for (const char c : std::string("DNNINB01")) expected.u8(static_cast<uint8_t>(c));
   expected.u8(1);
   expected.u64(wall.unix_ms());
   expected.string("probe:" + to_string(id(2)));
@@ -242,7 +242,7 @@ membership::NodeRecord record(uint8_t n, const std::string& host, uint16_t port,
   out.id = id(n);
   out.host = host;
   out.port = port;
-  out.flags = membership::flags_for(capable, true);
+  out.capabilities = capable ? membership::capability_inbound : 0;
   return out;
 }
 

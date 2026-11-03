@@ -31,12 +31,6 @@
 
 namespace dannan::net {
 
-struct Endpoint {
-  std::string host;
-  uint16_t port = 0;
-  auto operator<=>(const Endpoint&) const = default;
-};
-
 // Where requests that arrive on the sessions this client dialled go: the
 // node's server scheduler, so every request is served by the same workers
 // whichever end dialled.
@@ -304,7 +298,7 @@ class Client {
   bool _health_started DANNAN_GUARDED_BY(_mutex) = false;
   // Each peer's flags, from handshakes, calls and note_peer(); a peer not
   // listed is taken as capable.
-  std::map<identity::NodeId, uint8_t> _peer_flags DANNAN_GUARDED_BY(_mutex);
+  std::map<identity::NodeId, uint32_t> _peer_capabilities DANNAN_GUARDED_BY(_mutex);
   std::map<RouteKey, membership::NodeRecord> _requested DANNAN_GUARDED_BY(_mutex);
   std::function<std::vector<membership::NodeRecord>()> _maintained DANNAN_GUARDED_BY(_mutex);
   std::map<RouteKey, ReverseWait> _reverse DANNAN_GUARDED_BY(_mutex);

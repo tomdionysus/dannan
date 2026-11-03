@@ -56,7 +56,7 @@ net::Handled DialBackResponder::answer(const identity::NodeId& asker, std::span<
     _last[asker] = now;
   }
   const auto error = _prober(target, asker);
-  return net::Handled::processed({net::message::dial_back_probe_reply, encode_dial_back_reply(error.empty(), error), {}});
+  return net::Handled::processed({net::message::dial_back_reply, encode_dial_back_reply(error.empty(), error), {}});
 }
 
 }  // namespace dannan::reach

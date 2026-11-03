@@ -30,8 +30,15 @@ NodeRecord initial_self(const NodeConfig& config, const identity::NodeId& id, bo
   self.host = config.advertise_host;
   self.port = config.port;
   self.failure_domain = config.failure_domain;
-  self.flags = membership::flags_for(capable, config.hosts_extents ? config.hosts_extents(capable) : false);
+  self.capabilities = (capable ? membership::capability_inbound : 0U) | (config.relay ? membership::capability_relay : 0U);
   return self;
+}
+
+// What a topology event is for: where a node is, what it does, and what
+// it advertises; its liveness and candidates are not.
+bool shape_changed(const NodeRecord& before, const NodeRecord& after) {
+  return before.host != after.host || before.port != after.port || before.failure_domain != after.failure_domain || before.capabilities != after.capabilities ||
+         before.path_class != after.path_class || before.adverts != after.adverts;
 }
 
 std::vector<identity::NodeId> ids_of(const std::vector<NodeRecord>& nodes) {
@@ -71,11 +78,14 @@ class Node::NodesNoun final : public Nodes {
   void propagate_identity_reset(const membership::IdentityReset& reset, std::chrono::milliseconds deadline) override {
     _node.propagate_identity_reset(reset, deadline);
   }
-  std::vector<NodeRecord> placement(std::span<const uint8_t> key, size_t copies, bool extents_only, const placement::Salts& salts) const override {
+  std::vector<NodeRecord> placement(std::span<const uint8_t> key, size_t copies, const placement::Scheme& scheme,
+                                    const std::string& only_advertising) const override {
     auto candidates = _node._members.active();
-    if (extents_only) candidates = placement::extent_candidates(candidates);
-    return placement::by_capacity(key, candidates, copies, salts);
+    if (!only_advertising.empty()) candidates = placement::with_advert(candidates, only_advertising);
+    return placement::by_capacity(key, candidates, copies, scheme);
   }
+  void advertise(const std::string& key, net::Bytes value) override { _node._members.set_advert(key, std::move(value)); }
+  void withdraw(const std::string& key) override { _node._members.clear_advert(key); }
 
  private:
   Node& _node;
@@ -442,7 +452,7 @@ net::Handled Node::handle(const NodeRecord& peer, sched::FrameType frame, const 
     return net::Handled::processed({m::identity_resets_reply, membership::encode_identity_resets(_members.identity_resets()), {}});
   }
   if (type == m::dial_request) return _client->handle_dial_request(peer, request);
-  if (type == m::dial_back_probe) return _dial_back->answer(peer.id, request.payload);
+  if (type == m::dial_back) return _dial_back->answer(peer.id, request.payload);
   // Held shared across the call: unbind waits for it.
   contract::ReadLock lock(_handlers_mutex);
   const auto handler = _handlers.find(type);
@@ -453,8 +463,7 @@ net::Handled Node::handle(const NodeRecord& peer, sched::FrameType frame, const 
 void Node::observe_direct(const NodeRecord& peer) {
   const auto before = _members.active();
   const auto previous = std::find_if(before.begin(), before.end(), [&](const NodeRecord& n) { return n.id == peer.id; });
-  const bool changed = previous == before.end() || previous->host != peer.host || previous->port != peer.port ||
-                       previous->failure_domain != peer.failure_domain || previous->flags != peer.flags;
+  const bool changed = previous == before.end() || shape_changed(*previous, peer);
   _members.observe(peer, true);
   if (_client && peer.id != _identity.id) _client->note_peer(peer);
   if (changed) _events.notify(status::NodeEvents::topology);
@@ -471,9 +480,7 @@ void Node::merge(std::span<const uint8_t> payload) {
   for (uint32_t i = 0; i < count; ++i) {
     auto node = membership::decode(reader);
     const auto previous = std::find_if(before_all.begin(), before_all.end(), [&](const NodeRecord& n) { return n.id == node.id; });
-    changed = changed || previous == before_all.end() || previous->host != node.host || previous->port != node.port ||
-              previous->failure_domain != node.failure_domain || previous->metadata_write_replicas_required != node.metadata_write_replicas_required ||
-              previous->flags != node.flags;
+    changed = changed || previous == before_all.end() || shape_changed(*previous, node);
     if (node.id != _identity.id && _client) _client->note_peer(node);
     _members.observe(std::move(node));
   }
@@ -612,7 +619,7 @@ void Node::telemetry_loop(std::stop_token stop) {
 }
 
 void Node::apply_inbound(bool capable) {
-  if (_members.set_flags(capable, _config.hosts_extents ? _config.hosts_extents(capable) : false)) {
+  if (_members.set_inbound_capable(capable)) {
     _events.notify(status::NodeEvents::topology);
     signal_telemetry();
   }
@@ -641,9 +648,9 @@ void Node::connectivity_loop(std::stop_token stop) {
     }
     if (!peer) continue;
     const auto self = _members.self();
-    const auto outcome = call_wait(peer, {peer->host, peer->port}, net::message::dial_back_probe, reach::encode_dial_back_request({self.host, self.port}),
+    const auto outcome = call_wait(peer, {peer->host, peer->port}, net::message::dial_back, reach::encode_dial_back_request({self.host, self.port}),
                                    _config.connect_timeout * 3);
-    if (!outcome.reply || outcome.reply->type != net::message::dial_back_probe_reply) continue;
+    if (!outcome.reply || outcome.reply->type != net::message::dial_back_reply) continue;
     try {
       const auto [reachable, error] = reach::decode_dial_back_reply(outcome.reply->payload);
       const auto verdict = _inbound.observe_probe(peer->id, reachable, error);

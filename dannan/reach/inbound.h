@@ -48,7 +48,7 @@ struct ProbeVerdict {
 // The evidence is a peer reporting whether a fresh connection to this
 // node's advertised endpoint completed a handshake. Sticky: capable to
 // incapable takes two failures in a row, back takes one success. Persisted
-// under the state path as protocol 23's connectivity/inbound.bin.
+// under the state path as connectivity/inbound.bin (DNNINB01).
 // Thread-safe; waits on the file when it persists.
 class InboundResolver {
  public:

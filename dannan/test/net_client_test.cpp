@@ -31,10 +31,10 @@ namespace asio = boost::asio;
 using namespace std::chrono_literals;
 using sched::FrameType;
 
-constexpr MessageType put_object{5};
-constexpr MessageType slow{200};
-constexpr MessageType sluggish{201};
-constexpr MessageType news{202};
+constexpr MessageType put_object{2005};
+constexpr MessageType slow{1200};
+constexpr MessageType sluggish{1201};
+constexpr MessageType news{1202};
 
 struct Io {
   asio::io_context context;
@@ -78,10 +78,10 @@ struct Node {
   std::unique_ptr<Server> server;
   std::unique_ptr<Client> client;
 
-  explicit Node(Io& io, ClientOptions tuning = {}, uint8_t flags = membership::flags_default) : io(io) {
+  explicit Node(Io& io, ClientOptions tuning = {}, uint32_t capabilities = membership::capabilities_default) : io(io) {
     self.id = identity::NodeId::random();
     self.host = "127.0.0.1";
-    self.flags = flags;
+    self.capabilities = capabilities;
     const auto key = cluster_key();
     auto traffic = std::make_shared<TransportTraffic>();
     ServerOptions server_options;
@@ -449,7 +449,7 @@ TEST(Broadcast, NeverDials) {
   EXPECT_EQ(a.client->stats().dials, 0u);
 }
 
-constexpr uint8_t incapable = membership::flags_for(false, true);
+constexpr uint32_t incapable = 0;
 
 // A node that accepts no inbound connection is never dialled: with no
 // session of its own to ask over, a call to it fails at once.

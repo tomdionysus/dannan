@@ -7,13 +7,15 @@
 
 // The authenticated channel, sans I/O: the inventory's transport rows "frame
 // size negotiated at the handshake, bounded by config", "authenticated
-// encrypted channel: AEAD per fragment with counters, a session id" and
-// "protocol version in the handshake; any other version fails it, never
-// negotiates down". The interop tests check the same against Macha.
+// encrypted channel: AEAD per fragment with counters, a session id", and
+// wire v1's handshake (section 2): a version range from 1, the highest
+// common version chosen and none refused, the observed address in the ack,
+// and the path token of a punched or relayed connection inside the hello.
 
 #include <gtest/gtest.h>
 
 #include <fstream>
+#include <tuple>
 
 #include "dannan/net/channel.h"
 #include "dannan/test/fixtures/temp_dir.h"
@@ -51,7 +53,7 @@ Pair handshake(const identity::ClusterKey& client_key, size_t client_frame, cons
   const auto a = node(client_host);
   const auto b = node("10.0.0.2");
   ClientHandshake client(client_key, a, client_frame, lane);
-  auto reply = server_handshake(server_key, b, server_frame, body(client.hello_blob()), "192.0.2.7");
+  auto reply = server_handshake(server_key, b, server_frame, body(client.hello_blob()), {"192.0.2.7", 50123});
   auto established = client.finish(body(reply.response_blob));
   return {std::move(established), std::move(reply.session)};
 }
@@ -96,16 +98,16 @@ TEST(Channel, AFrameLimitOutsideFourKToFourMIsRefused) {
   const auto k = key("cluster");
   EXPECT_THROW(ClientHandshake(k, node("a"), 4095, Lane::control), std::invalid_argument);
   EXPECT_THROW(ClientHandshake(k, node("a"), 4 * 1024 * 1024 + 1, Lane::control), std::invalid_argument);
-  EXPECT_THROW(server_handshake(k, node("b"), 1024, body(ClientHandshake(k, node("a"), 4096, Lane::control).hello_blob()), "h"), std::invalid_argument);
+  EXPECT_THROW(server_handshake(k, node("b"), 1024, body(ClientHandshake(k, node("a"), 4096, Lane::control).hello_blob()), {"h", 1}), std::invalid_argument);
 }
 
 TEST(Channel, AnotherClustersKeyFailsBothWays) {
   const auto ours = key("ours");
   const auto theirs = key("theirs");
   ClientHandshake client(theirs, node("a"), 65536, Lane::control);
-  EXPECT_THROW(server_handshake(ours, node("b"), 65536, body(client.hello_blob()), "h"), HandshakeRefused);
+  EXPECT_THROW(server_handshake(ours, node("b"), 65536, body(client.hello_blob()), {"h", 1}), HandshakeRefused);
   ClientHandshake ours_client(ours, node("a"), 65536, Lane::control);
-  auto reply = server_handshake(ours, node("b"), 65536, body(ours_client.hello_blob()), "h");
+  auto reply = server_handshake(ours, node("b"), 65536, body(ours_client.hello_blob()), {"h", 1});
   ClientHandshake theirs_client(theirs, node("a"), 65536, Lane::control);
   EXPECT_THROW(theirs_client.finish(body(reply.response_blob)), HandshakeRefused);
 }
@@ -115,13 +117,80 @@ TEST(Channel, AlteredHandshakeBytesAreRefused) {
   ClientHandshake client(k, node("a"), 65536, Lane::control);
   auto hello = client.hello_blob();
   hello[10] ^= 1;
-  EXPECT_THROW(server_handshake(k, node("b"), 65536, body(hello), "h"), HandshakeRefused);
-  auto reply = server_handshake(k, node("b"), 65536, body(client.hello_blob()), "h");
+  EXPECT_THROW(server_handshake(k, node("b"), 65536, body(hello), {"h", 1}), HandshakeRefused);
+  auto reply = server_handshake(k, node("b"), 65536, body(client.hello_blob()), {"h", 1});
   reply.response_blob[20] ^= 1;
   EXPECT_THROW(client.finish(body(reply.response_blob)), HandshakeRefused);
 }
 
-TEST(Channel, ProtocolVersionIsTwentyThree) { EXPECT_EQ(protocol_version, 23); }
+// Dannan's wire starts at version 1.
+TEST(Channel, TheWireVersionStartsAtOne) {
+  EXPECT_EQ(min_wire_version, 1);
+  EXPECT_EQ(max_wire_version, 1);
+  const auto k = key("cluster");
+  const auto pair = handshake(k, 65536, k, 65536);
+  EXPECT_EQ(pair.client.version, 1);
+  EXPECT_EQ(pair.server.version, 1);
+}
+
+// The server picks the highest version both speak; with none in common the
+// hello is refused, and nothing goes below either side's minimum.
+TEST(Channel, TheHighestCommonVersionIsChosenAndNoneIsRefused) {
+  const auto k = key("cluster");
+  const auto agree = [&](WireVersions client, WireVersions server) {
+    ClientHandshake hello(k, node("a"), 65536, Lane::control, Purpose::ordinary, {}, client);
+    auto reply = server_handshake(k, node("b"), 65536, body(hello.hello_blob()), {"h", 1}, nullptr, server);
+    const auto established = hello.finish(body(reply.response_blob));
+    EXPECT_EQ(established.version, reply.session.version);
+    return established.version;
+  };
+  EXPECT_EQ(agree({1, 3}, {2, 5}), 3);
+  EXPECT_EQ(agree({2, 5}, {1, 3}), 3);
+  EXPECT_EQ(agree({1, 1}, {1, 4}), 1);
+  ClientHandshake old(k, node("a"), 65536, Lane::control, Purpose::ordinary, {}, {1, 2});
+  EXPECT_THROW(server_handshake(k, node("b"), 65536, body(old.hello_blob()), {"h", 1}, nullptr, {3, 4}), HandshakeRefused);
+  EXPECT_THROW(ClientHandshake(k, node("a"), 65536, Lane::control, Purpose::ordinary, {}, {2, 1}), std::invalid_argument);
+  EXPECT_THROW(ClientHandshake(k, node("a"), 65536, Lane::control, Purpose::ordinary, {}, {0, 1}), std::invalid_argument);
+}
+
+// The ack tells the client where the server's socket saw it come from:
+// how a node learns its candidate addresses without a STUN server.
+TEST(Channel, TheAckCarriesTheObservedAddress) {
+  const auto k = key("cluster");
+  const auto pair = handshake(k, 65536, k, 65536);
+  EXPECT_EQ(pair.client.observed, (Endpoint{"192.0.2.7", 50123}));
+  EXPECT_EQ(pair.client.purpose, Purpose::ordinary);
+}
+
+// A punched or relayed connection proves itself inside the hello: the
+// acceptor expecting one accepts only that purpose, that token and that
+// peer, and a listening server refuses any such hello outright.
+TEST(Channel, APathTokenIsCheckedInsideTheHandshake) {
+  const auto k = key("cluster");
+  const auto a = node("10.0.0.1");
+  const PathToken token{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
+  const Expected expected{Purpose::punched, token, a.id};
+  {
+    ClientHandshake hello(k, a, 65536, Lane::control, Purpose::punched, token);
+    auto reply = server_handshake(k, node("b"), 65536, body(hello.hello_blob()), {"h", 1}, &expected);
+    EXPECT_EQ(reply.session.purpose, Purpose::punched);
+    EXPECT_EQ(hello.finish(body(reply.response_blob)).purpose, Purpose::punched);
+  }
+  {
+    ClientHandshake hello(k, a, 65536, Lane::control, Purpose::punched, token);
+    EXPECT_THROW(server_handshake(k, node("b"), 65536, body(hello.hello_blob()), {"h", 1}), HandshakeRefused);
+  }
+  auto wrong = token;
+  wrong[0] ^= 1;
+  for (const auto& [purpose, sent, from] :
+       {std::tuple{Purpose::punched, wrong, a}, std::tuple{Purpose::relayed, token, a}, std::tuple{Purpose::punched, token, node("10.0.0.9")}}) {
+    ClientHandshake hello(k, from, 65536, Lane::control, purpose, sent);
+    EXPECT_THROW(server_handshake(k, node("b"), 65536, body(hello.hello_blob()), {"h", 1}, &expected), HandshakeRefused);
+  }
+  ClientHandshake ordinary(k, a, 65536, Lane::control);
+  EXPECT_THROW(server_handshake(k, node("b"), 65536, body(ordinary.hello_blob()), {"h", 1}, &expected), HandshakeRefused);
+  EXPECT_THROW(ClientHandshake(k, a, 65536, Lane::control, Purpose::ordinary, token), std::invalid_argument);
+}
 
 Pair established() {
   const auto k = key("cluster");
@@ -149,7 +218,17 @@ TEST(Frames, CarryTheirHeaderAndPayloadAcross) {
   EXPECT_EQ(fragment.payload, Bytes({1, 2, 3}));
 }
 
-// A 28-byte header, a 12-byte nonce and a 16-byte tag around the payload.
+// A 28-byte header, a 12-byte nonce and a 16-byte tag around the payload;
+// the header opens with Dannan's magic, "DN" and the wire's number.
+TEST(Frames, OpenWithDannansMagic) {
+  const auto pair = established();
+  const auto routes = std::make_shared<const RouteTable>(RouteTable::with_dannan_types());
+  FrameSealer sealer(pair.client, routes);
+  const auto wire = sealer.seal(1, FrameType::control, message::ping, true, true, Bytes{});
+  EXPECT_EQ(Bytes(wire.begin(), wire.begin() + 4), (Bytes{'D', 'N', 0, 1}));
+}
+
+// The overhead: header, nonce and tag.
 TEST(Frames, CostFiftySixBytesOfOverhead) {
   const auto pair = established();
   const auto routes = std::make_shared<const RouteTable>(RouteTable::with_dannan_types());
@@ -201,12 +280,12 @@ TEST(Frames, AReplayedFragmentIsRefused) {
 TEST(Frames, AMessageOffItsLaneOrClassIsRefusedOnItsHeader) {
   const auto pair = established();
   auto table = RouteTable::with_dannan_types();
-  table.add(MessageType{4}, {"get_object", Lanes::data, Frames::not_control, false});
+  table.add(MessageType{1028}, {"get_object", Lanes::data, Frames::not_control, false});
   const auto routes = std::make_shared<const RouteTable>(std::move(table));
   // The sender's table has never heard of the rule; the receiver's has.
   FrameSealer sealer(pair.client, std::make_shared<const RouteTable>(RouteTable::with_dannan_types()));
   FrameOpener opener(pair.server, routes);
-  const auto wire = sealer.seal(1, FrameType::control, MessageType{4}, true, true, Bytes{1});
+  const auto wire = sealer.seal(1, FrameType::control, MessageType{1028}, true, true, Bytes{1});
   EXPECT_THROW(opener.header(std::span<const uint8_t, frame_header_size>(wire.data(), frame_header_size)), FrameRefused);
 }
 

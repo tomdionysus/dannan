@@ -13,8 +13,8 @@
 namespace dannan::net {
 namespace {
 
-// "MC13": the frame magic since protocol 13.
-constexpr uint32_t frame_magic = 0x4d433133;
+// "DN", wire 1.
+constexpr uint32_t frame_magic = 0x444e0001;
 constexpr uint8_t flag_first = 0x01;
 constexpr uint8_t flag_last = 0x02;
 
@@ -33,7 +33,7 @@ Bytes framed(const Bytes& body) {
 
 Bytes session_info(std::span<const uint8_t> transcript, const identity::NodeId& client, const identity::NodeId& server, const char* direction) {
   Writer writer;
-  writer.string("macha/session/v15");
+  writer.string("dannan/session/1");
   writer.string(direction);
   writer.fixed(identity::sha256(transcript).bytes);
   writer.fixed(client.bytes);
@@ -75,6 +75,10 @@ void check_limit(size_t size) {
   if (size < min_frame_size || size > max_frame_size) throw HandshakeRefused("max frame size must be 4K..4M");
 }
 
+void validate_versions(WireVersions versions) {
+  if (!versions.min || versions.min > versions.max) throw std::invalid_argument("a wire version range is min..max from 1");
+}
+
 // Decode errors in a handshake are refusals, not crashes.
 template <class F>
 auto refusing(F&& f) {
@@ -87,28 +91,46 @@ auto refusing(F&& f) {
 
 }  // namespace
 
+const char* purpose_name(Purpose purpose) noexcept {
+  switch (purpose) {
+    case Purpose::ordinary:
+      return "ordinary";
+    case Purpose::punched:
+      return "punched";
+    case Purpose::relayed:
+      return "relayed";
+  }
+  return "unknown";
+}
+
 void validate_frame_limit(size_t size) {
   if (size < min_frame_size || size > max_frame_size) throw std::invalid_argument("max frame size must be 4K..4M");
 }
 
-ClientHandshake::ClientHandshake(const identity::ClusterKey& key, membership::NodeRecord local, size_t max_frame, Lane lane)
-    : _key(key), _local(std::move(local)), _max_frame(max_frame), _lane(lane) {
+ClientHandshake::ClientHandshake(const identity::ClusterKey& key, membership::NodeRecord local, size_t max_frame, Lane lane, Purpose purpose, PathToken token,
+                                 WireVersions versions)
+    : _key(key), _local(std::move(local)), _max_frame(max_frame), _lane(lane), _purpose(purpose), _versions(versions) {
   validate_frame_limit(_max_frame);
+  validate_versions(_versions);
+  if (_purpose == Purpose::ordinary && token != PathToken{}) throw std::invalid_argument("an ordinary connection carries no path token");
   _nonce = random32();
   _ephemeral = identity::x25519_generate();
   Writer hello;
-  hello.u16(protocol_version);
+  hello.u16(_versions.min);
+  hello.u16(_versions.max);
   hello.u32(static_cast<uint32_t>(_max_frame));
   hello.u8(static_cast<uint8_t>(_lane));
   hello.fixed(_key.cluster_id);
   hello.fixed(_local.id.bytes);
   hello.fixed(_nonce);
   hello.fixed(_ephemeral.public_key);
+  hello.u8(static_cast<uint8_t>(_purpose));
+  if (_purpose != Purpose::ordinary) hello.fixed(token);
   membership::encode(hello, _local);
   _hello = hello.take();
   Writer envelope;
   envelope.bytes(_hello);
-  envelope.fixed(identity::hmac_sha256(_key.auth, label("client/v15", _hello)));
+  envelope.fixed(identity::hmac_sha256(_key.auth, label("dannan/hello/1", _hello)));
   _blob = framed(envelope.data());
 }
 
@@ -120,21 +142,24 @@ Established ClientHandshake::finish(std::span<const uint8_t> response) {
     const auto ack = envelope.bytes(max_handshake_blob);
     const auto mac = envelope.fixed<32>();
     envelope.finish();
-    auto authenticated = label("server/v15", _hello);
+    auto authenticated = label("dannan/ack/1", _hello);
     authenticated.insert(authenticated.end(), ack.begin(), ack.end());
     if (!identity::constant_time_equal(mac, identity::hmac_sha256(_key.auth, authenticated))) throw HandshakeRefused("peer auth failed");
 
     Reader reader(ack);
-    if (reader.u16() != protocol_version) throw HandshakeRefused("wrong cluster/protocol");
+    const auto version = reader.u16();
+    if (version < _versions.min || version > _versions.max) throw HandshakeRefused("peer chose a wire version outside our range");
     const size_t negotiated = reader.u32();
     check_limit(negotiated);
     if (static_cast<Lane>(reader.u8()) != _lane) throw HandshakeRefused("peer acknowledged the wrong transport lane");
     if (negotiated > _max_frame) throw HandshakeRefused("peer negotiated an invalid frame size");
-    if (reader.fixed<16>() != _key.cluster_id) throw HandshakeRefused("wrong cluster/protocol");
     identity::NodeId server_id{reader.fixed<16>()};
     const auto server_nonce = reader.fixed<32>();
     const auto server_public = reader.fixed<32>();
     auto peer = membership::decode(reader);
+    Endpoint observed;
+    observed.host = reader.string(4096);
+    observed.port = reader.u16();
     reader.finish();
     if (peer.id != server_id) throw HandshakeRefused("peer identity mismatch");
 
@@ -145,6 +170,9 @@ Established ClientHandshake::finish(std::span<const uint8_t> response) {
     out.peer = std::move(peer);
     out.lane = _lane;
     out.max_frame = negotiated;
+    out.version = version;
+    out.purpose = _purpose;
+    out.observed = std::move(observed);
     out.keys.tx = c2s;
     out.keys.rx = s2c;
     out.keys.session_id = _nonce;
@@ -153,46 +181,64 @@ Established ClientHandshake::finish(std::span<const uint8_t> response) {
 }
 
 ServerReply server_handshake(const identity::ClusterKey& key, const membership::NodeRecord& local, size_t max_frame, std::span<const uint8_t> envelope_bytes,
-                             const std::string& remote_host) {
+                             const Endpoint& remote, const Expected* expected, WireVersions versions) {
   validate_frame_limit(max_frame);
+  validate_versions(versions);
   return refusing([&] {
     Reader envelope(envelope_bytes);
     const auto hello = envelope.bytes(max_handshake_blob);
     const auto mac = envelope.fixed<32>();
     envelope.finish();
-    if (!identity::constant_time_equal(mac, identity::hmac_sha256(key.auth, label("client/v15", hello)))) throw HandshakeRefused("client auth failed");
+    if (!identity::constant_time_equal(mac, identity::hmac_sha256(key.auth, label("dannan/hello/1", hello)))) throw HandshakeRefused("client auth failed");
 
     Reader reader(hello);
-    if (reader.u16() != protocol_version) throw HandshakeRefused("wrong cluster/protocol");
+    const auto their_min = reader.u16();
+    const auto their_max = reader.u16();
+    if (!their_min || their_min > their_max) throw HandshakeRefused("invalid wire version range");
+    const auto version = std::min(their_max, versions.max);
+    if (version < std::max(their_min, versions.min))
+      throw HandshakeRefused("no common wire version: ours " + std::to_string(versions.min) + ".." + std::to_string(versions.max) + ", theirs " +
+                             std::to_string(their_min) + ".." + std::to_string(their_max));
     const size_t peer_max = reader.u32();
     check_limit(peer_max);
     const auto lane_byte = reader.u8();
     if (lane_byte < 1 || lane_byte > 3) throw HandshakeRefused("invalid transport lane");
     const auto lane = static_cast<Lane>(lane_byte);
-    if (reader.fixed<16>() != key.cluster_id) throw HandshakeRefused("wrong cluster/protocol");
+    if (reader.fixed<16>() != key.cluster_id) throw HandshakeRefused("wrong cluster");
     identity::NodeId client_id{reader.fixed<16>()};
     const auto client_nonce = reader.fixed<32>();
     const auto client_public = reader.fixed<32>();
+    const auto purpose_byte = reader.u8();
+    if (purpose_byte > static_cast<uint8_t>(Purpose::relayed)) throw HandshakeRefused("invalid connection purpose");
+    const auto purpose = static_cast<Purpose>(purpose_byte);
+    PathToken token{};
+    if (purpose != Purpose::ordinary) token = reader.fixed<16>();
     auto peer = membership::decode(reader);
     reader.finish();
     if (peer.id != client_id) throw HandshakeRefused("client identity mismatch");
-    if (peer.host.empty() || peer.host == "0.0.0.0" || peer.host == "::") peer.host = remote_host;
+    if (!expected) {
+      if (purpose != Purpose::ordinary) throw HandshakeRefused(std::string("a ") + purpose_name(purpose) + " connection nobody expected");
+    } else if (purpose != expected->purpose || !identity::constant_time_equal(token, expected->token) || client_id != expected->peer) {
+      throw HandshakeRefused(std::string("not the expected ") + purpose_name(expected->purpose) + " connection");
+    }
+    if (peer.host.empty() || peer.host == "0.0.0.0" || peer.host == "::") peer.host = remote.host;
 
     const auto negotiated = std::min(peer_max, max_frame);
     const auto server_nonce = random32();
     auto ephemeral = identity::x25519_generate();
     Writer ack_writer;
-    ack_writer.u16(protocol_version);
+    ack_writer.u16(version);
     ack_writer.u32(static_cast<uint32_t>(negotiated));
     ack_writer.u8(lane_byte);
-    ack_writer.fixed(key.cluster_id);
     ack_writer.fixed(local.id.bytes);
     ack_writer.fixed(server_nonce);
     ack_writer.fixed(ephemeral.public_key);
     membership::encode(ack_writer, local);
+    ack_writer.string(remote.host);
+    ack_writer.u16(remote.port);
     const auto ack = ack_writer.take();
 
-    auto authenticated = label("server/v15", hello);
+    auto authenticated = label("dannan/ack/1", hello);
     authenticated.insert(authenticated.end(), ack.begin(), ack.end());
     Writer response;
     response.bytes(ack);
@@ -206,6 +252,8 @@ ServerReply server_handshake(const identity::ClusterKey& key, const membership::
     out.session.peer = std::move(peer);
     out.session.lane = lane;
     out.session.max_frame = negotiated;
+    out.session.version = version;
+    out.session.purpose = purpose;
     out.session.keys.tx = s2c;
     out.session.keys.rx = c2s;
     out.session.keys.session_id = client_nonce;

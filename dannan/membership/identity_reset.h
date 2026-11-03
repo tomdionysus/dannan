@@ -41,8 +41,8 @@ struct IdentityReset {
   auto operator<=>(const IdentityReset&) const = default;
 };
 
-// Protocol 23's gossip payload (MACHIDR1), the identity_resets request and
-// its reply. Decoding throws net::DecodeError for a bad magic, more than
+// The gossip payload (DNNRST01), the identity_resets request and its
+// reply. Decoding throws net::DecodeError for a bad magic, more than
 // 65536 records, or a record with no host or epoch.
 net::Bytes encode_identity_resets(const std::vector<IdentityReset>& resets);
 std::vector<IdentityReset> decode_identity_resets(std::span<const uint8_t> payload);

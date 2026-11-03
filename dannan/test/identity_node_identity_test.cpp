@@ -65,7 +65,7 @@ TEST(StateLock, OneHolderAtATime) {
     EXPECT_THROW(StateLock second(dir.path()), std::runtime_error);
   }
   EXPECT_NO_THROW(StateLock again(dir.path()));
-  EXPECT_TRUE(std::filesystem::exists(dir.path() / ".macha.lock"));
+  EXPECT_TRUE(std::filesystem::exists(dir.path() / ".dannan.lock"));
 }
 
 }  // namespace

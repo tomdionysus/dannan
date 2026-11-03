@@ -21,9 +21,9 @@
 
 namespace dannan::reach {
 
-// "Can you connect to me here?": protocol 23's dial_back_probe (44), an
-// address, answered by dial_back_probe_reply (120), whether a fresh
-// connection's handshake authenticated as the asker, and why not.
+// "Can you connect to me here?": dial_back, an address, answered by
+// dial_back_reply: whether a fresh connection's handshake authenticated as
+// the asker, and why not.
 net::Bytes encode_dial_back_request(const net::Endpoint& endpoint);
 net::Endpoint decode_dial_back_request(std::span<const uint8_t> payload);
 net::Bytes encode_dial_back_reply(bool reachable, const std::string& error);
