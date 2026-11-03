@@ -12,6 +12,33 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
 
+## 2026-11-03, night -- step 4b, part 2: reach v0
+
+On `feature/control-plane` (this commit):
+
+- `reach::InboundResolver`: configured is final; `automatic` starts from
+  protocol 23's `connectivity/inbound.bin` (`MACHINB1`) or as capable;
+  sticky (two failed dial-backs in a row to turn incapable, one success
+  back), re-probed after 1 h capable or 10 min incapable, persisted on
+  every answer; a corrupt file is ignored. `refuse_impossible_cluster`
+  with Macha's reasons.
+- `reach::DialBackResponder` and the dial-back codec (protocol 23's 44 and
+  120): a fresh connection that must authenticate as the asker, one per
+  asking peer per interval (429 inside it), 400 without an address.
+- `reach::PublicConnectivity`: a UPnP mapping made, verified and owned
+  (removed on exit), else the external address, else the configured
+  endpoint; the self-probe; every status code Macha names; the work lock
+  before the status lock so Status never waits. Gateway, lookup and probe
+  injected.
+- Written by hand rather than taking Macha's miniupnpc and libcurl:
+  `reach::UpnpGateway` (SSDP, the device description, the WAN connection
+  service's SOAP actions over a small HTTP client) and
+  `checkip_external_ip` (HTTPS over Asio's SSL with the certificate and
+  host name verified). OpenSSL's SSL component is now linked (Asio's TLS);
+  no new dependency. Tested against a fake IGD on loopback and by their
+  pure parsers; no case touches a real network.
+- **Gate: `dannan_tests` 274, `dagda_tests` 1, `dannan_interop_tests` 12.**
+
 ## 2026-11-03, night -- step 4b, part 1: identity v1 and status
 
 On `feature/control-plane` (this commit):

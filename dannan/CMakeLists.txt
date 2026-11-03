@@ -29,6 +29,11 @@ add_library(dannan SHARED
   net/server.cpp
   net/session.cpp
   placement/placement.cpp
+  reach/connectivity.cpp
+  reach/dial_back.cpp
+  reach/external_ip.cpp
+  reach/inbound.cpp
+  reach/upnp.cpp
   sched/memory_limit.cpp
   sched/retained_memory.cpp
   sched/work.cpp
@@ -47,7 +52,7 @@ target_include_directories(dannan
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}>
 )
 target_link_libraries(dannan
-  PUBLIC Boost::headers OpenSSL::Crypto Threads::Threads
+  PUBLIC Boost::headers OpenSSL::SSL OpenSSL::Crypto Threads::Threads
   PRIVATE dannan_warnings
 )
 set_target_properties(dannan PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR})
