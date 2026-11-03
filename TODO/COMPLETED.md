@@ -12,6 +12,31 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
 
+## 2026-11-03, night -- step 4c: supervision
+
+On `feature/control-plane` (this commit):
+
+- `supervise::Supervisor`: plugins from a directory (a missing one loads
+  none; a library without the entry symbol is not a plugin and is
+  unloaded untouched), the build identity checked before any call in and
+  a mismatch disabled with its reason; declining is `unavailable` and
+  never retried; a throw in construction or start, or a fault reported
+  later through the sink (first reason wins, none after stopping), tears
+  the instance down and retries under `sched::RetryPolicy` until it is
+  disabled; stop runs the subsystem's stop, which may write; builtins
+  supervised alike; a blocking construction cancelled through its stop
+  token. The entry symbol and build identity are the hosted system's
+  options, so Macha keeps `macha_subsystem_entry` and its identity; the
+  context it passes is opaque to Dannan.
+- `supervise::SupervisedThreads` (service loops with backoff doubling to
+  a ceiling, once, escalating; statuses by name), `supervise::Registry`
+  (by name and type; a faulted instance withdraws only itself),
+  `StartupProgress` and `StartupStallGate`. Macha's process globals
+  (thread statuses, startup progress) are objects injected per node here.
+- Seven test plugins built as modules, one behaviour each.
+- **Gate: `dannan_tests` 286, `dagda_tests` 1, `dannan_interop_tests` 12**;
+  the threaded supervision cases 30 times over.
+
 ## 2026-11-03, night -- step 4b, part 2: reach v0
 
 On `feature/control-plane` (this commit):

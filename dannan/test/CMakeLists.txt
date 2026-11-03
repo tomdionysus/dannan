@@ -39,6 +39,23 @@ add_executable(dannan_tests
   status_observation_test.cpp
   status_surface_test.cpp
   status_telemetry_test.cpp
+  supervise_test.cpp
   version_test.cpp
 )
 target_link_libraries(dannan_tests PRIVATE dannan dannan_test_fixtures GTest::gtest_main dannan_warnings)
+
+# The supervisor's test plugins, one behaviour each, built as loadable
+# modules into one directory the tests point the supervisor at.
+set(DANNAN_TEST_PLUGIN_DIR "${PROJECT_BINARY_DIR}/test-plugins")
+foreach(kind running writes_on_stop declining faulting faulting_after_start mismatched no_entry)
+  add_library(dannan_test_plugin_${kind} MODULE plugins/test_plugin.cpp)
+  target_include_directories(dannan_test_plugin_${kind} PRIVATE "${PROJECT_SOURCE_DIR}")
+  target_compile_definitions(dannan_test_plugin_${kind} PRIVATE DANNAN_TEST_PLUGIN_KIND="${kind}")
+  if(kind STREQUAL "no_entry")
+    target_compile_definitions(dannan_test_plugin_${kind} PRIVATE DANNAN_TEST_PLUGIN_NO_ENTRY)
+  endif()
+  set_target_properties(dannan_test_plugin_${kind} PROPERTIES PREFIX "" OUTPUT_NAME "${kind}" LIBRARY_OUTPUT_DIRECTORY "${DANNAN_TEST_PLUGIN_DIR}")
+  target_link_libraries(dannan_test_plugin_${kind} PRIVATE Boost::headers)
+  add_dependencies(dannan_tests dannan_test_plugin_${kind})
+endforeach()
+target_compile_definitions(dannan_tests PRIVATE DANNAN_TEST_PLUGIN_DIR="${DANNAN_TEST_PLUGIN_DIR}")
