@@ -9,6 +9,9 @@
 # as "dannan/x.h"; everything else is included from the repository root as
 # "dannan/<subsystem>/x.h".
 add_library(dannan SHARED
+  contract/thread_safety.cpp
+  sched/work.cpp
+  status/log.cpp
   version.cpp
 )
 target_include_directories(dannan
