@@ -7,6 +7,32 @@ left green. `ACTIVE.md` is the plan and this is the record.
 
 None. Dannan has no code yet.
 
+## 2026-11-03, night -- step 2: the server's scheduler and the server
+
+On `feature/transport` (`6172274`, `01168d1` and this commit):
+
+- `RequestScheduler` (`dannan/net/scheduler.h`): `ServerLimits` are
+  Dannan's; per-class workers (fast control, control, ordered one job per
+  peer at a time, data with a foreground reserve), byte and job bounds per
+  queue, the ordered pool's last quarter kept for control-class jobs; a
+  request that cannot be queued is answered with
+  `error_reply(503, "overloaded", "request queue full")` and counted;
+  promote and cancel of queued jobs; `WorkStats` with timings per message
+  type and per frame class. `01168d1` fixed a race in the stop test (it
+  now waits for `stopping()`); `6172274` was committed while a repeated
+  run showed it, a process slip now closed by checking every suite's
+  return code before a commit.
+- `Server` (`dannan/net/server.h`): accept on Asio, `peer_socket_options`
+  (no Nagle, keepalive at 60 s then 15 s by four, BBR where the kernel has
+  it) on every peer socket, the pre-auth bound (8, the excess closed at
+  once), the handshake timeout (5 s) on the connection's strand, a probe
+  closed once authenticated, sessions feeding the scheduler with promote
+  and cancel wired through, reaping with a count, `stop()` waiting for
+  every handler that touches it.
+- **Gate: `dannan_tests` 176, `dagda_tests` 1, `dannan_interop_tests` 6,
+  all passed**; the scheduler and server cases 100 times over with no
+  failure.
+
 ## 2026-11-03, evening -- step 2: reassembly, the outbound queue, the Asio session
 
 On `feature/transport` (`9d51b5f` and this commit):
