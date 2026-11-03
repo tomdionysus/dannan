@@ -68,10 +68,9 @@ path classes and candidates, the brokered punch, the relay
 (`test/compose/`: two public relaying hubs, four NATed nodes, two of them
 punchable, one behind a randomising NAT, one behind two NATs; the runner
 `test/compose/scenario.py` checks classes, paths, echoes on both lanes, a
-healed partition and a relay failover) and has not run yet: the Docker
-daemon was not running, and starting Docker Desktop is outside this
-tree. Next: run it (`python3 test/compose/scenario.py` from the root,
-Docker running) and fix what it finds. Left of section 6's rules, as work:
+healed partition and a relay failover) and passes (`COMPLETED.md`).
+Next: the stack's foundations (below, "Foundations for the stack":
+secure memory done; signing, node key custody, fuzz targets). Left of section 6's rules, as work:
 a relayed or punched pair moving up a class while it runs, the relay's
 DATA budget (only a circuit cap now), and placement told a peer's path
 class. Identity (step 10) waits; the port steps wait
@@ -744,6 +743,27 @@ path change as a reconnect under the same identity. Protocol 24, the
 first bump, rolling. Proven by making half the compose cluster relay-only
 and asserting the same gates; then on the chaos cluster when there is one
 (Waiting on Tom, 2).
+
+### Foundations for the stack (2026-11-03 night, under "no duplicated code")
+
+Dannan is the one home of what Dannan, Dagda and Lugh all need. Written
+here from Dannan's design (Lugh's code read for what it does, never pasted),
+each announced to the Lugh and Dagda sessions as it lands, so they delete
+their copies:
+
+1. Secure memory: key material locked in RAM, kept out of core dumps and
+   forks, wiped on release; a `Secret` that cannot be logged.
+2. Signing: EC P-256 (ES256) and Ed25519, sign and verify, PKCS#8 keys.
+   Step 10's CA uses them too.
+3. Node key custody, an early slice of step 10: the node's private key
+   and the root Dagda seals node-local keys under, loaded from a sealed
+   systemd credential or a typed passphrase, held in secure memory.
+4. Fuzz targets for every parser of untrusted bytes (`dannan/fuzz/`):
+   handshake, frame header, assembler, node record, telemetry, the level 0
+   payloads.
+
+Lugh keeps what only Lugh needs: HMAC-SHA1, Argon2id, base32, base64url,
+JOSE.
 
 ### 10. Identity (step 10)
 

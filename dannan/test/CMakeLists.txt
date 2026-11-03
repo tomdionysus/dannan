@@ -19,6 +19,7 @@ add_executable(dannan_tests
   identity_crypto_test.cpp
   identity_durable_file_test.cpp
   identity_node_identity_test.cpp
+  identity_secure_memory_test.cpp
   membership_test.cpp
   placement_test.cpp
   reach_paths_test.cpp
