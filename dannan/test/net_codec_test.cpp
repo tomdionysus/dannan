@@ -69,7 +69,8 @@ TEST(Codec, ATruncatedInputIsRefused) {
   const Bytes data{0, 0, 0};
   Reader reader(data);
   EXPECT_THROW(reader.u32(), DecodeError);
-  Reader blob(Bytes{0, 0, 0, 5, 1, 2});
+  const Bytes short_blob{0, 0, 0, 5, 1, 2};
+  Reader blob(short_blob);
   EXPECT_THROW(blob.bytes(), DecodeError);
 }
 

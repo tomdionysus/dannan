@@ -49,10 +49,24 @@ configure line for Macha is in `COMPLETED.md`).
 
 Written for a session starting from nothing. Steps 0 and 1 are
 done (`COMPLETED.md`): the skeleton, then the vocabulary, gate 78 + 1.
-The next session is **step 2**, the transport on Asio (Next, 2), on
-`feature/transport` off `develop`: settle its two open design points
-first, write the transport table's rows as `dannan_tests` cases (Macha's
-`tests/test_rpc_cluster.cpp` cases are the model), then the code.
+Step 2, the transport on Asio (Next, 2), is under
+way on `feature/transport` off `develop`: crypto, the cluster key, the
+node record, the open route table and the sans-I/O channel are done and
+proven byte for byte against Macha 0.91.2 (`dannan_interop_tests`, built
+against a pinned export: `COMPLETED.md` has how). Reassembly, the outbound
+queue, the Asio session with retirement, the request scheduler, the
+server and the client's routes (dial on demand and reuse, shared cold
+dials, reconciliation, the no-progress deadline, the probe dial), health
+with backoff, the three broadcasts, and reverse dial with maintained
+peers are done too (`COMPLETED.md`, gate 205 + 1 + 6). The two-process
+test passes too (`dannan_interop_tests`, 7). The frame capture
+is done too (`Interop.DannansFramesAreMachasByteForByte`, gate 206 + 1 +
+8), and the sanitizers ran clean after two fixes (`COMPLETED.md`): step
+2's gate is whole. Next: merge `feature/transport` to `develop`,
+`develop` to `main`, tag `0.1.0`, then step 3 in `../macha` (tell the Macha
+session first). Waiting on Tom, item 8, does not block it. Each from the transport table's rows with Macha's
+`tests/test_rpc_cluster.cpp` cases as the model; then the two-process
+test against the Macha binary.
 
 Read in this order: this file to the end of Standing rules;
 `2026-11-02-dannan-plan.md` whole; the inventory; the head of
@@ -124,6 +138,22 @@ first.
 7. **The design doc's "starts in-tree" paragraph** (Repository, build,
    versioning), which Tom's decision supersedes: his edit of the Claude
    Doc, after which the rendering is re-made.
+8. **What a frame of a type this node does not host should do**
+   (found by the two-process test, 2026-11-03). Protocol 23's rule, in
+   Macha and in Dannan, is per type: a type the receiver does not know may
+   travel only in the control frame, and a frame that breaks its type's
+   rule ends the session. A Macha node sends its metadata traffic to every
+   peer in any frame class (`get_metadata_heads` as speculative, say), so
+   a node that has not registered Macha's types loses the whole session to
+   it. Within Macha's own cluster nothing changes once Macha registers its
+   types (step 3), and `dannan-node` registers them as Macha will. It
+   matters when nodes that host different systems share a cluster.
+   Recommendation: keep the strict check for registered types; for a type
+   the node does not host, accept any frame class on the CONTROL lane and
+   answer 501 (a notification is dropped), so a peer is never cut off for
+   traffic this node will simply decline. That accepts more than Macha
+   0.91.2 does for unknown numbers, and changes no byte. Until Tom
+   decides, the strict rule stands.
 
 ## How to prove it
 
@@ -133,7 +163,10 @@ Two gates, and both are run.
 `dagda_tests` (`-DDANNAN_BUILD_TESTING=ON`, run the binaries), counts
 recorded in `COMPLETED.md` and never lower; a test is never deleted; time
 is injected and nothing sleeps; sanitizers before a release and to hunt a
-bug that cannot be pinned any other way. At every step that speaks the
+bug that cannot be pinned any other way (`build-asan/` with
+`ASAN_OPTIONS=detect_container_overflow=0`, `build-tsan/` with
+`TSAN_OPTIONS=suppressions=$PWD/dannan/test/tsan-suppressions.txt`; the
+flags are in `COMPLETED.md`'s 0.1.0 entries). At every step that speaks the
 wire, the two-process test: a Dannan node (a small executable built here)
 against the Macha binary over loopback, both ways round, in whatever form
 the step can prove (step 2: handshake, membership, telemetry, both lanes;
@@ -154,10 +187,17 @@ Macha:  cmake -S . -B build-macports ... (COMPLETED.md has the line)
         cmake --build build-macports -j8
         sh ./run-tests.sh build-macports
 Dannan: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DDANNAN_BUILD_TESTING=ON \
-          -DCMAKE_PREFIX_PATH="/opt/local/libexec/boost/1.88;/opt/local"
+          -DDANNAN_WARNINGS_AS_ERRORS=ON \
+          -DCMAKE_PREFIX_PATH="/opt/local/libexec/boost/1.88;/opt/local" \
+          -DDANNAN_MACHA_INTEROP_DIR=$PWD/build/interop/macha-0.91.2 \
+          -DDANNAN_MACHA_BINARY=$PWD/../macha/build-macports/macha
         cmake --build build -j8
-        ./build/dannan_tests && ./build/dagda_tests
+        ./build/dannan_tests && ./build/dagda_tests && ./build/dannan_interop_tests
 ```
+
+`dannan_interop_tests` holds the in-process byte-for-byte cases (against
+the pinned 0.91.2 export) and, with `DANNAN_MACHA_BINARY`, the two-process
+test (that binary and `dannan-node`, about 5 s).
 
 For AthenaSIP (step 11): `./build-tests/athenasip_tests` with Redis and
 MQTT set, then `test/e2e/cluster.sh` with the second node behind CGNAT and
@@ -333,6 +373,17 @@ words, so a session does not re-derive it.
   the cap, up to `max_pending_rpc_requests` extra; past that the
   connection closes, which answers every pending call. In the inventory's
   transport table.
+
+- (2026-11-03 evening, this plan; step 2's open design points) **How a
+  request is executed is a property of its type's registration**, beside
+  its lanes and classes: `fast_control` (answered by the small pool that
+  never queues behind storage-backed control work; Dannan's `ping` and
+  `members`) and `ordered` (one job per peer at a time, in arrival order,
+  across a small bounded pool; Macha registers its three metadata
+  mutations so). The server's per-class queue byte bounds and worker
+  counts are Dannan's, as `ServerLimits`; the ordered class's job and
+  byte bounds are the registering hosted system's to size, defaulting to
+  Macha's.
 
 ## Standing rules
 

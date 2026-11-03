@@ -16,8 +16,17 @@ target_compile_definitions(dannan_test_fixtures INTERFACE DANNAN_TEST_TEMP_ROOT=
 add_executable(dannan_tests
   contract_test.cpp
   fixtures_test.cpp
+  identity_crypto_test.cpp
   identity_durable_file_test.cpp
+  net_assembler_test.cpp
+  net_channel_test.cpp
+  net_client_test.cpp
   net_codec_test.cpp
+  net_outbound_test.cpp
+  net_routes_record_test.cpp
+  net_scheduler_test.cpp
+  net_server_test.cpp
+  net_session_test.cpp
   sched_memory_test.cpp
   sched_walk_retry_test.cpp
   sched_work_test.cpp

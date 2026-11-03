@@ -10,8 +10,21 @@
 # "dannan/<subsystem>/x.h".
 add_library(dannan SHARED
   contract/thread_safety.cpp
+  identity/cluster_key.cpp
+  identity/crypto.cpp
   identity/durable_file.cpp
+  identity/node_id.cpp
+  membership/node_record.cpp
+  net/assembler.cpp
+  net/channel.cpp
+  net/client.cpp
   net/codec.cpp
+  net/message.cpp
+  net/outbound.cpp
+  net/routes.cpp
+  net/scheduler.cpp
+  net/server.cpp
+  net/session.cpp
   sched/memory_limit.cpp
   sched/retained_memory.cpp
   sched/work.cpp
