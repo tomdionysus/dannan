@@ -45,28 +45,22 @@ plugin contract `API_VERSION` 24; two live nodes, neither production. The
 laptop is on MacPorts for everything (Boost 1.88 the only Boost; the
 configure line for Macha is in `COMPLETED.md`).
 
-## Resume here (2026-11-03, evening)
+## Resume here (2026-11-03, night)
 
-Written for a session starting from nothing. Steps 0 and 1 are
-done (`COMPLETED.md`): the skeleton, then the vocabulary, gate 78 + 1.
-Step 2, the transport on Asio (Next, 2), is under
-way on `feature/transport` off `develop`: crypto, the cluster key, the
-node record, the open route table and the sans-I/O channel are done and
-proven byte for byte against Macha 0.91.2 (`dannan_interop_tests`, built
-against a pinned export: `COMPLETED.md` has how). Reassembly, the outbound
-queue, the Asio session with retirement, the request scheduler, the
-server and the client's routes (dial on demand and reuse, shared cold
-dials, reconciliation, the no-progress deadline, the probe dial), health
-with backoff, the three broadcasts, and reverse dial with maintained
-peers are done too (`COMPLETED.md`, gate 205 + 1 + 6). The two-process
-test passes too (`dannan_interop_tests`, 7). The frame capture
-is done too (`Interop.DannansFramesAreMachasByteForByte`, gate 206 + 1 +
-8), and the sanitizers ran clean after two fixes (`COMPLETED.md`): step
-2's gate is whole. Next: merge `feature/transport` to `develop`,
-`develop` to `main`, tag `0.1.0`, then step 3 in `../macha` (tell the Macha
-session first). Waiting on Tom, item 8, does not block it. Each from the transport table's rows with Macha's
-`tests/test_rpc_cluster.cpp` cases as the model; then the two-process
-test against the Macha binary.
+Written for a session starting from nothing. Steps 0, 1 and 2 are done
+and released as `0.1.0` (`main`, tag `0.1.0`, not pushed; `COMPLETED.md`
+has every milestone with its gate). `develop` holds the same tree;
+`feature/transport` is merged. Gate: `dannan_tests` 206, `dagda_tests`
+1, `dannan_interop_tests` 8 (the configure line is under "How to prove
+it").
+
+Next is step 3, the first port step, in `../macha` on
+`feature/dannan-port-transport` (its section below). Before touching that
+tree: tell the Macha session (another Claude session on this machine),
+and check "Waiting on Tom": item 1 (the suite counts on fi-1) is the
+port gate's baseline, and item 8 (a frame of a type the node does not
+host) is a design point the port does not wait on, since Macha registers
+all its types.
 
 Read in this order: this file to the end of Standing rules;
 `2026-11-02-dannan-plan.md` whole; the inventory; the head of
