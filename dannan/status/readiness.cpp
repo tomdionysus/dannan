@@ -12,7 +12,7 @@
 
 namespace dannan::status {
 
-Readiness::Readiness(std::vector<std::string> planes, const contract::WallClock* wall) : _wall(wall) {
+Readiness::Readiness(std::vector<std::string> planes, const contract::WallClock* wall) : _wall(wall), _started_unix_ms(wall->unix_ms()) {
   contract::Lock lock(_mutex);
   for (auto& plane : planes) _planes.emplace(std::move(plane), false);
 }

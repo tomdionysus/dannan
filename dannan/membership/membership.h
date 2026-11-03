@@ -26,8 +26,9 @@ namespace dannan::membership {
 // directly reachable while authenticated directly within it; gossip never
 // makes a node directly reachable. A node unheard of for the forgetting
 // horizon is dropped, and gossip that old does not teach it back. The
-// roster is persisted under the state path in protocol 23's layout
-// (MACHMEM4; MACHMEM1 to 3 are read), so a restarting node knows its peers
+// roster is persisted under the state path (DNNMEM01: each record as the
+// wire carries it, then when this node last heard of it), so a restarting
+// node knows its peers
 // and which of them it must not dial before it has heard from anyone.
 //
 // Thread-safe. Waits only to write the roster file, never while holding
@@ -47,18 +48,22 @@ class Membership {
 
   // This node's record, seen now.
   NodeRecord self() const;
-  void set_usage(uint64_t used);
-  void set_storage(uint64_t used, uint64_t capacity);
   // Throws std::invalid_argument for an empty host or a zero port.
   void set_endpoint(std::string host, uint16_t port);
-  // Only ever rises.
-  void set_metadata_generation(uint64_t generation);
-  // True when either flag changed.
-  bool set_flags(bool inbound_capable, bool hosts_extents);
+  // Each is true when the record changed; a change makes the record newer,
+  // so gossip carries it.
+  bool set_capabilities(uint32_t capabilities);
+  bool set_inbound_capable(bool capable);
+  bool set_path_class(PathClass path);
+  // Throws std::invalid_argument past 16.
+  bool set_candidates(std::vector<Candidate> candidates);
+  // The hosted system's adverts. Throws std::invalid_argument for an empty
+  // or over-long key, a value over 1 KiB, or a 65th advert.
+  bool set_advert(const std::string& key, net::Bytes value);
+  bool clear_advert(const std::string& key);
 
   // As gossiped, self included; a node not known reports true.
   bool inbound_capable(const identity::NodeId& id) const;
-  bool hosts_extents(const identity::NodeId& id) const;
 
   // A record heard of: from the node's own authenticated connection
   // (`direct`) or from gossip. The newer record (by seen_unix_ms) wins; a

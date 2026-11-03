@@ -180,7 +180,7 @@ void PublicConnectivity::refresh_locked(PublicConnectivityStatus& status) {
           upnp.error = "UPnP external port " + std::to_string(external_port) + " is already mapped to " + existing->internal_client + ":" +
                        std::to_string(existing->internal_port);
         } else if (!active) {
-          const auto description = "Macha " + to_string(_node).substr(0, 12);
+          const auto description = "Dannan " + to_string(_node).substr(0, 12);
           if (const auto failed = _gateway->add(external_port, _configured.port, upnp.lan_address, description, _config.upnp.lease_seconds); failed.empty()) {
             const auto made = _gateway->mapping(external_port);
             active = made && made->internal_port == _configured.port && made->internal_client == upnp.lan_address;

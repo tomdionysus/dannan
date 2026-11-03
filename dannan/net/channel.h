@@ -23,20 +23,23 @@
 #include "dannan/net/routes.h"
 #include "dannan/sched/work.h"
 
-// The authenticated channel, without I/O: protocol 23's handshake (v15) and
-// its sealed frames as functions over bytes. The transport moves the bytes;
+// The authenticated channel, without I/O: wire v1's handshake and its
+// sealed frames as functions over bytes. The transport moves the bytes;
 // everything that decides whether they are right is here, where it can be
-// tested alone and against Macha's own channel.
+// tested alone.
 //
-// Handshake. The client sends a hello: the protocol version, its frame
-// limit, the lane, the cluster id, its node id, a fresh nonce, an ephemeral
-// X25519 key and its node record, MACed with the cluster's auth key under
-// "client/v15". The server answers with an ack of the same shape (the frame
-// limit is the smaller of the two), MACed under "server/v15" over hello and
-// ack. Each side derives its send and receive keys by HKDF over the X25519
-// secret, salted with the auth key, bound to the transcript, both node ids
-// and both nonces. Any other protocol version fails the handshake; nothing
-// is negotiated down. The session id is the client's nonce.
+// Handshake. The client sends a hello: the range of wire versions it
+// speaks, its frame limit, the lane, the cluster id, its node id, a fresh
+// nonce, an ephemeral X25519 key, why it connects (with the path token for
+// a punched or relayed session) and its node record, MACed with the
+// cluster's auth key under "dannan/hello/1". The server picks the highest
+// version both speak (none: refused) and answers with an ack: the version,
+// the smaller frame limit, the lane, its id, nonce, key and record, and the
+// address the connection came from as its socket saw it, MACed under
+// "dannan/ack/1" over hello and ack. Each side derives its send and receive
+// keys by HKDF over the X25519 secret, salted with the auth key, bound to
+// the transcript, both node ids and both nonces. The session id is the
+// client's nonce.
 //
 // Frames. A 28-byte header (magic, frame type, flags, message type, payload
 // size, counter, request id), a 12-byte nonce, a 16-byte tag, then the
@@ -44,12 +47,43 @@
 // direction counts its frames from 1; a frame out of sequence is refused.
 namespace dannan::net {
 
-inline constexpr uint16_t protocol_version = 23;
+// The wire versions this build speaks. Rolling upgrades: a node speaks a
+// range, the server picks the highest common version, and nothing is
+// negotiated below a node's own minimum.
+inline constexpr uint16_t min_wire_version = 1;
+inline constexpr uint16_t max_wire_version = 1;
 inline constexpr size_t min_frame_size = 4 * 1024;
 inline constexpr size_t max_frame_size = 4 * 1024 * 1024;
 inline constexpr size_t max_handshake_blob = 16384;
 inline constexpr size_t frame_header_size = 28;
 inline constexpr size_t frame_overhead = frame_header_size + 12 + 16;
+
+struct Endpoint {
+  std::string host;
+  uint16_t port = 0;
+  auto operator<=>(const Endpoint&) const = default;
+};
+
+struct WireVersions {
+  uint16_t min = min_wire_version;
+  uint16_t max = max_wire_version;
+};
+
+// Why a connection was opened: an ordinary dial to a listening port, or
+// one end of a punched or relayed path. The last two carry the token the
+// broker or relay handed both ends, so a stray connection fails the
+// handshake rather than after it.
+enum class Purpose : uint8_t { ordinary = 0, punched = 1, relayed = 2 };
+const char* purpose_name(Purpose) noexcept;
+using PathToken = std::array<uint8_t, 16>;
+
+// What an acceptor of a punched or relayed connection expects of its
+// hello: the purpose, the token and who is at the other end.
+struct Expected {
+  Purpose purpose = Purpose::punched;
+  PathToken token{};
+  identity::NodeId peer;
+};
 
 // A handshake that did not authenticate or did not agree; the session ends.
 class HandshakeRefused : public std::runtime_error {
@@ -75,6 +109,11 @@ struct Established {
   membership::NodeRecord peer;
   Lane lane = Lane::control;
   size_t max_frame = 0;
+  uint16_t version = 0;
+  Purpose purpose = Purpose::ordinary;
+  // The client's side only: its own address as the server's socket saw it,
+  // the received/rport idea; how a node learns its candidate addresses.
+  Endpoint observed;
   SessionKeys keys;
 };
 
@@ -86,8 +125,10 @@ void validate_frame_limit(size_t size);
 // pass its body to finish(). Single owner.
 class ClientHandshake {
  public:
-  // Throws std::invalid_argument for a frame limit outside 4K..4M.
-  ClientHandshake(const identity::ClusterKey& key, membership::NodeRecord local, size_t max_frame, Lane lane);
+  // Throws std::invalid_argument for a frame limit outside 4K..4M, an empty
+  // or inverted version range, or a token without a purpose that takes one.
+  ClientHandshake(const identity::ClusterKey& key, membership::NodeRecord local, size_t max_frame, Lane lane, Purpose purpose = Purpose::ordinary,
+                  PathToken token = {}, WireVersions versions = {});
   ~ClientHandshake();
   ClientHandshake(const ClientHandshake&) = delete;
   ClientHandshake& operator=(const ClientHandshake&) = delete;
@@ -102,6 +143,8 @@ class ClientHandshake {
   membership::NodeRecord _local;
   size_t _max_frame;
   Lane _lane;
+  Purpose _purpose;
+  WireVersions _versions;
   std::array<uint8_t, 32> _nonce{};
   identity::X25519KeyPair _ephemeral;
   Bytes _hello;
@@ -114,12 +157,15 @@ struct ServerReply {
   Established session;
 };
 
-// The server's half, from the body of the client's blob. `remote_host` is
-// the address the connection came from, used when the client advertises
-// none. Throws HandshakeRefused for a hello that does not authenticate or
-// agree, std::invalid_argument for a frame limit outside 4K..4M.
+// The server's half, from the body of the client's blob. `remote` is where
+// the connection came from: its host stands in when the client advertises
+// none, and both go back as the observed address. A listening server
+// expects ordinary hellos (`expected` null); the acceptor of a punched or
+// relayed connection names what it expects, and anything else is refused.
+// Throws HandshakeRefused for a hello that does not authenticate or agree,
+// std::invalid_argument for a frame limit outside 4K..4M.
 ServerReply server_handshake(const identity::ClusterKey& key, const membership::NodeRecord& local, size_t max_frame, std::span<const uint8_t> hello,
-                             const std::string& remote_host);
+                             const Endpoint& remote, const Expected* expected = nullptr, WireVersions versions = {});
 
 struct WireFragment {
   uint64_t request_id = 0;
@@ -142,8 +188,7 @@ class FrameSealer {
   Bytes seal(uint64_t request_id, sched::FrameType frame, MessageType type, bool first, bool last, std::span<const uint8_t> payload);
   uint64_t counter() const noexcept { return _counter; }
   // Tests only: frames are sealed under the nonces `nonces` gives instead of
-  // fresh random ones, so a frame can be compared byte for byte with
-  // another implementation's.
+  // fresh random ones, so a frame's bytes can be pinned.
   void use_nonces_for_test(std::function<std::array<uint8_t, 12>()> nonces) { _nonces = std::move(nonces); }
 
  private:

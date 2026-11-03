@@ -38,6 +38,7 @@ class Readiness {
   bool failed() const;
   std::string error() const;
   uint64_t ready_unix_ms() const;
+  uint64_t started_unix_ms() const noexcept { return _started_unix_ms; }
   // The phase telemetry and Status report: a failed node says recovering
   // (the wire has no state for it; its own Status has the detail).
   Phase phase() const;
@@ -48,6 +49,7 @@ class Readiness {
   bool complete_locked() const DANNAN_REQUIRES(_mutex);
 
   const contract::WallClock* const _wall;
+  const uint64_t _started_unix_ms;
   mutable contract::Mutex _mutex;
   std::condition_variable _changed;
   std::map<std::string, bool> _planes DANNAN_GUARDED_BY(_mutex);

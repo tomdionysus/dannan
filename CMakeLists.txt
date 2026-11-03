@@ -22,6 +22,7 @@ endif()
 
 option(DANNAN_BUILD_TESTING "Build dannan_tests and dagda_tests (GoogleTest)" OFF)
 option(DANNAN_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
+option(DANNAN_BUILD_FUZZING "Build each fuzz target as its own binary (libFuzzer where the compiler has it)" OFF)
 
 # Asio is header-only; 1.87 is AthenaSIP's floor and the two must agree.
 find_package(Boost 1.87 CONFIG REQUIRED COMPONENTS headers)
@@ -44,12 +45,12 @@ add_subdirectory(dannan)
 add_subdirectory(dagda)
 add_subdirectory(tools)
 
+if(DANNAN_BUILD_TESTING OR DANNAN_BUILD_FUZZING)
+  add_subdirectory(dannan/fuzz)
+endif()
+
 if(DANNAN_BUILD_TESTING)
   find_package(GTest 1.14 CONFIG REQUIRED)
   add_subdirectory(dannan/test)
   add_subdirectory(dagda/test)
-  set(DANNAN_MACHA_INTEROP_DIR "" CACHE PATH "A pinned Macha export with macha_core built under build/ (dannan/test/interop)")
-  if(DANNAN_MACHA_INTEROP_DIR)
-    add_subdirectory(dannan/test/interop)
-  endif()
 endif()

@@ -8,54 +8,85 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
+#include <optional>
+#include <span>
 #include <string>
+#include <vector>
 
 #include "dannan/identity/node_id.h"
 #include "dannan/net/codec.h"
 
 namespace dannan::membership {
 
-// Self-declared node properties, gossiped so every peer makes the same
-// dialling and placement decisions; until protocol 25 they are the
-// capability set, read from this byte. Both set is an ordinary dialable
-// storage node.
-inline constexpr uint8_t flag_inbound_capable = 1U << 0;
-inline constexpr uint8_t flag_hosts_extents = 1U << 1;
-inline constexpr uint8_t flags_default = flag_inbound_capable | flag_hosts_extents;
+// What a node does for the cluster, gossiped so every peer makes the same
+// dialling decisions. Unknown bits are kept as they came.
+inline constexpr uint32_t capability_inbound = 1U << 0;  // dialable at host:port
+inline constexpr uint32_t capability_relay = 1U << 1;    // forwards circuits for others
+inline constexpr uint32_t capabilities_default = capability_inbound;
 
-constexpr uint8_t flags_for(bool inbound_capable, bool hosts_extents) noexcept {
-  return static_cast<uint8_t>((inbound_capable ? flag_inbound_capable : 0U) | (hosts_extents ? flag_hosts_extents : 0U));
-}
+// What a node knows of its own reachability (wire v1, section 5): public is
+// dial-back confirmed; punchable kept the same external port for two
+// different peers, so a brokered simultaneous open can work; relay_only is
+// neither.
+enum class PathClass : uint8_t { public_path = 0, punchable = 1, relay_only = 2 };
+const char* path_class_name(PathClass) noexcept;
 
-// A node as the roster gossips it and every handshake carries it: protocol
-// 23's record, grandfathered. capacity, used, metadata_generation and the
-// write floor are the store's figures; Dannan carries them without reading
-// them until protocol 25 replaces them with a generic advertisement map.
+// An address this node was seen at from outside: every handshake's
+// observed address is one. Confirmed once a peer reached the node there.
+struct Candidate {
+  std::string host;
+  uint16_t port = 0;
+  bool confirmed = false;
+  uint64_t confirmed_unix_ms = 0;
+  bool operator==(const Candidate&) const = default;
+};
+
+// Bounds every decoder checks and every setter refuses past.
+inline constexpr size_t max_candidates = 16;
+inline constexpr size_t max_adverts = 64;
+inline constexpr size_t max_advert_key = 256;
+inline constexpr size_t max_advert_value = 1024;
+
+// A node as the roster gossips it and every handshake carries it (wire v1,
+// section 3). The adverts are the hosted system's: a store puts its
+// capacity, use and write floor there, and Dannan carries them without
+// reading them, except where a caller names one (placement's capacity).
 struct NodeRecord {
   identity::NodeId id;
   std::string host;
-  std::string failure_domain;
   uint16_t port = 0;
-  uint64_t capacity = 0;
-  uint64_t used = 0;
+  std::string failure_domain;
   uint64_t seen_unix_ms = 0;
-  uint64_t metadata_generation = 0;
-  // Every node advertising a write floor must advertise the same one; a
-  // mismatch fails closed.
-  uint32_t metadata_write_replicas_required = 0;
-  uint8_t flags = flags_default;
+  // The node's process (its durability epoch): a new one is a restart, not
+  // a reconnect. Unordered: it says "the same process or not", never which
+  // is newer.
+  identity::NodeId incarnation;
+  uint32_t capabilities = capabilities_default;
+  PathClass path_class = PathClass::public_path;
+  std::vector<Candidate> candidates;
+  std::map<std::string, net::Bytes> adverts;
 
   // Peers never dial a node without it: it reaches them, and they answer
   // over the sessions it opened.
-  bool inbound_capable() const noexcept { return (flags & flag_inbound_capable) != 0; }
-  // A node without it is never a DATA placement candidate.
-  bool hosts_extents() const noexcept { return (flags & flag_hosts_extents) != 0; }
+  bool inbound_capable() const noexcept { return (capabilities & capability_inbound) != 0; }
+  bool relays() const noexcept { return (capabilities & capability_relay) != 0; }
+
+  // The advert under `key`, or nothing.
+  std::optional<std::span<const uint8_t>> advert(const std::string& key) const;
+  // An advert holding a u64 (big-endian, eight bytes); nothing when absent
+  // or of another width.
+  std::optional<uint64_t> advert_u64(const std::string& key) const;
 
   bool operator==(const NodeRecord&) const = default;
 };
 
+// The eight bytes advert_u64 reads.
+net::Bytes u64_advert(uint64_t value);
+
 void encode(net::Writer&, const NodeRecord&);
-// Strings are bounded at 4096 bytes. Throws net::DecodeError.
+// Strings are bounded at 4096 bytes, candidates, adverts and their sizes as
+// above. Throws net::DecodeError, also for a path class out of range.
 NodeRecord decode(net::Reader&);
 
 }  // namespace dannan::membership
