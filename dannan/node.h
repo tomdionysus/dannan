@@ -1,0 +1,227 @@
+//
+// Dannan - The Distributed Substrate
+//
+// Copyright (C) 2026 Tom Cully <mail@tomcully.com>
+// Licensed under the GNU GPLv3 - see <https://www.gnu.org/licenses/gpl-3.0.html>
+//
+
+#pragma once
+
+#include <atomic>
+#include <boost/asio/io_context.hpp>
+#include <chrono>
+#include <condition_variable>
+#include <filesystem>
+#include <functional>
+#include <map>
+#include <memory>
+#include <optional>
+#include <string>
+#include <thread>
+#include <vector>
+
+#include "dannan/context.h"
+#include "dannan/identity/node_identity.h"
+#include "dannan/membership/membership.h"
+#include "dannan/net/client.h"
+#include "dannan/net/server.h"
+#include "dannan/reach/connectivity.h"
+#include "dannan/reach/dial_back.h"
+#include "dannan/reach/inbound.h"
+#include "dannan/status/readiness.h"
+#include "dannan/status/telemetry.h"
+#include "dannan/supervise/supervised.h"
+
+namespace dannan {
+
+struct NodeConfig {
+  // State: the lock, the node id, the roster, telemetry, the inbound answer.
+  std::filesystem::path state_path;
+  identity::ClusterKey key;
+  std::string listen_host = "0.0.0.0";
+  // What peers dial; the advertised endpoint may move with UPnP or the
+  // external address.
+  std::string advertise_host;
+  // Zero: any; the bound port is advertised.
+  uint16_t port = 7437;
+  std::string failure_domain;
+  std::string node_name;
+  // Seeds, not masters: exchanged with every heartbeat.
+  std::vector<net::Endpoint> bootstrap;
+  reach::Inbound inbound = reach::Inbound::automatic;
+  // Whether this node hosts extents, given whether it is inbound-capable:
+  // the hosted system's answer. A bare node hosts none.
+  std::function<bool(bool inbound_capable)> hosts_extents = [](bool) { return false; };
+  // What recovers before the node is ready, by name.
+  std::vector<std::string> planes;
+  std::string version;
+
+  std::chrono::milliseconds heartbeat{5000};
+  std::chrono::milliseconds dead_after{30000};
+  // Never under twice dead_after.
+  std::chrono::milliseconds forget_after = std::chrono::hours(24 * 30);
+  std::chrono::milliseconds telemetry_interval{10000};
+  std::chrono::milliseconds connect_timeout{2500};
+  std::chrono::milliseconds control_no_progress{30000};
+  std::chrono::milliseconds data_no_progress{0};
+  std::chrono::milliseconds dial_back_min_interval{10000};
+  std::chrono::milliseconds reprobe_while_capable = std::chrono::hours(1);
+  std::chrono::milliseconds reprobe_while_incapable = std::chrono::minutes(10);
+  size_t max_frame = 256 * 1024;
+  net::ServerLimits limits;
+  reach::ConnectivityConfig connectivity;
+  // The node's retained-memory budget and its reserves.
+  uint64_t memory_bytes = 768ull << 20;
+  uint64_t control_reserve_bytes = 64ull << 20;
+  uint64_t foreground_reserve_bytes = 192ull << 20;
+  uint64_t loader_reserve_bytes = 64ull << 20;
+  uint64_t reassembly_reserve_bytes = 32ull << 20;
+  // The hosted system's own telemetry fields, added to each local record.
+  std::function<void(status::Telemetry&)> telemetry_fields;
+  std::vector<uint16_t> telemetry_layout = status::protocol23_layout();
+  // Null: UPnP not built, the lookup and the self-probe their defaults.
+  std::shared_ptr<reach::Gateway> gateway;
+  reach::ExternalIpLookup external_ip;
+  reach::SelfProbe self_probe;
+
+  const contract::TimeSource* time = &contract::steady_time_source();
+  const contract::WallClock* wall = &contract::system_wall_clock();
+};
+
+// Dannan's node: the control plane assembled. The identity under a locked
+// state path, the roster, public connectivity and the inbound answer,
+// telemetry, the transport's client and server, the control routes
+// (ping, members, telemetry, identity_resets, dial_request,
+// dial_back_probe), and three loops: membership (exchange with seeds and
+// known peers every heartbeat, forget at the horizon), telemetry (refresh,
+// gossip at most once a second), connectivity (the advertised endpoint and
+// the inbound answer by dial-back). The node is reachable before it is
+// ready. It is the hosted system's Context.
+//
+// The io context is the caller's, run on its threads; the loops have their
+// own. Thread-safe. Lock order: the client's route table before the
+// roster's (the client calls `local` with its table held).
+class Node final : public Context {
+ public:
+  // Takes the state lock and reads the node's state; throws if the path is
+  // in use or a state file is corrupt.
+  Node(boost::asio::io_context& io, NodeConfig config);
+  ~Node() override;
+  Node(const Node&) = delete;
+  Node& operator=(const Node&) = delete;
+
+  // Refuses a cluster nobody could reach, then listens and starts the
+  // loops. Hosted routes are frozen from here.
+  void start();
+  // Stops the loops, the server and the client; pending calls fail at once.
+  void stop();
+
+  uint16_t port() const noexcept { return _bound_port.load(); }
+  Context& context() noexcept { return *this; }
+  const Context& context() const noexcept { return *this; }
+
+  // For the hosted system's Status and its facade.
+  membership::Membership& membership() noexcept { return _members; }
+  status::TelemetryStore& telemetry() noexcept { return _telemetry; }
+  const status::TelemetryStore& telemetry() const noexcept { return _telemetry; }
+  reach::InboundResolver& inbound() noexcept { return _inbound; }
+  status::Readiness& readiness() noexcept { return _readiness; }
+  std::optional<reach::PublicConnectivityStatus> connectivity() const;
+  std::optional<net::ClientStats> client_stats() const;
+  std::optional<net::WorkStats> work_stats() const;
+  std::vector<supervise::SupervisedThreadStatus> threads() const { return _threads.statuses(); }
+  sched::RetainedMemoryLedger& memory() noexcept { return _memory; }
+  // The node's traffic by frame class, client and server together.
+  status::TrafficTotals traffic() const;
+
+  // Applies a reset everywhere it matters here; propagate also sends it to
+  // every active peer and applies what they answer with.
+  bool apply_identity_reset(const membership::IdentityReset& reset);
+  void propagate_identity_reset(const membership::IdentityReset& reset);
+  // Asks for a telemetry refresh now (a readiness change, say).
+  void signal_telemetry();
+
+  // Context.
+  uint32_t version() const noexcept override { return context_version; }
+  Nodes& nodes() override;
+  const Nodes& nodes() const override;
+  Routes& routes() override;
+  Channels& channels() override;
+  const Identity& identity() const override;
+  Budget& budget() override;
+  Faults& faults() override;
+  Time& time() override;
+  status::Surface& status() override { return _surface; }
+  status::NodeEvents& events() override { return _events; }
+
+ private:
+  class NodesNoun;
+  class RoutesNoun;
+  class ChannelsNoun;
+  class IdentityNoun;
+  class BudgetNoun;
+  class FaultsNoun;
+  class TimeNoun;
+  friend class RoutesNoun;
+
+  net::Handled handle(const membership::NodeRecord& peer, sched::FrameType frame, const net::Message& request);
+  void observe_direct(const membership::NodeRecord& peer);
+  void merge(std::span<const uint8_t> payload);
+  void place_call(std::optional<membership::NodeRecord> peer, const net::Endpoint& endpoint, net::MessageType type, net::Bytes payload, sched::FrameType frame,
+                  std::chrono::milliseconds deadline, boost::asio::any_io_executor executor, net::Client::Done done);
+  // A call from a loop thread, waited on within the deadline.
+  net::CallOutcome call_wait(std::optional<membership::NodeRecord> peer, const net::Endpoint& endpoint, net::MessageType type, net::Bytes payload,
+                             std::chrono::milliseconds deadline);
+  void exchange(std::optional<membership::NodeRecord> peer, const net::Endpoint& endpoint);
+  void membership_loop(std::stop_token stop);
+  void telemetry_loop(std::stop_token stop);
+  void connectivity_loop(std::stop_token stop);
+  void apply_inbound(bool capable);
+  // Waits on the loops' wake until `due` or stop.
+  void sleep_until(std::stop_token stop, contract::TimePoint due);
+
+  boost::asio::io_context& _io;
+  NodeConfig _config;
+  identity::StateLock _lock;
+  identity::NodeIdentity _identity;
+  reach::InboundResolver _inbound;
+  membership::Membership _members;
+  status::TelemetryStore _telemetry;
+  status::NodeEvents _events;
+  status::Surface _surface;
+  status::Readiness _readiness;
+  supervise::SupervisedThreads _threads;
+  sched::RetainedMemoryLedger _memory;
+  const std::shared_ptr<net::TransportTraffic> _traffic = std::make_shared<net::TransportTraffic>();
+
+  // Hosted routes, written before start and read only after.
+  net::RouteTable _table = net::RouteTable::with_dannan_types();
+  std::map<net::MessageType, net::RequestHandler> _handlers;
+  std::shared_ptr<const net::RouteTable> _frozen;
+  std::atomic<bool> _started{false};
+  std::atomic<bool> _stopping{false};
+  std::atomic<uint16_t> _bound_port{0};
+  std::atomic<uint32_t> _peers_known{0};
+  std::atomic<uint32_t> _peers_active{1};
+
+  std::unique_ptr<net::Server> _server;
+  std::unique_ptr<net::Client> _client;
+  std::unique_ptr<reach::PublicConnectivity> _connectivity;
+  std::unique_ptr<reach::DialBackResponder> _dial_back;
+
+  // Guards nothing: the loops' wait.
+  std::mutex _wait_mutex;
+  std::condition_variable_any _wake;
+  std::atomic<uint64_t> _telemetry_demand{0};
+  std::vector<std::jthread> _loops;
+
+  std::unique_ptr<NodesNoun> _nodes;
+  std::unique_ptr<RoutesNoun> _routes_noun;
+  std::unique_ptr<ChannelsNoun> _channels;
+  std::unique_ptr<IdentityNoun> _identity_noun;
+  std::unique_ptr<BudgetNoun> _budget;
+  std::unique_ptr<FaultsNoun> _faults;
+  std::unique_ptr<TimeNoun> _time;
+};
+
+}  // namespace dannan
