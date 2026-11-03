@@ -173,7 +173,7 @@ void Client::call(Target target, Call call) {
       if (first) ++_stats.dials;
     }
   }
-  if (route) return place(route, std::move(call));
+  if (route) return place(route, std::move(call), target);
   if (!refused.empty()) {
     // The backoff a refused dial earns, so a retrying caller does not ask
     // over the wire on every attempt.
@@ -336,6 +336,37 @@ void Client::ensure_lane(const membership::NodeRecord& peer, Lane lane) {
        [this, key, target, lane](std::shared_ptr<Session> session, std::string why) { dialled(key, target, lane, std::move(session), std::move(why)); });
 }
 
+void Client::invalidate_identity_association(const membership::IdentityReset& reset) {
+  if (reset.host.empty() || !reset.epoch) return;
+  std::vector<std::shared_ptr<Session>> routes;
+  {
+    contract::Lock lock(_mutex);
+    std::set<identity::NodeId> stale;
+    for (auto it = _endpoint_ids.begin(); it != _endpoint_ids.end();) {
+      if (reset.matches_endpoint(it->first.host, it->first.port) && reset.matches_node(it->second)) {
+        stale.insert(it->second);
+        _backoff.erase(address_of(it->first) + "/" + lane_name(Lane::control));
+        _backoff.erase(address_of(it->first) + "/" + lane_name(Lane::data));
+        it = _endpoint_ids.erase(it);
+      } else {
+        ++it;
+      }
+    }
+    for (auto* table : {&_outbound, &_inbound}) {
+      for (auto it = table->begin(); it != table->end();) {
+        const auto& peer = it->second->peer();
+        if (stale.contains(it->first.first) || (reset.matches_endpoint(peer.host, peer.port) && reset.matches_node(peer.id))) {
+          routes.push_back(it->second);
+          it = table->erase(it);
+        } else {
+          ++it;
+        }
+      }
+    }
+  }
+  for (auto& session : routes) session->close("identity association reset");
+}
+
 void Client::close_route(const identity::NodeId& peer, Lane lane, const std::string& why) {
   std::vector<std::shared_ptr<Session>> routes;
   {
@@ -354,19 +385,27 @@ void Client::fail(Call& call, std::string why) {
   asio::post(call.executor, [done = std::move(call.done), why = std::move(why)] { done(CallOutcome{std::nullopt, why}); });
 }
 
-void Client::place(const std::shared_ptr<Session>& session, Call call) {
+void Client::place(const std::shared_ptr<Session>& session, Call call, const Target& target) {
   const auto lane = session->lane();
   const auto deadline = lane == Lane::data ? _options.data_no_progress : _options.control_no_progress;
   auto stall = std::make_shared<Stall>();
   auto finished = std::make_shared<std::atomic<bool>>(false);
   auto done = std::make_shared<Done>(std::move(call.done));
   const auto name = _options.routes->name(call.type);
+  // Moved from only once admitted: a refusal by a retiring session leaves it
+  // to be routed again.
   const auto admitted = session->call(call.type, std::move(call.payload), call.frame, call.executor, [stall, finished, done](CallOutcome outcome) {
     finished->store(true);
     if (!outcome.reply && stall->stalled.load()) outcome.failure = stall->why;
     (*done)(std::move(outcome));
   });
   if (!admitted.refused.empty()) {
+    const bool gone = admitted.refused == "peer channel is retiring" || admitted.refused == "peer channel is closed";
+    if (gone && call.reroutes < 3) {
+      call.done = std::move(*done);
+      ++call.reroutes;
+      return this->call(target, std::move(call));
+    }
     asio::post(call.executor, [done, why = admitted.refused] { (*done)(CallOutcome{std::nullopt, why}); });
     return;
   }
@@ -509,9 +548,10 @@ void Client::dialled(const std::string& key, const Target& target, Lane lane, st
     why = "client stopped";
   }
   for (auto& loser : retire) loser->retire();
+  if (session && !stopped && _options.established) _options.established(session->peer());
   for (auto& call : waiting) {
     if (route)
-      place(route, std::move(call));
+      place(route, std::move(call), target);
     else
       fail(call, why.empty() ? "no route to the peer after its dial" : why);
   }
@@ -557,7 +597,7 @@ void Client::admit(const std::shared_ptr<Session>& session) {
   }
   for (auto& loser : retire) loser->retire();
   if (timer) asio::post(_health_strand, [timer] { timer->cancel(); });
-  for (auto& call : waiting) place(route, std::move(call));
+  for (auto& call : waiting) place(route, std::move(call), Target{key.first, {peer.host, peer.port}});
 }
 
 void Client::reconcile_locked(const RouteKey& key, Retire& retire) {

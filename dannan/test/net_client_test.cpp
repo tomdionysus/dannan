@@ -535,5 +535,40 @@ TEST(ReverseDial, ACapableNodeMaintainsNothing) {
   EXPECT_EQ(other.client->stats().dials, 0u);
 }
 
+// The node is told of each session this client dials, with the peer's
+// record, as of each session a peer opens: both are direct observations.
+TEST(Client, TellsTheNodeOfEachSessionItDials) {
+  Io io;
+  std::mutex mutex;
+  std::vector<identity::NodeId> seen;
+  ClientOptions tuning;
+  tuning.established = [&](const membership::NodeRecord& peer) {
+    std::lock_guard lock(mutex);
+    seen.push_back(peer.id);
+  };
+  Node a(io, tuning), b(io);
+  ASSERT_TRUE(call(a, b.self).reply);
+  ASSERT_TRUE(call(a, b.self, put_object, FrameType::foreground, Bytes(10, 1)).reply);
+  std::lock_guard lock(mutex);
+  EXPECT_EQ(seen, (std::vector<identity::NodeId>{b.self.id, b.self.id}));
+}
+
+// An identity reset closes the routes it covers and forgets the address's
+// node, so the next call dials afresh and checks who answers.
+TEST(Client, AnIdentityResetClosesTheRoutesItCovers) {
+  Io io;
+  Node a(io), b(io);
+  ASSERT_TRUE(call(a, b.self).reply);
+  membership::IdentityReset reset;
+  reset.host = b.self.host;
+  reset.port = b.self.port;
+  reset.stale_node_id = b.self.id;
+  reset.epoch = 1;
+  a.client->invalidate_identity_association(reset);
+  EXPECT_FALSE(a.client->has_route(b.self.id, Lane::control));
+  ASSERT_TRUE(call(a, b.self).reply);
+  EXPECT_EQ(a.client->stats().dials, 2u);
+}
+
 }  // namespace
 }  // namespace dannan::net
