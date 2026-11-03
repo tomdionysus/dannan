@@ -56,9 +56,11 @@ it").
 
 Step 4a (membership and placement) is done on `feature/control-plane`
 (`COMPLETED.md`, gate 230 + 1 + 10). Steps 4 and 5 are done (`develop`; gate 298 + 1 + 13): the control
-plane, and the node with `dannan::Context` v1. Next: Dannan's part of
-step 9 (level 0's `reach/`: observed addresses, path classes, the punch
-broker, relay; protocol 24) and step 10 (identity: the cluster CA); the port steps wait for the Macha agent and Dagda is
+plane, and the node with `dannan::Context` v1. Dannan now has its own wire
+from version 1 (Decisions, 2026-11-03 night). Waiting on Tom: approval of
+`TODO/2026-11-03-dannan-wire-v1.md` (the v1 wire and level 0). Then: wire
+v1 in code, level 0 (`reach/`: candidates, path classes, punch, relay),
+and the Docker compose test bed. Identity (step 10) waits; the port steps wait for the Macha agent and Dagda is
 another project (Decisions, 2026-11-03 night).
 
 Read in this order: this file to the end of Standing rules;
@@ -345,6 +347,15 @@ words, so a session does not re-derive it.
   reaping). Dannan is new code: a session count in the server's work
   stats (kept out of the Status JSON) and a test-only hook on the client's
   route table are part of the design, not a retrofit.
+- (2026-11-03 night, Tom) **Dannan is a new project with its own wire,
+  versioned from 1.** It is not an extension of Macha; Macha is refactored
+  to use it. This supersedes "the one rule"'s byte-for-byte protocol 23 and
+  "No byte moves": nothing of protocol 23 binds Dannan (versions, labels,
+  magics, record layouts, message numbers). Dannan does everything to
+  maintain the PHY (reachability included). Level 0's wire is drafted in
+  `TODO/2026-11-03-dannan-wire-v1.md` for Tom's approval before code.
+  Docker is used for the compose test bed and nothing else. Identity
+  (step 10) waits.
 - (2026-11-03 night, Tom) **Dagda is its own project, with its own agent.**
   Steps 7 and 8 leave this plan; the `dagda/` stub here goes when that
   project starts. **Macha is not moving yet:** the port steps (3, 6) are
