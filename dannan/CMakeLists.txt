@@ -43,6 +43,8 @@ add_library(dannan SHARED
   status/observation.cpp
   status/surface.cpp
   status/telemetry.cpp
+  supervise/supervised.cpp
+  supervise/supervisor.cpp
   version.cpp
 )
 target_include_directories(dannan

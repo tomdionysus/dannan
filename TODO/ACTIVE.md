@@ -55,8 +55,9 @@ has every milestone with its gate). `develop` holds the same tree;
 it").
 
 Step 4a (membership and placement) is done on `feature/control-plane`
-(`COMPLETED.md`, gate 230 + 1 + 10). Step 4b (identity v1, status, reach v0) is done too (gate 274 + 1 + 12).
-Next: 4c (the supervisor), then 5; the port steps wait for the Macha agent and Dagda is
+(`COMPLETED.md`, gate 230 + 1 + 10). Steps 4b (identity v1, status, reach v0) and 4c (supervision) are done
+too: step 4 is whole (gate 286 + 1 + 12). Next: step 5, the node and
+`dannan::Context`; the port steps wait for the Macha agent and Dagda is
 another project (Decisions, 2026-11-03 night).
 
 Read in this order: this file to the end of Standing rules;
