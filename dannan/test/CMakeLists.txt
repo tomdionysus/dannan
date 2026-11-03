@@ -18,8 +18,10 @@ add_executable(dannan_tests
   fixtures_test.cpp
   identity_crypto_test.cpp
   identity_durable_file_test.cpp
+  net_assembler_test.cpp
   net_channel_test.cpp
   net_codec_test.cpp
+  net_outbound_test.cpp
   net_routes_record_test.cpp
   sched_memory_test.cpp
   sched_walk_retry_test.cpp
