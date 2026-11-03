@@ -28,6 +28,8 @@ class SecureBytes {
   // Throws std::runtime_error if the pages cannot be mapped. Locking is best
   // effort and reported by locked().
   explicit SecureBytes(size_t size);
+  // Empty: maps nothing, costs nothing.
+  SecureBytes() noexcept = default;
   ~SecureBytes();
   SecureBytes(SecureBytes&& other) noexcept;
   SecureBytes& operator=(SecureBytes&& other) noexcept;
@@ -91,6 +93,9 @@ using SecureBuffer = std::vector<uint8_t, SecureAllocator<uint8_t>>;
 // is revealed only by asking. Compared in constant time.
 class Secret {
  public:
+  // Empty (size 0, nothing mapped), so a struct or a result can hold one
+  // before it has a value.
+  Secret() noexcept = default;
   explicit Secret(std::span<const uint8_t> bytes);
   explicit Secret(SecureBytes bytes) noexcept : _bytes(std::move(bytes)) {}
   // From a growable secure buffer (a passphrase typed a character at a

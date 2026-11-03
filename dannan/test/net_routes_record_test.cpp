@@ -167,6 +167,7 @@ NodeRecord sample() {
   node.port = 7437;
   node.failure_domain = "home";
   node.seen_unix_ms = 10;
+  node.incarnation.bytes[0] = 0x77;
   node.capabilities = capability_inbound | capability_relay;
   node.path_class = PathClass::punchable;
   node.candidates = {{"198.51.100.7", 40000, true, 99}};
@@ -175,7 +176,7 @@ NodeRecord sample() {
 }
 
 // Wire v1's record, field by field: id, host, port, failure domain, seen,
-// capabilities, path class, candidates, adverts.
+// incarnation, capabilities, path class, candidates, adverts.
 TEST(NodeRecord, EncodesWireV1sLayout) {
   net::Writer writer;
   encode(writer, sample());
@@ -185,6 +186,7 @@ TEST(NodeRecord, EncodesWireV1sLayout) {
   expected.u16(7437);
   expected.string("home");
   expected.u64(10);
+  expected.fixed(sample().incarnation.bytes);
   expected.u32(3);
   expected.u8(1);
   expected.u16(1);

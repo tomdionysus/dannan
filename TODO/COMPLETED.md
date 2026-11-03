@@ -12,6 +12,20 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
 
+## 2026-11-03, night -- the roster feed and the incarnation
+
+- The node record carries the node's incarnation (its durability epoch)
+  after `seen_unix_ms` (wire v1 section 3 updated); a new one counts as a
+  topology change.
+- `Nodes::watch(executor, handler)` / `unwatch`: the active roster's
+  changes (`RosterChange`: joined, left, changed), a new watcher first told
+  of every node active now; taken on every topology change and every
+  membership tick, so a node silent past dead_after is reported as left.
+- `Secret` and `SecureBytes` default to empty (nothing mapped), for Lugh's
+  results and structs that hold one.
+- **Gate: `dannan_tests` 365, `dagda_tests` 1**; node, two-process, level 0
+  and channel cases 5 times.
+
 ## 2026-11-03, night -- secrets never in ordinary memory
 
 Asked by Lugh, needed by Dagda too: `SecureAllocator` and `SecureBuffer` (a

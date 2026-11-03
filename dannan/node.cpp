@@ -24,12 +24,13 @@ using membership::NodeRecord;
 
 namespace {
 
-NodeRecord initial_self(const NodeConfig& config, const identity::NodeId& id, bool capable) {
+NodeRecord initial_self(const NodeConfig& config, const identity::NodeId& id, const identity::NodeId& incarnation, bool capable) {
   NodeRecord self;
   self.id = id;
   self.host = config.advertise_host;
   self.port = config.port;
   self.failure_domain = config.failure_domain;
+  self.incarnation = incarnation;
   self.capabilities = (capable ? membership::capability_inbound : 0U) | (config.relay ? membership::capability_relay : 0U);
   return self;
 }
@@ -37,8 +38,8 @@ NodeRecord initial_self(const NodeConfig& config, const identity::NodeId& id, bo
 // What a topology event is for: where a node is, what it does, and what
 // it advertises; its liveness and candidates are not.
 bool shape_changed(const NodeRecord& before, const NodeRecord& after) {
-  return before.host != after.host || before.port != after.port || before.failure_domain != after.failure_domain || before.capabilities != after.capabilities ||
-         before.path_class != after.path_class || before.adverts != after.adverts;
+  return before.host != after.host || before.port != after.port || before.failure_domain != after.failure_domain || before.incarnation != after.incarnation ||
+         before.capabilities != after.capabilities || before.path_class != after.path_class || before.adverts != after.adverts;
 }
 
 std::vector<identity::NodeId> ids_of(const std::vector<NodeRecord>& nodes) {
@@ -88,6 +89,19 @@ class Node::NodesNoun final : public Nodes {
     return placement::by_capacity(key, candidates, copies, scheme);
   }
   void advertise(const std::string& key, net::Bytes value) override { _node._members.set_advert(key, std::move(value)); }
+  uint64_t watch(asio::any_io_executor executor, std::function<void(RosterChange)> handler) override {
+    contract::Lock lock(_node._watch_mutex);
+    const auto id = _node._next_watcher++;
+    // Told of the roster as the others were last told of it, so every
+    // watcher sees the same sequence from here.
+    for (const auto& [_, node] : _node._told) asio::post(executor, [handler, node] { handler({RosterChange::Kind::joined, node}); });
+    _node._watchers.emplace(id, Watcher{std::move(executor), std::move(handler)});
+    return id;
+  }
+  void unwatch(uint64_t id) override {
+    contract::Lock lock(_node._watch_mutex);
+    _node._watchers.erase(id);
+  }
   void withdraw(const std::string& key) override { _node._members.clear_advert(key); }
 
  private:
@@ -281,8 +295,8 @@ Node::Node(asio::io_context& io, NodeConfig config)
       _lock(_config.state_path),
       _identity(_config.state_path, _config.key),
       _inbound(_config.inbound, _config.state_path, _config.wall, _config.reprobe_while_capable, _config.reprobe_while_incapable, _config.heartbeat),
-      _members(initial_self(_config, _identity.id, _inbound.capable()), _config.dead_after, _config.state_path / "membership" / "known-nodes.bin",
-               _config.forget_after, _config.time, _config.wall),
+      _members(initial_self(_config, _identity.id, _identity.durability_epoch, _inbound.capable()), _config.dead_after,
+               _config.state_path / "membership" / "known-nodes.bin", _config.forget_after, _config.time, _config.wall),
       _telemetry(_identity.id, _config.state_path / "telemetry" / "last-known.bin", _config.time, _config.wall, _config.telemetry_layout),
       _readiness(_config.planes, _config.wall),
       _activity(_config.time),
@@ -527,13 +541,48 @@ net::Handled Node::handle(const NodeRecord& peer, sched::FrameType frame, const 
   return handler->second(peer, frame, request);
 }
 
+const char* roster_change_name(RosterChange::Kind kind) noexcept {
+  switch (kind) {
+    case RosterChange::Kind::joined:
+      return "joined";
+    case RosterChange::Kind::left:
+      return "left";
+    case RosterChange::Kind::changed:
+      return "changed";
+  }
+  return "unknown";
+}
+
+void Node::topology_changed(bool quiet) {
+  std::vector<RosterChange> changes;
+  {
+    contract::Lock lock(_watch_mutex);
+    std::map<identity::NodeId, NodeRecord> now;
+    for (auto& node : _members.active())
+      if (node.id != _identity.id) now.emplace(node.id, std::move(node));
+    for (const auto& [id, node] : now) {
+      const auto before = _told.find(id);
+      if (before == _told.end())
+        changes.push_back({RosterChange::Kind::joined, node});
+      else if (shape_changed(before->second, node))
+        changes.push_back({RosterChange::Kind::changed, node});
+    }
+    for (const auto& [id, node] : _told)
+      if (!now.contains(id)) changes.push_back({RosterChange::Kind::left, node});
+    _told = std::move(now);
+    for (const auto& [_, watcher] : _watchers)
+      for (const auto& change : changes) asio::post(watcher.executor, [handler = watcher.handler, change] { handler(change); });
+  }
+  if (!quiet || !changes.empty()) _events.notify(status::NodeEvents::topology);
+}
+
 void Node::observe_direct(const NodeRecord& peer) {
   const auto before = _members.active();
   const auto previous = std::find_if(before.begin(), before.end(), [&](const NodeRecord& n) { return n.id == peer.id; });
   const bool changed = previous == before.end() || shape_changed(*previous, peer);
   _members.observe(peer, true);
   if (_client && peer.id != _identity.id) _client->note_peer(peer);
-  if (changed) _events.notify(status::NodeEvents::topology);
+  if (changed) topology_changed();
   signal_telemetry();
 }
 
@@ -553,7 +602,7 @@ void Node::merge(std::span<const uint8_t> payload) {
   }
   reader.finish();
   // An exchange is a heartbeat: identical gossip wakes nobody.
-  if (changed || ids_of(before_active) != ids_of(_members.active())) _events.notify(status::NodeEvents::topology);
+  if (changed || ids_of(before_active) != ids_of(_members.active())) topology_changed();
 }
 
 std::shared_ptr<net::CallHandle> Node::place_call(std::optional<NodeRecord> peer, const net::Endpoint& endpoint, net::MessageType type, net::Bytes payload,
@@ -615,7 +664,10 @@ void Node::sleep_until(std::stop_token stop, contract::TimePoint due) {
 
 void Node::membership_loop(std::stop_token stop) {
   while (!stop.stop_requested()) {
-    if (_members.forget_unseen()) _events.notify(status::NodeEvents::topology);
+    if (_members.forget_unseen())
+      topology_changed();
+    else
+      topology_changed(true);
     const auto known = _members.all();
     _peers_known = static_cast<uint32_t>(known.size());
     uint32_t active = 1;
@@ -687,7 +739,7 @@ void Node::telemetry_loop(std::stop_token stop) {
 
 void Node::apply_inbound(bool capable) {
   if (_members.set_inbound_capable(capable)) {
-    _events.notify(status::NodeEvents::topology);
+    topology_changed();
     signal_telemetry();
   }
 }
@@ -716,7 +768,7 @@ std::chrono::milliseconds Node::classify() {
     again = _config.reprobe_while_incapable;
   }
   if (changed) {
-    _events.notify(status::NodeEvents::topology);
+    topology_changed();
     signal_telemetry();
   }
   return again;
@@ -771,7 +823,7 @@ bool Node::apply_identity_reset(const membership::IdentityReset& reset) {
   // Idempotent: align every consumer even if one learned it first.
   _telemetry.apply_identity_reset(reset);
   if (_client) _client->invalidate_identity_association(reset);
-  if (changed) _events.notify(status::NodeEvents::topology);
+  if (changed) topology_changed();
   return changed;
 }
 

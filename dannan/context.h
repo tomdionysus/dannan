@@ -58,9 +58,25 @@ struct RosterSnapshot {
 
 // The cluster as this node knows it. Reads of local state wait on nothing;
 // propagate_identity_reset waits on peers, each within the deadline.
+// One change to the active roster: a node heard of anew, one not heard of
+// for dead_after, or one whose place, capabilities, path class, adverts or
+// incarnation changed. A new incarnation is a restart.
+struct RosterChange {
+  enum class Kind : uint8_t { joined, left, changed };
+  Kind kind = Kind::joined;
+  // As it is now; for a node that left, as it was last known.
+  membership::NodeRecord node;
+};
+const char* roster_change_name(RosterChange::Kind) noexcept;
+
 class Nodes {
  public:
   virtual ~Nodes() = default;
+  // The roster's changes, as they happen, posted to `executor` in order
+  // when it is a strand: first a `joined` for every node active now, then
+  // each change. An id for unwatch. Waits on nothing.
+  virtual uint64_t watch(boost::asio::any_io_executor executor, std::function<void(RosterChange)> handler) = 0;
+  virtual void unwatch(uint64_t id) = 0;
   virtual membership::NodeRecord self() const = 0;
   // Every known node, self first; and those heard of within dead_after.
   virtual std::vector<membership::NodeRecord> roster() const = 0;
