@@ -12,6 +12,20 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
 
+## 2026-11-03, night -- Argon2id and node key custody
+
+- `identity/argon2.*`: Argon2id (RFC 9106, its test vector pinned) for the
+  stack: custody's passphrase and Lugh's password hashes.
+- `identity/key_custody.*`, the early slice of step 10: the node's ES256
+  key and a seal root, sealed in `<state>/identity/custody` (DNNKEY01)
+  under a root never on disk in clear: a systemd credential (made at
+  create, handed to the operator to seal; read from
+  `$CREDENTIALS_DIRECTORY` as 32 bytes or 64 hex digits) or a passphrase
+  stretched with Argon2id under the file's salt and costs. Header bound as
+  associated data; a wrong root and an altered file refused alike; never
+  replaced; `derive(label)` gives hosted systems node-local keys.
+- **Gate: `dannan_tests` 350, `dagda_tests` 1.**
+
 ## 2026-11-03, night -- signing
 
 `identity/signing.*`, the stack's one home for signatures: ES256 (P-256,
