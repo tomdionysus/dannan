@@ -12,6 +12,50 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
 
+## 2026-11-03, night -- step 5: the node and dannan::Context
+
+On `feature/node` (three commits):
+
+- `dannan::Node`: the control plane assembled, as seam 2 lists it for
+  Dannan's half of `NodeRuntime`. The state lock, the identity, the
+  inbound resolver, the roster, telemetry, the transport's client and
+  server, the control routes (ping, members, telemetry, identity_resets,
+  dial_request, dial_back_probe), and three supervised loops: membership
+  (seeds and known peers every heartbeat, forgetting at the horizon, a
+  peer that takes no inbound connection exchanged only over its own
+  session), telemetry (refreshed on demand, gossiped best effort at most
+  once a second) and connectivity (the advertised endpoint, and the
+  `automatic` answer by dial-back). `refuse_impossible_cluster` before
+  listening; readiness by named planes (`status::Readiness`), the control
+  plane first, so a node is reachable before it is ready; identity resets
+  applied to roster, telemetry and client, and propagated; stop prompt,
+  the transport first.
+- `dannan::Context` (`dannan/context.h`), version 1, written as a spec:
+  Nodes (roster, liveness, latency, placement), Routes (a hosted system's
+  types before start, core types refused; calls with a deadline that
+  answers first), Channels v1 (notify on CONTROL), Identity (id, epoch,
+  derived keys), Budget (declare refuses a unit the budget cannot hold;
+  reserve), Faults (raised, counted, handed to the sink), Time, Status
+  (the surface), and events.
+- Client: a call refused because its session retired or closed under it
+  is routed again (a simultaneous dial's loser), its payload untouched
+  since `Session::call` now moves from it only once admitted; the client
+  tells the node of each session it dials; an identity reset drops the
+  association and closes its routes. Found by the node's cases (a call at
+  start failed with "peer channel is retiring"), committed on its own.
+- Gate cases: `Node.*` (two nodes forming one cluster, a counter hosted
+  system through the Context, a deadline, readiness and the phase, reset
+  propagation, the dial-back answer, the budget, stopping) and
+  `TwoProcess.ADannanNodeJoinsAMachaClusterAsABareMember` (Dannan's whole
+  node joins a running Macha cluster through a seed: each lists the other,
+  Macha's telemetry arrives, Macha's Status lists it). Macha's protocol 23
+  types moved to `tools/macha_types.h`, shared by `dannan-node` and the
+  interop tests.
+- Also: clangd's index, committed with steps 1 and 2 before it was
+  ignored, is no longer tracked.
+- **Gate: `dannan_tests` 298, `dagda_tests` 1, `dannan_interop_tests` 13**;
+  the node and client cases 25 times over, the two-process cases 5.
+
 ## 2026-11-03, night -- step 4c: supervision
 
 On `feature/control-plane` (this commit):

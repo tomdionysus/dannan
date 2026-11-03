@@ -41,11 +41,13 @@ add_library(dannan SHARED
   status/activity.cpp
   status/events.cpp
   status/observation.cpp
+  status/readiness.cpp
   status/surface.cpp
   status/telemetry.cpp
   supervise/supervised.cpp
   supervise/supervisor.cpp
   version.cpp
+  node.cpp
 )
 target_include_directories(dannan
   PUBLIC
