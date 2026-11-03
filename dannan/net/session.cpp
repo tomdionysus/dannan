@@ -146,7 +146,9 @@ void Session::deliver(Frame frame) {
         _retiring = true;
       }
       settle();
-    } else if (_routes->is_notification(type) && _handlers.request) {
+    } else if (_handlers.request && (_routes->is_notification(type) || !_routes->find(type))) {
+      // A registered notification, or a user type nobody here registered:
+      // the user's to take or ignore.
       try {
         _handlers.request(std::move(frame), Reply{});
       } catch (...) {
