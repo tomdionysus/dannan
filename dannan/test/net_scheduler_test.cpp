@@ -320,6 +320,8 @@ TEST(Scheduler, StoppingFinishesRunningWorkAndDropsTheQueue) {
   ASSERT_TRUE(gate.wait_for_entries(1));
   auto dropped = ask(*scheduler, peer(1), 3, put_commit, FrameType::control, Bytes{2});
   std::thread stopper([&] { scheduler->stop(); });
+  // The queue is dropped before the running job is let go.
+  while (!scheduler->stopping()) std::this_thread::yield();
   gate.open();
   stopper.join();
   EXPECT_TRUE(answered_within(running, 2s));
