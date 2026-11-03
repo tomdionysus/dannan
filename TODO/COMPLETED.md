@@ -12,6 +12,19 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
 
+## 2026-11-03, night -- secrets never in ordinary memory
+
+Asked by Lugh, needed by Dagda too: `SecureAllocator` and `SecureBuffer` (a
+growable buffer on secure pages), `net::BasicWriter<Buffer>` (`Writer` is
+`BasicWriter<Bytes>`; a record holding secrets is encoded into a
+`SecureBuffer`), `hkdf_sha256_secret` and `aes_gcm_open_secure` (derived
+keys and opened plaintext into secure memory), `Secret` from a
+`SecureBuffer`. `Argon2Costs::valid()` with a ceiling (2 GiB, 64 passes,
+64 lanes), checked by `argon2id` and by custody before a passphrase is
+asked for, so a crafted file cannot make a node allocate a terabyte.
+Custody now keeps its key-encryption key and opened body in secure memory.
+**Gate: `dannan_tests` 363, `dagda_tests` 1.**
+
 ## 2026-11-03, night -- channels
 
 `net/fanout.*` and `Context::channels()`: named channels with a delivery

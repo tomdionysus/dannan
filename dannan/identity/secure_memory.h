@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <span>
 #include <string>
+#include <vector>
 
 // Memory for key material, for the whole stack: Dannan's cluster and node
 // keys, Dagda's domain keys, Lugh's master key and signing keys. One home,
@@ -50,6 +51,41 @@ class SecureBytes {
   bool _locked = false;
 };
 
+// Allocates as SecureBytes does: pages of its own, locked, out of core
+// dumps and forks, wiped before they are released. For a buffer that grows
+// (a record being encoded, a passphrase typed a character at a time); a
+// buffer that moves to larger pages wipes the old ones.
+template <class T>
+struct SecureAllocator {
+  using value_type = T;
+  SecureAllocator() noexcept = default;
+  template <class U>
+  SecureAllocator(const SecureAllocator<U>&) noexcept {}
+  T* allocate(size_t count);
+  void deallocate(T* pointer, size_t count) noexcept;
+  template <class U>
+  bool operator==(const SecureAllocator<U>&) const noexcept {
+    return true;
+  }
+};
+
+// The pages behind SecureAllocator.
+void* secure_allocate(size_t bytes);
+void secure_deallocate(void* pointer, size_t bytes) noexcept;
+
+template <class T>
+T* SecureAllocator<T>::allocate(size_t count) {
+  return static_cast<T*>(secure_allocate(count * sizeof(T)));
+}
+
+template <class T>
+void SecureAllocator<T>::deallocate(T* pointer, size_t count) noexcept {
+  secure_deallocate(pointer, count * sizeof(T));
+}
+
+// A growable byte buffer on secure pages.
+using SecureBuffer = std::vector<uint8_t, SecureAllocator<uint8_t>>;
+
 // A secret value: key material, a password, a token. It has no conversion
 // to text and no stream operator, so it cannot reach a log by accident; it
 // is revealed only by asking. Compared in constant time.
@@ -57,6 +93,9 @@ class Secret {
  public:
   explicit Secret(std::span<const uint8_t> bytes);
   explicit Secret(SecureBytes bytes) noexcept : _bytes(std::move(bytes)) {}
+  // From a growable secure buffer (a passphrase typed a character at a
+  // time); the buffer is wiped.
+  explicit Secret(SecureBuffer&& buffer);
   // `size` fresh random bytes. Throws std::runtime_error if the generator
   // fails.
   static Secret random(size_t size);

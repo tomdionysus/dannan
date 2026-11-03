@@ -7,28 +7,7 @@
 
 #include "dannan/net/codec.h"
 
-#include <limits>
-
 namespace dannan::net {
-
-void Writer::u16(uint16_t value) {
-  _data.push_back(static_cast<uint8_t>(value >> 8));
-  _data.push_back(static_cast<uint8_t>(value));
-}
-
-void Writer::u32(uint32_t value) {
-  for (int shift = 24; shift >= 0; shift -= 8) _data.push_back(static_cast<uint8_t>(value >> shift));
-}
-
-void Writer::u64(uint64_t value) {
-  for (int shift = 56; shift >= 0; shift -= 8) _data.push_back(static_cast<uint8_t>(value >> shift));
-}
-
-void Writer::bytes(std::span<const uint8_t> value) {
-  if (value.size() > std::numeric_limits<uint32_t>::max()) throw std::length_error("encoded blob too large");
-  u32(static_cast<uint32_t>(value.size()));
-  raw(value);
-}
 
 void Reader::need(size_t count) const {
   if (count > remaining()) throw DecodeError("truncated input");

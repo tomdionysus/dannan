@@ -18,6 +18,7 @@
 
 #include "dannan/identity/argon2.h"
 #include "dannan/identity/key_custody.h"
+#include "dannan/net/codec.h"
 #include "dannan/test/fixtures/temp_dir.h"
 
 namespace dannan::identity {
@@ -57,6 +58,18 @@ TEST(Argon2id, MatchesRfc9106) {
   const std::vector<uint8_t> associated(12, 0x04);
   const auto tag = argon2id(password, salt, Argon2Costs{32, 3, 4}, 32, secret, associated);
   EXPECT_EQ(hex(tag.reveal()), "0d640df58d78766c08c037a34a8b53c9d01ef0452d75b65eb52520e96b01e659");
+}
+
+// Costs from a file or a record are checked against a ceiling before
+// anything is spent.
+TEST(Argon2id, RefusesCostsBeyondTheCeiling) {
+  const std::array<uint8_t, 16> salt{};
+  EXPECT_TRUE(Argon2Costs{}.valid());
+  EXPECT_FALSE((Argon2Costs{Argon2Costs::max_memory_kib + 1, 1, 1}.valid()));
+  EXPECT_FALSE((Argon2Costs{1024, Argon2Costs::max_iterations + 1, 1}.valid()));
+  EXPECT_FALSE((Argon2Costs{1u << 20, 1, Argon2Costs::max_lanes + 1}.valid()));
+  EXPECT_FALSE((Argon2Costs{1024, 0, 1}.valid()));
+  EXPECT_THROW(argon2id(phrase("p").reveal(), salt, Argon2Costs{Argon2Costs::max_memory_kib + 1, 1, 1}), std::invalid_argument);
 }
 
 TEST(KeyCustody, MadeUnderACredentialOpensUnderIt) {
@@ -164,6 +177,33 @@ TEST(KeyCustody, MadeUnderAPassphraseOpensUnderIt) {
   // Each source opens only what it made.
   EXPECT_THROW(KeyCustody::open(dir.path(), KeySource::systemd_credential("k", dir.path() / "credentials")), std::runtime_error);
   (void)custody;
+}
+
+// A crafted file asking for a terabyte is refused before the passphrase is
+// asked for or a byte spent.
+TEST(KeyCustody, RefusesCraftedCostsBeforeSpendingAnything) {
+  test::TempDir dir;
+  net::Writer header;
+  for (const char c : std::string("DNNKEY01")) header.u8(static_cast<uint8_t>(c));
+  header.u8(static_cast<uint8_t>(KeySource::Kind::passphrase));
+  header.u32(0xffffffffu);
+  header.u32(1);
+  header.u32(1);
+  header.fixed(std::array<uint8_t, 16>{});
+  header.fixed(std::array<uint8_t, 16>{});
+  header.fixed(std::array<uint8_t, 12>{});
+  header.fixed(std::array<uint8_t, 16>{});
+  header.bytes(net::Bytes(8, 0));
+  std::filesystem::create_directories(dir.path() / "identity");
+  std::ofstream(dir.path() / "identity" / "custody", std::ios::binary)
+      .write(reinterpret_cast<const char*>(header.data().data()), static_cast<std::streamsize>(header.data().size()));
+  bool asked = false;
+  const auto source = KeySource::typed_passphrase([&] {
+    asked = true;
+    return phrase("p");
+  });
+  EXPECT_THROW(KeyCustody::open(dir.path(), source), std::runtime_error);
+  EXPECT_FALSE(asked);
 }
 
 // Keys for hosted systems' node-local use (Dagda seals its node-local

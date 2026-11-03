@@ -20,8 +20,8 @@ namespace dannan::identity {
 Secret argon2id(std::span<const uint8_t> password, std::span<const uint8_t> salt, const Argon2Costs& costs, size_t length, std::span<const uint8_t> secret,
                 std::span<const uint8_t> associated) {
   if (salt.size() < 8) throw std::invalid_argument("an Argon2id salt is at least 8 bytes");
-  if (!costs.lanes || !costs.iterations || costs.memory_kib < 8 * costs.lanes || length < 4)
-    throw std::invalid_argument("Argon2id costs: at least one lane and one pass, 8 KiB per lane, a 4-byte tag");
+  if (!costs.valid() || length < 4)
+    throw std::invalid_argument("Argon2id costs: one to 64 lanes, one to 64 passes, 8 KiB per lane to 2 GiB, and a tag of at least 4 bytes");
   std::unique_ptr<EVP_KDF, decltype(&EVP_KDF_free)> kdf(EVP_KDF_fetch(nullptr, "ARGON2ID", nullptr), EVP_KDF_free);
   if (!kdf) throw std::runtime_error("Argon2id is not available in this OpenSSL (3.2 or later is needed)");
   std::unique_ptr<EVP_KDF_CTX, decltype(&EVP_KDF_CTX_free)> context(EVP_KDF_CTX_new(kdf.get()), EVP_KDF_CTX_free);

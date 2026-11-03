@@ -34,22 +34,51 @@ size_t page_size() noexcept {
   return page > 0 ? static_cast<size_t>(page) : 4096;
 }
 
+size_t mapped_size(size_t bytes) noexcept {
+  const auto page = page_size();
+  return (bytes + page - 1) / page * page;
+}
+
+// Pages of their own, kept out of dumps and forks; whether they could be
+// locked.
+std::pair<void*, bool> map_secure(size_t mapped) {
+  void* pages = ::mmap(nullptr, mapped, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+  if (pages == MAP_FAILED) throw std::runtime_error(std::string("cannot map secure memory: ") + std::strerror(errno));
+  const bool locked = ::mlock(pages, mapped) == 0;
+#if defined(__linux__)
+  (void)::madvise(pages, mapped, MADV_DONTDUMP);
+  (void)::madvise(pages, mapped, MADV_DONTFORK);
+#elif defined(__APPLE__)
+  (void)::minherit(pages, mapped, VM_INHERIT_NONE);
+#endif
+  return {pages, locked};
+}
+
+void unmap_secure(void* pages, size_t mapped, bool locked) noexcept {
+  cleanse({static_cast<uint8_t*>(pages), mapped});
+  if (locked) (void)::munlock(pages, mapped);
+  (void)::munmap(pages, mapped);
+}
+
 }  // namespace
+
+void* secure_allocate(size_t bytes) {
+  if (!bytes) bytes = 1;
+  // Whether it locked is not kept: munlock of an unlocked page is harmless.
+  return map_secure(mapped_size(bytes)).first;
+}
+
+void secure_deallocate(void* pointer, size_t bytes) noexcept {
+  if (!pointer) return;
+  unmap_secure(pointer, mapped_size(bytes ? bytes : 1), true);
+}
 
 SecureBytes::SecureBytes(size_t size) : _size(size) {
   if (!size) return;
-  const auto page = page_size();
-  _mapped = (size + page - 1) / page * page;
-  void* pages = ::mmap(nullptr, _mapped, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
-  if (pages == MAP_FAILED) throw std::runtime_error(std::string("cannot map secure memory: ") + std::strerror(errno));
+  _mapped = mapped_size(size);
+  const auto [pages, locked] = map_secure(_mapped);
   _data = static_cast<uint8_t*>(pages);
-  _locked = ::mlock(pages, _mapped) == 0;
-#if defined(__linux__)
-  (void)::madvise(pages, _mapped, MADV_DONTDUMP);
-  (void)::madvise(pages, _mapped, MADV_DONTFORK);
-#elif defined(__APPLE__)
-  (void)::minherit(pages, _mapped, VM_INHERIT_NONE);
-#endif
+  _locked = locked;
 }
 
 SecureBytes::~SecureBytes() { release(); }
@@ -73,9 +102,7 @@ SecureBytes& SecureBytes::operator=(SecureBytes&& other) noexcept {
 
 void SecureBytes::release() noexcept {
   if (!_data) return;
-  cleanse({_data, _mapped});
-  if (_locked) (void)::munlock(_data, _mapped);
-  (void)::munmap(_data, _mapped);
+  unmap_secure(_data, _mapped, _locked);
   _data = nullptr;
   _size = 0;
   _mapped = 0;
@@ -83,6 +110,12 @@ void SecureBytes::release() noexcept {
 }
 
 Secret::Secret(std::span<const uint8_t> bytes) : _bytes(bytes.size()) { std::copy(bytes.begin(), bytes.end(), _bytes.data()); }
+
+Secret::Secret(SecureBuffer&& buffer) : _bytes(buffer.size()) {
+  std::copy(buffer.begin(), buffer.end(), _bytes.data());
+  cleanse(buffer);
+  buffer.clear();
+}
 
 Secret Secret::random(size_t size) {
   SecureBytes bytes(size);
