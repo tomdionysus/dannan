@@ -55,6 +55,20 @@ TEST(SecureBytes, MovesWithoutCopying) {
   static_assert(!std::is_copy_assignable_v<SecureBytes>);
 }
 
+// Every allocation that could not be locked is counted, process-wide, so a
+// node can say once that some of its keys may be swapped.
+TEST(SecureBytes, UnlockedAllocationsAreCounted) {
+  const auto before = unlocked_secure_allocations();
+  std::vector<SecureBytes> held;
+  uint64_t unlocked = 0;
+  for (int i = 0; i < 8; ++i) {
+    held.emplace_back(64);
+    if (!held.back().locked()) ++unlocked;
+  }
+  // Other threads may allocate meanwhile, never fewer than these.
+  EXPECT_GE(unlocked_secure_allocations() - before, unlocked);
+}
+
 TEST(SecureBytes, AnEmptyOneIsValid) {
   SecureBytes none(0);
   EXPECT_EQ(none.size(), 0u);
