@@ -10,10 +10,14 @@
 add_library(dannan_test_fixtures INTERFACE)
 target_include_directories(dannan_test_fixtures INTERFACE ${PROJECT_SOURCE_DIR})
 target_link_libraries(dannan_test_fixtures INTERFACE GTest::gtest Threads::Threads)
+# Tests write only inside the build tree.
+target_compile_definitions(dannan_test_fixtures INTERFACE DANNAN_TEST_TEMP_ROOT="${PROJECT_BINARY_DIR}/test-tmp")
 
 add_executable(dannan_tests
   contract_test.cpp
   fixtures_test.cpp
+  identity_durable_file_test.cpp
+  net_codec_test.cpp
   sched_memory_test.cpp
   sched_walk_retry_test.cpp
   sched_work_test.cpp

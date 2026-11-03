@@ -47,11 +47,12 @@ configure line for Macha is in `COMPLETED.md`).
 
 ## Resume here (2026-11-03, evening)
 
-Written for a session starting from nothing. Step 0 is done
-(`COMPLETED.md`): the skeleton builds against MacPorts and the gate is
-7 + 1. The next session is **step 1**, the vocabulary (Next, 1), on
-`develop`: each inventory row it covers written as a GoogleTest case
-first and watched to fail, then the code.
+Written for a session starting from nothing. Steps 0 and 1 are
+done (`COMPLETED.md`): the skeleton, then the vocabulary, gate 78 + 1.
+The next session is **step 2**, the transport on Asio (Next, 2), on
+`feature/transport` off `develop`: settle its two open design points
+first, write the transport table's rows as `dannan_tests` cases (Macha's
+`tests/test_rpc_cluster.cpp` cases are the model), then the code.
 
 Read in this order: this file to the end of Standing rules;
 `2026-11-02-dannan-plan.md` whole; the inventory; the head of
@@ -449,7 +450,7 @@ under Waiting on Tom.
       with `TimeSource`), the in-process cluster of Dannan nodes (step 2,
       with the transport), forked-process isolation where a case needs it.
 
-### 1. The vocabulary (step 1)
+### 1. The vocabulary (step 1) - done 2026-11-03
 
 What the transport stands on, each small and specified: `sched/` (the
 work classes `control`, `foreground`, `read_ahead`, `loader`,
