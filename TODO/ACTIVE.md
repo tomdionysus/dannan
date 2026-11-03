@@ -344,6 +344,17 @@ words, so a session does not re-derive it.
   connection closes, which answers every pending call. In the inventory's
   transport table.
 
+- (2026-11-03 evening, this plan; step 2's open design points) **How a
+  request is executed is a property of its type's registration**, beside
+  its lanes and classes: `fast_control` (answered by the small pool that
+  never queues behind storage-backed control work; Dannan's `ping` and
+  `members`) and `ordered` (one job per peer at a time, in arrival order,
+  across a small bounded pool; Macha registers its three metadata
+  mutations so). The server's per-class queue byte bounds and worker
+  counts are Dannan's, as `ServerLimits`; the ordered class's job and
+  byte bounds are the registering hosted system's to size, defaulting to
+  Macha's.
+
 ## Standing rules
 
 ### Style

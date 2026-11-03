@@ -1,0 +1,333 @@
+//
+// Dannan - The Distributed Substrate
+//
+// Copyright (C) 2026 Tom Cully <mail@tomcully.com>
+// Licensed under the GNU GPLv3 - see <https://www.gnu.org/licenses/gpl-3.0.html>
+//
+
+// The server's request scheduler, without sockets: the inventory's
+// transport row "server request classes with byte-bounded queues per class,
+// a fast-control allow-list, an ordered pool with per-peer FIFO, rejection
+// counters, per-type and per-frame timings", and "a queued request can be
+// promoted or cancelled". Laws 1 to 4: each class has its own executor, so
+// no class waits behind another's held workers.
+
+#include <gtest/gtest.h>
+
+#include <atomic>
+#include <future>
+#include <mutex>
+#include <thread>
+#include <vector>
+
+#include "dannan/net/scheduler.h"
+#include "dannan/test/fixtures/gate.h"
+
+namespace dannan::net {
+namespace {
+
+using namespace std::chrono_literals;
+using sched::FrameType;
+
+constexpr MessageType have_object{3};
+constexpr MessageType get_object{4};
+constexpr MessageType put_object{5};
+constexpr MessageType put_commit{30};
+constexpr MessageType accept_commit{31};
+
+std::shared_ptr<const RouteTable> routes() {
+  auto table = RouteTable::with_dannan_types();
+  table.add(have_object, {"have_object", Lanes::control, Frames::any, false});
+  table.add(get_object, {"get_object", Lanes::data, Frames::not_control, false});
+  table.add(put_object, {"put_object", Lanes::data, Frames::not_control, false});
+  table.add(put_commit, {"put_metadata_commit", Lanes::control, Frames::any, false, false, true});
+  table.add(accept_commit, {"accept_metadata_commit", Lanes::control, Frames::any, false, false, true});
+  return std::make_shared<const RouteTable>(std::move(table));
+}
+
+membership::NodeRecord peer(uint8_t n) {
+  membership::NodeRecord node;
+  node.id.bytes[0] = n;
+  return node;
+}
+
+// Submits a request and returns a future for its answer.
+std::future<Message> ask(RequestScheduler& scheduler, const membership::NodeRecord& from, uint64_t id, MessageType type, FrameType frame, Bytes payload = {}) {
+  auto answer = std::make_shared<std::promise<Message>>();
+  auto future = answer->get_future();
+  scheduler.submit(from, Frame{id, frame, {type, std::move(payload), {}}}, Reply([answer](Message reply) { answer->set_value(std::move(reply)); }));
+  return future;
+}
+
+bool answered_within(std::future<Message>& future, std::chrono::milliseconds bound) { return future.wait_for(bound) == std::future_status::ready; }
+
+// Every class keeps answering while another class's workers are all held.
+TEST(Scheduler, HeldWorkersOfOneClassNeverDelayAnother) {
+  struct Case {
+    const char* name;
+    MessageType held;
+    FrameType frame;
+    size_t count;
+    size_t entries;
+    std::vector<std::pair<MessageType, FrameType>> prompt;
+  };
+  const std::vector<Case> cases{
+      {"every DATA worker on speculative puts",
+       put_object,
+       FrameType::speculative,
+       8,
+       6,
+       {{message::ping, FrameType::control}, {message::members, FrameType::control}}},
+      {"both control workers on slow handlers",
+       have_object,
+       FrameType::control,
+       2,
+       2,
+       {{message::ping, FrameType::control}, {message::members, FrameType::control}}},
+      {"loader puts on the DATA workers", put_object, FrameType::loader, 8, 6, {{get_object, FrameType::foreground}}},
+  };
+  for (const auto& c : cases) {
+    test::Gate gate;
+    test::GateOpener opener(gate);
+    RequestScheduler scheduler(routes(), ServerLimits{}, [&](const membership::NodeRecord&, FrameType frame, const Message& request) {
+      if (request.type == c.held && frame == c.frame) gate.enter_and_wait();
+      return Message{message::ok, {}, {}};
+    });
+    std::vector<std::future<Message>> held;
+    for (size_t i = 0; i < c.count; ++i) held.push_back(ask(scheduler, peer(1), 2 * i + 1, c.held, c.frame));
+    ASSERT_TRUE(gate.wait_for_entries(c.entries)) << c.name;
+    for (const auto& [type, frame] : c.prompt) {
+      auto answer = ask(scheduler, peer(2), 1001, type, frame);
+      EXPECT_TRUE(answered_within(answer, 1s)) << c.name << ": " << scheduler.routes().name(type);
+    }
+    gate.open();
+    for (auto& future : held) EXPECT_TRUE(answered_within(future, 2s)) << c.name;
+  }
+}
+
+// Ordered work: one job per peer at a time, in arrival order, while another
+// peer's job may run beside it.
+TEST(Scheduler, OrderedWorkKeepsEachPeersOrderAndRunsPeersSideBySide) {
+  test::Gate first;
+  test::GateOpener opener(first);
+  std::mutex mutex;
+  std::vector<uint8_t> first_peer;
+  std::atomic_bool second_peer_ran{false};
+  std::atomic_bool first_peer_second_ran{false};
+  ServerLimits limits;
+  limits.ordered_workers = 2;
+  RequestScheduler scheduler(routes(), limits, [&](const membership::NodeRecord& from, FrameType, const Message& request) {
+    if (from.id.bytes[0] == 1) {
+      {
+        std::lock_guard lock(mutex);
+        first_peer.push_back(request.payload.front());
+      }
+      if (request.payload.front() == 1) first.enter_and_wait();
+      if (request.payload.front() == 2) first_peer_second_ran = true;
+    } else {
+      second_peer_ran = true;
+    }
+    return Message{message::bool_reply, Bytes{1}, {}};
+  });
+  auto a1 = ask(scheduler, peer(1), 1, put_commit, FrameType::control, Bytes{1});
+  ASSERT_TRUE(first.wait_for_entries(1));
+  auto a2 = ask(scheduler, peer(1), 3, put_commit, FrameType::control, Bytes{2});
+  auto b1 = ask(scheduler, peer(2), 1, put_commit, FrameType::control, Bytes{3});
+  EXPECT_TRUE(answered_within(b1, 2s));
+  EXPECT_TRUE(second_peer_ran.load());
+  EXPECT_FALSE(first_peer_second_ran.load());
+  first.open();
+  EXPECT_TRUE(answered_within(a1, 2s));
+  EXPECT_TRUE(answered_within(a2, 2s));
+  std::lock_guard lock(mutex);
+  EXPECT_EQ(first_peer, (std::vector<uint8_t>{1, 2}));
+}
+
+// A commit's control-class mutation is taken before queued background ones,
+// and background work cannot fill the queue they share.
+TEST(Scheduler, ControlClassOrderedWorkGoesFirstAndKeepsAQuarterOfTheQueue) {
+  test::Gate first;
+  test::GateOpener opener(first);
+  std::mutex mutex;
+  std::vector<uint8_t> order;
+  ServerLimits limits;
+  limits.ordered_workers = 1;
+  limits.ordered_pending_jobs = 4;
+  limits.ordered_pending_bytes = 64;
+  RequestScheduler scheduler(routes(), limits, [&](const membership::NodeRecord&, FrameType, const Message& request) {
+    const auto tag = request.payload.front();
+    if (tag == 1) first.enter_and_wait();
+    std::lock_guard lock(mutex);
+    order.push_back(tag);
+    return Message{message::bool_reply, Bytes{1}, {}};
+  });
+  auto running = ask(scheduler, peer(1), 1, put_commit, FrameType::speculative, Bytes{1});
+  ASSERT_TRUE(first.wait_for_entries(1));
+  auto b2 = ask(scheduler, peer(2), 1, put_commit, FrameType::speculative, Bytes{2});
+  auto b3 = ask(scheduler, peer(3), 1, put_commit, FrameType::speculative, Bytes{3});
+  auto b4 = ask(scheduler, peer(4), 1, put_commit, FrameType::speculative, Bytes{4});
+  // Three of four slots are background's: a fourth queued is refused.
+  auto refused = ask(scheduler, peer(5), 1, put_commit, FrameType::speculative, Bytes{6});
+  ASSERT_TRUE(answered_within(refused, 2s));
+  EXPECT_EQ(refused.get().type, message::error);
+  auto commit = ask(scheduler, peer(6), 1, accept_commit, FrameType::control, Bytes{5});
+  first.open();
+  for (auto* future : {&running, &b2, &b3, &b4, &commit}) EXPECT_TRUE(answered_within(*future, 2s));
+  std::lock_guard lock(mutex);
+  EXPECT_EQ(order, (std::vector<uint8_t>{1, 5, 2, 3, 4}));
+  EXPECT_EQ(scheduler.stats().ordered_rejected, 1u);
+}
+
+// Every class's queue is bounded in bytes; a request over it is answered at
+// once with a refusal to try later, never queued, and counted.
+TEST(Scheduler, AQueueOverItsByteBoundRefusesAndCounts) {
+  test::Gate gate;
+  test::GateOpener opener(gate);
+  ServerLimits limits;
+  limits.fast_control_pending_bytes = 1;
+  limits.control_pending_bytes = 1;
+  limits.data_pending_bytes = 1;
+  limits.ordered_pending_bytes = 8;
+  std::atomic<int> calls{0};
+  RequestScheduler scheduler(routes(), limits, [&](const membership::NodeRecord&, FrameType, const Message&) {
+    ++calls;
+    return Message{message::ok, {}, {}};
+  });
+  auto fast = ask(scheduler, peer(1), 1, message::ping, FrameType::control, Bytes(2, 0));
+  auto control = ask(scheduler, peer(1), 3, have_object, FrameType::control, Bytes(2, 0));
+  auto data = ask(scheduler, peer(1), 5, get_object, FrameType::foreground, Bytes(2, 0));
+  auto ordered = ask(scheduler, peer(1), 7, accept_commit, FrameType::control, Bytes(9, 0));
+  for (auto* future : {&fast, &control, &data, &ordered}) {
+    ASSERT_TRUE(answered_within(*future, 2s));
+    const auto refusal = refusal_of(future->get());
+    ASSERT_TRUE(refusal);
+    EXPECT_TRUE(try_later(*refusal));
+  }
+  EXPECT_EQ(calls.load(), 0);
+  const auto stats = scheduler.stats();
+  EXPECT_EQ(stats.rejected, 3u);
+  EXPECT_EQ(stats.ordered_rejected, 1u);
+  // Within the bound, each is served.
+  EXPECT_TRUE(answered_within(*std::make_unique<std::future<Message>>(ask(scheduler, peer(1), 9, message::ping, FrameType::control)), 2s));
+}
+
+TEST(Scheduler, RecordsTimingsPerTypeAndPerFrameClass) {
+  RequestScheduler scheduler(routes(), ServerLimits{}, [](const membership::NodeRecord&, FrameType, const Message&) { return Message{message::ok, {}, {}}; });
+  auto a = ask(scheduler, peer(1), 1, message::ping, FrameType::control);
+  auto b = ask(scheduler, peer(1), 3, get_object, FrameType::foreground);
+  ASSERT_TRUE(answered_within(a, 2s));
+  ASSERT_TRUE(answered_within(b, 2s));
+  for (int spin = 0; spin < 200 && scheduler.stats().message_timings.size() < 2; ++spin) std::this_thread::sleep_for(5ms);
+  const auto stats = scheduler.stats();
+  EXPECT_EQ(stats.message_timings.at(message::ping).requests, 1u);
+  EXPECT_EQ(stats.message_timings.at(get_object).requests, 1u);
+  EXPECT_EQ(stats.frame_timings.at(FrameType::control).requests, 1u);
+  EXPECT_EQ(stats.frame_timings.at(FrameType::foreground).requests, 1u);
+}
+
+// A queued read-ahead waits behind held lower-class work until promoted to
+// foreground, then runs on a worker kept for it, as foreground.
+TEST(Scheduler, APromotedQueuedRequestRunsAtItsNewClass) {
+  test::Gate loaders;
+  test::GateOpener opener(loaders);
+  std::promise<FrameType> ran_as;
+  RequestScheduler scheduler(routes(), ServerLimits{}, [&](const membership::NodeRecord&, FrameType frame, const Message& request) {
+    if (request.type == put_object) loaders.enter_and_wait();
+    if (request.type == get_object) ran_as.set_value(frame);
+    return Message{message::ok, {}, {}};
+  });
+  std::vector<std::future<Message>> held;
+  for (uint64_t i = 0; i < 8; ++i) held.push_back(ask(scheduler, peer(1), 2 * i + 1, put_object, FrameType::loader, Bytes{1}));
+  ASSERT_TRUE(loaders.wait_for_entries(6));
+  auto read_ahead = ask(scheduler, peer(1), 101, get_object, FrameType::read_ahead, Bytes{1});
+  EXPECT_FALSE(answered_within(read_ahead, 50ms));
+  scheduler.promote(peer(1).id, 101, FrameType::foreground);
+  EXPECT_TRUE(answered_within(read_ahead, 2s));
+  EXPECT_EQ(ran_as.get_future().get(), FrameType::foreground);
+  loaders.open();
+}
+
+TEST(Scheduler, ACancelledQueuedRequestNeverRuns) {
+  test::Gate gate;
+  test::GateOpener opener(gate);
+  std::atomic<int> ran{0};
+  ServerLimits limits;
+  limits.ordered_workers = 1;
+  RequestScheduler scheduler(routes(), limits, [&](const membership::NodeRecord&, FrameType, const Message& request) {
+    ++ran;
+    if (request.payload.front() == 1) gate.enter_and_wait();
+    return Message{message::bool_reply, Bytes{1}, {}};
+  });
+  auto running = ask(scheduler, peer(1), 1, put_commit, FrameType::control, Bytes{1});
+  ASSERT_TRUE(gate.wait_for_entries(1));
+  auto queued = ask(scheduler, peer(1), 3, put_commit, FrameType::control, Bytes{2});
+  scheduler.cancel(peer(1).id, 3);
+  EXPECT_EQ(scheduler.stats().ordered_pending_jobs, 0u);
+  gate.open();
+  EXPECT_TRUE(answered_within(running, 2s));
+  EXPECT_EQ(ran.load(), 1);
+}
+
+// A handler that throws answers 500; the worker goes on.
+TEST(Scheduler, AThrowingHandlerAnswersAndTheWorkerGoesOn) {
+  RequestScheduler scheduler(routes(), ServerLimits{}, [](const membership::NodeRecord&, FrameType, const Message& request) -> Message {
+    if (request.payload.empty()) throw std::runtime_error("broken");
+    return Message{message::ok, {}, {}};
+  });
+  auto broken = ask(scheduler, peer(1), 1, have_object, FrameType::control);
+  ASSERT_TRUE(answered_within(broken, 2s));
+  EXPECT_EQ(refusal_of(broken.get())->status, 500);
+  auto fine = ask(scheduler, peer(1), 3, have_object, FrameType::control, Bytes{1});
+  ASSERT_TRUE(answered_within(fine, 2s));
+  EXPECT_EQ(fine.get().type, message::ok);
+}
+
+// A request's bytes stay charged until its handler is done with it.
+TEST(Scheduler, ARequestIsChargedUntilItsHandlerReturns) {
+  sched::RetainedMemoryLedger memory(1 << 20, 64 << 10, 256 << 10, 64 << 10, 64 << 10);
+  test::Gate gate;
+  test::GateOpener opener(gate);
+  RequestScheduler scheduler(
+      routes(), ServerLimits{},
+      [&](const membership::NodeRecord&, FrameType, const Message&) {
+        gate.enter_and_wait();
+        return Message{message::ok, {}, {}};
+      },
+      &memory);
+  auto answer = ask(scheduler, peer(1), 1, put_object, FrameType::loader, Bytes(64 << 10, 1));
+  ASSERT_TRUE(gate.wait_for_entries(1));
+  EXPECT_GE(memory.stats().used_bytes, 64u << 10);
+  gate.open();
+  ASSERT_TRUE(answered_within(answer, 2s));
+  for (int spin = 0; spin < 200 && memory.stats().used_bytes; ++spin) std::this_thread::sleep_for(5ms);
+  EXPECT_EQ(memory.stats().used_bytes, 0u);
+}
+
+// Stopping finishes the jobs that are running and drops the rest unanswered:
+// their sessions are closing anyway.
+TEST(Scheduler, StoppingFinishesRunningWorkAndDropsTheQueue) {
+  test::Gate gate;
+  test::GateOpener opener(gate);
+  std::atomic<int> ran{0};
+  ServerLimits limits;
+  limits.ordered_workers = 1;
+  auto scheduler = std::make_unique<RequestScheduler>(routes(), limits, [&](const membership::NodeRecord&, FrameType, const Message&) {
+    ++ran;
+    gate.enter_and_wait();
+    return Message{message::bool_reply, Bytes{1}, {}};
+  });
+  auto running = ask(*scheduler, peer(1), 1, put_commit, FrameType::control, Bytes{1});
+  ASSERT_TRUE(gate.wait_for_entries(1));
+  auto dropped = ask(*scheduler, peer(1), 3, put_commit, FrameType::control, Bytes{2});
+  std::thread stopper([&] { scheduler->stop(); });
+  gate.open();
+  stopper.join();
+  EXPECT_TRUE(answered_within(running, 2s));
+  EXPECT_EQ(ran.load(), 1);
+  const auto stats = scheduler->stats();
+  EXPECT_EQ(stats.ordered_pending_jobs, 0u);
+  EXPECT_EQ(stats.ordered_active_jobs, 0u);
+}
+
+}  // namespace
+}  // namespace dannan::net

@@ -81,6 +81,18 @@ TEST(RouteTable, LanesAndFramesAreEnforcedByRegistration) {
   EXPECT_FALSE(routes.is_notification(message::ping));
 }
 
+// Health and membership answer from the fast pool; ordering is opted into.
+TEST(RouteTable, HealthAndMembershipAreFastControl) {
+  auto routes = RouteTable::with_dannan_types();
+  EXPECT_TRUE(routes.is_fast_control(message::ping));
+  EXPECT_TRUE(routes.is_fast_control(message::members));
+  EXPECT_FALSE(routes.is_fast_control(message::telemetry));
+  EXPECT_FALSE(routes.is_ordered(message::ping));
+  routes.add(MessageType{30}, {"put_metadata_commit", Lanes::control, Frames::any, false, false, true});
+  EXPECT_TRUE(routes.is_ordered(MessageType{30}));
+  EXPECT_FALSE(routes.is_ordered(MessageType{999}));
+}
+
 // A probe lane authenticates and closes; nothing flows on it.
 TEST(RouteTable, NothingFlowsOnTheProbeLane) {
   const auto routes = RouteTable::with_dannan_types();

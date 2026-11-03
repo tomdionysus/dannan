@@ -23,6 +23,7 @@ add_executable(dannan_tests
   net_codec_test.cpp
   net_outbound_test.cpp
   net_routes_record_test.cpp
+  net_scheduler_test.cpp
   net_session_test.cpp
   sched_memory_test.cpp
   sched_walk_retry_test.cpp

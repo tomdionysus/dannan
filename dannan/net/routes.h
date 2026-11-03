@@ -64,6 +64,12 @@ struct Registration {
   // Sent with request id 0, no reply expected; dispatched only if so
   // registered, discarded otherwise.
   bool notification = false;
+  // Answered, in the control frame, by the server's fast pool, which never
+  // queues behind storage-backed control work (health, membership).
+  bool fast_control = false;
+  // Executed one job per peer at a time, in arrival order, by the server's
+  // ordered pool: mutations whose order matters.
+  bool ordered = false;
 };
 
 // What each type may do on the wire. Built once at start, before any
@@ -83,6 +89,8 @@ class RouteTable {
   // protocol 23's default: the control lane and the control frame.
   bool allowed(MessageType type, Lane lane, sched::FrameType frame) const noexcept;
   bool is_notification(MessageType type) const noexcept;
+  bool is_fast_control(MessageType type) const noexcept;
+  bool is_ordered(MessageType type) const noexcept;
   // The registered name, or the number in decimal.
   std::string name(MessageType type) const;
 

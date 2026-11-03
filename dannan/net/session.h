@@ -61,23 +61,21 @@ struct Admission {
   std::string refused;
 };
 
-class Session;
-
 // The way to answer one inbound request; empty for a notification. Callable
-// once, from any thread; the reply goes at the request's class and is never
-// dropped for capacity. After the session closes it goes nowhere.
+// once, from any thread; a session's reply goes at the request's class and
+// is never dropped for capacity, and after the session closes it goes
+// nowhere. Later calls do nothing.
 class Reply {
  public:
   Reply() = default;
-  explicit operator bool() const noexcept { return _request_id != 0; }
-  void operator()(Message message);
+  explicit Reply(std::function<void(Message)> send) : _send(std::move(send)) {}
+  explicit operator bool() const noexcept { return static_cast<bool>(_send); }
+  void operator()(Message message) {
+    if (auto send = std::exchange(_send, {})) send(std::move(message));
+  }
 
  private:
-  friend class Session;
-  Reply(std::weak_ptr<Session> session, uint64_t request_id, sched::FrameType frame) : _session(std::move(session)), _request_id(request_id), _frame(frame) {}
-  std::weak_ptr<Session> _session;
-  uint64_t _request_id = 0;
-  sched::FrameType _frame = sched::FrameType::control;
+  std::function<void(Message)> _send;
 };
 
 // What a session's owner is told. Called on the session's strand, in
@@ -143,7 +141,6 @@ class Session : public std::enable_shared_from_this<Session> {
   Lane lane() const noexcept { return _established.lane; }
 
  private:
-  friend class Reply;
   struct Pending {
     std::function<void(CallOutcome)> done;
     boost::asio::any_io_executor executor;
