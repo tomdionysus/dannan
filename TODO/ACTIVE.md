@@ -61,7 +61,8 @@ with backoff, the three broadcasts, and reverse dial with maintained
 peers are done too (`COMPLETED.md`, gate 205 + 1 + 6). The two-process
 test passes too (`dannan_interop_tests`, 7). The frame capture
 is done too (`Interop.DannansFramesAreMachasByteForByte`, gate 206 + 1 +
-8): step 2's gate is whole. Next: merge `feature/transport` to `develop`,
+8), and the sanitizers ran clean after two fixes (`COMPLETED.md`): step
+2's gate is whole. Next: merge `feature/transport` to `develop`,
 `develop` to `main`, tag `0.1.0`, then step 3 in `../macha` (tell the Macha
 session first). Waiting on Tom, item 8, does not block it. Each from the transport table's rows with Macha's
 `tests/test_rpc_cluster.cpp` cases as the model; then the two-process
@@ -162,7 +163,10 @@ Two gates, and both are run.
 `dagda_tests` (`-DDANNAN_BUILD_TESTING=ON`, run the binaries), counts
 recorded in `COMPLETED.md` and never lower; a test is never deleted; time
 is injected and nothing sleeps; sanitizers before a release and to hunt a
-bug that cannot be pinned any other way. At every step that speaks the
+bug that cannot be pinned any other way (`build-asan/` with
+`ASAN_OPTIONS=detect_container_overflow=0`, `build-tsan/` with
+`TSAN_OPTIONS=suppressions=$PWD/dannan/test/tsan-suppressions.txt`; the
+flags are in `COMPLETED.md`'s 0.1.0 entries). At every step that speaks the
 wire, the two-process test: a Dannan node (a small executable built here)
 against the Macha binary over loopback, both ways round, in whatever form
 the step can prove (step 2: handshake, membership, telemetry, both lanes;
