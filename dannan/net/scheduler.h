@@ -93,6 +93,8 @@ class RequestScheduler {
   void stop();
 
   WorkStats stats() const;
+  // Whether stop() has begun: nothing queued after this runs.
+  bool stopping() const;
   const RouteTable& routes() const noexcept { return *_routes; }
 
  private:

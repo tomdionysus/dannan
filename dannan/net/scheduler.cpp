@@ -300,6 +300,11 @@ void RequestScheduler::stop() {
   for (auto& worker : _workers) worker.join();
 }
 
+bool RequestScheduler::stopping() const {
+  contract::Lock lock(_mutex);
+  return _stopping;
+}
+
 WorkStats RequestScheduler::stats() const {
   WorkStats out;
   {
