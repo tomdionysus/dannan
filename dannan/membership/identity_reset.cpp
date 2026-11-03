@@ -13,7 +13,7 @@
 namespace dannan::membership {
 namespace {
 
-constexpr std::array<uint8_t, 8> magic{'M', 'A', 'C', 'H', 'I', 'D', 'R', '1'};
+constexpr std::array<uint8_t, 8> magic{'D', 'N', 'N', 'R', 'S', 'T', '0', '1'};
 constexpr uint32_t max_records = 65536;
 
 }  // namespace

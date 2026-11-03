@@ -118,9 +118,9 @@ TEST(NodeId, IsSixteenRandomBytesShownAsHex) {
 }
 
 // The cluster key file is a secret shared by every node. Its derivation is
-// protocol 23's and is pinned here by its labels: master is SHA-256 of the
-// file without trailing line ends; auth and the cluster id are HKDF of master
-// under "macha/auth/v1" and "macha/cluster-id/v1".
+// wire v1's and is pinned here by its labels: master is SHA-256 of the file
+// without trailing line ends; auth and the cluster id are HKDF of master
+// under "dannan/auth/1" and "dannan/cluster-id/1".
 TEST(ClusterKey, DerivesFromTheFileWithoutItsLineEnds) {
   test::TempDir dir;
   const auto a = dir.path() / "a.key";
@@ -133,9 +133,9 @@ TEST(ClusterKey, DerivesFromTheFileWithoutItsLineEnds) {
   const std::string secret = "shared secret";
   const auto master = sha256(std::span(reinterpret_cast<const uint8_t*>(secret.data()), secret.size()));
   EXPECT_EQ(ka.master, master.bytes);
-  const std::string auth_label = "macha/auth/v1";
+  const std::string auth_label = "dannan/auth/1";
   EXPECT_EQ(ka.auth, hkdf_sha256(ka.master, {}, std::span(reinterpret_cast<const uint8_t*>(auth_label.data()), auth_label.size())));
-  const std::string id_label = "macha/cluster-id/v1";
+  const std::string id_label = "dannan/cluster-id/1";
   const auto id = hkdf_sha256(ka.master, {}, std::span(reinterpret_cast<const uint8_t*>(id_label.data()), id_label.size()));
   EXPECT_TRUE(std::equal(ka.cluster_id.begin(), ka.cluster_id.end(), id.begin()));
 }
@@ -157,19 +157,19 @@ TEST(ClusterKey, RefusesAMissingOrEmptyFile) {
   EXPECT_THROW(load_cluster_key(dir.path() / "empty.key"), std::runtime_error);
 }
 
-// A hosted system's keys are its own derivations from the master (Dagda's
-// storage key is "macha/storage/v1"); Dannan names none of them.
+// A hosted system's keys are its own derivations from the master, under
+// its own labels; Dannan names none of them.
 TEST(ClusterKey, DerivesAHostedSystemsKeyUnderItsLabel) {
   test::TempDir dir;
   std::ofstream(dir.path() / "a.key") << "secret";
   const auto key = load_cluster_key(dir.path() / "a.key");
-  const std::string label = "macha/storage/v1";
-  EXPECT_EQ(key.derive("macha/storage/v1"), hkdf_sha256(key.master, {}, std::span(reinterpret_cast<const uint8_t*>(label.data()), label.size())));
+  const std::string label = "store/storage/1";
+  EXPECT_EQ(key.derive("store/storage/1"), hkdf_sha256(key.master, {}, std::span(reinterpret_cast<const uint8_t*>(label.data()), label.size())));
 }
 
 // Sealing under a given nonce is what sealing under a fresh one does with
 // that nonce: deterministic, and opened by the ordinary open. It exists so
-// a frame can be compared byte for byte with another implementation's.
+// a frame's bytes can be pinned in a test.
 TEST(Crypto, SealingUnderAGivenNonceMatchesTheRandomPath) {
   std::array<uint8_t, 32> key{};
   for (size_t i = 0; i < key.size(); ++i) key[i] = static_cast<uint8_t>(i * 7 + 1);

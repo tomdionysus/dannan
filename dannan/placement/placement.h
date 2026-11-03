@@ -12,6 +12,7 @@
 #include <functional>
 #include <optional>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -29,12 +30,18 @@ using membership::NodeRecord;
 using Shard = uint32_t;
 inline constexpr uint64_t shard_count = uint64_t{1} << 32;
 
-// The salts capacity placement hashes under. Protocol 23's are the
-// default; a hosted system may place under its own.
-struct Salts {
-  std::string_view fallback = "macha/data-fallback/v7";
-  std::string_view extra_domain = "macha/data-extra-domain/v7";
+// How a hosted system places: the salts capacity placement hashes under,
+// which the system names (there is no default), and the advert holding
+// each node's capacity as a u64 (NodeRecord::advert_u64); a node without
+// it has none.
+struct Scheme {
+  std::string fallback_salt;
+  std::string extra_domain_salt;
+  std::string capacity_advert;
 };
+
+// A node's capacity under `advert`; zero without it.
+uint64_t capacity_of(const NodeRecord& node, const std::string& advert);
 
 // Plain rendezvous (highest random weight) over SHA-256(key, node id), for
 // placement that ignores capacity: up to `count` nodes, distinct failure
@@ -46,20 +53,22 @@ std::vector<NodeRecord> rendezvous(std::span<const uint8_t> key, const std::vect
 // the shard space in proportion to its domain's capacity; then every other
 // node, as deterministic fallbacks a full or offline owner spills to. With
 // count 1, weighted rendezvous over the shard: a newcomer takes only the
-// shards it wins. Empty for no nodes or no copies.
-std::vector<NodeRecord> by_capacity(std::span<const uint8_t> key, const std::vector<NodeRecord>& nodes, size_t count, const Salts& salts = {});
+// shards it wins. Empty for no nodes or no copies. Throws
+// std::invalid_argument for a scheme without both salts.
+std::vector<NodeRecord> by_capacity(std::span<const uint8_t> key, const std::vector<NodeRecord>& nodes, size_t count, const Scheme& scheme);
 
 // The most logical bytes storable as `replicas` copies on distinct nodes,
 // distinct failure domains where there are enough: what a filesystem
 // reports, not the sum over R.
-uint64_t logical_capacity(const std::vector<NodeRecord>& nodes, size_t replicas);
+uint64_t logical_capacity(const std::vector<NodeRecord>& nodes, size_t replicas, const std::string& capacity_advert);
 
 // A critical-path fan-out's order: the local replica first, then peers by
 // measured round trip, unmeasured last; stable otherwise.
 std::vector<NodeRecord> order_commit_replicas(std::vector<NodeRecord> replicas, const identity::NodeId& local,
                                               const std::function<std::optional<std::chrono::milliseconds>(const identity::NodeId&)>& latency);
 
-// The nodes that may hold extents: a node without hosts_extents never is.
-std::vector<NodeRecord> extent_candidates(const std::vector<NodeRecord>& nodes);
+// The nodes advertising `key`: how a hosted system narrows placement to the
+// nodes that serve it (a store's "hosts extents").
+std::vector<NodeRecord> with_advert(const std::vector<NodeRecord>& nodes, const std::string& key);
 
 }  // namespace dannan::placement

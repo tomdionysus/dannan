@@ -12,6 +12,224 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
 
+## 2026-11-03, night -- fuzz targets
+
+`dannan/fuzz/`: a target per parser of untrusted bytes, each with seeds
+that authenticate, so a mutator reaches past the MAC: the hello, the ack,
+a frame, the node record, telemetry sets, identity resets, a channel's
+interest advert, and every level 0 and dial-back payload. Each may throw
+only what its parser documents. `Fuzz.EveryTargetSurvivesMutatedAndRandomInputs`
+runs every target over its seeds, 3000 mutations and 500 random inputs on
+each gate (no finding). `DANNAN_BUILD_FUZZING` builds `dannan_fuzz_<file>`
+binaries: libFuzzer with ASan and UBSan where the compiler has libFuzzer
+(not Apple's clang; no MacPorts clang is installed), a replay driver
+otherwise. **Gate: `dannan_tests` 367, `dagda_tests` 1.**
+
+## 2026-11-03, night -- the node opens its custody
+
+`NodeConfig::custody` names a key source; the node opens its custody at
+construction (refusing to start, in the operator's terms, if it was never
+made or does not open). `Identity` gains `has_custody`, `node_public_key`,
+`sign` and `derive_local(label)`; `derive_key` (cluster-wide) now returns a
+`Secret`. **Gate: `dannan_tests` 366, `dagda_tests` 1.**
+
+## 2026-11-03, night -- the roster feed and the incarnation
+
+- The node record carries the node's incarnation (its durability epoch)
+  after `seen_unix_ms` (wire v1 section 3 updated); a new one counts as a
+  topology change.
+- `Nodes::watch(executor, handler)` / `unwatch`: the active roster's
+  changes (`RosterChange`: joined, left, changed), a new watcher first told
+  of every node active now; taken on every topology change and every
+  membership tick, so a node silent past dead_after is reported as left.
+- `Secret` and `SecureBytes` default to empty (nothing mapped), for Lugh's
+  results and structs that hold one.
+- **Gate: `dannan_tests` 365, `dagda_tests` 1**; node, two-process, level 0
+  and channel cases 5 times.
+
+## 2026-11-03, night -- secrets never in ordinary memory
+
+Asked by Lugh, needed by Dagda too: `SecureAllocator` and `SecureBuffer` (a
+growable buffer on secure pages), `net::BasicWriter<Buffer>` (`Writer` is
+`BasicWriter<Bytes>`; a record holding secrets is encoded into a
+`SecureBuffer`), `hkdf_sha256_secret` and `aes_gcm_open_secure` (derived
+keys and opened plaintext into secure memory), `Secret` from a
+`SecureBuffer`. `Argon2Costs::valid()` with a ceiling (2 GiB, 64 passes,
+64 lanes), checked by `argon2id` and by custody before a passphrase is
+asked for, so a crafted file cannot make a node allocate a terabyte.
+Custody now keeps its key-encryption key and opened body in secure memory.
+**Gate: `dannan_tests` 363, `dagda_tests` 1.**
+
+## 2026-11-03, night -- channels
+
+`net/fanout.*` and `Context::channels()`: named channels with a delivery
+contract chosen at open (the plan's "Level 1"): notify (CONTROL, at most
+once, dropped under pressure), stream (CONTROL, at least once, a sequence
+per origin and destination, a gap refilled from the sender's bounded replay
+buffer, what it no longer holds reported as `lost`, a new incarnation
+restarting the sequence), bulk (DATA, acknowledged per destination).
+Subscription is node-local by topic prefix, gossiped as the advert
+`dannan.ch.<channel>` (covered prefixes folded, coarsened to everything
+past 1 KiB), so a publish goes only where someone listens; a destination
+with no route yet is reported and a route made for the next publish.
+Core types 17 to 19 and reply 108. Retained stays Dagda's. **Gate:
+`dannan_tests` 358, `dagda_tests` 1**; channel cases 10 times.
+
+## 2026-11-03, night -- Argon2id and node key custody
+
+- `identity/argon2.*`: Argon2id (RFC 9106, its test vector pinned) for the
+  stack: custody's passphrase and Lugh's password hashes.
+- `identity/key_custody.*`, the early slice of step 10: the node's ES256
+  key and a seal root, sealed in `<state>/identity/custody` (DNNKEY01)
+  under a root never on disk in clear: a systemd credential (made at
+  create, handed to the operator to seal; read from
+  `$CREDENTIALS_DIRECTORY` as 32 bytes or 64 hex digits) or a passphrase
+  stretched with Argon2id under the file's salt and costs. Header bound as
+  associated data; a wrong root and an altered file refused alike; never
+  replaced; `derive(label)` gives hosted systems node-local keys.
+- **Gate: `dannan_tests` 350, `dagda_tests` 1.**
+
+## 2026-11-03, night -- signing
+
+`identity/signing.*`, the stack's one home for signatures: ES256 (P-256,
+SHA-256, 64-byte r || s as JOSE wants) and Ed25519; `SigningKey`
+(generate, from PKCS#8, to PKCS#8 in secure memory, SubjectPublicKeyInfo,
+sign); `verify`, which treats anything malformed as false. **Gate:
+`dannan_tests` 341, `dagda_tests` 1.**
+
+## 2026-11-03, night -- the compose bed passes; secure memory
+
+On `feature/wire-v1` (this commit):
+
+- **The compose bed passes** (`python3 test/compose/scenario.py`, Docker
+  29.8.2, image on Arch with clang): six nodes through real NATs. The hubs
+  public; a1 and d1 (endpoint-independent NAT) punchable and punched to
+  each other; b1 (port-randomising NAT) and c1 (two NATs) relay-only and
+  relayed to every other NATed node; every pair's echo answered on both
+  lanes. router-d stopped: d1 dropped out; started: d1 back and punched to
+  a1 again. hub1 (a relay) stopped: the relayed pairs moved to hub2; hub1
+  back: all six as at the start. 9 punches brokered, 2.4 MB relayed. The
+  first run found the bed's LANs declared `internal`, which Docker drops
+  routed traffic on; they are ordinary networks with explicit routes now.
+- `identity/secure_memory.*`, the stack's one home for key material:
+  `SecureBytes` (pages of its own, locked, out of core dumps and forks,
+  wiped on release), `Secret` (no text conversion, no stream operator,
+  constant-time equality, `random`), `harden_process` (no core file; on
+  Linux, not attachable).
+- `CONTRIBUTING.md` states the stack's one layout and the shared-code and
+  error rules for all three projects.
+- **Gate: `dannan_tests` 333, `dagda_tests` 1.**
+
+## 2026-11-03, night -- level 0 moves up; a logger through the Context
+
+On `feature/wire-v1` (this commit):
+
+- When two sessions compete for one route, both ends keep the better path
+  (ordinary over punched over relayed), then the lower session id;
+  reconciliation of an outbound and an inbound session does the same. The
+  path sweep has the lower id of a relayed pair whose ends are both
+  punchable try a punch every `path_upgrade_every`; the punched session
+  replaces the relayed one, which retires, and its circuit closes.
+- The connectivity loop ticks at least every heartbeat, so the sweep runs
+  even when classification is an hour away.
+- `Context::logger(scope)`: a hosted system logs on the node's one sink
+  (`NodeConfig::log`) under its own scope.
+- The stack is described once, in `../dagda/TODO/2026-11-03-stack.md`.
+- **Gate: `dannan_tests` 325, `dagda_tests` 1**; node, client, reverse
+  dial, two-process and level 0 cases 10 times.
+
+## 2026-11-03, night -- level 0: path classes, punch and relay
+
+On `feature/wire-v1` (this commit). Wire v1 sections 5 and 6, as amended
+in the wire document's section 6 note:
+
+- `reach/paths.*`: the punch and relay payloads; `classify` (punchable
+  when two peers saw one local port at one external port, or one peer saw
+  it preserved; relay_only otherwise); `observe_from` (a probe-lane
+  handshake from a fixed local port, reading the ack's observed address);
+  `simultaneous_open` (from the punch port, retried for the window);
+  `Paths`, which makes paths on its own workers (a punch through each
+  public broker, then a circuit through each relay), answers as broker,
+  relay and target, pumps each circuit's end over a socketpair, sweeps
+  circuits that lost an end, and counts everything (`PathStats`, in
+  `Diagnostics::paths`).
+- `net::Client`: `make_path` asked when neither end can dial the other;
+  `adopt` runs the handshake on a made stream with the path's purpose and
+  token and installs an ordinary route; `path_of`, `send`; two incapable
+  nodes keep the lower id's session like any pair.
+- `dannan::Node`: the level 0 types routed to `Paths`; the connectivity
+  loop classifies the node (public when inbound-capable; otherwise by
+  observation) and sets its candidates; `NodeConfig::path_class` forces a
+  class, `punch_window`; `Nodes::path(peer, lane)` says how a route was
+  made.
+- **Gate: `dannan_tests` 323, `dagda_tests` 1**; level 0 cases 20 times,
+  and node, client, reverse dial, two-process and level 0 cases 10 times.
+
+## 2026-11-03, night -- wire v1
+
+On `feature/wire-v1` (this commit). Tom approved the draft
+(`TODO/2026-11-03-dannan-wire-v1.md`, "Continue please") with its
+recommendations. Dannan now speaks its own wire, sections 1 to 4:
+
+- Handshake v1 (`net/channel.*`): a version range in the hello, the
+  server picks the highest common version and refuses none; labels
+  `dannan/hello/1`, `dannan/ack/1`, `dannan/session/1`; the ack carries
+  the observed address (`Established::observed`); a purpose byte and a
+  16-byte path token inside the hello, checked by an acceptor that
+  expects a punched or relayed connection (`Expected`), refused by a
+  listening server. Frame magic `DN` 0x0001. Cluster key labels
+  `dannan/auth/1`, `dannan/cluster-id/1`.
+- Node record v1 (`membership/node_record.*`): id, host, port, failure
+  domain, seen, capabilities (inbound, relay), path class, up to 16
+  candidates, up to 64 adverts. The store's figures and flags are gone:
+  a hosted system advertises them (`Nodes::advertise`, `withdraw`), a
+  change makes the record newer and raises a topology event on peers.
+- Placement takes a `Scheme` (both salts named by the caller, capacity
+  from a named advert) and `with_advert` narrows candidates;
+  `Nodes::placement(key, copies, scheme, only_advertising)`.
+- Core message numbers 1 to 16 and replies 100 to 107, error 127,
+  including level 0's (punch and relay); user types from 1024, a number
+  below refused at registration.
+- Files: `DNNMEM01` (the whole record per node), `DNNTEL01` (fields
+  renumbered, hosted from 1024, no store fields), `DNNRST01`,
+  `DNNINB01`, `.dannan.lock`; UPnP description "Dannan".
+- Retired with protocol 23 by the decision: `dannan_interop_tests` (13
+  cases), `tools/macha_types.h`. `dannan-node` is rebuilt on
+  `dannan::Node` with an echo on each lane and JSON status lines, for the
+  compose bed; `TwoProcess.ANodeProcessAndANodeHereFormOneCluster` runs
+  it as a child and proves membership, telemetry and calls both ways on
+  both lanes.
+- **Gate: `dannan_tests` 315, `dagda_tests` 1**; node, client, reverse
+  dial and two-process cases 10 times over.
+
+## 2026-11-03, night -- step 5, part 2: the Context closed against Macha's use
+
+On `feature/wire-v1` (this commit). Tom: Macha is the first customer; the
+design is not complete until Macha can be refactored to use it.
+`TODO/2026-11-03-macha-on-context-audit.md` lists every call Macha makes
+into its network layer and what it maps to; this closes every gap that
+does not depend on the v1 wire:
+
+- `Routes`: types' wire rules registered before start (`add`), handlers
+  bound and unbound at any time (`bind`, `unbind`; unbind waits for calls
+  in flight, the handler lock held shared across each call); `call`
+  returns a `net::CallHandle` (cancel, abort, promote, idle_for, before or
+  after placement); `call_and_wait` for a worker thread, bounded by its
+  deadline; `CallOutcome::peer` says who answered.
+- `Channels`: all three broadcasts.
+- `Nodes`: `snapshot`, `all_known_reachable`, `latencies`, identity
+  resets (held, applied, propagated with a deadline).
+- A `Telemetry` noun (local, all, views, persisted, persist, refresh);
+  `readiness()`, `activity()` (the node notes each request's class),
+  `observations()`, `threads()` and `diagnostics()` on the Context.
+- `Node::cancel_outbound_calls`, so a worker blocked in a call is released
+  before it is joined; `ClientOptions::dial_hook`, a test's seam to refuse
+  a dial.
+- Left for the v1 wire: the record's advert map (`advertise`), and so the
+  store's figures and generation announcements.
+- **Gate: `dannan_tests` 305, `dagda_tests` 1, `dannan_interop_tests` 13**;
+  node and client cases 20 times over.
+
 ## 2026-11-03, night -- step 5: the node and dannan::Context
 
 On `feature/node` (three commits):

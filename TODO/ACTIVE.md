@@ -54,12 +54,29 @@ has every milestone with its gate). `develop` holds the same tree;
 1, `dannan_interop_tests` 8 (the configure line is under "How to prove
 it").
 
-Step 4a (membership and placement) is done on `feature/control-plane`
-(`COMPLETED.md`, gate 230 + 1 + 10). Steps 4 and 5 are done (`develop`; gate 298 + 1 + 13): the control
-plane, and the node with `dannan::Context` v1. Next: Dannan's part of
-step 9 (level 0's `reach/`: observed addresses, path classes, the punch
-broker, relay; protocol 24) and step 10 (identity: the cluster CA); the port steps wait for the Macha agent and Dagda is
-another project (Decisions, 2026-11-03 night).
+Steps 4 and 5 are done: the control plane, and the node with
+`dannan::Context`, closed against Macha's every use of its network layer
+(`TODO/2026-11-03-macha-on-context-audit.md`). Wire v1 is in code on
+`feature/wire-v1` (gate: `dannan_tests` 315, `dagda_tests` 1; the Macha
+interop suite is retired with protocol 23, Decisions): the version range,
+Dannan's labels and magics, the node record v1 with capabilities, path
+class, candidates and the advert map (`Nodes::advertise`), the renumbered
+core types with user types from 1024, the observed address in the ack and
+the path token inside the hello. Level 0 is in code too (gate 323 + 1):
+path classes and candidates, the brokered punch, the relay
+(`reach/paths.*`). The Docker compose test bed is written
+(`test/compose/`: two public relaying hubs, four NATed nodes, two of them
+punchable, one behind a randomising NAT, one behind two NATs; the runner
+`test/compose/scenario.py` checks classes, paths, echoes on both lanes, a
+healed partition and a relay failover) and passes (`COMPLETED.md`).
+Next: the stack's foundations (below, "Foundations for the stack":
+secure memory, signing, Argon2id, node key custody, channels and the
+roster feed, the node's custody and fuzz targets done). Left of section 6's rules, as work:
+a relayed or punched pair moving up a class while it runs, the relay's
+DATA budget (only a circuit cap now), and placement told a peer's path
+class. Identity (step 10) waits; the port steps wait
+for the Macha agent and Dagda is another project (Decisions, 2026-11-03
+night).
 
 Read in this order: this file to the end of Standing rules;
 `2026-11-02-dannan-plan.md` whole; the inventory; the head of
@@ -133,6 +150,13 @@ first.
    Doc, after which the rendering is re-made.
 8. Settled (Tom, 2026-11-03): core message types are Dannan's; the rest
    are user-definable and under the user's control. See Decisions.
+
+9. **Revoking a single node at once** (Lugh, 2026-11-03 night): Lugh needs
+   a removed node refused immediately. Step 10's design (cluster CA, node
+   certificates) says a compromised node is cut off by rotation; immediate
+   per-node revocation is not designed. Also asked: whether the Context
+   offers completion tokens or awaitables beside callbacks (Lugh is built
+   on asio::awaitable).
 
 ## How to prove it
 
@@ -345,6 +369,29 @@ words, so a session does not re-derive it.
   reaping). Dannan is new code: a session count in the server's work
   stats (kept out of the Status JSON) and a test-only hook on the client's
   route table are part of the design, not a retrofit.
+- (2026-11-03 night, Tom) **Macha is the first customer. The design is not
+  complete until Macha can be refactored to use it.** Every call Macha
+  makes into its network layer must map to a `dannan::Context` operation
+  before step 5 counts as done; the audit is
+  `TODO/2026-11-03-macha-on-context-audit.md`, and its gaps are work, not
+  questions. Macha's move to the new wire is a flag day (no protocol 23
+  mode), noted for the Macha agent.
+- (2026-11-03 night, Tom) **Dannan is a new project with its own wire,
+  versioned from 1.** It is not an extension of Macha; Macha is refactored
+  to use it. This supersedes "the one rule"'s byte-for-byte protocol 23 and
+  "No byte moves": nothing of protocol 23 binds Dannan (versions, labels,
+  magics, record layouts, message numbers). Dannan does everything to
+  maintain the PHY (reachability included). Level 0's wire is
+  `TODO/2026-11-03-dannan-wire-v1.md`. Docker is used for the compose test
+  bed and nothing else. Identity (step 10) waits.
+- (2026-11-03 night, Tom: "Continue please" on the draft) **Wire v1 as
+  drafted, with the draft's recommendations.** The Macha interop suite
+  (`dannan_interop_tests`), `tools/macha_types.h` and `dannan-node`'s Macha
+  script go with protocol 23; "a test is never deleted" is set aside for
+  them by this decision, and a Dannan-only two-process test replaces the
+  cross-process proof. A punched or relayed connection proves its token
+  inside the hello (a purpose byte and a 16-byte token), so a stray
+  connection fails the handshake.
 - (2026-11-03 night, Tom) **Dagda is its own project, with its own agent.**
   Steps 7 and 8 leave this plan; the `dagda/` stub here goes when that
   project starts. **Macha is not moving yet:** the port steps (3, 6) are
@@ -362,6 +409,30 @@ words, so a session does not re-derive it.
   frame only) for unknown numbers; no byte changes. Follows from it, Tom's
   question the same night: a handler reports whether it processed the
   message, failed, or does not recognise it.
+- (2026-11-03 night, Tom) **One stack, no duplicated code.** Dagda and
+  Lugh use Dannan as their network layer; Lugh uses Dagda as its
+  datastore. No code is duplicated between the three projects: what more
+  than one needs (crypto primitives, durable files, the thread-safety
+  contract, time sources, logging, the Status surface) lives once, in the
+  lowest project that needs it, and the others link it.
+- (2026-11-03 night, Tom) **Identical styles, conventions and layouts** in
+  all three: one `.clang-format`, one header block form, one naming scheme,
+  one repository layout (`<project>/<subsystem>/`, `<project>/include/`,
+  `<project>/test/`, `tools/`, `docs/`, `TODO/`), one branch and tag
+  scheme, one set of rules in `CLAUDE.md` and `CONTRIBUTING.md`.
+- (2026-11-03 night, Tom, in Lugh's session, as Lugh reported it) **Lugh
+  goes callback style**, Dannan's shape (deadline, caller's executor,
+  completion posted there): no completion-token wrappers are needed by
+  anyone now. **Lugh links Dannan now**, by FetchContent of this tree pinned
+  to `feature/wire-v1` at `785e393`, moving to a tag once one carries the
+  Context. Lugh adopts Dannan's conventions; its header is "Lugh - The
+  Directory".
+- (2026-11-03 night) **The stack has one document**:
+  `../dagda/TODO/2026-11-03-stack.md`, kept by the Dagda session, checked
+  by the Dannan and Lugh sessions. What each of Dannan, Dagda and Lugh owns,
+  the seams (the scope source Dannan declares and Lugh installs, Lugh's two
+  domains, one process per node, node revocation) and what is proposed for
+  Tom are there, not restated here.
 - (2026-11-03 evening, this plan) **0.91.3's reply rule is a transport
   behaviour Dannan keeps.** A reply to an admitted request is never
   dropped for capacity: refused by the outbound limits or the memory
@@ -674,7 +745,50 @@ first bump, rolling. Proven by making half the compose cluster relay-only
 and asserting the same gates; then on the chaos cluster when there is one
 (Waiting on Tom, 2).
 
+### Foundations for the stack (2026-11-03 night, under "no duplicated code")
+
+Dannan is the one home of what Dannan, Dagda and Lugh all need. Written
+here from Dannan's design (Lugh's code read for what it does, never pasted),
+each announced to the Lugh and Dagda sessions as it lands, so they delete
+their copies:
+
+1. Secure memory: key material locked in RAM, kept out of core dumps and
+   forks, wiped on release; a `Secret` that cannot be logged.
+2. Signing: EC P-256 (ES256) and Ed25519, sign and verify, PKCS#8 keys.
+   Step 10's CA uses them too.
+3. Node key custody, an early slice of step 10: the node's private key
+   and the root Dagda seals node-local keys under, loaded from a sealed
+   systemd credential or a typed passphrase, held in secure memory.
+4. Fuzz targets for every parser of untrusted bytes (`dannan/fuzz/`):
+   handshake, frame header, assembler, node record, telemetry, the level 0
+   payloads.
+
+5. Channels with named delivery contracts (plan, "Level 1"): notify
+   (CONTROL, at most once, dropped under pressure), stream (CONTROL, at
+   least once, a per-origin sequence, bounded replay from the sender),
+   bulk (DATA, backpressured, acknowledged); subscription node-local by
+   topic prefix, gossiped as an advert, so a publish goes only to nodes
+   with a subscriber. Retained is Dagda's (a notify whose last value lands
+   in a head). Lir's lir.notify, lir.seq and lir.bulk sit on these.
+6. A membership-change feed (joined, left, changed) with each node's
+   incarnation, the durability epoch carried in the node record.
+7. The node opening its custody (`NodeConfig`), its node key and derived
+   keys reachable through the Context's Identity.
+
+Lugh keeps what only Lugh needs: HMAC-SHA1, base32, base64url, JOSE.
+Argon2id moved here: custody stretches a passphrase with it too.
+
 ### 10. Identity (step 10)
+
+Requirements from Lugh (2026-11-03 night), part of the step: a single
+node revoked and refused at once (proposed: a CA-signed, grow-only
+revocation record, gossiped and persisted like an identity reset, refused
+at every handshake and its sessions closed); and a node's private key held
+as Lugh holds its master key (a TPM-sealed systemd credential where there
+is one, locked memory, never on disk in clear), since Dagda wraps domain
+keys, Lugh's among them, to node certificates. And the scope seam:
+`contract::ScopeSource` declared here, `Identity::verify` over it, Lugh
+installing the source (the stack document).
 
 AthenaSIP's `cluster_ca.cpp` written into `identity/` in Dannan's style;
 Macha's shared cluster key becomes a one-class CA; `SecureChannel` keys

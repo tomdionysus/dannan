@@ -6,9 +6,8 @@
 //
 
 // Telemetry: the inventory's "Telemetry and status" rows. The record is
-// protocol 23's tagged TEL3 format, fields grandfathered: Dannan fills the
-// core fields and carries the hosted system's own, in the order a layout
-// says, so the bytes a hosted system sends are the bytes it sent before.
+// tagged fields (DNNTEL01): Dannan fills its core fields, below 1024, and
+// carries the hosted system's own, numbered from 1024, as they come.
 
 #include <gtest/gtest.h>
 
@@ -60,14 +59,14 @@ TEST(Telemetry, FieldsAreTaggedAndDefaultsOmitted) {
 }
 
 // A record: u32 length, then u16 id, u16 length, value per field; a set:
-// MACHTEL3, u32 count, records.
+// DNNTEL01, u32 count, records.
 TEST(Telemetry, EncodesAsTel3) {
   Telemetry t;
   t.set_u16(field::port, 7);
   t.set_text(field::host, "h");
   const auto bytes = encode_telemetry_set({t});
   net::Writer expected;
-  for (const char c : std::string("MACHTEL3")) expected.u8(static_cast<uint8_t>(c));
+  for (const char c : std::string("DNNTEL01")) expected.u8(static_cast<uint8_t>(c));
   expected.u32(1);
   expected.u32(4 + 2 + 4 + 1);
   expected.u16(field::port);
@@ -212,7 +211,6 @@ TEST(TelemetryStore, RefreshesTheLocalRecord) {
   figures.self.id = id(1);
   figures.self.host = "10.0.0.1";
   figures.self.port = 7437;
-  figures.self.capacity = 1000;
   figures.version = "0.1.0";
   figures.phase = Phase::recovering;
   figures.peers_known = 3;
@@ -220,20 +218,21 @@ TEST(TelemetryStore, RefreshesTheLocalRecord) {
   TrafficTotals traffic;
   traffic.in_bytes[1] = 100;
   figures.traffic = traffic;
-  const auto first = s.store.refresh_local(figures, [](Telemetry& t) { t.set_u64(11, 77); });
+  const auto first = s.store.refresh_local(figures, [](Telemetry& t) { t.set_u64(1100, 77); });
   EXPECT_EQ(first.node_id(), id(1));
   EXPECT_EQ(first.sequence(), 1u);
   EXPECT_EQ(first.phase(), Phase::recovering);
-  EXPECT_EQ(first.u64(field::storage_capacity), 1000u);
-  EXPECT_EQ(first.u64(11), 77u);
+  EXPECT_EQ(first.u64(1100), 77u);
+  EXPECT_EQ(field::first_hosted, 1024);
   EXPECT_EQ(first.text(field::version), "0.1.0");
   EXPECT_GT(first.u32(field::cpu_cores), 0u);
   ASSERT_TRUE(s.store.local());
   EXPECT_EQ(s.store.local()->sequence(), 1u);
-  // In protocol 23's order: field 11 sits between 10 and 12, not at the end.
+  // The core fields first, the hosted system's after them.
   std::vector<uint16_t> order;
   for (const auto& [field_id, _] : first.fields()) order.push_back(field_id);
-  EXPECT_LT(std::find(order.begin(), order.end(), 11), std::find(order.begin(), order.end(), field::uptime_ms));
+  EXPECT_EQ(order.back(), 1100);
+  EXPECT_TRUE(std::is_sorted(order.begin(), order.end()));
   s.time.advance(2s);
   traffic.in_bytes[1] = 300;
   figures.traffic = traffic;

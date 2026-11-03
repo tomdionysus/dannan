@@ -10,11 +10,15 @@
 # "dannan/<subsystem>/x.h".
 add_library(dannan SHARED
   contract/thread_safety.cpp
+  identity/argon2.cpp
   identity/cluster_key.cpp
   identity/crypto.cpp
   identity/durable_file.cpp
+  identity/key_custody.cpp
   identity/node_id.cpp
   identity/node_identity.cpp
+  identity/secure_memory.cpp
+  identity/signing.cpp
   membership/node_record.cpp
   membership/identity_reset.cpp
   membership/membership.cpp
@@ -22,6 +26,7 @@ add_library(dannan SHARED
   net/channel.cpp
   net/client.cpp
   net/codec.cpp
+  net/fanout.cpp
   net/message.cpp
   net/outbound.cpp
   net/routes.cpp
@@ -33,6 +38,7 @@ add_library(dannan SHARED
   reach/dial_back.cpp
   reach/external_ip.cpp
   reach/inbound.cpp
+  reach/paths.cpp
   reach/upnp.cpp
   sched/memory_limit.cpp
   sched/retained_memory.cpp

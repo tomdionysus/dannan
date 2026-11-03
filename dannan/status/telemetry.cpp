@@ -25,7 +25,7 @@
 namespace dannan::status {
 namespace {
 
-constexpr std::array<uint8_t, 8> magic{'M', 'A', 'C', 'H', 'T', 'E', 'L', '3'};
+constexpr std::array<uint8_t, 8> magic{'D', 'N', 'N', 'T', 'E', 'L', '0', '1'};
 constexpr uint32_t max_set_records = 65536;
 constexpr size_t max_persisted = 1024;
 constexpr uint64_t max_persisted_bytes = 16ull * 1024 * 1024;
@@ -38,9 +38,6 @@ std::optional<size_t> core_width(uint16_t id) {
       return 16;
     case field::sequence:
     case field::observed_unix_ms:
-    case field::storage_capacity:
-    case field::storage_used:
-    case field::metadata_generation:
     case field::uptime_ms:
     case field::rss_bytes:
     case field::connections_created:
@@ -148,12 +145,6 @@ const char* phase_name(Phase phase) noexcept {
       return "ready";
   }
   return "unknown";
-}
-
-const std::vector<uint16_t>& protocol23_layout() {
-  static const std::vector<uint16_t> layout{1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
-                                            23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 38, 33, 34, 39, 40, 41, 42, 43, 44, 35, 36, 37};
-  return layout;
 }
 
 void Telemetry::set_bytes(uint16_t id, std::span<const uint8_t> value) {
@@ -387,9 +378,6 @@ Telemetry TelemetryStore::refresh_local(const LocalFigures& figures, const std::
     t.set_text(field::host, figures.self.host);
     t.set_text(field::failure_domain, figures.self.failure_domain);
     t.set_u16(field::port, figures.self.port);
-    t.set_u64(field::storage_capacity, figures.self.capacity);
-    t.set_u64(field::storage_used, figures.self.used);
-    t.set_u64(field::metadata_generation, figures.self.metadata_generation);
     t.set_u64(field::uptime_ms, static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(now - _started).count()));
     t.set_u64(field::rss_bytes, resident_bytes());
     t.set_u32(field::process_cpu_milli_percent, static_cast<uint32_t>(std::min<double>(percent * 1000.0, std::numeric_limits<uint32_t>::max())));
@@ -429,7 +417,7 @@ Telemetry TelemetryStore::refresh_local(const LocalFigures& figures, const std::
     }
   }
   if (extra) extra(t);
-  t.order_by(_layout);
+  if (!_layout.empty()) t.order_by(_layout);
   observe(t, true);
   return t;
 }

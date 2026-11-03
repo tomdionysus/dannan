@@ -70,8 +70,10 @@ std::array<uint8_t, 32> hmac_sha256(std::span<const uint8_t> key, std::span<cons
   return out;
 }
 
-std::array<uint8_t, 32> hkdf_sha256(std::span<const uint8_t> key, std::span<const uint8_t> salt, std::span<const uint8_t> info) {
-  std::array<uint8_t, 32> out{};
+namespace {
+
+// HKDF-SHA256 into `out`, whatever memory it is.
+void hkdf_into(std::span<const uint8_t> key, std::span<const uint8_t> salt, std::span<const uint8_t> info, std::span<uint8_t> out) {
   KeyContext context(EVP_PKEY_CTX_new_id(EVP_PKEY_HKDF, nullptr), EVP_PKEY_CTX_free);
   if (!context || EVP_PKEY_derive_init(context.get()) <= 0 || EVP_PKEY_CTX_set_hkdf_md(context.get(), EVP_sha256()) <= 0 ||
       EVP_PKEY_CTX_set1_hkdf_key(context.get(), key.data(), length(key.size())) <= 0)
@@ -80,7 +82,20 @@ std::array<uint8_t, 32> hkdf_sha256(std::span<const uint8_t> key, std::span<cons
   if (!info.empty() && EVP_PKEY_CTX_add1_hkdf_info(context.get(), info.data(), length(info.size())) <= 0) throw std::runtime_error("HKDF info failed");
   size_t size = out.size();
   if (EVP_PKEY_derive(context.get(), out.data(), &size) <= 0 || size != out.size()) throw std::runtime_error("HKDF derive failed");
+}
+
+}  // namespace
+
+std::array<uint8_t, 32> hkdf_sha256(std::span<const uint8_t> key, std::span<const uint8_t> salt, std::span<const uint8_t> info) {
+  std::array<uint8_t, 32> out{};
+  hkdf_into(key, salt, info, out);
   return out;
+}
+
+Secret hkdf_sha256_secret(std::span<const uint8_t> key, std::span<const uint8_t> salt, std::span<const uint8_t> info) {
+  SecureBytes out(32);
+  hkdf_into(key, salt, info, out.span());
+  return Secret(std::move(out));
 }
 
 SealedData aes_gcm_seal(std::span<const uint8_t, 32> key, std::span<const uint8_t> plaintext, std::span<const uint8_t> associated) {
@@ -116,9 +131,14 @@ SealedData aes_gcm_seal(std::span<const uint8_t, 32> key, std::span<const uint8_
   return out;
 }
 
-Bytes aes_gcm_open(std::span<const uint8_t, 32> key, std::span<const uint8_t, 12> nonce, std::span<const uint8_t, 16> tag, std::span<const uint8_t> ciphertext,
-                   std::span<const uint8_t> associated) {
-  Bytes out(ciphertext.size());
+namespace {
+
+// AES-256-GCM open into a buffer of the ciphertext's size, whatever memory
+// it is; resized to what was produced.
+template <class Buffer>
+Buffer open_into(std::span<const uint8_t, 32> key, std::span<const uint8_t, 12> nonce, std::span<const uint8_t, 16> tag, std::span<const uint8_t> ciphertext,
+                 std::span<const uint8_t> associated) {
+  Buffer out(ciphertext.size());
   CipherContext context(EVP_CIPHER_CTX_new(), EVP_CIPHER_CTX_free);
   if (!context || EVP_DecryptInit_ex(context.get(), EVP_aes_256_gcm(), nullptr, nullptr, nullptr) != 1 ||
       EVP_CIPHER_CTX_ctrl(context.get(), EVP_CTRL_GCM_SET_IVLEN, 12, nullptr) != 1 ||
@@ -139,6 +159,18 @@ Bytes aes_gcm_open(std::span<const uint8_t, 32> key, std::span<const uint8_t, 12
     throw std::runtime_error("AES-GCM authentication failed");
   out.resize(static_cast<size_t>(total + produced));
   return out;
+}
+
+}  // namespace
+
+Bytes aes_gcm_open(std::span<const uint8_t, 32> key, std::span<const uint8_t, 12> nonce, std::span<const uint8_t, 16> tag, std::span<const uint8_t> ciphertext,
+                   std::span<const uint8_t> associated) {
+  return open_into<Bytes>(key, nonce, tag, ciphertext, associated);
+}
+
+SecureBuffer aes_gcm_open_secure(std::span<const uint8_t, 32> key, std::span<const uint8_t, 12> nonce, std::span<const uint8_t, 16> tag,
+                                 std::span<const uint8_t> ciphertext, std::span<const uint8_t> associated) {
+  return open_into<SecureBuffer>(key, nonce, tag, ciphertext, associated);
 }
 
 X25519KeyPair x25519_generate() {

@@ -31,8 +31,8 @@ ClusterKey load_cluster_key(const std::filesystem::path& path) {
   ClusterKey key;
   key.master = sha256(secret).bytes;
   cleanse(secret);
-  key.auth = key.derive("macha/auth/v1");
-  const auto id = key.derive("macha/cluster-id/v1");
+  key.auth = key.derive("dannan/auth/1");
+  const auto id = key.derive("dannan/cluster-id/1");
   std::copy_n(id.begin(), key.cluster_id.size(), key.cluster_id.begin());
   return key;
 }
