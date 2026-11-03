@@ -763,6 +763,18 @@ their copies:
    handshake, frame header, assembler, node record, telemetry, the level 0
    payloads.
 
+5. Channels with named delivery contracts (plan, "Level 1"): notify
+   (CONTROL, at most once, dropped under pressure), stream (CONTROL, at
+   least once, a per-origin sequence, bounded replay from the sender),
+   bulk (DATA, backpressured, acknowledged); subscription node-local by
+   topic prefix, gossiped as an advert, so a publish goes only to nodes
+   with a subscriber. Retained is Dagda's (a notify whose last value lands
+   in a head). Lir's lir.notify, lir.seq and lir.bulk sit on these.
+6. A membership-change feed (joined, left, changed) with each node's
+   incarnation, the durability epoch carried in the node record.
+7. The node opening its custody (`NodeConfig`), its node key and derived
+   keys reachable through the Context's Identity.
+
 Lugh keeps what only Lugh needs: HMAC-SHA1, base32, base64url, JOSE.
 Argon2id moved here: custody stretches a passphrase with it too.
 
