@@ -16,15 +16,21 @@
 #include <boost/asio/io_context.hpp>
 #include <fstream>
 #include <future>
+#include <map>
+#include <random>
 #include <thread>
 
+#include "cluster/membership.hpp"
 #include "cluster/net.hpp"
+#include "cluster/placement.hpp"
 #include "codec.hpp"
 #include "crypto.hpp"
 #include "dannan/identity/cluster_key.h"
+#include "dannan/membership/membership.h"
 #include "dannan/membership/node_record.h"
 #include "dannan/net/channel.h"
 #include "dannan/net/session.h"
+#include "dannan/placement/placement.h"
 #include "dannan/test/fixtures/temp_dir.h"
 #include "types.hpp"
 
@@ -412,6 +418,104 @@ TEST(Interop, DannansFramesAreMachasByteForByte) {
   }
   sender.join();
   ::shutdown(pair.ours, SHUT_RDWR);
+}
+
+// The persisted roster, both ways: what one writes the other loads.
+TEST(Interop, TheRosterFileIsSharedWithMacha) {
+  test::TempDir dir;
+  const auto ours_path = dir.path() / "ours";
+  const auto theirs_path = dir.path() / "theirs";
+  auto self = ours_sample();
+  auto peer = ours_sample();
+  peer.host = "10.1.2.3";
+  auto other = ours_sample();
+  other.host = "10.1.2.4";
+  other.flags = membership::flags_default;
+  membership::IdentityReset reset;
+  reset.host = "10.9.9.9";
+  reset.epoch = 3;
+  reset.reset_unix_ms = 77;
+  reset.reason = "replaced";
+  {
+    membership::Membership ours(self, std::chrono::seconds(30), ours_path);
+    ours.observe(peer, true);
+    ours.observe(other, true);
+    ours.apply_identity_reset(reset);
+  }
+  macha::Membership theirs(theirs_of(self), std::chrono::seconds(30), ours_path);
+  const auto loaded = theirs.all();
+  ASSERT_EQ(loaded.size(), 3u);
+  for (const auto& expected : {peer, other}) {
+    const auto found = std::find_if(loaded.begin(), loaded.end(), [&](const macha::NodeInfo& n) { return n.id.bytes == expected.id.bytes; });
+    ASSERT_NE(found, loaded.end());
+    EXPECT_EQ(found->host, expected.host);
+    EXPECT_EQ(found->flags, expected.flags);
+    EXPECT_EQ(found->failure_domain, expected.failure_domain);
+  }
+  ASSERT_EQ(theirs.identity_resets().size(), 1u);
+  EXPECT_EQ(theirs.identity_resets().front().reason, "replaced");
+
+  {
+    macha::Membership writer(theirs_of(self), std::chrono::seconds(30), theirs_path);
+    writer.observe(theirs_of(peer), true);
+  }
+  membership::Membership back(self, std::chrono::seconds(30), theirs_path);
+  const auto all = back.all();
+  ASSERT_EQ(all.size(), 2u);
+  EXPECT_EQ(all[1].id, peer.id);
+  EXPECT_EQ(all[1].flags, peer.flags);
+}
+
+// Placement decides as Macha's does, key for key, over random rosters: same
+// owners in the same order, same fallbacks, same capacity, same commit order.
+TEST(Interop, PlacementDecidesAsMachasDoes) {
+  std::mt19937_64 random(20261103);
+  const std::vector<std::string> domain_names{"", "", "a", "b", "c"};
+  for (int round = 0; round < 400; ++round) {
+    std::vector<membership::NodeRecord> ours;
+    std::vector<macha::NodeInfo> theirs;
+    const auto count = 1 + random() % 9;
+    for (size_t i = 0; i < count; ++i) {
+      auto n = ours_sample();
+      n.capacity = random() % 4 == 0 ? 0 : random() % (1ull << 40);
+      n.failure_domain = domain_names[random() % domain_names.size()];
+      ours.push_back(n);
+      theirs.push_back(theirs_of(n));
+    }
+    for (int k = 0; k < 20; ++k) {
+      std::vector<uint8_t> key(k % 5 == 0 ? 3 : 32);
+      for (auto& byte : key) byte = static_cast<uint8_t>(random());
+      for (size_t replicas = 0; replicas <= 4; ++replicas) {
+        const auto ours_by_capacity = placement::by_capacity(key, ours, replicas);
+        const auto theirs_by_capacity = macha::capacity_placement_nodes(key, theirs, replicas);
+        ASSERT_EQ(ours_by_capacity.size(), theirs_by_capacity.size());
+        for (size_t i = 0; i < ours_by_capacity.size(); ++i) ASSERT_EQ(ours_by_capacity[i].id.bytes, theirs_by_capacity[i].id.bytes) << "round " << round;
+        const auto ours_rendezvous = placement::rendezvous(key, ours, replicas);
+        const auto theirs_rendezvous = macha::rendezvous_nodes(key, theirs, replicas);
+        ASSERT_EQ(ours_rendezvous.size(), theirs_rendezvous.size());
+        for (size_t i = 0; i < ours_rendezvous.size(); ++i) ASSERT_EQ(ours_rendezvous[i].id.bytes, theirs_rendezvous[i].id.bytes);
+      }
+    }
+    for (size_t replicas = 0; replicas <= 4; ++replicas)
+      ASSERT_EQ(placement::logical_capacity(ours, replicas), macha::placement_logical_capacity(theirs, replicas));
+    std::map<identity::NodeId, std::chrono::milliseconds> rtt;
+    for (const auto& n : ours)
+      if (random() % 2) rtt[n.id] = std::chrono::milliseconds(random() % 5);
+    const auto ours_order =
+        placement::order_commit_replicas(ours, ours.front().id, [&](const identity::NodeId& id) -> std::optional<std::chrono::milliseconds> {
+          const auto found = rtt.find(id);
+          return found == rtt.end() ? std::nullopt : std::optional(found->second);
+        });
+    macha::NodeId local;
+    local.bytes = ours.front().id.bytes;
+    const auto theirs_order = macha::order_commit_replicas(theirs, local, [&](const macha::NodeId& id) -> std::optional<std::chrono::milliseconds> {
+      identity::NodeId mine;
+      mine.bytes = id.bytes;
+      const auto found = rtt.find(mine);
+      return found == rtt.end() ? std::nullopt : std::optional(found->second);
+    });
+    for (size_t i = 0; i < ours_order.size(); ++i) ASSERT_EQ(ours_order[i].id.bytes, theirs_order[i].id.bytes);
+  }
 }
 }  // namespace
 }  // namespace dannan
