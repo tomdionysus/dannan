@@ -12,6 +12,22 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
 
+## 2026-11-03, night -- a handler says what it did
+
+On `feature/user-types` (this commit), from Tom's question: a handler
+returns `Handled`, one of `processed(reply)`, `failed(status, code, why)`
+or `unrecognised()`. Dannan sends the reply or the refusal, answers an
+unrecognised request with 501 `not_implemented` itself (a notification
+gets nothing), treats a throw as a failure answered 500, and counts
+failures and unrecognised messages per type in the work stats' timings.
+`Client::handle_dial_request` reports through it; `dannan-node` declines
+what it does not serve with `unrecognised()`. New cases:
+`Scheduler.AHandlerSaysWhetherItProcessedFailedOrDidNotRecognise`,
+`Scheduler.AnUnrecognisedNotificationIsCountedAndAnswersNothing`,
+`Scheduler.AThrowIsCountedAsAFailure`.
+**Gate: `dannan_tests` 211, `dagda_tests` 1, `dannan_interop_tests` 8**;
+the scheduler cases 30 times over.
+
 ## 2026-11-03, night -- core types and user types
 
 On `feature/user-types` (this commit), from Tom's decision (ACTIVE,

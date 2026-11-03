@@ -211,9 +211,9 @@ int main(int argc, char** argv) {
   server_options.traffic = traffic;
   net::Server server(
       io, options.listen, options.port, server_options,
-      [&](const membership::NodeRecord& peer, sched::FrameType, const net::Message& request) -> net::Message {
+      [&](const membership::NodeRecord& peer, sched::FrameType, const net::Message& request) -> net::Handled {
         meet(peer);
-        if (request.type == net::message::ping) return {net::message::ok, {}, {}};
+        if (request.type == net::message::ping) return net::Handled::processed();
         if (request.type == net::message::members) {
           std::vector<membership::NodeRecord> nodes{local()};
           {
@@ -223,14 +223,14 @@ int main(int argc, char** argv) {
           net::Writer writer;
           writer.u32(static_cast<uint32_t>(nodes.size()));
           for (const auto& node : nodes) membership::encode(writer, node);
-          return {net::message::members_reply, writer.take(), {}};
+          return net::Handled::processed({net::message::members_reply, writer.take(), {}});
         }
         if (request.type == net::message::telemetry) {
           say("telemetry " + short_id(peer.id) + " " + std::to_string(request.payload.size()));
-          return {net::message::telemetry_reply, empty_telemetry_set(), {}};
+          return net::Handled::processed({net::message::telemetry_reply, empty_telemetry_set(), {}});
         }
         if (request.type == net::message::dial_request) return client->handle_dial_request(peer, request);
-        return net::error_reply(501, "not_implemented", "dannan-node serves the transport only");
+        return net::Handled::unrecognised();
       },
       [&](const std::shared_ptr<net::Session>& session) {
         meet(session->peer());

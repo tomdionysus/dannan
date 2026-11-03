@@ -171,20 +171,28 @@ void RequestScheduler::cancel(const identity::NodeId& peer, uint64_t request_id)
 
 void RequestScheduler::run(Job job) {
   const auto started = _time->now();
-  Message answer;
+  auto handled = Handled::failed(500, "internal_error", "request handler failed");
   try {
-    answer = _handler(job.peer, job.frame.frame, job.frame.message);
+    handled = _handler(job.peer, job.frame.frame, job.frame.message);
   } catch (const std::exception& failure) {
-    answer = error_reply(500, "internal_error", failure.what());
+    handled = Handled::failed(500, "internal_error", failure.what());
   } catch (...) {
-    answer = error_reply(500, "internal_error", "request handler failed");
   }
   const auto finished = _time->now();
-  if (job.reply) job.reply(std::move(answer));
+  const auto outcome = handled.outcome();
+  if (job.reply) {
+    if (outcome == Handled::Outcome::unrecognised)
+      job.reply(error_reply(501, "not_implemented", "message " + _routes->name(job.frame.message.type) + " is not handled here"));
+    else
+      job.reply(handled.take_reply());
+  }
   {
     contract::Lock lock(_timing_mutex);
     record(_frame_timings[job.frame.frame], micros(started - job.queued), micros(finished - started));
-    record(_message_timings[job.frame.message.type], micros(started - job.queued), micros(finished - started));
+    auto& by_type = _message_timings[job.frame.message.type];
+    record(by_type, micros(started - job.queued), micros(finished - started));
+    if (outcome == Handled::Outcome::failed) ++by_type.failed;
+    if (outcome == Handled::Outcome::unrecognised) ++by_type.unrecognised;
   }
 }
 
