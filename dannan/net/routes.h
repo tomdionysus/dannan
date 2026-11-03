@@ -46,6 +46,9 @@ inline constexpr MessageType relay_open{13};
 inline constexpr MessageType relay_offer{14};
 inline constexpr MessageType relay_data{15};
 inline constexpr MessageType relay_close{16};
+inline constexpr MessageType channel_publish{17};
+inline constexpr MessageType channel_replay{18};
+inline constexpr MessageType channel_bulk{19};
 inline constexpr MessageType ok{100};
 inline constexpr MessageType members_reply{101};
 inline constexpr MessageType telemetry_reply{102};
@@ -54,6 +57,7 @@ inline constexpr MessageType dial_back_reply{104};
 inline constexpr MessageType punch_reply{105};
 inline constexpr MessageType relay_open_reply{106};
 inline constexpr MessageType relay_offer_reply{107};
+inline constexpr MessageType channel_replay_reply{108};
 inline constexpr MessageType error{127};
 }  // namespace message
 

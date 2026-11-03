@@ -947,7 +947,7 @@ std::vector<std::pair<identity::NodeId, Lane>> Client::routes_on(Purpose purpose
   return {out.begin(), out.end()};
 }
 
-bool Client::send(const identity::NodeId& peer, Lane lane, const Message& message, sched::FrameType frame) {
+bool Client::send(const identity::NodeId& peer, Lane lane, const Message& message, sched::FrameType frame, bool best_effort) {
   std::shared_ptr<Session> route;
   {
     contract::Lock lock(_mutex);
@@ -956,6 +956,7 @@ bool Client::send(const identity::NodeId& peer, Lane lane, const Message& messag
   }
   if (!route) return false;
   if (route->try_notify(message, frame)) return true;
+  if (best_effort) return false;
   try {
     route->notify(message, frame, _io.get_executor());
     return true;

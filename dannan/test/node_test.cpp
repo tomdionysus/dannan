@@ -15,6 +15,7 @@
 #include <gtest/gtest.h>
 
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/strand.hpp>
 #include <fstream>
 #include <future>
 #include <thread>
@@ -331,6 +332,54 @@ TEST(Node, AdvertsReachPeersAndSteerPlacement) {
   pair.a->context().nodes().withdraw("capacity");
   EXPECT_TRUE(eventually([&] { return pair.b->context().nodes().placement(key, 1, scheme, "capacity").empty(); }));
   EXPECT_THROW(pair.a->context().nodes().advertise("", {}), std::invalid_argument);
+}
+
+// Channels across a real cluster: B subscribes, A learns of it by gossip
+// and publishes only there; notify and stream arrive, a stream in order and
+// numbered, and bulk is acknowledged.
+TEST(Node, ChannelsReachSubscribersAcrossTheCluster) {
+  Pair pair;
+  pair.b->start();
+  const auto b = pair.b->context().identity().id();
+  ASSERT_TRUE(eventually([&] { return knows(*pair.a, b) && knows(*pair.b, pair.a->context().identity().id()); }));
+  for (auto* node : {pair.a.get(), pair.b.get()}) {
+    node->context().channels().open("news", net::Delivery::notify);
+    node->context().channels().open("seq", net::Delivery::stream);
+    node->context().channels().open("bulk", net::Delivery::bulk);
+  }
+  std::mutex mutex;
+  std::vector<net::ChannelMessage> got;
+  const auto strand = asio::make_strand(pair.io.context);
+  const auto record = [&](net::ChannelMessage m) {
+    std::lock_guard lock(mutex);
+    got.push_back(std::move(m));
+  };
+  for (const auto* channel : {"news", "seq", "bulk"}) pair.b->context().channels().subscribe(channel, "room/", strand, record);
+  // A sees B's subscription by gossip.
+  ASSERT_TRUE(eventually([&] {
+    for (const auto& node : pair.a->context().nodes().active())
+      if (node.id == b && node.advert("dannan.ch.seq")) return true;
+    return false;
+  }));
+  auto& channels = pair.a->context().channels();
+  EXPECT_EQ(channels.publish("news", "room/1", net::Bytes{1}).to, std::vector<identity::NodeId>{b});
+  EXPECT_TRUE(channels.publish("news", "hall/1", net::Bytes{2}).to.empty());
+  for (uint8_t i = 1; i <= 3; ++i) channels.publish("seq", "room/1", net::Bytes{i});
+  std::promise<net::Published> bulk;
+  channels.publish_bulk("bulk", "room/2", net::Bytes(4096, 9), 5s, pair.io.context.get_executor(), [&](net::Published p) { bulk.set_value(std::move(p)); });
+  EXPECT_EQ(bulk.get_future().get().to, std::vector<identity::NodeId>{b});
+  ASSERT_TRUE(eventually([&] {
+    std::lock_guard lock(mutex);
+    return got.size() == 5;
+  }));
+  std::lock_guard lock(mutex);
+  std::vector<uint64_t> sequence;
+  for (const auto& m : got) {
+    EXPECT_EQ(m.origin, pair.a->context().identity().id());
+    EXPECT_EQ(m.incarnation, pair.a->context().identity().durability_epoch());
+    if (m.channel == "seq") sequence.push_back(m.sequence);
+  }
+  EXPECT_EQ(sequence, (std::vector<uint64_t>{1, 2, 3}));
 }
 
 // The three broadcasts reach every CONTROL route; none dials.

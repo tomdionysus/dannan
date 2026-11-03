@@ -176,8 +176,9 @@ class Client {
   // Every route whose session was opened for `purpose`, by peer and lane.
   std::vector<std::pair<identity::NodeId, Lane>> routes_on(Purpose purpose) const;
   // A notification to `peer` over the route it has on `lane`; never dials.
-  // False without a route, or when the session refuses it.
-  bool send(const identity::NodeId& peer, Lane lane, const Message& message, sched::FrameType frame);
+  // False without a route, or when the session refuses it; with
+  // `best_effort`, also when it would have to queue behind other traffic.
+  bool send(const identity::NodeId& peer, Lane lane, const Message& message, sched::FrameType frame, bool best_effort = false);
 
   // Starts the health pings.
   void start();

@@ -21,6 +21,7 @@
 #include "dannan/contract/time_source.h"
 #include "dannan/membership/node_record.h"
 #include "dannan/net/client.h"
+#include "dannan/net/fanout.h"
 #include "dannan/net/scheduler.h"
 #include "dannan/net/server.h"
 #include "dannan/placement/placement.h"
@@ -128,12 +129,29 @@ class Routes {
                                          std::chrono::milliseconds deadline) = 0;
 };
 
-// Channels v1: a notification to every peer over CONTROL; bulk transfer is
-// a Routes call on a DATA-lane type. Each returns how many peers' queues
-// took it; none dials.
+// Channels. Named channels with a delivery contract chosen when opened
+// (notify, stream, bulk: net/fanout.h), subscribed to on this node by
+// topic prefix, the subscriptions gossiped, so a publish goes only where
+// someone listens. And the broadcasts: a notification to every peer over
+// CONTROL, each returning how many peers' queues took it; none dials.
 class Channels {
  public:
   virtual ~Channels() = default;
+  // Throws std::invalid_argument for an empty name, one over 64 bytes, or
+  // one already open. `replay_bytes` bounds a stream's replay buffer.
+  virtual void open(std::string name, net::Delivery delivery, size_t replay_bytes = 1 << 20) = 0;
+  // Deliveries to `handler` are posted to `executor`, in order per origin
+  // when it is a strand. Throws std::invalid_argument for a channel not open.
+  virtual uint64_t subscribe(const std::string& channel, std::string prefix, boost::asio::any_io_executor executor, net::ChannelHandler handler) = 0;
+  virtual void unsubscribe(uint64_t id) = 0;
+  // notify and stream: sent now, never waiting; where it went is the
+  // evidence. A destination with no route yet is reported, and a route is
+  // made for the next publish; a stream message is held for its replay.
+  virtual net::Published publish(const std::string& channel, std::string topic, net::Bytes payload) = 0;
+  // bulk: `done` posted to `executor` once every destination acknowledged
+  // or `deadline` passed.
+  virtual void publish_bulk(const std::string& channel, std::string topic, net::Bytes payload, std::chrono::milliseconds deadline,
+                            boost::asio::any_io_executor executor, std::function<void(net::Published)> done) = 0;
   // In the control class, queued behind whatever is there; waits for a
   // queue that is full, never for a peer.
   virtual size_t broadcast(const net::Message& message) = 0;

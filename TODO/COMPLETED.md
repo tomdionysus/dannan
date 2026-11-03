@@ -12,6 +12,21 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
 
+## 2026-11-03, night -- channels
+
+`net/fanout.*` and `Context::channels()`: named channels with a delivery
+contract chosen at open (the plan's "Level 1"): notify (CONTROL, at most
+once, dropped under pressure), stream (CONTROL, at least once, a sequence
+per origin and destination, a gap refilled from the sender's bounded replay
+buffer, what it no longer holds reported as `lost`, a new incarnation
+restarting the sequence), bulk (DATA, acknowledged per destination).
+Subscription is node-local by topic prefix, gossiped as the advert
+`dannan.ch.<channel>` (covered prefixes folded, coarsened to everything
+past 1 KiB), so a publish goes only where someone listens; a destination
+with no route yet is reported and a route made for the next publish.
+Core types 17 to 19 and reply 108. Retained stays Dagda's. **Gate:
+`dannan_tests` 358, `dagda_tests` 1**; channel cases 10 times.
+
 ## 2026-11-03, night -- Argon2id and node key custody
 
 - `identity/argon2.*`: Argon2id (RFC 9106, its test vector pinned) for the

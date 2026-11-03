@@ -26,6 +26,7 @@ add_library(dannan SHARED
   net/channel.cpp
   net/client.cpp
   net/codec.cpp
+  net/fanout.cpp
   net/message.cpp
   net/outbound.cpp
   net/routes.cpp
