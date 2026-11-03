@@ -28,6 +28,7 @@
 #include "dannan/reach/connectivity.h"
 #include "dannan/reach/dial_back.h"
 #include "dannan/reach/inbound.h"
+#include "dannan/reach/paths.h"
 #include "dannan/status/readiness.h"
 #include "dannan/status/telemetry.h"
 #include "dannan/supervise/supervised.h"
@@ -51,6 +52,11 @@ struct NodeConfig {
   reach::Inbound inbound = reach::Inbound::automatic;
   // Whether this node forwards circuits for others (the relay capability).
   bool relay = false;
+  // Level 0: a forced path class (tests, the compose bed); nothing:
+  // classified from what peers observe. How long both ends of a punch keep
+  // trying.
+  std::optional<membership::PathClass> path_class;
+  std::chrono::milliseconds punch_window{3000};
   // What recovers before the node is ready, by name.
   std::vector<std::string> planes;
   std::string version;
@@ -185,6 +191,8 @@ class Node final : public Context {
   void telemetry_loop(std::stop_token stop);
   void connectivity_loop(std::stop_token stop);
   void apply_inbound(bool capable);
+  // Learns this node's path class and candidates; when to do it again.
+  std::chrono::milliseconds classify();
   // Waits on the loops' wake until `due` or stop.
   void sleep_until(std::stop_token stop, contract::TimePoint due);
 
@@ -220,6 +228,8 @@ class Node final : public Context {
 
   std::unique_ptr<net::Server> _server;
   std::unique_ptr<net::Client> _client;
+  // Destroyed before the client it uses.
+  std::unique_ptr<reach::Paths> _paths;
   std::unique_ptr<reach::PublicConnectivity> _connectivity;
   std::unique_ptr<reach::DialBackResponder> _dial_back;
 

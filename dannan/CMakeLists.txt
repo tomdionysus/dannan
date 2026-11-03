@@ -33,6 +33,7 @@ add_library(dannan SHARED
   reach/dial_back.cpp
   reach/external_ip.cpp
   reach/inbound.cpp
+  reach/paths.cpp
   reach/upnp.cpp
   sched/memory_limit.cpp
   sched/retained_memory.cpp

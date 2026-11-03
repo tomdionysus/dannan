@@ -67,6 +67,9 @@ class Node::NodesNoun final : public Nodes {
     return out;
   }
   bool all_known_reachable() const override { return _node._members.all_known_reachable(); }
+  std::optional<net::Purpose> path(const identity::NodeId& node, net::Lane lane) const override {
+    return _node._client ? _node._client->path_of(node, lane) : std::nullopt;
+  }
   std::optional<std::chrono::milliseconds> latency(const identity::NodeId& node) const override {
     return _node._client ? _node._client->peer_latency(node) : std::nullopt;
   }
@@ -254,6 +257,7 @@ Diagnostics Node::diagnostics() const {
   if (_server) out.work = _server->work_stats();
   out.traffic = traffic();
   out.threads = _threads.statuses();
+  if (_paths) out.paths = _paths->stats();
   return out;
 }
 
@@ -331,7 +335,25 @@ void Node::start() {
     _server->scheduler().promote(peer, id, frame);
   };
   client_options.inbound.cancelled = [this](const identity::NodeId& peer, uint64_t id) { _server->scheduler().cancel(peer, id); };
+  client_options.make_path = [this](const identity::NodeId& peer, net::Lane lane, std::function<void(std::string)> failed) {
+    if (_paths)
+      _paths->make_path(peer, lane, std::move(failed));
+    else
+      failed("level 0 is not running");
+  };
   _client = std::make_unique<net::Client>(_io, client_options);
+  reach::PathsConfig paths;
+  paths.key = _identity.key;
+  paths.connect_timeout = _config.connect_timeout;
+  paths.punch_window = _config.punch_window;
+  paths.relay = _config.relay;
+  paths.forced_class = _config.path_class;
+  _paths = std::make_unique<reach::Paths>(
+      _io, paths, *_client, [this] { return _members.self(); }, [this] { return _members.active(); },
+      [this](const NodeRecord& peer, net::MessageType type, net::Bytes payload, std::chrono::milliseconds deadline) {
+        return call_wait(peer, {peer.host, peer.port}, type, std::move(payload), deadline);
+      });
+  if (_config.path_class) _members.set_path_class(*_config.path_class);
   // An inbound-incapable node keeps both lanes dialled to every capable
   // peer: only it can restore its own reachability.
   _client->set_maintained_peers([this] {
@@ -385,6 +407,7 @@ void Node::stop() {
   // The transport goes first: a loop waiting on a call is released by it.
   if (_server) _server->stop();
   cancel_outbound_calls();
+  if (_paths) _paths->stop();
   for (auto& loop : _loops)
     if (loop.joinable()) loop.join();
   _loops.clear();
@@ -452,6 +475,12 @@ net::Handled Node::handle(const NodeRecord& peer, sched::FrameType frame, const 
     return net::Handled::processed({m::identity_resets_reply, membership::encode_identity_resets(_members.identity_resets()), {}});
   }
   if (type == m::dial_request) return _client->handle_dial_request(peer, request);
+  if (type == m::punch_request) return _paths->punch_request(peer, request);
+  if (type == m::punch_go) return _paths->punch_go(peer, request);
+  if (type == m::relay_open) return _paths->relay_open(peer, request);
+  if (type == m::relay_offer) return _paths->relay_offer(peer, request);
+  if (type == m::relay_data) return _paths->relay_data(peer, request);
+  if (type == m::relay_close) return _paths->relay_close(peer, request);
   if (type == m::dial_back) return _dial_back->answer(peer.id, request.payload);
   // Held shared across the call: unbind waits for it.
   contract::ReadLock lock(_handlers_mutex);
@@ -625,19 +654,54 @@ void Node::apply_inbound(bool capable) {
   }
 }
 
+std::chrono::milliseconds Node::classify() {
+  const auto self = _members.self();
+  bool changed = false;
+  auto again = _config.heartbeat;
+  if (_config.path_class) {
+    changed = _members.set_path_class(*_config.path_class);
+  } else if (self.inbound_capable()) {
+    // Dialable where it advertises: that is its one candidate, confirmed by
+    // the dial-back or the operator.
+    changed = _members.set_path_class(membership::PathClass::public_path);
+    const bool same = self.candidates.size() == 1 && self.candidates[0].host == self.host && self.candidates[0].port == self.port;
+    if (!same) changed = _members.set_candidates({{self.host, self.port, true, _config.wall->unix_ms()}}) || changed;
+  } else if (const auto observation = _paths->observe()) {
+    changed = _members.set_path_class(reach::classify(*observation));
+    std::vector<membership::Candidate> candidates;
+    for (const auto& seen : observation->seen) {
+      const auto known = std::any_of(candidates.begin(), candidates.end(), [&](const auto& c) { return c.host == seen.host && c.port == seen.port; });
+      if (!known && candidates.size() < membership::max_candidates) candidates.push_back({seen.host, seen.port, false, 0});
+    }
+    changed = _members.set_candidates(std::move(candidates)) || changed;
+    again = _config.reprobe_while_incapable;
+  }
+  if (changed) {
+    _events.notify(status::NodeEvents::topology);
+    signal_telemetry();
+  }
+  return again;
+}
+
 void Node::connectivity_loop(std::stop_token stop) {
   const auto before = _members.self();
   const auto status = _connectivity->refresh(_config.connectivity.check.enabled);
   if (!status.advertised.host.empty() && status.advertised.port && (status.advertised.host != before.host || status.advertised.port != before.port))
     _members.set_endpoint(status.advertised.host, status.advertised.port);
-  if (_config.inbound != reach::Inbound::automatic) return;
-  // Evidence is a peer, reached over CONTROL, reporting whether a fresh
-  // connection to the advertised endpoint completed a handshake. An
-  // unaskable peer is no evidence.
+  const bool automatic = _config.inbound == reach::Inbound::automatic;
   auto next = _config.time->now();
+  auto next_class = next;
   while (!stop.stop_requested()) {
-    sleep_until(stop, next);
+    sleep_until(stop, automatic ? std::min(next, next_class) : next_class);
     if (stop.stop_requested()) return;
+    // Level 0: this node's path class and candidates, and the circuits
+    // through it that have lost an end.
+    if (_config.time->now() >= next_class) next_class = _config.time->now() + classify();
+    _paths->sweep();
+    if (!automatic || _config.time->now() < next) continue;
+    // Evidence is a peer, reached over CONTROL, reporting whether a fresh
+    // connection to the advertised endpoint completed a handshake. An
+    // unaskable peer is no evidence.
     next = _config.time->now() + _config.heartbeat;
     std::optional<NodeRecord> peer;
     for (const auto& node : _members.active()) {

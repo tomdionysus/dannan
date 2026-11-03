@@ -26,6 +26,7 @@
 #include "dannan/placement/placement.h"
 #include "dannan/reach/connectivity.h"
 #include "dannan/reach/inbound.h"
+#include "dannan/reach/paths.h"
 #include "dannan/sched/retained_memory.h"
 #include "dannan/status/activity.h"
 #include "dannan/status/events.h"
@@ -69,6 +70,9 @@ class Nodes {
   // Every known node directly reachable, pairs that cannot meet excepted.
   virtual bool all_known_reachable() const = 0;
   virtual bool inbound_capable(const identity::NodeId& node) const = 0;
+  // Why this node's route to `node` on `lane` was opened: ordinary (direct
+  // or reverse), punched or relayed; nothing without a route.
+  virtual std::optional<net::Purpose> path(const identity::NodeId& node, net::Lane lane) const = 0;
   // The smoothed CONTROL round trip, from health pings only.
   virtual std::optional<std::chrono::milliseconds> latency(const identity::NodeId& node) const = 0;
   virtual std::map<identity::NodeId, std::chrono::milliseconds> latencies() const = 0;
@@ -162,6 +166,9 @@ struct Diagnostics {
   net::WorkStats work;
   status::TrafficTotals traffic;
   std::vector<supervise::SupervisedThreadStatus> threads;
+  // Level 0: punches and relays tried and made, and the circuits through
+  // this node with their bytes.
+  reach::PathStats paths;
 };
 
 // Who this node is.
