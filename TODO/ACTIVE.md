@@ -54,12 +54,13 @@ way on `feature/transport` off `develop`: crypto, the cluster key, the
 node record, the open route table and the sans-I/O channel are done and
 proven byte for byte against Macha 0.91.2 (`dannan_interop_tests`, built
 against a pinned export: `COMPLETED.md` has how). Reassembly, the outbound
-queue, the Asio session, the request scheduler and the server are done
-too (`COMPLETED.md`, gate 176 + 1 + 6). Next on that branch: the client
-(routes per peer and lane, dial on demand and reuse, shared cold dials,
-simultaneous-dial reconciliation, the no-progress deadline per lane,
-health and backoff, the three broadcasts, reverse dial and maintained
-peers, the probe dial, traffic shared with the server), each from the transport table's rows with Macha's
+queue, the Asio session with retirement, the request scheduler, the
+server and the client's routes (dial on demand and reuse, shared cold
+dials, reconciliation, the no-progress deadline, the probe dial) are done
+too (`COMPLETED.md`, gate 189 + 1 + 6). Next on that branch: the rest of
+the client (health pings and per-peer backoff with the round trip from
+pings only, the three broadcasts with the test hook, reverse dial and
+maintained peers), each from the transport table's rows with Macha's
 `tests/test_rpc_cluster.cpp` cases as the model; then the two-process
 test against the Macha binary.
 

@@ -71,6 +71,9 @@ class Server {
   size_t sessions() const;
   size_t pre_auth() const;
   WorkStats work_stats() const { return _scheduler.stats(); }
+  // Where the node's client sends requests that arrive on the sessions it
+  // dialled, so every request is served by the same workers.
+  RequestScheduler& scheduler() noexcept { return _scheduler; }
   const std::shared_ptr<TransportTraffic>& traffic() const noexcept { return _options.traffic; }
 
  private:

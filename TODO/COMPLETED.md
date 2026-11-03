@@ -7,6 +7,35 @@ left green. `ACTIVE.md` is the plan and this is the record.
 
 None. Dannan has no code yet.
 
+## 2026-11-03, night -- step 2: retirement and the client's routes
+
+On `feature/transport` (two commits):
+
+- `Session::retire()`: protocol 23's retirement. No new call is admitted
+  ("peer channel is retiring"), what is in flight is answered both ways,
+  `session_retire` (12) goes once nothing of this end's is queued, and the
+  session closes as "retired" once both ends have said so and it has
+  drained; a peer's notice retires this end too.
+- `Client` (`dannan/net/client.h`): routes per peer and lane (its own
+  dials and the sessions peers opened, admitted from the server), a lane
+  dialled on demand and reused, the DATA lane only for types registered
+  there, concurrent cold callers sharing one dial (24 callers, one dial),
+  a dial checked against the node it meant to reach, simultaneous dials
+  settled on the lower id's session with the other retired (exercised in
+  every round of its test: both ends dialled, each retired one), duplicate
+  inbound sessions settled on the lower session id, the no-progress
+  deadline per lane (the failure names the message and says "cancelled
+  for retry"; zero is none), the probe dial (authenticates, closes, leaves
+  no route), and `stop()` failing every pending call at once. Requests
+  arriving on dialled sessions go to the server's scheduler.
+- Still owed in step 2: health pings with per-peer backoff and round trip
+  from pings only, the three broadcasts, reverse dial and maintained
+  peers, then the two-process test against the Macha binary (which should
+  also show retirement interoperating with Macha's).
+- **Gate: `dannan_tests` 189, `dagda_tests` 1, `dannan_interop_tests` 6,
+  all passed**; the session and client cases 100 times over with no
+  failure.
+
 ## 2026-11-03, night -- step 2: the server's scheduler and the server
 
 On `feature/transport` (`6172274`, `01168d1` and this commit):

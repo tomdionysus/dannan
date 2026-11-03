@@ -20,6 +20,7 @@ add_executable(dannan_tests
   identity_durable_file_test.cpp
   net_assembler_test.cpp
   net_channel_test.cpp
+  net_client_test.cpp
   net_codec_test.cpp
   net_outbound_test.cpp
   net_routes_record_test.cpp
