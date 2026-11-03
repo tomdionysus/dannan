@@ -7,6 +7,42 @@ left green. `ACTIVE.md` is the plan and this is the record.
 
 None. Dannan has no code yet.
 
+## 2026-11-03, evening -- step 2 begun: the channel, proven against Macha
+
+On `feature/transport` (two commits, `ca9ffdd` and this one):
+
+- `dannan::identity`: SHA-256, HMAC, HKDF, AES-GCM, X25519 over OpenSSL,
+  pinned to RFC 4231, 5869 and 7748 and FIPS 180 vectors; the cluster key
+  derived as protocol 23 derives it (labels `macha/auth/v1`,
+  `macha/cluster-id/v1`), with a hosted system's keys derived from the
+  master under its own labels (Dagda's storage key is
+  `macha/storage/v1`); node ids.
+- `dannan::membership::NodeRecord`, protocol 23's roster record,
+  grandfathered.
+- `dannan::net::RouteTable`, the open route space from the first commit:
+  a 16-bit type registered with lanes, frame classes and whether it is a
+  notification; Dannan's numbers reserved; the retired 37, 38, 48, 124
+  refused; an unregistered type has protocol 23's defaults (control lane,
+  control frame), so a bare Dannan node refuses nothing Macha accepts.
+  Correction to the extraction document's seam 4: `session_retire` (12)
+  is the transport's, so Dannan's, not Macha's.
+- The channel, sans I/O (`dannan/net/channel.h`): the v15 handshake both
+  ways and sealed frames, every label and byte protocol 23's. Sealer and
+  opener hold the node's route table by `shared_ptr` (a reference let a
+  test dangle it).
+- **Interop.** `dannan_interop_tests` links Macha 0.91.2's own
+  `libmacha_core`, from a pinned `git archive` of the tag built under
+  `build/interop/macha-0.91.2` (Macha's repository untouched), and runs
+  Dannan against Macha in one process: the key derivation and the node
+  record are byte-identical; a Dannan client and a Macha server, and a
+  Macha client and a Dannan server on the DATA lane, complete the
+  handshake, share the session id and frame limit, and exchange frames
+  both ways, each side checking them by its own rules; Macha refuses
+  object traffic on a control session as Dannan's table does. Configure
+  with `-DDANNAN_MACHA_INTEROP_DIR=$PWD/build/interop/macha-0.91.2`.
+- **Gate: `dannan_tests` 119, `dagda_tests` 1, `dannan_interop_tests` 5,
+  all passed.**
+
 ## 2026-11-03, evening -- step 1: the vocabulary
 
 Three commits on `develop` (`7e2f414`, `aeb5113`, and this one), tests

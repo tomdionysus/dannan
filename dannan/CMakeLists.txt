@@ -15,6 +15,7 @@ add_library(dannan SHARED
   identity/durable_file.cpp
   identity/node_id.cpp
   membership/node_record.cpp
+  net/channel.cpp
   net/codec.cpp
   net/routes.cpp
   sched/memory_limit.cpp

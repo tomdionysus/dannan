@@ -49,10 +49,15 @@ configure line for Macha is in `COMPLETED.md`).
 
 Written for a session starting from nothing. Steps 0 and 1 are
 done (`COMPLETED.md`): the skeleton, then the vocabulary, gate 78 + 1.
-The next session is **step 2**, the transport on Asio (Next, 2), on
-`feature/transport` off `develop`: settle its two open design points
-first, write the transport table's rows as `dannan_tests` cases (Macha's
-`tests/test_rpc_cluster.cpp` cases are the model), then the code.
+Step 2, the transport on Asio (Next, 2), is under
+way on `feature/transport` off `develop`: crypto, the cluster key, the
+node record, the open route table and the sans-I/O channel are done and
+proven byte for byte against Macha 0.91.2 (`dannan_interop_tests`, built
+against a pinned export: `COMPLETED.md` has how). Next on that branch:
+the Asio session (reader and writer over the channel, priority queue,
+fragments and reassembly), then the client and server, each from the
+transport table's rows with Macha's `tests/test_rpc_cluster.cpp` cases
+as the model.
 
 Read in this order: this file to the end of Standing rules;
 `2026-11-02-dannan-plan.md` whole; the inventory; the head of
