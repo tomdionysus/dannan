@@ -12,7 +12,11 @@ target_include_directories(dannan_test_fixtures INTERFACE ${PROJECT_SOURCE_DIR})
 target_link_libraries(dannan_test_fixtures INTERFACE GTest::gtest Threads::Threads)
 
 add_executable(dannan_tests
+  contract_test.cpp
   fixtures_test.cpp
+  sched_walk_retry_test.cpp
+  sched_work_test.cpp
+  status_log_test.cpp
   version_test.cpp
 )
 target_link_libraries(dannan_tests PRIVATE dannan dannan_test_fixtures GTest::gtest_main dannan_warnings)
