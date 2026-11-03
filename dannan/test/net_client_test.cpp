@@ -33,6 +33,8 @@ using sched::FrameType;
 
 constexpr MessageType put_object{5};
 constexpr MessageType slow{200};
+constexpr MessageType sluggish{201};
+constexpr MessageType news{202};
 
 struct Io {
   asio::io_context context;
@@ -58,14 +60,19 @@ std::shared_ptr<const RouteTable> table() {
   auto routes = RouteTable::with_dannan_types();
   routes.add(put_object, {"put_object", Lanes::data, Frames::not_control, false});
   routes.add(slow, {"slow", Lanes::control, Frames::control_only, false});
+  routes.add(sluggish, {"sluggish", Lanes::control, Frames::control_only, false});
+  routes.add(news, {"news", Lanes::control, Frames::any, true});
   return std::make_shared<const RouteTable>(std::move(routes));
 }
 
 // A whole node on loopback: a server and a client wired as a node wires
-// them. `slow` waits on the node's gate, then answers.
+// them. `slow` waits on the node's gate, then answers; `sluggish` takes
+// 300 ms; the first `hang_pings` pings wait on the gate; `news` is counted.
 struct Node {
   Io& io;
   test::Gate gate;
+  std::atomic<int> hang_pings{0};
+  std::atomic<int> heard{0};
   membership::NodeRecord self;
   std::unique_ptr<Server> server;
   std::unique_ptr<Client> client;
@@ -84,6 +91,9 @@ struct Node {
         io.context, "127.0.0.1", 0, server_options,
         [this](const membership::NodeRecord&, FrameType, const Message& request) {
           if (request.type == slow) gate.enter_and_wait();
+          if (request.type == sluggish) std::this_thread::sleep_for(300ms);
+          if (request.type == news) ++heard;
+          if (request.type == message::ping && hang_pings.fetch_sub(1) > 0) gate.enter_and_wait();
           return Message{message::ok, request.payload, {}};
         },
         [this](const std::shared_ptr<Session>& session) { client->admit(session); });
@@ -98,6 +108,7 @@ struct Node {
     client = std::make_unique<Client>(io.context, std::move(options));
     server->start();
     self.port = server->bound_port();
+    client->start();
   }
   ~Node() {
     gate.open();
@@ -306,6 +317,133 @@ TEST(Client, StoppingFailsPendingCallsAtOnceAndRefusesNewOnes) {
   const auto refused = call(a, b.self);
   EXPECT_FALSE(refused.reply);
   EXPECT_NE(refused.failure.find("stopped"), std::string::npos) << refused.failure;
+}
+
+// The round trip is smoothed from pings alone, so slow handlers and large
+// payloads never distort it.
+TEST(Health, TheRoundTripComesFromPingsNotFromSlowReplies) {
+  Io io;
+  ClientOptions tuning;
+  tuning.heartbeat = 50ms;
+  Node a(io, tuning), b(io);
+  ASSERT_TRUE(call(a, b.self).reply);
+  for (int i = 0; i < 3; ++i) ASSERT_TRUE(call(a, b.self, sluggish).reply);
+  ASSERT_TRUE(eventually([&] { return a.client->peer_latency(b.self.id).has_value(); }));
+  EXPECT_LT(*a.client->peer_latency(b.self.id), 150ms);
+}
+
+// A ping that hangs is abandoned after a third of the liveness budget and
+// retried; the peer keeps its route.
+TEST(Health, AHungPingIsRetriedInsideTheLivenessBudget) {
+  Io io;
+  ClientOptions tuning;
+  tuning.heartbeat = 100ms;
+  tuning.dead_after = 900ms;
+  Node a(io, tuning), b(io);
+  ASSERT_TRUE(call(a, b.self).reply);
+  b.hang_pings = 1;
+  ASSERT_TRUE(b.gate.wait_for_entries(1));
+  ASSERT_TRUE(eventually([&] { return a.client->peer_latency(b.self.id).has_value(); }));
+  std::this_thread::sleep_for(1200ms);
+  EXPECT_TRUE(a.client->has_route(b.self.id, Lane::control));
+  EXPECT_EQ(b.server->sessions(), 1u);
+}
+
+// A peer that answers no ping for the liveness budget loses its route.
+TEST(Health, APeerThatStopsAnsweringLosesItsRoute) {
+  Io io;
+  ClientOptions tuning;
+  tuning.heartbeat = 100ms;
+  tuning.dead_after = 600ms;
+  Node a(io, tuning), b(io);
+  ASSERT_TRUE(call(a, b.self).reply);
+  b.hang_pings = 1000;
+  EXPECT_TRUE(eventually([&] { return !a.client->has_route(b.self.id, Lane::control); }));
+  EXPECT_TRUE(eventually([&] { return b.server->sessions() == 0; }));
+}
+
+membership::NodeRecord unreachable(Io& io) {
+  membership::NodeRecord nobody;
+  nobody.id = identity::NodeId::random();
+  nobody.host = "127.0.0.1";
+  Node gone(io);
+  nobody.port = gone.self.port;
+  return nobody;
+}
+
+// A failed dial is not retried until its backoff passes.
+TEST(Backoff, AFailedDialWaitsOutItsBackoff) {
+  Io io;
+  Node a(io);
+  const auto nobody = unreachable(io);
+  EXPECT_NE(call(a, nobody).failure.find("dial"), std::string::npos);
+  const auto refused = call(a, nobody);
+  EXPECT_NE(refused.failure.find("backoff"), std::string::npos) << refused.failure;
+  EXPECT_EQ(a.client->stats().dials, 1u);
+  std::this_thread::sleep_for(300ms);
+  EXPECT_NE(call(a, nobody).failure.find("dial"), std::string::npos);
+  EXPECT_EQ(a.client->stats().dials, 2u);
+}
+
+TEST(Backoff, IsPerPeer) {
+  Io io;
+  Node a(io), b(io);
+  EXPECT_FALSE(call(a, unreachable(io)).reply);
+  const auto outcome = call(a, b.self);
+  EXPECT_TRUE(outcome.reply) << outcome.failure;
+}
+
+// Backoff governs new dials, never a route the peer opened meanwhile.
+TEST(Backoff, NeverMasksARouteThePeerOpened) {
+  Io io;
+  Node a(io), c(io);
+  auto stale = c.self;
+  stale.port = unreachable(io).port;
+  EXPECT_FALSE(call(a, stale).reply);
+  ASSERT_TRUE(call(c, a.self).reply);
+  ASSERT_TRUE(eventually([&] { return a.client->has_route(c.self.id, Lane::control); }));
+  const auto outcome = call(a, stale);
+  EXPECT_TRUE(outcome.reply) << outcome.failure;
+}
+
+// A broadcast reaches every CONTROL route, whichever end dialled it.
+TEST(Broadcast, ReachesEveryControlRouteBothWays) {
+  Io io;
+  Node a(io), b(io), c(io);
+  ASSERT_TRUE(call(b, a.self).reply);
+  ASSERT_TRUE(call(a, c.self).reply);
+  ASSERT_TRUE(eventually([&] { return a.client->has_route(b.self.id, Lane::control); }));
+  EXPECT_EQ(a.client->broadcast({news, {1}, {}}), 2u);
+  EXPECT_TRUE(eventually([&] { return b.heard == 1 && c.heard == 1; }));
+}
+
+// Best effort skips while the route table is busy rather than wait for it;
+// broadcast_notify waits for the table but never for a peer.
+TEST(Broadcast, BestEffortSkipsABusyRouteTableAndNotifyWaitsForIt) {
+  Io io;
+  Node a(io), b(io);
+  ASSERT_TRUE(call(a, b.self).reply);
+  size_t skipped = 99;
+  std::future<size_t> waited;
+  a.client->hold_routes_for_test([&] {
+    std::thread([&] { skipped = a.client->broadcast_best_effort({news, {}, {}}, FrameType::speculative); }).join();
+    waited = std::async(std::launch::async, [&] { return a.client->broadcast_notify({news, {}, {}}, FrameType::speculative); });
+    EXPECT_EQ(waited.wait_for(100ms), std::future_status::timeout);
+  });
+  EXPECT_EQ(skipped, 0u);
+  EXPECT_EQ(waited.get(), 1u);
+  EXPECT_EQ(a.client->broadcast_best_effort({news, {}, {}}, FrameType::speculative), 1u);
+  EXPECT_TRUE(eventually([&] { return b.heard == 2; }));
+}
+
+// Broadcasts go over the routes there are; none dials.
+TEST(Broadcast, NeverDials) {
+  Io io;
+  Node a(io), b(io);
+  EXPECT_EQ(a.client->broadcast({news, {}, {}}), 0u);
+  EXPECT_EQ(a.client->broadcast_notify({news, {}, {}}, FrameType::control), 0u);
+  EXPECT_EQ(a.client->broadcast_best_effort({news, {}, {}}, FrameType::control), 0u);
+  EXPECT_EQ(a.client->stats().dials, 0u);
 }
 
 }  // namespace

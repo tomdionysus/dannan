@@ -56,11 +56,11 @@ proven byte for byte against Macha 0.91.2 (`dannan_interop_tests`, built
 against a pinned export: `COMPLETED.md` has how). Reassembly, the outbound
 queue, the Asio session with retirement, the request scheduler, the
 server and the client's routes (dial on demand and reuse, shared cold
-dials, reconciliation, the no-progress deadline, the probe dial) are done
-too (`COMPLETED.md`, gate 189 + 1 + 6). Next on that branch: the rest of
-the client (health pings and per-peer backoff with the round trip from
-pings only, the three broadcasts with the test hook, reverse dial and
-maintained peers), each from the transport table's rows with Macha's
+dials, reconciliation, the no-progress deadline, the probe dial), health
+with backoff, and the three broadcasts are done too (`COMPLETED.md`, gate
+199 + 1 + 6). Next on that branch: reverse dial and maintained peers
+(an inbound-incapable peer is never dialled; `dial_request` and a bounded
+wait for the reverse dial; both lanes kept to maintained peers), each from the transport table's rows with Macha's
 `tests/test_rpc_cluster.cpp` cases as the model; then the two-process
 test against the Macha binary.
 

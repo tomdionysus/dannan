@@ -9,6 +9,8 @@
 
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/steady_timer.hpp>
+#include <boost/asio/strand.hpp>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -60,6 +62,13 @@ struct ClientOptions {
   // ever. Per lane, since a DATA reply may legitimately take long to start.
   std::chrono::milliseconds control_no_progress{0};
   std::chrono::milliseconds data_no_progress{0};
+  // Health: every heartbeat each peer with a route is pinged on each lane
+  // it has; a ping that hangs is abandoned after a third of dead_after and
+  // retried, and a CONTROL route with no answer for dead_after is closed.
+  std::chrono::milliseconds heartbeat{5000};
+  std::chrono::milliseconds dead_after{30000};
+  // Told of each peer that answers a CONTROL ping, with its record.
+  std::function<void(const membership::NodeRecord&)> alive;
 };
 
 struct ClientStats {
@@ -97,6 +106,27 @@ class Client {
   // A session a peer opened to this node, from the server: a route back.
   void admit(const std::shared_ptr<Session>& session);
 
+  // Starts the health pings.
+  void start();
+
+  // Notifies every CONTROL route, whichever end dialled it; never dials.
+  // Returns how many took it.
+  size_t broadcast(const Message& message);
+  // As broadcast, at `frame`, but only where it adds no delay
+  // (Session::try_notify); sends nothing if the route table is momentarily
+  // in use, so a caller on a hot path never waits.
+  size_t broadcast_best_effort(const Message& message, sched::FrameType frame);
+  // As broadcast_best_effort, but waits for the route table. Still never
+  // dials and never waits on a peer.
+  size_t broadcast_notify(const Message& message, sched::FrameType frame);
+  // Runs `held` while holding the route table. Tests only: the one way to
+  // show best effort skipping a busy table.
+  void hold_routes_for_test(const std::function<void()>& held);
+
+  // The smoothed CONTROL round trip to a peer, from health pings only.
+  std::optional<std::chrono::milliseconds> peer_latency(const identity::NodeId& peer) const;
+  std::map<identity::NodeId, std::chrono::milliseconds> peer_latencies() const;
+
   // A one-shot dial on the probe lane: the handshake must authenticate as
   // `expected`, then the connection closes; never a route. `done` gets the
   // reason it failed, empty on success.
@@ -126,6 +156,11 @@ class Client {
     Endpoint endpoint;
   };
   struct Dialling;
+  struct Probe;
+  struct Backoff {
+    unsigned failures = 0;
+    contract::TimePoint retry_after{};
+  };
   using RouteKey = std::pair<identity::NodeId, Lane>;
   using Retire = std::vector<std::shared_ptr<Session>>;
 
@@ -138,10 +173,23 @@ class Client {
   std::shared_ptr<Session> route_locked(const identity::NodeId& peer, Lane lane) DANNAN_REQUIRES(_mutex);
   void reconcile_locked(const RouteKey& key, Retire& retire) DANNAN_REQUIRES(_mutex);
   void end_operation();
+  // Records a dial's outcome against its address and lane: a failure backs
+  // off 250 ms doubling to 4 s, a success clears it.
+  void observe_dial(const std::string& key, bool success);
+  size_t notify_routes(const Message& message, sched::FrameType frame, bool wait);
+  std::vector<std::shared_ptr<Session>> control_routes_locked() const DANNAN_REQUIRES(_mutex);
+  // The health loop, on its strand.
+  void arm_heartbeat();
+  void health_pass();
+  void attempt(const std::shared_ptr<Probe>& probe);
+  void answered(const std::shared_ptr<Probe>& probe, CallOutcome outcome);
+  void retry(const std::shared_ptr<Probe>& probe);
 
   boost::asio::io_context& _io;
   ClientOptions _options;
   const identity::NodeId _self;
+  boost::asio::strand<boost::asio::io_context::executor_type> _health_strand;
+  boost::asio::steady_timer _heartbeat;
 
   mutable contract::Mutex _mutex;
   std::condition_variable _idle;
@@ -152,6 +200,9 @@ class Client {
   std::map<std::string, std::vector<Call>> _dials DANNAN_GUARDED_BY(_mutex);
   std::map<Endpoint, identity::NodeId> _endpoint_ids DANNAN_GUARDED_BY(_mutex);
   std::set<std::shared_ptr<Dialling>> _dialling DANNAN_GUARDED_BY(_mutex);
+  std::map<std::string, Backoff> _backoff DANNAN_GUARDED_BY(_mutex);
+  std::map<identity::NodeId, double> _latency_ms DANNAN_GUARDED_BY(_mutex);
+  bool _health_started DANNAN_GUARDED_BY(_mutex) = false;
   ClientStats _stats DANNAN_GUARDED_BY(_mutex);
   size_t _operations DANNAN_GUARDED_BY(_mutex) = 0;
   bool _stopped DANNAN_GUARDED_BY(_mutex) = false;
