@@ -10,6 +10,8 @@
 # "dannan/<subsystem>/x.h".
 add_library(dannan SHARED
   contract/thread_safety.cpp
+  sched/memory_limit.cpp
+  sched/retained_memory.cpp
   sched/work.cpp
   status/log.cpp
   version.cpp

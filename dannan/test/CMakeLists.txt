@@ -14,6 +14,7 @@ target_link_libraries(dannan_test_fixtures INTERFACE GTest::gtest Threads::Threa
 add_executable(dannan_tests
   contract_test.cpp
   fixtures_test.cpp
+  sched_memory_test.cpp
   sched_walk_retry_test.cpp
   sched_work_test.cpp
   status_log_test.cpp
