@@ -13,7 +13,9 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <boost/asio/io_context.hpp>
 #include <fstream>
+#include <future>
 #include <thread>
 
 #include "cluster/net.hpp"
@@ -22,6 +24,7 @@
 #include "dannan/identity/cluster_key.h"
 #include "dannan/membership/node_record.h"
 #include "dannan/net/channel.h"
+#include "dannan/net/session.h"
 #include "dannan/test/fixtures/temp_dir.h"
 #include "types.hpp"
 
@@ -288,6 +291,70 @@ TEST(Interop, MachaRefusesObjectTrafficOnAControlSessionAsDannanDoes) {
   EXPECT_THROW(server.receive_fragment(), std::runtime_error);
   EXPECT_FALSE(routes()->allowed(net::MessageType{4}, net::Lane::control, sched::FrameType::foreground));
   ::shutdown(pair.ours, SHUT_RDWR);
+}
+
+// Dannan's Asio session in both roles against Macha's channel, with real
+// request ids: the dialler's odd, the acceptor's even, and fragmented replies.
+TEST(Interop, DannansSessionAnswersAndCallsAMachaPeer) {
+  namespace asio = boost::asio;
+  Keys keys;
+  asio::io_context io;
+  auto work = asio::make_work_guard(io);
+  std::thread runner([&] { io.run(); });
+  Socketpair pair;
+  // Macha dials; Dannan accepts.
+  auto client_node = theirs_of(ours_sample());
+  macha::SecureChannel macha_side(pair.theirs, keys.theirs, client_node, 4096);
+  std::thread macha_handshake([&] { macha_side.client_handshake(macha::TransportLane::control); });
+  net::Session::Socket socket(io, net::Session::Socket::protocol_type(AF_UNIX, SOCK_STREAM), pair.ours);
+  pair.ours = -1;  // the socket owns it now
+  std::promise<net::Established> accepted;
+  net::async_accept_handshake(socket, keys.ours, ours_sample(), 65536, "127.0.0.9", [&](std::exception_ptr error, net::Established done) {
+    if (error)
+      accepted.set_exception(error);
+    else
+      accepted.set_value(std::move(done));
+  });
+  auto established = accepted.get_future().get();
+  macha_handshake.join();
+  EXPECT_EQ(established.max_frame, 4096u);
+
+  net::SessionHandlers handlers;
+  handlers.request = [](net::Frame frame, net::Reply reply) { reply({net::message::members_reply, net::Bytes(10000, 0x42), {}}); };
+  auto session = net::Session::create(std::move(socket), std::move(established), net::Role::acceptor, routes(), std::move(handlers));
+  session->start();
+
+  // Macha asks with an odd id; Dannan's reply comes back in 4 KiB fragments.
+  macha_side.send_fragment(7, macha::FrameType::control, macha::MessageType::members, true, true, macha::Bytes{1});
+  macha::Bytes reassembled;
+  for (;;) {
+    const auto fragment = macha_side.receive_fragment();
+    EXPECT_EQ(fragment.request_id, 7u);
+    EXPECT_EQ(fragment.message_type, macha::MessageType::members_reply);
+    reassembled.insert(reassembled.end(), fragment.payload.begin(), fragment.payload.end());
+    if (fragment.last) break;
+  }
+  EXPECT_EQ(reassembled, macha::Bytes(10000, 0x42));
+
+  // Dannan asks with an even id; Macha answers it.
+  std::promise<net::CallOutcome> outcome;
+  const auto admitted = session->call(net::message::ping, net::Bytes{9}, sched::FrameType::control, io.get_executor(),
+                                      [&](net::CallOutcome result) { outcome.set_value(std::move(result)); });
+  ASSERT_TRUE(admitted.refused.empty());
+  EXPECT_EQ(admitted.request_id % 2, 0u);
+  const auto request = macha_side.receive_fragment();
+  EXPECT_EQ(request.request_id, admitted.request_id);
+  EXPECT_EQ(request.message_type, macha::MessageType::ping);
+  macha_side.send_fragment(request.request_id, macha::FrameType::control, macha::MessageType::ok, true, true, macha::Bytes{9});
+  const auto result = outcome.get_future().get();
+  ASSERT_TRUE(result.reply);
+  EXPECT_EQ(result.reply->type, net::message::ok);
+  EXPECT_EQ(result.reply->payload, net::Bytes{9});
+
+  session->close("done");
+  work.reset();
+  io.stop();
+  runner.join();
 }
 
 }  // namespace
