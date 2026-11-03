@@ -382,5 +382,60 @@ TEST(Session, CountsTrafficByClassInBothDirections) {
   EXPECT_GE(pair.traffic->out_bytes[loader].load(), 10000u + frame_overhead);
 }
 
+// Retirement drains, then closes: nothing new is admitted, what is in flight
+// is answered, and once both ends have said so (protocol 23's session_retire)
+// both close. A connection that lost a simultaneous dial is retired, never
+// cut, so no call on it fails.
+TEST(Session, RetiringAdmitsNothingNewAndClosesOnceDrained) {
+  Io io;
+  std::mutex mutex;
+  std::vector<Reply> held;
+  std::promise<void> arrived;
+  SessionHandlers holding;
+  holding.request = [&](Frame, Reply reply) {
+    std::lock_guard lock(mutex);
+    held.push_back(std::move(reply));
+    arrived.set_value();
+  };
+  Pair pair(io, echo(), holding);
+  auto done = std::make_shared<std::promise<CallOutcome>>();
+  const auto admitted = pair.dialler->call(message::members, {}, FrameType::control, io.context.get_executor(),
+                                           [done](CallOutcome outcome) { done->set_value(std::move(outcome)); });
+  ASSERT_TRUE(admitted.refused.empty());
+  arrived.get_future().wait();
+  pair.dialler->retire();
+  EXPECT_FALSE(pair.dialler->usable());
+  const auto refused = call_and_wait(*pair.dialler, message::members, {}, FrameType::control, io.context.get_executor());
+  EXPECT_FALSE(refused.reply);
+  EXPECT_NE(refused.failure.find("retiring"), std::string::npos) << refused.failure;
+  // Still draining: neither end has closed.
+  EXPECT_EQ(pair.dialler_closed.wait_for(100ms), std::future_status::timeout);
+  {
+    std::lock_guard lock(mutex);
+    held.front()({message::members_reply, {}, {}});
+  }
+  auto future = done->get_future();
+  ASSERT_EQ(future.wait_for(5s), std::future_status::ready);
+  const auto outcome = future.get();
+  ASSERT_TRUE(outcome.reply) << outcome.failure;
+  EXPECT_EQ(outcome.reply->type, message::members_reply);
+  ASSERT_EQ(pair.dialler_closed.wait_for(5s), std::future_status::ready);
+  ASSERT_EQ(pair.acceptor_closed.wait_for(5s), std::future_status::ready);
+  EXPECT_EQ(pair.dialler_closed.get(), "retired");
+  EXPECT_EQ(pair.acceptor_closed.get(), "retired");
+}
+
+// The peer's retirement is honoured: this end stops admitting, drains its own
+// calls, and answers with its own notice.
+TEST(Session, APeersRetirementRetiresThisEndToo) {
+  Io io;
+  Pair pair(io, echo(), echo());
+  pair.acceptor->retire();
+  ASSERT_EQ(pair.dialler_closed.wait_for(5s), std::future_status::ready);
+  ASSERT_EQ(pair.acceptor_closed.wait_for(5s), std::future_status::ready);
+  EXPECT_EQ(pair.dialler_closed.get(), "retired");
+  EXPECT_FALSE(pair.dialler->usable());
+}
+
 }  // namespace
 }  // namespace dannan::net
