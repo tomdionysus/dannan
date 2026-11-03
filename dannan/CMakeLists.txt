@@ -17,6 +17,7 @@ add_library(dannan SHARED
   membership/node_record.cpp
   net/assembler.cpp
   net/channel.cpp
+  net/client.cpp
   net/codec.cpp
   net/message.cpp
   net/outbound.cpp
