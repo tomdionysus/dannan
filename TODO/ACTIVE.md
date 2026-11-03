@@ -70,7 +70,7 @@ punchable, one behind a randomising NAT, one behind two NATs; the runner
 `test/compose/scenario.py` checks classes, paths, echoes on both lanes, a
 healed partition and a relay failover) and passes (`COMPLETED.md`).
 Next: the stack's foundations (below, "Foundations for the stack":
-secure memory done; signing, node key custody, fuzz targets). Left of section 6's rules, as work:
+secure memory and signing done; node key custody, fuzz targets). Left of section 6's rules, as work:
 a relayed or punched pair moving up a class while it runs, the relay's
 DATA budget (only a circuit cap now), and placement told a peer's path
 class. Identity (step 10) waits; the port steps wait
