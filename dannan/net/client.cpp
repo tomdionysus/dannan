@@ -8,6 +8,7 @@
 #include "dannan/net/client.h"
 
 #include <sys/socket.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <atomic>
@@ -213,6 +214,7 @@ void Client::call(Target target, Call call) {
   std::shared_ptr<Session> route;
   std::shared_ptr<Session> ask_over;
   std::shared_ptr<asio::steady_timer> timer;
+  bool path = false;
   std::string key;
   std::string refused;
   bool first = false;
@@ -230,9 +232,11 @@ void Client::call(Target target, Call call) {
       return fail(call, "peer " + address_of(target.endpoint) + " in retry backoff");
     } else if (target.id && !capable_locked(*target.id)) {
       // Never dialled: asked, over its own CONTROL session, to dial back.
+      // Neither end dialable, or nothing to ask over: level 0 makes a path.
       const RouteKey wanted{*target.id, lane};
       ask_over = route_locked(*target.id, Lane::control);
-      if (!ask_over) {
+      path = _options.make_path && (!ask_over || !local_capable());
+      if (!ask_over && !path) {
         refused = "peer " + to_string(*target.id) + " accepts no inbound connections and is not connected";
       } else {
         auto [wait, fresh] = _reverse.try_emplace(wanted);
@@ -241,8 +245,12 @@ void Client::call(Target target, Call call) {
           timer = std::make_shared<asio::steady_timer>(_health_strand);
           wait->second.timer = timer;
           wait->second.backoff_key = backoff_key;
+          wait->second.path = path;
           ++_operations;
-          ++_stats.dial_requests_sent;
+          if (path)
+            ++_stats.paths_requested;
+          else
+            ++_stats.dial_requests_sent;
         }
       }
     } else {
@@ -260,6 +268,7 @@ void Client::call(Target target, Call call) {
     observe_dial(backoff_key, false);
     return fail(call, refused);
   }
+  if (timer && path) return ask_for_path({*target.id, lane}, timer);
   if (timer) return ask_for_lane({*target.id, lane}, ask_over, timer);
   if (first)
     dial(target, lane,
@@ -311,22 +320,60 @@ void Client::ask_for_lane(const RouteKey& key, const std::shared_ptr<Session>& c
 void Client::reverse_expired(const RouteKey& key, const std::shared_ptr<asio::steady_timer>& timer) {
   std::vector<Call> calls;
   std::string backoff_key;
+  bool path = false;
   {
     contract::Lock lock(_mutex);
     _reverse_timers.erase(timer);
     if (const auto found = _reverse.find(key); found != _reverse.end() && found->second.timer == timer) {
       calls = std::move(found->second.calls);
       backoff_key = found->second.backoff_key;
+      path = found->second.path;
       _reverse.erase(found);
     }
   }
   if (!calls.empty()) {
     observe_dial(backoff_key, false);
     for (auto& call : calls)
-      fail(call, "peer " + to_string(key.first) + " accepts no inbound connections; its reverse dial for the " + lane_name(key.second) +
-                     " lane did not arrive within " + std::to_string(_options.connect_timeout.count()) + " ms");
+      fail(call, path ? "no path to peer " + to_string(key.first) + " for the " + lane_name(key.second) + " lane within " +
+                            std::to_string(_options.path_timeout.count()) + " ms"
+                      : "peer " + to_string(key.first) + " accepts no inbound connections; its reverse dial for the " + lane_name(key.second) +
+                            " lane did not arrive within " + std::to_string(_options.connect_timeout.count()) + " ms");
   }
   end_operation();
+}
+
+void Client::ask_for_path(const RouteKey& key, const std::shared_ptr<asio::steady_timer>& timer) {
+  asio::post(_health_strand, [this, key, timer] {
+    bool stopped;
+    {
+      contract::Lock lock(_mutex);
+      stopped = _stopped;
+      if (!stopped) _reverse_timers.insert(timer);
+    }
+    if (stopped) return end_operation();
+    timer->expires_after(_options.path_timeout);
+    timer->async_wait([this, key, timer](const boost::system::error_code&) { reverse_expired(key, timer); });
+  });
+  _options.make_path(key.first, key.second, [this, key, timer](std::string why) {
+    abandon_wait(key, timer, "no path to peer " + to_string(key.first) + " for the " + lane_name(key.second) + " lane: " + why);
+  });
+}
+
+void Client::abandon_wait(const RouteKey& key, const std::shared_ptr<asio::steady_timer>& timer, const std::string& why) {
+  std::vector<Call> calls;
+  std::string backoff_key;
+  {
+    contract::Lock lock(_mutex);
+    if (const auto found = _reverse.find(key); found != _reverse.end() && found->second.timer == timer) {
+      calls = std::move(found->second.calls);
+      backoff_key = found->second.backoff_key;
+      _reverse.erase(found);
+    }
+  }
+  asio::post(_health_strand, [timer] { timer->cancel(); });
+  if (calls.empty()) return;
+  observe_dial(backoff_key, false);
+  for (auto& call : calls) fail(call, why);
 }
 
 bool Client::capable_locked(const identity::NodeId& peer) const {
@@ -549,50 +596,35 @@ void Client::dial(Target target, Lane lane, std::function<void(std::shared_ptr<S
         target.endpoint.host, std::to_string(target.endpoint.port),
         [this, attempt, target, lane, complete, failed](const boost::system::error_code& error, const asio::ip::tcp::resolver::results_type& results) {
           if (error) return failed("resolve: ", error.message());
-          asio::async_connect(
-              attempt->tcp, results,
-              [this, attempt, target, lane, complete, failed](const boost::system::error_code& error, const asio::ip::tcp::endpoint& to) {
-                if (error) return failed("", error.message());
-                peer_socket_options(attempt->tcp.native_handle());
-                attempt->socket.emplace(attempt->strand, Session::Socket::protocol_type(to.protocol().family(), SOCK_STREAM), attempt->tcp.release());
-                async_dial_handshake(
-                    *attempt->socket, _options.key, _options.local(), _options.max_frame, lane,
-                    [this, attempt, target, lane, complete, failed](std::exception_ptr error, Established established) {
-                      if (error) {
-                        try {
-                          std::rethrow_exception(error);
-                        } catch (const std::exception& refused) {
-                          return failed("handshake: ", refused.what());
-                        }
-                      }
-                      if (target.id && established.peer.id != *target.id)
-                        return failed("", "reached node " + to_string(established.peer.id) + ", not " + to_string(*target.id));
-                      if (lane == Lane::probe) {
-                        attempt->abort();
-                        return complete(nullptr, "");
-                      }
-                      SessionHandlers handlers;
-                      const auto& inbound = _options.inbound;
-                      const auto peer = established.peer;
-                      if (inbound.request)
-                        handlers.request = [request = inbound.request, peer](Frame frame, Reply reply) { request(peer, std::move(frame), std::move(reply)); };
-                      if (inbound.promoted)
-                        handlers.promoted = [promoted = inbound.promoted, id = peer.id](uint64_t request_id, sched::FrameType frame) {
-                          promoted(id, request_id, frame);
-                        };
-                      if (inbound.cancelled)
-                        handlers.cancelled = [cancelled = inbound.cancelled, id = peer.id](uint64_t request_id) { cancelled(id, request_id); };
-                      SessionOptions options;
-                      options.memory = _options.memory;
-                      options.traffic = _options.traffic;
-                      options.time = _options.time;
-                      auto session =
-                          Session::create(std::move(*attempt->socket), std::move(established), Role::dialler, _options.routes, std::move(handlers), options);
-                      attempt->socket.reset();
-                      session->start();
-                      complete(std::move(session), "");
-                    });
-              });
+          asio::async_connect(attempt->tcp, results,
+                              [this, attempt, target, lane, complete, failed](const boost::system::error_code& error, const asio::ip::tcp::endpoint& to) {
+                                if (error) return failed("", error.message());
+                                peer_socket_options(attempt->tcp.native_handle());
+                                attempt->socket.emplace(attempt->strand, Session::Socket::protocol_type(to.protocol().family(), SOCK_STREAM),
+                                                        attempt->tcp.release());
+                                async_dial_handshake(*attempt->socket, _options.key, _options.local(), _options.max_frame, lane,
+                                                     [this, attempt, target, lane, complete, failed](std::exception_ptr error, Established established) {
+                                                       if (error) {
+                                                         try {
+                                                           std::rethrow_exception(error);
+                                                         } catch (const std::exception& refused) {
+                                                           return failed("handshake: ", refused.what());
+                                                         }
+                                                       }
+                                                       if (target.id && established.peer.id != *target.id)
+                                                         return failed("", "reached node " + to_string(established.peer.id) + ", not " + to_string(*target.id));
+                                                       if (lane == Lane::probe) {
+                                                         attempt->abort();
+                                                         return complete(nullptr, "");
+                                                       }
+                                                       auto handlers = handlers_for(established.peer);
+                                                       auto session = Session::create(std::move(*attempt->socket), std::move(established), Role::dialler,
+                                                                                      _options.routes, std::move(handlers), session_options());
+                                                       attempt->socket.reset();
+                                                       session->start();
+                                                       complete(std::move(session), "");
+                                                     });
+                              });
         });
   });
 }
@@ -699,9 +731,10 @@ void Client::reconcile_locked(const RouteKey& key, Retire& retire) {
   if (outbound == _outbound.end() || !outbound->second->usable()) return;
   if (inbound == _inbound.end() || !inbound->second->usable()) return;
   // Both ends dialled: both keep the session the lower node id dialled. An
-  // incapable node keeps its own: nothing can replace them from the other
-  // side.
-  if (_self < key.first || !local_capable()) {
+  // incapable node keeps its own when the peer is capable: nothing can
+  // replace it from the other side. Two incapable nodes, whose sessions
+  // are level 0's, keep the lower id's like any pair.
+  if (_self < key.first || (!local_capable() && capable_locked(key.first))) {
     retire.push_back(inbound->second);
     _inbound.erase(inbound);
   } else {
@@ -720,6 +753,168 @@ std::shared_ptr<Session> Client::route_locked(const identity::NodeId& peer, Lane
     routes->erase(found);
   }
   return nullptr;
+}
+
+SessionHandlers Client::handlers_for(const membership::NodeRecord& peer) const {
+  SessionHandlers handlers;
+  const auto& inbound = _options.inbound;
+  if (inbound.request) handlers.request = [request = inbound.request, peer](Frame frame, Reply reply) { request(peer, std::move(frame), std::move(reply)); };
+  if (inbound.promoted)
+    handlers.promoted = [promoted = inbound.promoted, id = peer.id](uint64_t request_id, sched::FrameType frame) { promoted(id, request_id, frame); };
+  if (inbound.cancelled) handlers.cancelled = [cancelled = inbound.cancelled, id = peer.id](uint64_t request_id) { cancelled(id, request_id); };
+  return handlers;
+}
+
+SessionOptions Client::session_options() const {
+  SessionOptions options;
+  options.memory = _options.memory;
+  options.traffic = _options.traffic;
+  options.time = _options.time;
+  return options;
+}
+
+void Client::adopt(int descriptor, int family, const identity::NodeId& peer, Lane lane, Role role, Purpose purpose, PathToken token,
+                   std::function<void(std::string)> done) {
+  auto attempt = std::make_shared<Dialling>(_io);
+  bool stopped;
+  {
+    contract::Lock lock(_mutex);
+    stopped = _stopped;
+    if (!stopped) {
+      _dialling.insert(attempt);
+      ++_operations;
+    }
+  }
+  if (stopped) {
+    ::close(descriptor);
+    if (done) asio::post(_io, [done] { done("client stopped"); });
+    return;
+  }
+  // Called once, on the strand.
+  auto finish = [this, attempt, done = std::move(done)](std::string why) {
+    if (attempt->finished) return;
+    attempt->finished = true;
+    attempt->timer.cancel();
+    {
+      contract::Lock lock(_mutex);
+      _dialling.erase(attempt);
+      if (why.empty()) ++_stats.paths_adopted;
+    }
+    if (done) asio::post(_io, [done, why = std::move(why)] { done(why); });
+    end_operation();
+  };
+  asio::dispatch(attempt->strand, [this, attempt, finish, descriptor, family, peer, lane, role, purpose, token] {
+    boost::system::error_code error;
+    attempt->socket.emplace(attempt->strand);
+    attempt->socket->assign(Session::Socket::protocol_type(family, SOCK_STREAM), descriptor, error);
+    if (error) {
+      ::close(descriptor);
+      attempt->socket.reset();
+      return finish("adopt: " + error.message());
+    }
+    attempt->timer.expires_after(_options.connect_timeout);
+    attempt->timer.async_wait([attempt](const boost::system::error_code& error) {
+      if (error || attempt->finished) return;
+      attempt->timed_out = true;
+      attempt->abort();
+    });
+    auto handshaken = [this, attempt, finish, peer, role](std::exception_ptr error, Established established) {
+      if (error) {
+        attempt->abort();
+        try {
+          std::rethrow_exception(error);
+        } catch (const std::exception& refused) {
+          return finish(attempt->timed_out ? std::string("handshake timed out") : std::string("handshake: ") + refused.what());
+        }
+      }
+      if (established.peer.id != peer) {
+        attempt->abort();
+        return finish("reached node " + to_string(established.peer.id) + ", not " + to_string(peer));
+      }
+      auto handlers = handlers_for(established.peer);
+      auto session = Session::create(std::move(*attempt->socket), std::move(established), role, _options.routes, std::move(handlers), session_options());
+      attempt->socket.reset();
+      session->start();
+      if (role == Role::dialler)
+        install_dialled(session);
+      else
+        admit(session);
+      finish("");
+    };
+    if (role == Role::dialler)
+      async_dial_handshake(*attempt->socket, _options.key, _options.local(), _options.max_frame, lane, handshaken, purpose, token);
+    else
+      async_accept_handshake(*attempt->socket, _options.key, _options.local(), _options.max_frame, Endpoint{}, handshaken, Expected{purpose, token, peer});
+  });
+}
+
+void Client::install_dialled(const std::shared_ptr<Session>& session) {
+  const auto& peer = session->peer();
+  const RouteKey key{peer.id, session->lane()};
+  Retire retire;
+  std::vector<Call> waiting;
+  std::shared_ptr<asio::steady_timer> timer;
+  std::shared_ptr<Session> route;
+  {
+    contract::Lock lock(_mutex);
+    if (_stopped) {
+      retire.push_back(session);
+    } else {
+      _peer_capabilities[peer.id] = peer.capabilities;
+      auto& slot = _outbound[key];
+      if (slot && slot->usable() && slot != session) {
+        if (session->established().keys.session_id < slot->established().keys.session_id) {
+          retire.push_back(slot);
+          slot = session;
+        } else {
+          retire.push_back(session);
+        }
+        ++_stats.retired;
+      } else {
+        slot = session;
+      }
+      reconcile_locked(key, retire);
+      if (const auto found = _reverse.find(key); found != _reverse.end()) {
+        route = route_locked(key.first, key.second);
+        if (route) {
+          waiting = std::move(found->second.calls);
+          timer = found->second.timer;
+          _reverse.erase(found);
+        }
+      }
+    }
+  }
+  for (auto& loser : retire) loser->retire();
+  if (_options.established) _options.established(peer);
+  if (timer) asio::post(_health_strand, [timer] { timer->cancel(); });
+  for (auto& call : waiting) place(route, std::move(call), Target{key.first, {peer.host, peer.port}});
+}
+
+std::optional<Purpose> Client::path_of(const identity::NodeId& peer, Lane lane) const {
+  contract::Lock lock(_mutex);
+  const RouteKey key{peer, lane};
+  for (const auto* routes : {&_outbound, &_inbound}) {
+    const auto found = routes->find(key);
+    if (found != routes->end() && found->second->usable()) return found->second->established().purpose;
+  }
+  return std::nullopt;
+}
+
+bool Client::send(const identity::NodeId& peer, Lane lane, const Message& message, sched::FrameType frame) {
+  std::shared_ptr<Session> route;
+  {
+    contract::Lock lock(_mutex);
+    if (_stopped) return false;
+    route = route_locked(peer, lane);
+  }
+  if (!route) return false;
+  if (route->try_notify(message, frame)) return true;
+  try {
+    route->notify(message, frame, _io.get_executor());
+    return true;
+  } catch (const OutboundRefused&) {
+    return false;
+  }
 }
 
 void Client::probe(const Endpoint& endpoint, const identity::NodeId& expected, asio::any_io_executor executor, std::function<void(std::string)> done) {

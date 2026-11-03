@@ -2,7 +2,8 @@
 
 Status: APPROVED, 2026-11-03 night (Tom: "Continue please"), with section 8's
 recommendations: the interop suite goes, the token rides inside the hello.
-Sections 1 to 4 are in code; 5 to 7 are level 0's work.
+Sections 1 to 6 are in code (section 6 as amended in its note); 7 is the
+compose bed.
 
 Tom, 2026-11-03: Dannan is a new project, not an extension of Macha; its
 protocol versions start at 1; Dannan does everything to maintain the PHY.
@@ -107,8 +108,8 @@ Core (Dannan's, 1 to 1023; a hosted system's from 1024):
 | 8 | identity_resets | control, control | reset set; reply 103 |
 | 9 | dial_request | control, control, notification | u8 lane |
 | 10 | dial_back | control, control | string host, u16 port; reply 104 |
-| 11 | punch_request | control, control | id target, u8 lane; reply 105 |
-| 12 | punch_go | control, control, notification | section 6 |
+| 11 | punch_request | control, control | id target, u8 lane, string host, u16 port; reply 105 |
+| 12 | punch_go | control, control | id peer, u8 lane, fixed16 token, string host, u16 port; reply 105 |
 | 13 | relay_open | control, control | section 6; reply 106 |
 | 14 | relay_offer | control, control | section 6; reply 107 |
 | 15 | relay_data | both, any, notification | u64 circuit, bytes |
@@ -118,9 +119,9 @@ Core (Dannan's, 1 to 1023; a hosted system's from 1024):
 | 102 | telemetry_reply | control, any | telemetry set |
 | 103 | identity_resets_reply | control, control | reset set |
 | 104 | dial_back_reply | control, control | u8 reachable, string error |
-| 105 | punch_reply | control, control | u8 accepted, string why |
-| 106 | relay_open_reply | control, control | u64 circuit or 0, string why |
-| 107 | relay_offer_reply | control, control | u8 accepted |
+| 105 | punch_reply | control, control | u8 accepted, string why, string host, u16 port, fixed16 token |
+| 106 | relay_open_reply | control, control | u64 circuit or 0, string why, fixed16 token |
+| 107 | relay_offer_reply | control, control | u8 accepted, string why |
 | 127 | error | both, any | string message, u16 status, string code |
 
 ## 5. Path classes and candidates
@@ -153,6 +154,24 @@ node holding a relayed or punched path re-tries the better classes every
 reprobe interval and moves up when one works.
 
 ## 6. Punch and relay flows
+
+**As built (2026-11-03 night).** Two changes from the flows below, both
+found in writing them. A node does not keep its broker session on a fixed
+port (two CONTROL dials from one port to one peer would collide on their
+4-tuple); instead each punch starts with a probe-lane handshake from a
+fresh punch port to the broker, whose ack's observed address is that
+port's mapping. And `punch_go` is a request, not a notification, because
+the target must answer with its own mapping: A observes its punch port
+and sends `punch_request{B, lane, A's address}`; the broker calls B with
+`punch_go{A, lane, token, A's address}`; B observes its own punch port,
+answers `punch_reply` with its address and starts connecting to A at
+once; the broker answers A with B's address and the token, and A starts
+connecting. Both retry for the punch window (3 s); there is no `at` time,
+so clocks need not agree. The lower node id runs the dialler's
+handshake, the token inside the hello (section 8, item 3). Relayed bytes
+travel on the ends' CONTROL sessions with the relay, as control frames
+for a CONTROL circuit and loader frames for a DATA one, and are handled
+in arrival order per peer.
 
 **Punch.** Each node keeps its CONTROL session to a public peer (the
 broker) on a fixed local port `P` (bound with SO_REUSEADDR/REUSEPORT), so

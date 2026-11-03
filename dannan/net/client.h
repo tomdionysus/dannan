@@ -100,6 +100,13 @@ struct ClientOptions {
   // Tests only: consulted before every dial; a non-empty answer is the
   // reason the dial fails, as if the network refused it.
   std::function<std::string(const Endpoint&, Lane)> dial_hook;
+  // Level 0: asked for a path to a peer that can be neither dialled nor
+  // asked to dial back (it takes no inbound connection, and neither does
+  // this node, or it has no session here to ask over). The maker hands the
+  // path to adopt() when it has one, or calls `failed` with why not; the
+  // calls wait for it within path_timeout. Null: such calls fail at once.
+  std::function<void(const identity::NodeId& peer, Lane lane, std::function<void(std::string)> failed)> make_path;
+  std::chrono::milliseconds path_timeout{15000};
 };
 
 struct ClientStats {
@@ -113,6 +120,9 @@ struct ClientStats {
   // Lanes asked of inbound-incapable peers, and asked of this node.
   uint64_t dial_requests_sent = 0;
   uint64_t dial_requests_received = 0;
+  // Level 0's paths asked for, and sessions adopted on them.
+  uint64_t paths_requested = 0;
+  uint64_t paths_adopted = 0;
 };
 
 // Calls peers over two lanes each, CONTROL and DATA: a lane is dialled on
@@ -152,6 +162,20 @@ class Client {
 
   // A session a peer opened to this node, from the server: a route back.
   void admit(const std::shared_ptr<Session>& session);
+  // A connected stream that a level 0 path made to `peer` (punched or
+  // relayed), given as its descriptor, which the client owns from here. The
+  // handshake runs as `role` with `purpose` and `token` within the connect
+  // timeout, the other end must be `peer`, and the session becomes an
+  // ordinary route, placing the calls that waited for one. `done`, if
+  // given, is posted with why not, empty on success.
+  void adopt(int descriptor, int family, const identity::NodeId& peer, Lane lane, Role role, Purpose purpose, PathToken token,
+             std::function<void(std::string)> done = {});
+  // Why the route to `peer` on `lane` was opened (ordinary, punched or
+  // relayed); nothing without a route.
+  std::optional<Purpose> path_of(const identity::NodeId& peer, Lane lane) const;
+  // A notification to `peer` over the route it has on `lane`; never dials.
+  // False without a route, or when the session refuses it.
+  bool send(const identity::NodeId& peer, Lane lane, const Message& message, sched::FrameType frame);
 
   // Starts the health pings.
   void start();
@@ -229,11 +253,13 @@ class Client {
   };
   struct Dialling;
   struct Probe;
-  // Calls waiting for an inbound-incapable peer to dial a lane back.
+  // Calls waiting for an inbound-incapable peer to dial a lane back, or
+  // for a level 0 path to it.
   struct ReverseWait {
     std::vector<Call> calls;
     std::shared_ptr<boost::asio::steady_timer> timer;
     std::string backoff_key;
+    bool path = false;
   };
   struct Backoff {
     unsigned failures = 0;
@@ -277,6 +303,16 @@ class Client {
   // wait for its reverse dial.
   void ask_for_lane(const RouteKey& key, const std::shared_ptr<Session>& control, const std::shared_ptr<boost::asio::steady_timer>& timer);
   void reverse_expired(const RouteKey& key, const std::shared_ptr<boost::asio::steady_timer>& timer);
+  // Asks the path maker for `key`, the wait already armed.
+  void ask_for_path(const RouteKey& key, const std::shared_ptr<boost::asio::steady_timer>& timer);
+  // Fails the calls waiting on `key` under `timer`, with `why`.
+  void abandon_wait(const RouteKey& key, const std::shared_ptr<boost::asio::steady_timer>& timer, const std::string& why);
+  // How a session reaches the node's workers, and its options.
+  SessionHandlers handlers_for(const membership::NodeRecord& peer) const;
+  SessionOptions session_options() const;
+  // A session this end dialled over an adopted path: installed as dialled,
+  // and the calls waiting for it placed.
+  void install_dialled(const std::shared_ptr<Session>& session);
 
   boost::asio::io_context& _io;
   ClientOptions _options;

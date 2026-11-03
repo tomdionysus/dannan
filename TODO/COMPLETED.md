@@ -12,6 +12,33 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
 
+## 2026-11-03, night -- level 0: path classes, punch and relay
+
+On `feature/wire-v1` (this commit). Wire v1 sections 5 and 6, as amended
+in the wire document's section 6 note:
+
+- `reach/paths.*`: the punch and relay payloads; `classify` (punchable
+  when two peers saw one local port at one external port, or one peer saw
+  it preserved; relay_only otherwise); `observe_from` (a probe-lane
+  handshake from a fixed local port, reading the ack's observed address);
+  `simultaneous_open` (from the punch port, retried for the window);
+  `Paths`, which makes paths on its own workers (a punch through each
+  public broker, then a circuit through each relay), answers as broker,
+  relay and target, pumps each circuit's end over a socketpair, sweeps
+  circuits that lost an end, and counts everything (`PathStats`, in
+  `Diagnostics::paths`).
+- `net::Client`: `make_path` asked when neither end can dial the other;
+  `adopt` runs the handshake on a made stream with the path's purpose and
+  token and installs an ordinary route; `path_of`, `send`; two incapable
+  nodes keep the lower id's session like any pair.
+- `dannan::Node`: the level 0 types routed to `Paths`; the connectivity
+  loop classifies the node (public when inbound-capable; otherwise by
+  observation) and sets its candidates; `NodeConfig::path_class` forces a
+  class, `punch_window`; `Nodes::path(peer, lane)` says how a route was
+  made.
+- **Gate: `dannan_tests` 323, `dagda_tests` 1**; level 0 cases 20 times,
+  and node, client, reverse dial, two-process and level 0 cases 10 times.
+
 ## 2026-11-03, night -- wire v1
 
 On `feature/wire-v1` (this commit). Tom approved the draft

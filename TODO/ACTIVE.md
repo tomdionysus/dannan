@@ -62,9 +62,10 @@ interop suite is retired with protocol 23, Decisions): the version range,
 Dannan's labels and magics, the node record v1 with capabilities, path
 class, candidates and the advert map (`Nodes::advertise`), the renumbered
 core types with user types from 1024, the observed address in the ack and
-the path token inside the hello. Next: level 0 (`reach/`: candidates from
-the observed address, path classes, the punch broker, relay) and the
-Docker compose test bed. Identity (step 10) waits; the port steps wait
+the path token inside the hello. Level 0 is in code too (gate 323 + 1):
+path classes and candidates, the brokered punch, the relay
+(`reach/paths.*`). Next: the Docker compose test bed (wire v1 section 7)
+that proves level 0 through real NATs. Identity (step 10) waits; the port steps wait
 for the Macha agent and Dagda is another project (Decisions, 2026-11-03
 night).
 

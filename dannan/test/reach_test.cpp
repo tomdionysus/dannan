@@ -59,7 +59,7 @@ TEST(InboundResolution, ConfiguredIsFinalAndAutoStartsFromWhatWasPersisted) {
 }
 
 // The persisted file: DNNINB01, the answer, when it was decided, by whom.
-TEST(InboundResolution, PersistsProtocol23sFile) {
+TEST(InboundResolution, PersistsItsFile) {
   test::TempDir dir;
   test::SteppedWall wall;
   InboundResolver resolver(Inbound::automatic, dir.path(), &wall);
