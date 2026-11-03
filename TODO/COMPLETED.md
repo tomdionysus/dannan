@@ -12,6 +12,29 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
 
+## 2026-11-03, night -- the compose bed passes; secure memory
+
+On `feature/wire-v1` (this commit):
+
+- **The compose bed passes** (`python3 test/compose/scenario.py`, Docker
+  29.8.2, image on Arch with clang): six nodes through real NATs. The hubs
+  public; a1 and d1 (endpoint-independent NAT) punchable and punched to
+  each other; b1 (port-randomising NAT) and c1 (two NATs) relay-only and
+  relayed to every other NATed node; every pair's echo answered on both
+  lanes. router-d stopped: d1 dropped out; started: d1 back and punched to
+  a1 again. hub1 (a relay) stopped: the relayed pairs moved to hub2; hub1
+  back: all six as at the start. 9 punches brokered, 2.4 MB relayed. The
+  first run found the bed's LANs declared `internal`, which Docker drops
+  routed traffic on; they are ordinary networks with explicit routes now.
+- `identity/secure_memory.*`, the stack's one home for key material:
+  `SecureBytes` (pages of its own, locked, out of core dumps and forks,
+  wiped on release), `Secret` (no text conversion, no stream operator,
+  constant-time equality, `random`), `harden_process` (no core file; on
+  Linux, not attachable).
+- `CONTRIBUTING.md` states the stack's one layout and the shared-code and
+  error rules for all three projects.
+- **Gate: `dannan_tests` 333, `dagda_tests` 1.**
+
 ## 2026-11-03, night -- level 0 moves up; a logger through the Context
 
 On `feature/wire-v1` (this commit):
