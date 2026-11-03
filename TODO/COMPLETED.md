@@ -7,6 +7,39 @@ left green. `ACTIVE.md` is the plan and this is the record.
 
 None. Dannan has no code yet.
 
+## 2026-11-03, night -- step 2: the two-process test
+
+On `feature/transport` (this commit):
+
+- `dannan-node` (`tools/dannan_node.cpp`): a node with Dannan's transport
+  and nothing above it. It answers `ping`, `members` (its record and the
+  peers it met, protocol 23's roster form) and `telemetry` (an empty
+  `MACHTEL3` set), registers Macha's message types as Macha will at step
+  3, and, given `--peer`, calls through members, ping, a `dial_request`
+  for the DATA lane and `get_object` over the lane the peer dials back,
+  one stdout line per event.
+- `TwoProcess.ADannanNodeAndAMachaNodeFormOneCluster` in
+  `dannan_interop_tests` (built when `DANNAN_MACHA_BINARY` names a Macha
+  binary; run against `../macha/build-macports/macha`, executed only,
+  nothing in that tree written): a Macha node from a config under the
+  test's directory, ready by `/api/v1/health`, and `dannan-node` against
+  it. Proven: the v15 handshake both ways; Macha's roster lists the Dannan
+  node; ping; Macha dials the DATA lane back on `dial_request` and answers
+  `get_object` over it with its real `404 not_found`, with one dial from
+  the Dannan side; Macha's telemetry arrives every second; and Macha's
+  `/api/v1/status/nodes` lists the Dannan node. Ten repeats clean.
+- **Finding** (ACTIVE, Waiting on Tom, item 8): without Macha's types
+  registered, the Dannan node lost its session at once: Macha sends
+  `get_metadata_heads` (29) as speculative on CONTROL, and an unknown type
+  is control-frame only under protocol 23's rule in both
+  implementations. The earlier entry's "a bare Dannan node refuses
+  nothing Macha accepts" was wrong and is marked so. Two test mistakes on
+  the way: the first version started the Dannan node once Macha's ports
+  accepted, before its storage routes were bound (Macha answered 501),
+  and passed by luck once; it now waits for health.
+- **Gate: `dannan_tests` 205, `dagda_tests` 1, `dannan_interop_tests` 7,
+  all passed.**
+
 ## 2026-11-03, night -- step 2: reverse dial and maintained peers
 
 On `feature/transport` (this commit):
@@ -168,7 +201,7 @@ On `feature/transport` (two commits, `ca9ffdd` and this one):
   a 16-bit type registered with lanes, frame classes and whether it is a
   notification; Dannan's numbers reserved; the retired 37, 38, 48, 124
   refused; an unregistered type has protocol 23's defaults (control lane,
-  control frame), so a bare Dannan node refuses nothing Macha accepts.
+  control frame), so a bare Dannan node refuses nothing Macha accepts [wrong for Macha's own types in data frames: see the two-process entry].
   Correction to the extraction document's seam 4: `session_retire` (12)
   is the transport's, so Dannan's, not Macha's.
 - The channel, sans I/O (`dannan/net/channel.h`): the v15 handshake both
