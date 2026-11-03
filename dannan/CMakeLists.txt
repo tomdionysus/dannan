@@ -15,6 +15,8 @@ add_library(dannan SHARED
   identity/durable_file.cpp
   identity/node_id.cpp
   membership/node_record.cpp
+  membership/identity_reset.cpp
+  membership/membership.cpp
   net/assembler.cpp
   net/channel.cpp
   net/client.cpp
@@ -25,6 +27,7 @@ add_library(dannan SHARED
   net/scheduler.cpp
   net/server.cpp
   net/session.cpp
+  placement/placement.cpp
   sched/memory_limit.cpp
   sched/retained_memory.cpp
   sched/work.cpp

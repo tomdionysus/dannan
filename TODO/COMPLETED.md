@@ -12,6 +12,37 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
 
+## 2026-11-03, night -- step 4a: membership and placement
+
+On `feature/control-plane` (this commit):
+
+- `contract::WallClock` beside the steady `TimeSource` (wall dates
+  recorded and gossiped, never deadlines), with `test::SteppedWall`.
+- `membership::IdentityReset` (key, endpoint and node matching, protocol
+  23's `MACHIDR1` gossip codec) and `membership::Membership`: direct
+  liveness counts and gossip does not; the newer record wins and a
+  direct observation of an older one only refreshes liveness; forgetting
+  at the horizon (never under twice `dead_after`) with old gossip unable
+  to teach a node back; the roster persisted as `MACHMEM4` (1 to 3 read),
+  encoded under the roster lock and written after it in sequence order;
+  identity resets applied, persisted as tombstones and honoured on load;
+  flags with unknown nodes capable; `all_known_reachable`. Time injected
+  throughout.
+- `placement`: rendezvous, capacity placement over the 2^32 shard space
+  (water level, quotas, systematic sample, failure domains, weighted
+  fallbacks; protocol 23's salts by default, a hosted system may pass its
+  own), logical capacity, commit-replica order, the extent candidate
+  filter.
+- Interop: `Interop.TheRosterFileIsSharedWithMacha` (Dannan's roster
+  loads in Macha's `Membership` and Macha's in Dannan's) and
+  `Interop.PlacementDecidesAsMachasDoes` (400 random rosters, 20 keys
+  each, 0 to 4 copies: the same owners and fallbacks in the same order,
+  the same logical capacity and commit order).
+- Not here, step 5's: the gossip exchange and bootstrap seeds, publishing
+  the node's figures, propagating resets to peers and the client's
+  invalidation of a reset association.
+- **Gate: `dannan_tests` 230, `dagda_tests` 1, `dannan_interop_tests` 10.**
+
 ## 2026-11-03, night -- a handler says what it did
 
 On `feature/user-types` (this commit), from Tom's question: a handler
