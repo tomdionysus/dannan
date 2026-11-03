@@ -64,8 +64,17 @@ class, candidates and the advert map (`Nodes::advertise`), the renumbered
 core types with user types from 1024, the observed address in the ack and
 the path token inside the hello. Level 0 is in code too (gate 323 + 1):
 path classes and candidates, the brokered punch, the relay
-(`reach/paths.*`). Next: the Docker compose test bed (wire v1 section 7)
-that proves level 0 through real NATs. Identity (step 10) waits; the port steps wait
+(`reach/paths.*`). The Docker compose test bed is written
+(`test/compose/`: two public relaying hubs, four NATed nodes, two of them
+punchable, one behind a randomising NAT, one behind two NATs; the runner
+`test/compose/scenario.py` checks classes, paths, echoes on both lanes, a
+healed partition and a relay failover) and has not run yet: the Docker
+daemon was not running, and starting Docker Desktop is outside this
+tree. Next: run it (`python3 test/compose/scenario.py` from the root,
+Docker running) and fix what it finds. Left of section 6's rules, for
+Tom's call: a relayed or punched pair moving up a class while it runs,
+the relay's DATA budget (only a circuit cap now), and placement told a
+peer's path class. Identity (step 10) waits; the port steps wait
 for the Macha agent and Dagda is another project (Decisions, 2026-11-03
 night).
 

@@ -1,0 +1,182 @@
+#
+# Dannan - The Distributed Substrate
+#
+# Copyright (C) 2026 Tom Cully <mail@tomcully.com>
+# Licensed under the GNU GPLv3 - see <https://www.gnu.org/licenses/gpl-3.0.html>
+#
+
+# The compose test bed (wire v1, section 7): level 0 through real NATs on
+# one machine. Two public hubs, both relays, on the outside network; four
+# nodes that take no inbound connection, each behind its own router:
+#
+#   a1  behind router-a, endpoint-independent NAT      punchable
+#   d1  behind router-d, endpoint-independent NAT      punchable
+#   b1  behind router-b, port-randomising NAT          relay only
+#   c1  behind two NATs (router-c2 inside router-c1)   relay only
+#
+# So a1 and d1 meet by a punch, every pair with b1 or c1 through a relay,
+# and everyone reaches the hubs directly. test/compose/scenario.py drives
+# it; run by hand, never in the per-commit gate.
+
+name: dannan-bed
+
+x-image: &image
+  image: dannan-bed:latest
+  init: true
+
+x-router: &router
+  <<: *image
+  entrypoint: ["/bed/router.sh"]
+  cap_add: [NET_ADMIN]
+  sysctls:
+    net.ipv4.ip_forward: "1"
+
+x-node: &node
+  <<: *image
+  entrypoint: ["/bed/node.sh"]
+  cap_add: [NET_ADMIN]
+
+x-secret: &secret
+  CLUSTER_SECRET: ${DANNAN_BED_SECRET:-dannan compose bed}
+
+services:
+  hub1:
+    <<: *node
+    build:
+      context: ../..
+      dockerfile: test/compose/Dockerfile
+    environment:
+      <<: *secret
+      NAME: hub1
+      ADVERTISE: 10.10.0.10
+      INBOUND: "yes"
+      RELAY: "1"
+      BOOTSTRAP: 10.10.0.11:7437
+    networks:
+      wan: {ipv4_address: 10.10.0.10}
+
+  hub2:
+    <<: *node
+    depends_on: [hub1]
+    environment:
+      <<: *secret
+      NAME: hub2
+      ADVERTISE: 10.10.0.11
+      INBOUND: "yes"
+      RELAY: "1"
+      BOOTSTRAP: 10.10.0.10:7437
+    networks:
+      wan: {ipv4_address: 10.10.0.11}
+
+  router-a:
+    <<: *router
+    depends_on: [hub1]
+    environment: {OUTSIDE_IP: 10.10.0.20, NAT: eim}
+    networks:
+      wan: {ipv4_address: 10.10.0.20}
+      lan-a: {ipv4_address: 10.20.1.2}
+
+  a1:
+    <<: *node
+    depends_on: [router-a, hub2]
+    environment:
+      <<: *secret
+      NAME: a1
+      ADVERTISE: 10.20.1.10
+      INBOUND: "no"
+      GATEWAY: 10.20.1.2
+      BOOTSTRAP: 10.10.0.10:7437 10.10.0.11:7437
+    networks:
+      lan-a: {ipv4_address: 10.20.1.10}
+
+  router-d:
+    <<: *router
+    depends_on: [hub1]
+    environment: {OUTSIDE_IP: 10.10.0.23, NAT: eim}
+    networks:
+      wan: {ipv4_address: 10.10.0.23}
+      lan-d: {ipv4_address: 10.20.4.2}
+
+  d1:
+    <<: *node
+    depends_on: [router-d, hub2]
+    environment:
+      <<: *secret
+      NAME: d1
+      ADVERTISE: 10.20.4.10
+      INBOUND: "no"
+      GATEWAY: 10.20.4.2
+      BOOTSTRAP: 10.10.0.10:7437 10.10.0.11:7437
+    networks:
+      lan-d: {ipv4_address: 10.20.4.10}
+
+  router-b:
+    <<: *router
+    depends_on: [hub1]
+    environment: {OUTSIDE_IP: 10.10.0.21, NAT: random}
+    networks:
+      wan: {ipv4_address: 10.10.0.21}
+      lan-b: {ipv4_address: 10.20.2.2}
+
+  b1:
+    <<: *node
+    depends_on: [router-b, hub2]
+    environment:
+      <<: *secret
+      NAME: b1
+      ADVERTISE: 10.20.2.10
+      INBOUND: "no"
+      GATEWAY: 10.20.2.2
+      BOOTSTRAP: 10.10.0.10:7437 10.10.0.11:7437
+    networks:
+      lan-b: {ipv4_address: 10.20.2.10}
+
+  # The carrier: router-c1 faces the outside with a randomising NAT;
+  # router-c2 is the home router inside it.
+  router-c1:
+    <<: *router
+    depends_on: [hub1]
+    environment: {OUTSIDE_IP: 10.10.0.22, NAT: random}
+    networks:
+      wan: {ipv4_address: 10.10.0.22}
+      carrier: {ipv4_address: 100.64.0.2}
+
+  router-c2:
+    <<: *router
+    depends_on: [router-c1]
+    environment: {OUTSIDE_IP: 100.64.0.3, NAT: eim, GATEWAY: 100.64.0.2}
+    networks:
+      carrier: {ipv4_address: 100.64.0.3}
+      lan-c: {ipv4_address: 10.20.3.2}
+
+  c1:
+    <<: *node
+    depends_on: [router-c2, hub2]
+    environment:
+      <<: *secret
+      NAME: c1
+      ADVERTISE: 10.20.3.10
+      INBOUND: "no"
+      GATEWAY: 10.20.3.2
+      BOOTSTRAP: 10.10.0.10:7437 10.10.0.11:7437
+    networks:
+      lan-c: {ipv4_address: 10.20.3.10}
+
+networks:
+  wan:
+    ipam: {config: [{subnet: 10.10.0.0/24}]}
+  lan-a:
+    internal: true
+    ipam: {config: [{subnet: 10.20.1.0/24}]}
+  lan-b:
+    internal: true
+    ipam: {config: [{subnet: 10.20.2.0/24}]}
+  lan-c:
+    internal: true
+    ipam: {config: [{subnet: 10.20.3.0/24}]}
+  lan-d:
+    internal: true
+    ipam: {config: [{subnet: 10.20.4.0/24}]}
+  carrier:
+    internal: true
+    ipam: {config: [{subnet: 100.64.0.0/24}]}
