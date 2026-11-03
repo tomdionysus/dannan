@@ -100,7 +100,7 @@ net::CallOutcome wait_for(const std::function<void(net::Client::Done)>& place) {
   auto done = std::make_shared<std::promise<net::CallOutcome>>();
   auto future = done->get_future();
   place([done](net::CallOutcome outcome) { done->set_value(std::move(outcome)); });
-  if (future.wait_for(10s) != std::future_status::ready) return {std::nullopt, "timed out"};
+  if (future.wait_for(10s) != std::future_status::ready) return {std::nullopt, "timed out", {}};
   return future.get();
 }
 

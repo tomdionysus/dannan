@@ -142,8 +142,8 @@ CallOutcome call_and_wait(Session& session, MessageType type, Bytes payload, Fra
   auto done = std::make_shared<std::promise<CallOutcome>>();
   auto future = done->get_future();
   const auto admitted = session.call(type, std::move(payload), frame, executor, [done](CallOutcome outcome) { done->set_value(std::move(outcome)); });
-  if (!admitted.refused.empty()) return CallOutcome{std::nullopt, admitted.refused};
-  if (future.wait_for(10s) != std::future_status::ready) return CallOutcome{std::nullopt, "test timed out"};
+  if (!admitted.refused.empty()) return CallOutcome{std::nullopt, admitted.refused, {}};
+  if (future.wait_for(10s) != std::future_status::ready) return CallOutcome{std::nullopt, "test timed out", {}};
   return future.get();
 }
 
@@ -484,6 +484,16 @@ TEST(Session, ARefusedCallKeepsItsPayload) {
   const auto admitted = pair.dialler->call(message::members, std::move(payload), FrameType::control, io.context.get_executor(), [](CallOutcome) {});
   EXPECT_EQ(admitted.refused, "peer channel is retiring");
   EXPECT_EQ(payload, Bytes(1000, 7));
+}
+
+// A reply says who answered: the peer's record as the handshake carried it.
+TEST(Session, AReplyNamesThePeer) {
+  Io io;
+  Pair pair(io, echo(), echo());
+  const auto outcome = call_and_wait(*pair.dialler, message::members, {}, FrameType::control, io.context.get_executor());
+  ASSERT_TRUE(outcome.reply);
+  EXPECT_EQ(outcome.peer.id, pair.dialler->peer().id);
+  EXPECT_EQ(outcome.peer.host, "10.0.0.2");
 }
 
 }  // namespace

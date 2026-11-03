@@ -166,7 +166,9 @@ void Session::deliver(Frame frame) {
       pending = std::move(found->second);
       _pending.erase(found);
     }
-    asio::post(pending.executor, [done = std::move(pending.done), message = std::move(frame.message)]() mutable { done(CallOutcome{std::move(message), {}}); });
+    asio::post(pending.executor, [done = std::move(pending.done), message = std::move(frame.message), peer = _established.peer]() mutable {
+      done(CallOutcome{std::move(message), {}, std::move(peer)});
+    });
     settle();
     return;
   }
@@ -279,7 +281,7 @@ void Session::cancel(uint64_t request_id) {
     }
     _queue.cancel_outgoing(request_id);
   }
-  if (pending) asio::post(pending->executor, [done = std::move(pending->done)] { done(CallOutcome{std::nullopt, "RPC cancelled"}); });
+  if (pending) asio::post(pending->executor, [done = std::move(pending->done)] { done(CallOutcome{std::nullopt, "RPC cancelled", {}}); });
   queue_control(message::cancel_transfer, request_id);
   settle();
 }
@@ -353,7 +355,7 @@ bool Session::mark_closed(const std::string& why) {
     // a fragment of it outside the lock.
   }
   for (auto& [_, call] : pending)
-    asio::post(call.executor, [done = std::move(call.done), why] { done(CallOutcome{std::nullopt, "peer channel closed: " + why}); });
+    asio::post(call.executor, [done = std::move(call.done), why] { done(CallOutcome{std::nullopt, "peer channel closed: " + why, {}}); });
   return true;
 }
 

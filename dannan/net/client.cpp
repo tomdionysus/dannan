@@ -118,13 +118,93 @@ Lane Client::lane_for(MessageType type) const {
   return registration && registration->lanes == Lanes::data ? Lane::data : Lane::control;
 }
 
-void Client::call(const membership::NodeRecord& peer, MessageType type, Bytes payload, sched::FrameType frame, asio::any_io_executor executor, Done done) {
-  note_peer(peer);
-  call(Target{peer.id, {peer.host, peer.port}}, Call{type, std::move(payload), frame, std::move(executor), std::move(done)});
+void CallHandle::placed(const std::shared_ptr<Session>& session, uint64_t request_id) {
+  bool cancelled, aborted;
+  std::optional<sched::FrameType> promoted;
+  {
+    contract::Lock lock(_mutex);
+    _session = session;
+    _id = request_id;
+    cancelled = _cancelled;
+    aborted = _aborted;
+    promoted = _promoted;
+  }
+  // Asked for before placement: applied now.
+  if (promoted) session->promote(request_id, *promoted);
+  if (cancelled) session->cancel(request_id);
+  if (aborted) session->close("call aborted");
 }
 
-void Client::call(const Endpoint& endpoint, MessageType type, Bytes payload, sched::FrameType frame, asio::any_io_executor executor, Done done) {
-  call(Target{std::nullopt, endpoint}, Call{type, std::move(payload), frame, std::move(executor), std::move(done)});
+bool CallHandle::cancelled_before_placement() const {
+  contract::Lock lock(_mutex);
+  return _cancelled;
+}
+
+void CallHandle::cancel() {
+  std::shared_ptr<Session> session;
+  uint64_t id;
+  {
+    contract::Lock lock(_mutex);
+    _cancelled = true;
+    session = _session.lock();
+    id = _id;
+  }
+  if (session && id) session->cancel(id);
+}
+
+void CallHandle::abort() {
+  std::shared_ptr<Session> session;
+  uint64_t id;
+  {
+    contract::Lock lock(_mutex);
+    _cancelled = true;
+    _aborted = true;
+    session = _session.lock();
+    id = _id;
+  }
+  if (!session || !id) return;
+  session->cancel(id);
+  session->close("call aborted");
+}
+
+void CallHandle::promote(sched::FrameType frame) {
+  std::shared_ptr<Session> session;
+  uint64_t id;
+  {
+    contract::Lock lock(_mutex);
+    _promoted = frame;
+    session = _session.lock();
+    id = _id;
+  }
+  if (session && id) session->promote(id, frame);
+}
+
+std::chrono::milliseconds CallHandle::idle_for() const {
+  std::shared_ptr<Session> session;
+  uint64_t id;
+  {
+    contract::Lock lock(_mutex);
+    session = _session.lock();
+    id = _id;
+  }
+  if (!session || !id) return std::chrono::milliseconds::max();
+  const auto idle = session->idle_for(id);
+  return idle ? std::chrono::duration_cast<std::chrono::milliseconds>(*idle) : std::chrono::milliseconds::max();
+}
+
+std::shared_ptr<CallHandle> Client::call(const membership::NodeRecord& peer, MessageType type, Bytes payload, sched::FrameType frame,
+                                         asio::any_io_executor executor, Done done) {
+  note_peer(peer);
+  auto handle = std::make_shared<CallHandle>();
+  call(Target{peer.id, {peer.host, peer.port}}, Call{type, std::move(payload), frame, std::move(executor), std::move(done), 0, handle});
+  return handle;
+}
+
+std::shared_ptr<CallHandle> Client::call(const Endpoint& endpoint, MessageType type, Bytes payload, sched::FrameType frame, asio::any_io_executor executor,
+                                         Done done) {
+  auto handle = std::make_shared<CallHandle>();
+  call(Target{std::nullopt, endpoint}, Call{type, std::move(payload), frame, std::move(executor), std::move(done), 0, handle});
+  return handle;
 }
 
 void Client::call(Target target, Call call) {
@@ -382,16 +462,18 @@ void Client::close_route(const identity::NodeId& peer, Lane lane, const std::str
 }
 
 void Client::fail(Call& call, std::string why) {
-  asio::post(call.executor, [done = std::move(call.done), why = std::move(why)] { done(CallOutcome{std::nullopt, why}); });
+  asio::post(call.executor, [done = std::move(call.done), why = std::move(why)] { done(CallOutcome{std::nullopt, why, {}}); });
 }
 
 void Client::place(const std::shared_ptr<Session>& session, Call call, const Target& target) {
+  if (call.handle && call.handle->cancelled_before_placement()) return fail(call, "RPC cancelled");
   const auto lane = session->lane();
   const auto deadline = lane == Lane::data ? _options.data_no_progress : _options.control_no_progress;
   auto stall = std::make_shared<Stall>();
   auto finished = std::make_shared<std::atomic<bool>>(false);
   auto done = std::make_shared<Done>(std::move(call.done));
   const auto name = _options.routes->name(call.type);
+  auto handle = call.handle;
   // Moved from only once admitted: a refusal by a retiring session leaves it
   // to be routed again.
   const auto admitted = session->call(call.type, std::move(call.payload), call.frame, call.executor, [stall, finished, done](CallOutcome outcome) {
@@ -406,9 +488,10 @@ void Client::place(const std::shared_ptr<Session>& session, Call call, const Tar
       ++call.reroutes;
       return this->call(target, std::move(call));
     }
-    asio::post(call.executor, [done, why = admitted.refused] { (*done)(CallOutcome{std::nullopt, why}); });
+    asio::post(call.executor, [done, why = admitted.refused] { (*done)(CallOutcome{std::nullopt, why, {}}); });
     return;
   }
+  if (handle) handle->placed(session, admitted.request_id);
   if (deadline.count() <= 0) return;
   auto watchdog = std::make_shared<Watchdog>(
       _io, session, admitted.request_id, deadline, stall, finished,
@@ -429,6 +512,16 @@ void Client::dial(Target target, Lane lane, std::function<void(std::shared_ptr<S
   }
   if (stopped) return finished(nullptr, "client stopped");
   const auto address = address_of(target.endpoint);
+  if (_options.dial_hook) {
+    if (const auto refused = _options.dial_hook(target.endpoint, lane); !refused.empty()) {
+      {
+        contract::Lock lock(_mutex);
+        _dialling.erase(attempt);
+      }
+      finished(nullptr, "dial to " + address + " failed: " + refused);
+      return end_operation();
+    }
+  }
   // Called once, on the strand.
   auto complete = [this, attempt, finished = std::move(finished)](std::shared_ptr<Session> session, std::string why) {
     if (attempt->finished) return;

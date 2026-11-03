@@ -120,16 +120,17 @@ class Node final : public Context {
   Context& context() noexcept { return *this; }
   const Context& context() const noexcept { return *this; }
 
-  // For the hosted system's Status and its facade.
+  // Fails every outbound call at once and admits no more, so a worker
+  // blocked in one can be joined; the rest of the node runs on until stop().
+  void cancel_outbound_calls();
+
+  // Beneath the Context, for the hosted system's facade.
   membership::Membership& membership() noexcept { return _members; }
-  status::TelemetryStore& telemetry() noexcept { return _telemetry; }
-  const status::TelemetryStore& telemetry() const noexcept { return _telemetry; }
+  status::TelemetryStore& telemetry_store() noexcept { return _telemetry; }
   reach::InboundResolver& inbound() noexcept { return _inbound; }
-  status::Readiness& readiness() noexcept { return _readiness; }
   std::optional<reach::PublicConnectivityStatus> connectivity() const;
   std::optional<net::ClientStats> client_stats() const;
   std::optional<net::WorkStats> work_stats() const;
-  std::vector<supervise::SupervisedThreadStatus> threads() const { return _threads.statuses(); }
   sched::RetainedMemoryLedger& memory() noexcept { return _memory; }
   // The node's traffic by frame class, client and server together.
   status::TrafficTotals traffic() const;
@@ -137,7 +138,7 @@ class Node final : public Context {
   // Applies a reset everywhere it matters here; propagate also sends it to
   // every active peer and applies what they answer with.
   bool apply_identity_reset(const membership::IdentityReset& reset);
-  void propagate_identity_reset(const membership::IdentityReset& reset);
+  void propagate_identity_reset(const membership::IdentityReset& reset, std::chrono::milliseconds deadline);
   // Asks for a telemetry refresh now (a readiness change, say).
   void signal_telemetry();
 
@@ -151,8 +152,14 @@ class Node final : public Context {
   Budget& budget() override;
   Faults& faults() override;
   Time& time() override;
+  Telemetry& telemetry() override;
   status::Surface& status() override { return _surface; }
   status::NodeEvents& events() override { return _events; }
+  status::Readiness& readiness() override { return _readiness; }
+  status::ActivityClocks& activity() override { return _activity; }
+  status::Observations& observations() override { return _observations; }
+  supervise::SupervisedThreads& threads() override { return _threads; }
+  Diagnostics diagnostics() const override;
 
  private:
   class NodesNoun;
@@ -162,16 +169,18 @@ class Node final : public Context {
   class BudgetNoun;
   class FaultsNoun;
   class TimeNoun;
+  class TelemetryNoun;
   friend class RoutesNoun;
 
   net::Handled handle(const membership::NodeRecord& peer, sched::FrameType frame, const net::Message& request);
   void observe_direct(const membership::NodeRecord& peer);
   void merge(std::span<const uint8_t> payload);
-  void place_call(std::optional<membership::NodeRecord> peer, const net::Endpoint& endpoint, net::MessageType type, net::Bytes payload, sched::FrameType frame,
-                  std::chrono::milliseconds deadline, boost::asio::any_io_executor executor, net::Client::Done done);
+  std::shared_ptr<net::CallHandle> place_call(std::optional<membership::NodeRecord> peer, const net::Endpoint& endpoint, net::MessageType type,
+                                              net::Bytes payload, sched::FrameType frame, std::chrono::milliseconds deadline,
+                                              boost::asio::any_io_executor executor, net::Client::Done done);
   // A call from a loop thread, waited on within the deadline.
   net::CallOutcome call_wait(std::optional<membership::NodeRecord> peer, const net::Endpoint& endpoint, net::MessageType type, net::Bytes payload,
-                             std::chrono::milliseconds deadline);
+                             std::chrono::milliseconds deadline, sched::FrameType frame = sched::FrameType::control);
   void exchange(std::optional<membership::NodeRecord> peer, const net::Endpoint& endpoint);
   void membership_loop(std::stop_token stop);
   void telemetry_loop(std::stop_token stop);
@@ -190,16 +199,22 @@ class Node final : public Context {
   status::NodeEvents _events;
   status::Surface _surface;
   status::Readiness _readiness;
+  status::ActivityClocks _activity;
+  status::Observations _observations;
   supervise::SupervisedThreads _threads;
   sched::RetainedMemoryLedger _memory;
   const std::shared_ptr<net::TransportTraffic> _traffic = std::make_shared<net::TransportTraffic>();
 
-  // Hosted routes, written before start and read only after.
+  // Hosted types' wire rules, written before start and read only after;
+  // their handlers bound and unbound at any time, the lock held shared
+  // across each handler call, so unbind waits for calls in flight.
   net::RouteTable _table = net::RouteTable::with_dannan_types();
-  std::map<net::MessageType, net::RequestHandler> _handlers;
   std::shared_ptr<const net::RouteTable> _frozen;
+  mutable contract::IoSharedMutex _handlers_mutex;
+  std::map<net::MessageType, net::RequestHandler> _handlers DANNAN_GUARDED_BY(_handlers_mutex);
   std::atomic<bool> _started{false};
   std::atomic<bool> _stopping{false};
+  std::atomic<bool> _calls_cancelled{false};
   std::atomic<uint16_t> _bound_port{0};
   std::atomic<uint32_t> _peers_known{0};
   std::atomic<uint32_t> _peers_active{1};
@@ -222,6 +237,7 @@ class Node final : public Context {
   std::unique_ptr<BudgetNoun> _budget;
   std::unique_ptr<FaultsNoun> _faults;
   std::unique_ptr<TimeNoun> _time;
+  std::unique_ptr<TelemetryNoun> _telemetry_noun;
 };
 
 }  // namespace dannan

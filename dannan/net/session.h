@@ -51,6 +51,8 @@ enum class Role : uint8_t { dialler, acceptor };
 struct CallOutcome {
   std::optional<Message> reply;
   std::string failure;
+  // Who answered: the peer's record as its handshake carried it.
+  membership::NodeRecord peer;
 };
 
 // Whether a call was admitted: its request id, or why not ("peer pending
