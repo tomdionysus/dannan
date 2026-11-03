@@ -63,6 +63,8 @@ Header decode_header(net::Reader& reader) {
     out.costs.memory_kib = reader.u32();
     out.costs.iterations = reader.u32();
     out.costs.lanes = reader.u32();
+    // Checked before a passphrase is asked for or a byte is spent.
+    if (!out.costs.valid()) throw net::DecodeError("Argon2id costs beyond the ceiling");
     out.salt = reader.fixed<16>();
   } else {
     throw net::DecodeError("unknown key source");
@@ -124,7 +126,9 @@ Secret root_for(const Header& header, const KeySource& source) {
   return argon2id(passphrase.reveal(), header.salt, header.costs);
 }
 
-std::array<uint8_t, 32> kek(const Secret& root, const Header& header) { return hkdf_sha256(root.reveal(), header.file_id, text("dannan/custody/1")); }
+Secret kek(const Secret& root, const Header& header) { return hkdf_sha256_secret(root.reveal(), header.file_id, text("dannan/custody/1")); }
+
+std::span<const uint8_t, 32> key_of(const Secret& key) { return std::span<const uint8_t, 32>(key.reveal().data(), 32); }
 
 }  // namespace
 
@@ -178,9 +182,8 @@ std::optional<Secret> KeyCustody::create(const std::filesystem::path& state, con
   std::copy(pkcs8.reveal().begin(), pkcs8.reveal().end(), body.data() + 5);
   std::copy(seal_root.reveal().begin(), seal_root.reveal().end(), body.data() + 5 + pkcs8.size());
   const auto header_bytes = encode_header(header);
-  auto key = kek(sealing_root, header);
-  const auto sealed = aes_gcm_seal(key, body.span(), header_bytes);
-  cleanse(key);
+  const auto key = kek(sealing_root, header);
+  const auto sealed = aes_gcm_seal(key_of(key), body.span(), header_bytes);
   net::Writer file;
   file.raw(header_bytes);
   file.fixed(sealed.nonce);
@@ -214,19 +217,14 @@ KeyCustody KeyCustody::open(const std::filesystem::path& state, const KeySource&
     const auto ciphertext = reader.bytes(max_file);
     reader.finish();
     const auto root = root_for(header, source);
-    auto key = kek(root, header);
-    Bytes opened;
+    const auto key = kek(root, header);
+    SecureBuffer body;
     try {
-      opened = aes_gcm_open(key, nonce, tag, ciphertext, std::span(bytes).first(header_size));
+      body = aes_gcm_open_secure(key_of(key), nonce, tag, ciphertext, std::span(bytes).first(header_size));
     } catch (const std::runtime_error&) {
-      cleanse(key);
       throw refused("does not open: the key is not the one it was made under, or the file was altered");
     }
-    cleanse(key);
-    SecureBytes body(opened.size());
-    std::copy(opened.begin(), opened.end(), body.data());
-    cleanse(opened);
-    net::Reader fields(body.span());
+    net::Reader fields(body);
     if (fields.u8() != body_version) throw refused("has a body version this build does not know");
     const auto key_size = fields.u32();
     if (key_size > body.size()) throw refused("is malformed");
@@ -242,10 +240,7 @@ KeyCustody KeyCustody::open(const std::filesystem::path& state, const KeySource&
 
 Secret KeyCustody::derive(std::string_view label) const {
   if (label.empty()) throw std::invalid_argument("a derived key needs a label");
-  auto derived = hkdf_sha256(_seal_root.reveal(), {}, text(label));
-  Secret out(derived);
-  cleanse(derived);
-  return out;
+  return hkdf_sha256_secret(_seal_root.reveal(), {}, text(label));
 }
 
 }  // namespace dannan::identity

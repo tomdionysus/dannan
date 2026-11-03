@@ -19,7 +19,9 @@
 #include <string>
 #include <type_traits>
 
+#include "dannan/identity/crypto.h"
 #include "dannan/identity/secure_memory.h"
+#include "dannan/net/codec.h"
 
 namespace dannan::identity {
 namespace {
@@ -89,6 +91,49 @@ TEST(Secret, CanBeMadeRandom) {
   const auto b = Secret::random(32);
   EXPECT_EQ(a.size(), 32u);
   EXPECT_FALSE(a == b);
+}
+
+// A buffer that grows on secure pages: a record holding secrets is encoded
+// into one, so its plaintext never sits in ordinary memory before sealing.
+TEST(SecureBuffer, GrowsAndCarriesARecord) {
+  net::BasicWriter<SecureBuffer> writer;
+  writer.string("totp");
+  for (int i = 0; i < 5000; ++i) writer.u8(static_cast<uint8_t>(i));
+  const auto record = writer.take();
+  static_assert(std::is_same_v<std::remove_cvref_t<decltype(record)>, SecureBuffer>);
+  EXPECT_EQ(record.size(), 4u + 4 + 5000);
+  net::Reader reader(record);
+  EXPECT_EQ(reader.string(), "totp");
+  EXPECT_EQ(reader.u8(), 0);
+}
+
+// A passphrase typed a character at a time becomes a Secret, and the
+// buffer it was typed into is left empty.
+TEST(SecureBuffer, BecomesASecret) {
+  SecureBuffer typed;
+  for (const char c : std::string("hunter2")) typed.push_back(static_cast<uint8_t>(c));
+  const Secret secret(std::move(typed));
+  EXPECT_EQ(secret.size(), 7u);
+  EXPECT_EQ(std::string(secret.reveal().begin(), secret.reveal().end()), "hunter2");
+}
+
+// Opened plaintext and derived keys in secure memory, the same bytes the
+// ordinary forms give.
+TEST(SecureBuffer, HoldsOpenedPlaintextAndDerivedKeys) {
+  const auto key = Secret::random(32);
+  const std::span<const uint8_t, 32> fixed(key.reveal().data(), 32);
+  const Bytes plaintext{1, 2, 3, 4};
+  const Bytes associated{9};
+  const auto sealed = aes_gcm_seal(fixed, plaintext, associated);
+  const auto opened = aes_gcm_open_secure(fixed, sealed.nonce, sealed.tag, sealed.ciphertext, associated);
+  EXPECT_TRUE(std::equal(opened.begin(), opened.end(), plaintext.begin(), plaintext.end()));
+  auto bent = sealed.tag;
+  bent[0] ^= 1;
+  EXPECT_THROW(aes_gcm_open_secure(fixed, sealed.nonce, bent, sealed.ciphertext, associated), std::runtime_error);
+  const Bytes info{'k'};
+  const auto derived = hkdf_sha256_secret(key.reveal(), {}, info);
+  const auto plain = hkdf_sha256(key.reveal(), {}, info);
+  EXPECT_TRUE(std::equal(plain.begin(), plain.end(), derived.reveal().begin()));
 }
 
 // The process-wide hardening a node with keys applies at start: no core
