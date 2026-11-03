@@ -12,6 +12,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <cstring>
 #include <stdexcept>
@@ -41,10 +42,13 @@ size_t mapped_size(size_t bytes) noexcept {
 
 // Pages of their own, kept out of dumps and forks; whether they could be
 // locked.
+std::atomic<uint64_t> unlocked_allocations{0};
+
 std::pair<void*, bool> map_secure(size_t mapped) {
   void* pages = ::mmap(nullptr, mapped, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
   if (pages == MAP_FAILED) throw std::runtime_error(std::string("cannot map secure memory: ") + std::strerror(errno));
   const bool locked = ::mlock(pages, mapped) == 0;
+  if (!locked) unlocked_allocations.fetch_add(1, std::memory_order_relaxed);
 #if defined(__linux__)
   (void)::madvise(pages, mapped, MADV_DONTDUMP);
   (void)::madvise(pages, mapped, MADV_DONTFORK);
@@ -61,6 +65,8 @@ void unmap_secure(void* pages, size_t mapped, bool locked) noexcept {
 }
 
 }  // namespace
+
+uint64_t unlocked_secure_allocations() noexcept { return unlocked_allocations.load(std::memory_order_relaxed); }
 
 void* secure_allocate(size_t bytes) {
   if (!bytes) bytes = 1;

@@ -12,6 +12,13 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
 
+## 2026-11-03, night -- counting unlocked key memory
+
+`identity::unlocked_secure_allocations()`: how many secure allocations
+could not be locked into RAM since start, process-wide, so a node says once
+that some keys may be swapped (Lugh asked; it used to warn so). **Gate:
+`dannan_tests` 368, `dagda_tests` 1.**
+
 ## 2026-11-03, night -- fuzz targets
 
 `dannan/fuzz/`: a target per parser of untrusted bytes, each with seeds
