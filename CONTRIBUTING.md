@@ -48,6 +48,12 @@ cmake --build build -j8
 ./build/dannan_tests && ./build/dagda_tests
 ```
 
+Every fuzz target also runs in `dannan_tests` (`Fuzz.*`: seeds, mutations and
+noise, the same inputs every run). `-DDANNAN_BUILD_FUZZING=ON` builds each
+target file as its own binary, `build/dannan_fuzz_<target>`: a libFuzzer
+fuzzer under a clang that has libFuzzer, otherwise a replay driver over files
+(`build/dannan_fuzz_records corpus/`).
+
 Run the test binaries rather than `ctest`. Everything runs on a developer machine
 (MacPorts for every dependency on the laptop); there is no hosted CI.
 Sanitizers run before a release, or to hunt a bug that cannot be pinned any

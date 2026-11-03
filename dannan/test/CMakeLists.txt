@@ -16,6 +16,7 @@ target_compile_definitions(dannan_test_fixtures INTERFACE DANNAN_TEST_TEMP_ROOT=
 add_executable(dannan_tests
   contract_test.cpp
   fixtures_test.cpp
+  fuzz_smoke_test.cpp
   identity_crypto_test.cpp
   identity_durable_file_test.cpp
   identity_key_custody_test.cpp
@@ -50,6 +51,8 @@ add_executable(dannan_tests
   version_test.cpp
 )
 target_link_libraries(dannan_tests PRIVATE dannan dannan_test_fixtures GTest::gtest_main dannan_warnings)
+# Every fuzz target, run by the smoke test.
+target_sources(dannan_tests PRIVATE $<TARGET_OBJECTS:dannan_fuzz_targets>)
 
 # The supervisor's test plugins, one behaviour each, built as loadable
 # modules into one directory the tests point the supervisor at.
