@@ -437,5 +437,22 @@ TEST(Session, APeersRetirementRetiresThisEndToo) {
   EXPECT_FALSE(pair.dialler->usable());
 }
 
+// Closing from any thread while the writer is sealing a fragment is safe:
+// the queue the fragment lives in is dropped on the session's strand, not
+// under the closer (a use-after-free the liveness close found).
+TEST(Session, ClosingFromAnotherThreadMidTransferIsSafe) {
+  Io io;
+  for (int round = 0; round < 20; ++round) {
+    Pair pair(io, echo(), echo(), Lane::data, 4096);
+    auto done = std::make_shared<std::promise<CallOutcome>>();
+    pair.dialler->call(MessageType{5}, Bytes(2 << 20, 9), FrameType::loader, io.context.get_executor(),
+                       [done](CallOutcome outcome) { done->set_value(std::move(outcome)); });
+    while (pair.traffic->out_bytes[static_cast<size_t>(FrameType::loader)].load() < 64 * 1024) std::this_thread::yield();
+    pair.dialler->close("closed mid-transfer");
+    const auto outcome = done->get_future().get();
+    EXPECT_FALSE(outcome.reply);
+  }
+}
+
 }  // namespace
 }  // namespace dannan::net

@@ -7,6 +7,8 @@
 
 #include "dannan/net/session.h"
 
+#include <sys/socket.h>
+
 #include <boost/asio/bind_executor.hpp>
 #include <boost/asio/buffer.hpp>
 #include <boost/asio/dispatch.hpp>
@@ -62,7 +64,14 @@ Session::Session(Socket socket, Established established, Role role, std::shared_
       _assembler(options.max_incomplete_messages, options.max_incomplete_bytes, options.max_message_bytes, options.memory),
       _sealer(_established, _routes),
       _queue(options.memory),
-      _next_request(role == Role::dialler ? 1 : 2) {}
+      _next_request(role == Role::dialler ? 1 : 2) {
+#ifdef SO_NOSIGPIPE
+  // A peer that goes away must never end the process: whatever socket the
+  // session was given, a write to a closed one fails instead of signalling.
+  const int on = 1;
+  ::setsockopt(_socket.native_handle(), SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof(on));
+#endif
+}
 
 Session::~Session() = default;
 
@@ -322,7 +331,8 @@ bool Session::mark_closed(const std::string& why) {
     if (_closed) return false;
     _closed = true;
     pending.swap(_pending);
-    _queue.abandon();
+    // The queue is left to shut(), on the strand: the writer may be sealing
+    // a fragment of it outside the lock.
   }
   for (auto& [_, call] : pending)
     asio::post(call.executor, [done = std::move(call.done), why] { done(CallOutcome{std::nullopt, "peer channel closed: " + why}); });
@@ -330,6 +340,10 @@ bool Session::mark_closed(const std::string& why) {
 }
 
 void Session::shut(const std::string& why) {
+  {
+    contract::Lock lock(_mutex);
+    _queue.abandon();
+  }
   boost::system::error_code ignored;
   _socket.shutdown(Socket::shutdown_both, ignored);
   _socket.close(ignored);
