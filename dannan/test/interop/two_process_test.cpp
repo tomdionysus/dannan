@@ -21,6 +21,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <boost/asio/io_context.hpp>
 #include <chrono>
 #include <fstream>
 #include <random>
@@ -29,8 +30,10 @@
 #include <thread>
 #include <vector>
 
+#include "dannan/node.h"
 #include "dannan/test/fixtures/ports.h"
 #include "dannan/test/fixtures/temp_dir.h"
+#include "tools/macha_types.h"
 
 extern char** environ;
 
@@ -158,39 +161,57 @@ bool any_line(const std::vector<std::string>& lines, const std::string& pattern)
   return false;
 }
 
-TEST(TwoProcess, ADannanNodeAndAMachaNodeFormOneCluster) {
+// A Macha node from a config under the test's directory, ready (by
+// /api/v1/health) when constructed.
+struct MachaNode {
   dannan::test::TempDir dir;
-  const auto port = dannan::test::free_port();
-  const auto api = dannan::test::free_port();
-  std::filesystem::create_directories(dir.path() / "state");
-  std::filesystem::create_directories(dir.path() / "cache");
-  std::ofstream(dir.path() / "cluster.key") << random_key() << "\n";
-  std::ofstream(dir.path() / "macha.yaml") << "state_path: " << (dir.path() / "state").string() << "\n"
-                                           << "key_file: " << (dir.path() / "cluster.key").string() << "\n"
-                                           << "log_level: DEBUG\n"
-                                           << "storage:\n  hosts_extents: false\n"
-                                           << "cache:\n  path: " << (dir.path() / "cache").string() << "\n  max_blocks: 64\n"
-                                           << "network:\n  listen: 127.0.0.1\n  advertise: 127.0.0.1\n  port: " << port << "\n"
-                                           << "  inbound_capable: true\n  heartbeat_ms: 1000\n  telemetry_interval_ms: 1000\n"
-                                           << "  dead_after_ms: 10000\n  connect_timeout_ms: 2500\n"
-                                           << "catalogue:\n  scanner:\n    enabled: false\n  api:\n    enabled: true\n"
-                                           << "    listen: 127.0.0.1\n    port: " << api << "\n"
-                                           << "ingest:\n  enabled: false\ntorrent:\n  enabled: false\nstreaming:\n  enabled: false\n";
+  uint16_t port = dannan::test::free_port();
+  uint16_t api = dannan::test::free_port();
+  std::unique_ptr<Child> process;
 
-  Child macha({DANNAN_MACHA_BINARY, "--config", (dir.path() / "macha.yaml").string()}, dir.path() / "macha.log", false);
+  MachaNode() {
+    std::filesystem::create_directories(dir.path() / "state");
+    std::filesystem::create_directories(dir.path() / "cache");
+    std::ofstream(dir.path() / "cluster.key") << random_key() << "\n";
+    std::ofstream(dir.path() / "macha.yaml") << "state_path: " << (dir.path() / "state").string() << "\n"
+                                             << "key_file: " << (dir.path() / "cluster.key").string() << "\n"
+                                             << "log_level: DEBUG\n"
+                                             << "storage:\n  hosts_extents: false\n"
+                                             << "cache:\n  path: " << (dir.path() / "cache").string() << "\n  max_blocks: 64\n"
+                                             << "network:\n  listen: 127.0.0.1\n  advertise: 127.0.0.1\n  port: " << port << "\n"
+                                             << "  inbound_capable: true\n  heartbeat_ms: 1000\n  telemetry_interval_ms: 1000\n"
+                                             << "  dead_after_ms: 10000\n  connect_timeout_ms: 2500\n"
+                                             << "catalogue:\n  scanner:\n    enabled: false\n  api:\n    enabled: true\n"
+                                             << "    listen: 127.0.0.1\n    port: " << api << "\n"
+                                             << "ingest:\n  enabled: false\ntorrent:\n  enabled: false\nstreaming:\n  enabled: false\n";
+    process = std::make_unique<Child>(std::vector<std::string>{DANNAN_MACHA_BINARY, "--config", (dir.path() / "macha.yaml").string()}, dir.path() / "macha.log",
+                                      false);
+  }
   // Ready, not merely listening: Macha binds its storage routes and answers
   // Status only once its services are up, which /api/v1/health says with a
   // 200.
-  bool up = false;
-  for (int i = 0; i < 600 && !up; ++i) {
-    up = accepts(api) && http(api, "GET", "/api/v1/health", {}).starts_with("HTTP/1.1 200") && accepts(port);
-    if (!up) std::this_thread::sleep_for(100ms);
+  bool ready() const {
+    for (int i = 0; i < 600; ++i) {
+      if (accepts(api) && http(api, "GET", "/api/v1/health", {}).starts_with("HTTP/1.1 200") && accepts(port)) return true;
+      std::this_thread::sleep_for(100ms);
+    }
+    return false;
   }
-  ASSERT_TRUE(up) << "the Macha node did not become ready; its log is " << (dir.path() / "macha.log");
+  std::string status_nodes() const {
+    const auto session = http(api, "POST", "/api/v1/session", "{}");
+    std::smatch token;
+    if (!std::regex_search(session, token, std::regex("\"token\"\\s*:\\s*\"([^\"]+)\""))) return {};
+    return http(api, "GET", "/api/v1/status/nodes", {}, token[1]);
+  }
+};
 
-  Child node(
-      {DANNAN_NODE_BINARY, "--key", (dir.path() / "cluster.key").string(), "--port", "0", "--peer", "127.0.0.1:" + std::to_string(port), "--seconds", "4"},
-      dir.path() / "dannan-node.log", true);
+TEST(TwoProcess, ADannanNodeAndAMachaNodeFormOneCluster) {
+  MachaNode macha;
+  ASSERT_TRUE(macha.ready()) << "the Macha node did not become ready; its log is " << (macha.dir.path() / "macha.log");
+
+  Child node({DANNAN_NODE_BINARY, "--key", (macha.dir.path() / "cluster.key").string(), "--port", "0", "--peer", "127.0.0.1:" + std::to_string(macha.port),
+              "--seconds", "4"},
+             macha.dir.path() / "dannan-node.log", true);
   std::vector<std::string> lines;
   const auto deadline = std::chrono::steady_clock::now() + 60s;
   std::string self;
@@ -199,11 +220,7 @@ TEST(TwoProcess, ADannanNodeAndAMachaNodeFormOneCluster) {
     lines.push_back(*line);
     if (line->starts_with("listening ")) self = line->substr(10, 32);
     // While both run: the Dannan node in Macha's Status.
-    if (*line == "script done") {
-      const auto session = http(api, "POST", "/api/v1/session", "{}");
-      std::smatch token;
-      if (std::regex_search(session, token, std::regex("\"token\"\\s*:\\s*\"([^\"]+)\""))) status = http(api, "GET", "/api/v1/status/nodes", {}, token[1]);
-    }
+    if (*line == "script done") status = macha.status_nodes();
     if (*line == "stopped") break;
   }
   std::string all;
@@ -224,6 +241,64 @@ TEST(TwoProcess, ADannanNodeAndAMachaNodeFormOneCluster) {
   // And Macha's Status lists it.
   EXPECT_NE(status.find(self), std::string::npos) << status;
   EXPECT_TRUE(any_line(lines, "^stopped$")) << all;
+}
+
+// Step 5's gate: Dannan's whole node, not just its transport, joins a
+// running Macha cluster as a bare member through a bootstrap seed. Each
+// lists the other, Dannan's node has Macha's telemetry, and Macha's Status
+// lists Dannan's node.
+TEST(TwoProcess, ADannanNodeJoinsAMachaClusterAsABareMember) {
+  MachaNode macha;
+  ASSERT_TRUE(macha.ready()) << "the Macha node did not become ready; its log is " << (macha.dir.path() / "macha.log");
+  boost::asio::io_context io;
+  auto work = boost::asio::make_work_guard(io);
+  std::vector<std::thread> threads;
+  for (int i = 0; i < 4; ++i) threads.emplace_back([&] { io.run(); });
+
+  dannan::NodeConfig config;
+  config.state_path = macha.dir.path() / "dannan-state";
+  config.key = dannan::identity::load_cluster_key(macha.dir.path() / "cluster.key");
+  config.listen_host = "127.0.0.1";
+  config.advertise_host = "127.0.0.1";
+  config.port = 0;
+  config.bootstrap = {{"127.0.0.1", macha.port}};
+  config.inbound = dannan::reach::Inbound::yes;
+  config.heartbeat = std::chrono::milliseconds(500);
+  config.telemetry_interval = std::chrono::milliseconds(500);
+  config.version = "0.1.0";
+  {
+    dannan::Node node(io, config);
+    dannan::tools::macha_protocol23_types([&](dannan::net::MessageType type, dannan::net::Registration registration) {
+      node.context().routes().add(
+          type, std::move(registration),
+          [](const dannan::membership::NodeRecord&, dannan::sched::FrameType, const dannan::net::Message&) { return dannan::net::Handled::unrecognised(); });
+    });
+    node.start();
+    const auto self = dannan::identity::to_string(node.context().identity().id());
+    std::optional<dannan::identity::NodeId> macha_id;
+    std::string status;
+    bool telemetry = false;
+    const auto until = std::chrono::steady_clock::now() + 30s;
+    while (std::chrono::steady_clock::now() < until) {
+      for (const auto& member : node.context().nodes().active())
+        if (member.port == macha.port) macha_id = member.id;
+      if (macha_id) {
+        for (const auto& record : node.telemetry().all())
+          if (record.node_id() == *macha_id) telemetry = true;
+      }
+      status = macha.status_nodes();
+      if (macha_id && telemetry && status.find(self) != std::string::npos) break;
+      std::this_thread::sleep_for(200ms);
+    }
+    ASSERT_TRUE(macha_id) << "Macha never joined the Dannan node's roster";
+    EXPECT_TRUE(node.context().nodes().directly_reachable(*macha_id));
+    EXPECT_TRUE(telemetry) << "no telemetry from Macha";
+    EXPECT_NE(status.find(self), std::string::npos) << status;
+    node.stop();
+  }
+  work.reset();
+  io.stop();
+  for (auto& thread : threads) thread.join();
 }
 
 }  // namespace

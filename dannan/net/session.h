@@ -120,8 +120,10 @@ class Session : public std::enable_shared_from_this<Session> {
 
   // Places a call. Admitted, its completion is posted to `executor` exactly
   // once: the reply, or why none came (closed, cancelled). Refused, nothing
-  // is posted and the admission says why. Waits on nothing.
-  Admission call(MessageType type, Bytes payload, sched::FrameType frame, boost::asio::any_io_executor executor, std::function<void(CallOutcome)> done);
+  // is posted and the admission says why; refused as closed or retiring,
+  // `payload` is left as it was, so the caller can route it again. Waits on
+  // nothing.
+  Admission call(MessageType type, Bytes&& payload, sched::FrameType frame, boost::asio::any_io_executor executor, std::function<void(CallOutcome)> done);
   // Sends a notification; `sent` (optional) is posted to `executor` with
   // whether it was written. Throws OutboundRefused when the queue will not
   // take it.
