@@ -9,12 +9,12 @@
 # A NAT router: forwards between its networks and masquerades what leaves
 # by its outside address. NAT=eim keeps a connection's source port where it
 # can (an endpoint-independent mapping: punchable); NAT=random picks a fresh
-# port for every connection (relay only). GATEWAY, if set, is its own way
-# out (the inner router of a carrier-grade pair).
+# port for every connection (relay only).
 #
 #   OUTSIDE_IP  this router's address on the outside network
 #   NAT         eim | random
-#   GATEWAY     optional default route
+#   GATEWAY     its default route: the outside network's gateway, or the
+#               carrier router for the inner router of a carrier pair
 set -eu
 
 outside=$(ip -o -4 addr show | while read -r _ name _ address _; do

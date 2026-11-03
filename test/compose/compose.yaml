@@ -71,7 +71,7 @@ services:
   router-a:
     <<: *router
     depends_on: [hub1]
-    environment: {OUTSIDE_IP: 10.10.0.20, NAT: eim}
+    environment: {OUTSIDE_IP: 10.10.0.20, NAT: eim, GATEWAY: 10.10.0.1}
     networks:
       wan: {ipv4_address: 10.10.0.20}
       lan-a: {ipv4_address: 10.20.1.2}
@@ -92,7 +92,7 @@ services:
   router-d:
     <<: *router
     depends_on: [hub1]
-    environment: {OUTSIDE_IP: 10.10.0.23, NAT: eim}
+    environment: {OUTSIDE_IP: 10.10.0.23, NAT: eim, GATEWAY: 10.10.0.1}
     networks:
       wan: {ipv4_address: 10.10.0.23}
       lan-d: {ipv4_address: 10.20.4.2}
@@ -113,7 +113,7 @@ services:
   router-b:
     <<: *router
     depends_on: [hub1]
-    environment: {OUTSIDE_IP: 10.10.0.21, NAT: random}
+    environment: {OUTSIDE_IP: 10.10.0.21, NAT: random, GATEWAY: 10.10.0.1}
     networks:
       wan: {ipv4_address: 10.10.0.21}
       lan-b: {ipv4_address: 10.20.2.2}
@@ -136,7 +136,7 @@ services:
   router-c1:
     <<: *router
     depends_on: [hub1]
-    environment: {OUTSIDE_IP: 10.10.0.22, NAT: random}
+    environment: {OUTSIDE_IP: 10.10.0.22, NAT: random, GATEWAY: 10.10.0.1}
     networks:
       wan: {ipv4_address: 10.10.0.22}
       carrier: {ipv4_address: 100.64.0.2}
@@ -162,21 +162,21 @@ services:
     networks:
       lan-c: {ipv4_address: 10.20.3.10}
 
+# Ordinary networks, not `internal`: Docker drops an internal network's
+# packets whose other end is outside its subnet, which no router could
+# forward. Every node and router routes out explicitly (GATEWAY), and
+# Docker's isolation between bridges keeps the outside from reaching a LAN
+# but through its router.
 networks:
   wan:
     ipam: {config: [{subnet: 10.10.0.0/24}]}
   lan-a:
-    internal: true
     ipam: {config: [{subnet: 10.20.1.0/24}]}
   lan-b:
-    internal: true
     ipam: {config: [{subnet: 10.20.2.0/24}]}
   lan-c:
-    internal: true
     ipam: {config: [{subnet: 10.20.3.0/24}]}
   lan-d:
-    internal: true
     ipam: {config: [{subnet: 10.20.4.0/24}]}
   carrier:
-    internal: true
     ipam: {config: [{subnet: 100.64.0.0/24}]}
