@@ -7,6 +7,35 @@ left green. `ACTIVE.md` is the plan and this is the record.
 
 None. Dannan has no code yet.
 
+## 2026-11-03, evening -- step 1: the vocabulary
+
+Three commits on `develop` (`7e2f414`, `aeb5113`, and this one), tests
+written first from the inventory rows and the laws, then the code; each
+test first failed to build for want of the code, and five of my own test
+mistakes were corrected along the way (constructor argument order, three
+leases dropped by temporaries in assertions, a reserve example with no
+room for reassembly, and one case asserting the opposite of the
+reassembly reserve's place below the waiter gate).
+
+- `dannan::contract`: the thread-safety annotations and lock types
+  (`DANNAN_*`), the injected `TimeSource`, published snapshots.
+- `dannan::sched`: the five wire frame types (protocol 23's values) and
+  their queue priority; four work classes, foreground in place of viewer;
+  declared waits, the work context and the wait guard as an injected
+  object; budgets, cursors and pages; the retry policy with time passed
+  in; the retained-memory ledger (open owners: Dannan below 256, hosted
+  systems above; `wake()` for cancelled waiters); `fit_to_limit`.
+- `dannan::status`: log levels, the node's sink, a component's scoped
+  logger; no process-wide logger.
+- `dannan::net`: the wire codec, byte-compatible with Macha's.
+- `dannan::identity`: durable file replacement.
+- Fixtures: the stepped clock, and temporary directories created under
+  the build tree (`build/test-tmp/`), never the system temp directory.
+- Inventory rows covered are marked **Dannan** with their cases; owed:
+  the per-account bound (step 5).
+- **Gate: `dannan_tests` 78, `dagda_tests` 1, all passed**; the threaded
+  ledger and gate cases 200 times over with no failure.
+
 ## 2026-11-03, evening -- step 0: the repository and its skeleton
 
 - First commit `2a923f5` on `main` (the plan and project files);

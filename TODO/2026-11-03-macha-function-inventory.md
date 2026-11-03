@@ -129,13 +129,13 @@ the behaviour's specification, before seam 0 moves the row.
 
 | Behaviour | Where | Proof |
 |---|---|---|
-| One definition of class from frame type; `frame_for(class)`; control has no DATA frame | `frame_type.hpp` | `test_work_class.cpp` |
-| Declared waits per operation and the runtime wait guard; control may not wait on the DATA device or the network; tests switch the guard to throw | `Waits`, `WaitGuard` | `test_contract.cpp`, `test_work_class.cpp` |
-| Three memory reserves plus the reassembly reserve inside one retained total; a memory limit shrinks the configured parts pro rata with a `MEMORY OVER LIMIT` warning | `RuntimeConfig`, `RetainedMemoryLedger` | `test_contract.cpp`; the memory gauges (0.90.69/70) |
-| Budgets, cursors and pages for paged long work | `contract/walk.hpp` | `test_predicates.cpp`, `test_namespace_entries.cpp` |
-| Retry policy with backoff, a failure budget and a disabled state | `retry_policy.hpp` | `test_subsystem_supervisor.cpp` |
-| Published immutable snapshots behind a swap | `contract/published.hpp` | `test_contract.cpp` |
-| A per-account bound beside every node-wide bound on viewer resources (law 2, second clause) | per-session limits, `max_concurrent_password_checks` | `test_session.cpp`, `users/test_accounts_converge_across_nodes` (`try_later`) |
+| One definition of class from frame type; `frame_for(class)`; control has no DATA frame | `frame_type.hpp` | `test_work_class.cpp`. **Dannan** (step 1): `FrameType.*` and `WorkClass.*` in `dannan/test/sched_work_test.cpp` (wire values fixed, queue priority, decode refuses other bytes, one definition, `frame_for` round trip); foreground replaces viewer |
+| Declared waits per operation and the runtime wait guard; control may not wait on the DATA device or the network; tests switch the guard to throw | `Waits`, `WaitGuard` | `test_contract.cpp`, `test_work_class.cpp`. **Dannan** (step 1): `Waits.*`, `WorkContext.*`, `WaitGuard.*` in `sched_work_test.cpp`; the guard is an injected object, not a static |
+| Three memory reserves plus the reassembly reserve inside one retained total; a memory limit shrinks the configured parts pro rata with a `MEMORY OVER LIMIT` warning | `RuntimeConfig`, `RetainedMemoryLedger` | `test_contract.cpp`; the memory gauges (0.90.69/70). **Dannan** (step 1): `RetainedMemory.*` and `MemoryLimit.*` in `sched_memory_test.cpp` (each reserve by class, the waiter gates, reassembly's reserve and its exemption, shedding, restore, cancellation, deadline, stop); owners are open (Dannan below 256, hosted systems above) |
+| Budgets, cursors and pages for paged long work | `contract/walk.hpp` | `test_predicates.cpp`, `test_namespace_entries.cpp`. **Dannan** (step 1): `Budget.*`, `Page.*` in `sched_walk_retry_test.cpp`; time is passed in |
+| Retry policy with backoff, a failure budget and a disabled state | `retry_policy.hpp` | `test_subsystem_supervisor.cpp`. **Dannan** (step 1): `Retry.*` in `sched_walk_retry_test.cpp` (backoff to the ceiling, the window, the backstop, success keeps the window, reset); the disabled state is the supervisor's, step 4c |
+| Published immutable snapshots behind a swap | `contract/published.hpp` | `test_contract.cpp`. **Dannan** (step 1): `Published.*` in `contract_test.cpp` |
+| A per-account bound beside every node-wide bound on viewer resources (law 2, second clause) | per-session limits, `max_concurrent_password_checks` | `test_session.cpp`, `users/test_accounts_converge_across_nodes` (`try_later`). **Dannan**: owed at step 5, with the Budget noun |
 
 ## Supervision (`subsystem/*`, `startup_progress.hpp`) - to Dannan
 
@@ -157,10 +157,10 @@ the behaviour's specification, before seam 0 moves the row.
 | A durable node id created on first start under the state path; a fresh durability epoch per process, so peers tell a restart from a reconnect | `NodeIdentity` | `test_storage_v18.cpp`, `test_rpc_cluster.cpp` |
 | The cluster key file; `SecureChannel` keyed from it | `ClusterKeys`, `key_file` | `test_rpc_cluster.cpp` |
 | The state path is locked before any state file is read | `StorageLock` | `test_service_root.cpp` |
-| Injected time for every interval decision; the steady clock for logs only | `TimeSource`, `SteppedTime` | `tests/TESTING.md`, every timed case |
+| Injected time for every interval decision; the steady clock for logs only | `TimeSource`, `SteppedTime` | `tests/TESTING.md`, every timed case. **Dannan** (step 1): `SteadyTimeSource.*`, `SteppedTime.*` in `contract_test.cpp`; the stepped clock is `dannan/test/fixtures/stepped_time.h` |
 | Observation windows sampled to `observation/observations.jsonl` | `observation.*` | `test_observation.cpp` |
-| Durable file replacement (write, sync, rename) | `durable_file.*` | `test_storage_v18.cpp` |
-| Log levels, scoped prefixes, the glibc arena cap | `log.*`, `process_allocator.*` | `test_foundations.cpp` |
+| Durable file replacement (write, sync, rename) | `durable_file.*` | `test_storage_v18.cpp`. **Dannan** (step 1): `DurableFile.*` in `identity_durable_file_test.cpp` (new and replaced files, owner-only, failure leaves the old state and no debris) |
+| Log levels, scoped prefixes, the glibc arena cap | `log.*`, `process_allocator.*` | `test_foundations.cpp`. **Dannan** (step 1): `LogLevel.*`, `ScopedLogger.*`, `ConsoleSink.*` in `status_log_test.cpp`; a node's sink is injected, there is no process logger. The glibc arena cap is a setting of the hosted executable's process, not a library behaviour: Macha keeps it |
 
 ## Configuration (`config.hpp`, `config.cpp`) - split at seam 1
 
