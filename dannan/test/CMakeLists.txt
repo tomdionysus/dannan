@@ -24,6 +24,7 @@ add_executable(dannan_tests
   reach_test.cpp
   reach_upnp_test.cpp
   net_assembler_test.cpp
+  node_test.cpp
   net_channel_test.cpp
   net_client_test.cpp
   net_codec_test.cpp

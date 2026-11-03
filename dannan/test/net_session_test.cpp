@@ -474,5 +474,17 @@ TEST(Session, AnUnregisteredUserNotificationReachesTheHandler) {
   EXPECT_TRUE(pair.acceptor->usable());
 }
 
+// A call refused because the session retired or closed under it keeps its
+// payload, so the client can route it again without having copied it.
+TEST(Session, ARefusedCallKeepsItsPayload) {
+  Io io;
+  Pair pair(io, echo(), echo());
+  pair.dialler->retire();
+  Bytes payload(1000, 7);
+  const auto admitted = pair.dialler->call(message::members, std::move(payload), FrameType::control, io.context.get_executor(), [](CallOutcome) {});
+  EXPECT_EQ(admitted.refused, "peer channel is retiring");
+  EXPECT_EQ(payload, Bytes(1000, 7));
+}
+
 }  // namespace
 }  // namespace dannan::net
