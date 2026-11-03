@@ -58,6 +58,8 @@ class Writer {
 class Reader {
  public:
   explicit Reader(std::span<const uint8_t> data) noexcept : _data(data) {}
+  // A temporary buffer would be gone before the first read.
+  explicit Reader(Bytes&&) = delete;
 
   uint8_t u8();
   uint16_t u16();
