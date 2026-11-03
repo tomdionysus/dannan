@@ -215,7 +215,7 @@ void Session::queue_control(MessageType type, uint64_t target) {
   }
 }
 
-Admission Session::call(MessageType type, Bytes payload, sched::FrameType frame, asio::any_io_executor executor, std::function<void(CallOutcome)> done) {
+Admission Session::call(MessageType type, Bytes&& payload, sched::FrameType frame, asio::any_io_executor executor, std::function<void(CallOutcome)> done) {
   Admission out;
   {
     contract::Lock lock(_mutex);

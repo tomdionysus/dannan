@@ -25,6 +25,7 @@
 
 #include "dannan/contract/thread_safety.h"
 #include "dannan/identity/cluster_key.h"
+#include "dannan/membership/identity_reset.h"
 #include "dannan/net/scheduler.h"
 #include "dannan/net/session.h"
 
@@ -70,6 +71,9 @@ struct ClientOptions {
   std::chrono::milliseconds dead_after{30000};
   // Told of each peer that answers a CONTROL ping, with its record.
   std::function<void(const membership::NodeRecord&)> alive;
+  // Told of each session this client dials, with the peer's record as its
+  // handshake carried it: a direct observation.
+  std::function<void(const membership::NodeRecord&)> established;
 };
 
 struct ClientStats {
@@ -160,6 +164,10 @@ class Client {
   // type here): processed, or failed with 400 for a lane that is not
   // CONTROL or DATA.
   Handled handle_dial_request(const membership::NodeRecord& peer, const Message& request);
+  // An identity reset: forgets the addresses it covers and closes the
+  // routes to the nodes it names there, so the next call dials afresh and
+  // checks who answers.
+  void invalidate_identity_association(const membership::IdentityReset& reset);
   // Closes this node's routes to `peer` on `lane`, both directions.
   void close_route(const identity::NodeId& peer, Lane lane, const std::string& why);
 
@@ -181,6 +189,9 @@ class Client {
     sched::FrameType frame = sched::FrameType::control;
     boost::asio::any_io_executor executor;
     Done done;
+    // Times this call has been re-routed off a session that retired or
+    // closed under it.
+    int reroutes = 0;
   };
   struct Target {
     std::optional<identity::NodeId> id;
@@ -202,7 +213,10 @@ class Client {
   using Retire = std::vector<std::shared_ptr<Session>>;
 
   void call(Target target, Call call);
-  void place(const std::shared_ptr<Session>& session, Call call);
+  // Places `call` on `session`; one refused because the session retired or
+  // closed under it is routed again (a simultaneous dial's loser), at most
+  // a few times. `target` is where it is going.
+  void place(const std::shared_ptr<Session>& session, Call call, const Target& target);
   static void fail(Call& call, std::string why);
   // Dials `target` on `lane`; `finished` is told the session or why not.
   void dial(Target target, Lane lane, std::function<void(std::shared_ptr<Session>, std::string)> finished);
