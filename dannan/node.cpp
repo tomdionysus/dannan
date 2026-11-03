@@ -141,6 +141,18 @@ class Node::ChannelsNoun final : public Channels {
     return usable() ? _node._client->broadcast_best_effort(message, frame) : 0;
   }
   size_t notify(const net::Message& message, sched::FrameType frame) override { return usable() ? _node._client->broadcast_notify(message, frame) : 0; }
+  void open(std::string name, net::Delivery delivery, size_t replay_bytes) override { _node._fanout->open(std::move(name), delivery, replay_bytes); }
+  uint64_t subscribe(const std::string& channel, std::string prefix, asio::any_io_executor executor, net::ChannelHandler handler) override {
+    return _node._fanout->subscribe(channel, std::move(prefix), std::move(executor), std::move(handler));
+  }
+  void unsubscribe(uint64_t id) override { _node._fanout->unsubscribe(id); }
+  net::Published publish(const std::string& channel, std::string topic, net::Bytes payload) override {
+    return _node._fanout->publish(channel, std::move(topic), std::move(payload));
+  }
+  void publish_bulk(const std::string& channel, std::string topic, net::Bytes payload, std::chrono::milliseconds deadline, asio::any_io_executor executor,
+                    std::function<void(net::Published)> done) override {
+    _node._fanout->publish_bulk(channel, std::move(topic), std::move(payload), deadline, std::move(executor), std::move(done));
+  }
 
  private:
   bool usable() const { return _node._client && !_node._stopping && !_node._calls_cancelled; }
@@ -285,6 +297,27 @@ Node::Node(asio::io_context& io, NodeConfig config)
       _time(std::make_unique<TimeNoun>(*this)),
       _telemetry_noun(std::make_unique<TelemetryNoun>(*this)) {
   if (!_config.log) _config.log = std::make_shared<status::ConsoleSink>();
+  net::Fanout::Hooks hooks;
+  hooks.self = [this] { return _members.self(); };
+  hooks.roster = [this] { return _members.active(); };
+  hooks.incarnation = _identity.durability_epoch;
+  hooks.advertise = [this](const std::string& key, std::optional<net::Bytes> value) {
+    if (value)
+      _members.set_advert(key, std::move(*value));
+    else
+      _members.clear_advert(key);
+  };
+  hooks.call = [this](const NodeRecord& peer, net::MessageType type, net::Bytes payload, sched::FrameType frame, std::chrono::milliseconds deadline,
+                      asio::any_io_executor executor, net::Client::Done done) {
+    if (!_client || _stopping || _calls_cancelled) return asio::post(executor, [done] { done({std::nullopt, "the node is not running", {}}); });
+    (void)place_call(peer, {peer.host, peer.port}, type, std::move(payload), frame, deadline, std::move(executor), std::move(done));
+  };
+  hooks.send = [this](const identity::NodeId& peer, const net::Message& message, sched::FrameType frame, bool best_effort) {
+    return _client && !_stopping && _client->send(peer, net::Lane::control, message, frame, best_effort);
+  };
+  hooks.executor = _io.get_executor();
+  hooks.replay_deadline = _config.connect_timeout * 2;
+  _fanout = std::make_shared<net::Fanout>(std::move(hooks));
   // Tombstones loaded with the roster fence telemetry before anything runs.
   for (const auto& reset : _members.identity_resets()) _telemetry.apply_identity_reset(reset);
 }
@@ -483,6 +516,9 @@ net::Handled Node::handle(const NodeRecord& peer, sched::FrameType frame, const 
   if (type == m::relay_offer) return _paths->relay_offer(peer, request);
   if (type == m::relay_data) return _paths->relay_data(peer, request);
   if (type == m::relay_close) return _paths->relay_close(peer, request);
+  if (type == m::channel_publish) return _fanout->on_publish(peer, request);
+  if (type == m::channel_replay) return _fanout->on_replay(peer, request);
+  if (type == m::channel_bulk) return _fanout->on_bulk(peer, request);
   if (type == m::dial_back) return _dial_back->answer(peer.id, request.payload);
   // Held shared across the call: unbind waits for it.
   contract::ReadLock lock(_handlers_mutex);

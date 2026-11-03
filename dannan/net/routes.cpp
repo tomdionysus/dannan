@@ -49,6 +49,11 @@ RouteTable RouteTable::with_dannan_types() {
   // lane the circuit is for, in order.
   table.add_core(message::relay_data, {"relay_data", both, any, true, false, true});
   table.add_core(message::relay_close, {"relay_close", both, control_only, true, true});
+  // Channels: a publish in order per origin; a replay answered fast; bulk
+  // on DATA, never in the control class.
+  table.add_core(message::channel_publish, {"channel_publish", control, any, true, false, true});
+  table.add_core(message::channel_replay, {"channel_replay", control, control_only, false, true});
+  table.add_core(message::channel_bulk, {"channel_bulk", data, not_control, false});
   // Replies inherit their request's class.
   table.add_core(message::ok, {"ok", both, any, false});
   table.add_core(message::members_reply, {"members_reply", control, control_only, false});
@@ -58,6 +63,7 @@ RouteTable RouteTable::with_dannan_types() {
   table.add_core(message::punch_reply, {"punch_reply", control, control_only, false});
   table.add_core(message::relay_open_reply, {"relay_open_reply", control, control_only, false});
   table.add_core(message::relay_offer_reply, {"relay_offer_reply", control, control_only, false});
+  table.add_core(message::channel_replay_reply, {"channel_replay_reply", control, control_only, false});
   table.add_core(message::error, {"error", both, any, false});
   return table;
 }

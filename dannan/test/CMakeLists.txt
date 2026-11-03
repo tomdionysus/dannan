@@ -32,6 +32,7 @@ add_executable(dannan_tests
   net_channel_test.cpp
   net_client_test.cpp
   net_codec_test.cpp
+  net_fanout_test.cpp
   net_outbound_test.cpp
   net_routes_record_test.cpp
   net_scheduler_test.cpp

@@ -237,6 +237,8 @@ class Node final : public Context {
   std::unique_ptr<net::Client> _client;
   // Destroyed before the client it uses.
   std::unique_ptr<reach::Paths> _paths;
+  // Channels; shared, since its completions hold it weakly.
+  std::shared_ptr<net::Fanout> _fanout;
   std::unique_ptr<reach::PublicConnectivity> _connectivity;
   std::unique_ptr<reach::DialBackResponder> _dial_back;
 
