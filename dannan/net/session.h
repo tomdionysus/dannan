@@ -130,6 +130,12 @@ class Session : public std::enable_shared_from_this<Session> {
   void promote(uint64_t request_id, sched::FrameType frame);
   // Ends the session: every waiting call fails, the owner is told why.
   void close(const std::string& why);
+  // Retires the session: no new call is admitted ("peer channel is
+  // retiring"), what is in flight is answered both ways, the peer is told
+  // (session_retire) once nothing of this end's is queued, and the session
+  // closes as "retired" once both ends have said so and it has drained. A
+  // peer's notice retires this end too.
+  void retire();
 
   bool usable() const;
   size_t pending() const;
@@ -164,6 +170,9 @@ class Session : public std::enable_shared_from_this<Session> {
   bool mark_closed(const std::string& why);
   // On the strand: ends the socket and tells the owner.
   void shut(const std::string& why);
+  // Moves a retirement on: queues this end's notice once nothing else is
+  // queued, and closes once both ends have retired and nothing is left.
+  void settle();
 
   Socket _socket;
   boost::asio::strand<boost::asio::any_io_executor> _strand;
@@ -187,6 +196,9 @@ class Session : public std::enable_shared_from_this<Session> {
   uint64_t _next_request DANNAN_GUARDED_BY(_mutex);
   bool _writing DANNAN_GUARDED_BY(_mutex) = false;
   bool _closed DANNAN_GUARDED_BY(_mutex) = false;
+  bool _retiring DANNAN_GUARDED_BY(_mutex) = false;
+  bool _retire_sent DANNAN_GUARDED_BY(_mutex) = false;
+  bool _peer_retired DANNAN_GUARDED_BY(_mutex) = false;
 };
 
 // The client's and the server's handshakes on a connected socket. The

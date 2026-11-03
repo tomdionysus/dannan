@@ -105,6 +105,8 @@ class OutboundQueue {
   size_t size() const noexcept { return _queue.size() + (_in_flight ? 1 : 0); }
   uint64_t bytes() const noexcept { return _bytes; }
   bool writing() const noexcept { return _in_flight.has_value(); }
+  // Nothing queued or being written, and no inbound request awaiting its reply.
+  bool drained() const noexcept { return _queue.empty() && !_in_flight && _inbound.empty(); }
 
  private:
   struct Item {

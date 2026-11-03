@@ -131,7 +131,12 @@ void Session::deliver(Frame frame) {
         if (_handlers.cancelled) _handlers.cancelled(*target);
       }
     } else if (type == message::session_retire) {
-      // Retirement drains, then closes; the connection owner decides when.
+      {
+        contract::Lock lock(_mutex);
+        _peer_retired = true;
+        _retiring = true;
+      }
+      settle();
     } else if (_routes->is_notification(type) && _handlers.request) {
       try {
         _handlers.request(std::move(frame), Reply{});
@@ -151,6 +156,7 @@ void Session::deliver(Frame frame) {
       _pending.erase(found);
     }
     asio::post(pending.executor, [done = std::move(pending.done), message = std::move(frame.message)]() mutable { done(CallOutcome{std::move(message), {}}); });
+    settle();
     return;
   }
   {
@@ -203,6 +209,7 @@ Admission Session::call(MessageType type, Bytes payload, sched::FrameType frame,
   {
     contract::Lock lock(_mutex);
     if (_closed) return {0, "peer channel is closed"};
+    if (_retiring) return {0, "peer channel is retiring"};
     if (_pending.size() >= max_pending_replies) return {0, "peer pending reply limit reached"};
     if (!_routes->allowed(type, _established.lane, frame))
       return {0,
@@ -247,7 +254,7 @@ void Session::cancel(uint64_t request_id) {
   }
   if (pending) asio::post(pending->executor, [done = std::move(pending->done)] { done(CallOutcome{std::nullopt, "RPC cancelled"}); });
   queue_control(message::cancel_transfer, request_id);
-  kick_writer();
+  settle();
 }
 
 void Session::promote(uint64_t request_id, sched::FrameType frame) {
@@ -293,7 +300,7 @@ void Session::write_next() {
                         self->_writing = false;
                         self->_queue.written();
                       }
-                      self->write_next();
+                      self->settle();
                     }));
 }
 
@@ -335,7 +342,35 @@ void Session::shut(const std::string& why) {
 
 bool Session::usable() const {
   contract::Lock lock(_mutex);
-  return !_closed;
+  return !_closed && !_retiring;
+}
+
+void Session::retire() {
+  {
+    contract::Lock lock(_mutex);
+    if (_closed || _retiring) return;
+    _retiring = true;
+  }
+  settle();
+}
+
+void Session::settle() {
+  bool finished = false;
+  {
+    contract::Lock lock(_mutex);
+    if (_closed) return;
+    if (_retiring && !_retire_sent && _queue.size() == 0 && !_writing) {
+      _retire_sent = true;
+      try {
+        (void)_queue.push(0, sched::FrameType::control, Message{message::session_retire, {}, {}}, false);
+      } catch (const OutboundRefused&) {
+        _retire_sent = false;
+      }
+    }
+    finished = _retiring && _retire_sent && _peer_retired && _pending.empty() && _queue.drained() && !_writing;
+  }
+  if (finished) return close("retired");
+  kick_writer();
 }
 
 size_t Session::pending() const {
