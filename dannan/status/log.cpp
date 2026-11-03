@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cstdio>
 #include <ctime>
 #include <iomanip>
 #include <iostream>
@@ -46,12 +47,80 @@ LogLevel parse_log_level(std::string_view value) {
 
 bool ConsoleSink::enabled(LogLevel level) const noexcept { return static_cast<int>(level) >= static_cast<int>(_level); }
 
-void ConsoleSink::write(LogLevel level, std::string_view scope, std::string_view message) {
+namespace {
+
+std::tm utc_now() {
   const auto time = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
   std::tm tm{};
   gmtime_r(&time, &tm);
+  return tm;
+}
+
+void json_string(std::ostream& out, std::string_view text) {
+  out << '"';
+  for (const char c : text) {
+    switch (c) {
+      case '"':
+        out << "\\\"";
+        break;
+      case '\\':
+        out << "\\\\";
+        break;
+      case '\n':
+        out << "\\n";
+        break;
+      case '\r':
+        out << "\\r";
+        break;
+      case '\t':
+        out << "\\t";
+        break;
+      default:
+        if (static_cast<unsigned char>(c) < 0x20) {
+          char escaped[8];
+          std::snprintf(escaped, sizeof(escaped), "\\u%04x", static_cast<unsigned>(static_cast<unsigned char>(c)));
+          out << escaped;
+        } else {
+          out << c;
+        }
+    }
+  }
+  out << '"';
+}
+
+}  // namespace
+
+void ConsoleSink::write(LogLevel level, std::string_view scope, std::string_view message) {
+  const auto tm = utc_now();
   contract::Lock lock(_mutex);
-  std::cerr << std::put_time(&tm, "%F %TZ") << ' ' << log_level_name(level) << ' ' << scope << ": " << message << '\n';
+  auto& out = _out ? *_out : std::cerr;
+  out << std::put_time(&tm, "%F %TZ") << ' ' << log_level_name(level) << ' ' << scope << ": " << message << '\n';
+}
+
+bool JsonSink::enabled(LogLevel level) const noexcept { return static_cast<int>(level) >= static_cast<int>(_level); }
+
+void JsonSink::write(LogLevel level, std::string_view scope, std::string_view message) {
+  const auto tm = utc_now();
+  contract::Lock lock(_mutex);
+  auto& out = _out ? *_out : std::cerr;
+  out << "{\"time\":\"" << std::put_time(&tm, "%FT%TZ") << "\",\"level\":\"" << log_level_name(level) << "\",\"scope\":";
+  json_string(out, scope);
+  out << ",\"message\":";
+  json_string(out, message);
+  out << "}\n";
+}
+
+LogFormat parse_log_format(std::string_view value) {
+  std::string format(value);
+  std::transform(format.begin(), format.end(), format.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  if (format == "text") return LogFormat::text;
+  if (format == "json") return LogFormat::json;
+  throw std::invalid_argument("invalid log format: " + std::string(value) + " (expected text or json)");
+}
+
+std::shared_ptr<LogSink> console_sink(LogFormat format, LogLevel level) {
+  if (format == LogFormat::json) return std::make_shared<JsonSink>(level);
+  return std::make_shared<ConsoleSink>(level);
 }
 
 ScopedLogger::ScopedLogger(std::shared_ptr<LogSink> sink, std::string scope) : _sink(std::move(sink)), _scope(std::move(scope)) {
