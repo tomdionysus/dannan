@@ -799,7 +799,13 @@ net::Handled Paths::relay_open(const NodeRecord& from, const net::Message& reque
   {
     contract::Lock lock(_mutex);
     if (_stopped) return refuse("the relay is stopping");
-    if (_circuits.size() >= _config.max_circuits) return refuse("the relay is full");
+    if (asked.lane == net::Lane::data) {
+      const auto data = std::count_if(_circuits.begin(), _circuits.end(), [](const auto& c) { return c.second.lane == net::Lane::data; });
+      if (static_cast<size_t>(data) >= _config.max_data_circuits) {
+        ++_stats.data_circuits_refused;
+        return refuse("the relay's DATA budget is spent");
+      }
+    }
     // Registered before the offer, so nothing the target sends is lost.
     _circuits[circuit] = Circuit{from.id, asked.target, asked.lane, 0};
   }

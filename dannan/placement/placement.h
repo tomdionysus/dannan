@@ -38,6 +38,11 @@ struct Scheme {
   std::string fallback_salt;
   std::string extra_domain_salt;
   std::string capacity_advert;
+  // Bulk placement that knows level 0 (the plan's "Level 0" rules): a
+  // relay-only node still holds data but is never a preferred owner while
+  // enough other nodes can be; it comes first among the fallbacks. Off by
+  // default, so level 0 does not leak into placement unless asked.
+  bool demote_relay_only = false;
 };
 
 // A node's capacity under `advert`; zero without it.
@@ -54,7 +59,9 @@ std::vector<NodeRecord> rendezvous(std::span<const uint8_t> key, const std::vect
 // node, as deterministic fallbacks a full or offline owner spills to. With
 // count 1, weighted rendezvous over the shard: a newcomer takes only the
 // shards it wins. Empty for no nodes or no copies. Throws
-// std::invalid_argument for a scheme without both salts.
+// std::invalid_argument for a scheme without both salts. With
+// demote_relay_only, the preferred owners come from the nodes that are not
+// relay-only when there are at least `count` of them.
 std::vector<NodeRecord> by_capacity(std::span<const uint8_t> key, const std::vector<NodeRecord>& nodes, size_t count, const Scheme& scheme);
 
 // The most logical bytes storable as `replicas` copies on distinct nodes,
