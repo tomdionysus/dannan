@@ -84,8 +84,15 @@ std::array<uint8_t, 32> hkdf_sha256(std::span<const uint8_t> key, std::span<cons
 }
 
 SealedData aes_gcm_seal(std::span<const uint8_t, 32> key, std::span<const uint8_t> plaintext, std::span<const uint8_t> associated) {
+  std::array<uint8_t, 12> nonce{};
+  if (RAND_bytes(nonce.data(), static_cast<int>(nonce.size())) != 1) throw std::runtime_error("random nonce failed");
+  return aes_gcm_seal(key, nonce, plaintext, associated);
+}
+
+SealedData aes_gcm_seal(std::span<const uint8_t, 32> key, std::span<const uint8_t, 12> nonce, std::span<const uint8_t> plaintext,
+                        std::span<const uint8_t> associated) {
   SealedData out;
-  if (RAND_bytes(out.nonce.data(), static_cast<int>(out.nonce.size())) != 1) throw std::runtime_error("random nonce failed");
+  std::copy(nonce.begin(), nonce.end(), out.nonce.begin());
   out.ciphertext.resize(plaintext.size());
   CipherContext context(EVP_CIPHER_CTX_new(), EVP_CIPHER_CTX_free);
   if (!context || EVP_EncryptInit_ex(context.get(), EVP_aes_256_gcm(), nullptr, nullptr, nullptr) != 1 ||

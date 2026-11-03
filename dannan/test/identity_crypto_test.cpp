@@ -167,5 +167,20 @@ TEST(ClusterKey, DerivesAHostedSystemsKeyUnderItsLabel) {
   EXPECT_EQ(key.derive("macha/storage/v1"), hkdf_sha256(key.master, {}, std::span(reinterpret_cast<const uint8_t*>(label.data()), label.size())));
 }
 
+// Sealing under a given nonce is what sealing under a fresh one does with
+// that nonce: deterministic, and opened by the ordinary open. It exists so
+// a frame can be compared byte for byte with another implementation's.
+TEST(Crypto, SealingUnderAGivenNonceMatchesTheRandomPath) {
+  std::array<uint8_t, 32> key{};
+  for (size_t i = 0; i < key.size(); ++i) key[i] = static_cast<uint8_t>(i * 7 + 1);
+  const Bytes plaintext{'f', 'r', 'a', 'm', 'e'};
+  const Bytes associated{1, 2, 3, 4};
+  const auto random = aes_gcm_seal(key, plaintext, associated);
+  const auto given = aes_gcm_seal(key, random.nonce, plaintext, associated);
+  EXPECT_EQ(given.nonce, random.nonce);
+  EXPECT_EQ(given.tag, random.tag);
+  EXPECT_EQ(given.ciphertext, random.ciphertext);
+  EXPECT_EQ(aes_gcm_open(key, given.nonce, given.tag, given.ciphertext, associated), plaintext);
+}
 }  // namespace
 }  // namespace dannan::identity

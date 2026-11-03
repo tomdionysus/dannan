@@ -234,7 +234,7 @@ Bytes FrameSealer::seal(uint64_t request_id, sched::FrameType frame, MessageType
   header.u64(++_counter);
   header.u64(request_id);
   auto out = header.take();
-  const auto sealed = identity::aes_gcm_seal(_key, payload, out);
+  const auto sealed = _nonces ? identity::aes_gcm_seal(_key, _nonces(), payload, out) : identity::aes_gcm_seal(_key, payload, out);
   out.reserve(out.size() + 12 + 16 + sealed.ciphertext.size());
   out.insert(out.end(), sealed.nonce.begin(), sealed.nonce.end());
   out.insert(out.end(), sealed.tag.begin(), sealed.tag.end());

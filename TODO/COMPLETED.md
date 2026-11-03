@@ -7,6 +7,25 @@ left green. `ACTIVE.md` is the plan and this is the record.
 
 None. Dannan has no code yet.
 
+## 2026-11-03, night -- step 2: a session's frames, byte for byte with Macha's
+
+On `feature/transport` (this commit):
+
+- `Interop.DannansFramesAreMachasByteForByte`: a capture of one session
+  with Macha's channel as the sender. Each frame Macha writes (a reply, a
+  speculative notification, a fragmented reply's two fragments, an empty
+  loader reply, `session_retire`) is read raw and compared with the frame
+  Dannan's `FrameSealer` writes for the same fragment under the same
+  nonce: identical, header, nonce, tag and ciphertext. The nonce is the
+  one random part of a frame, so the sealer takes it from a test-only
+  source (`use_nonces_for_test`), over an explicit-nonce
+  `aes_gcm_seal`, whose own case shows it is the random path given that
+  nonce.
+- With it, step 2's gate is whole: the transport table's rows as cases,
+  the two-process test, and the frame capture.
+- **Gate: `dannan_tests` 206, `dagda_tests` 1, `dannan_interop_tests` 8,
+  all passed.**
+
 ## 2026-11-03, night -- step 2: the two-process test
 
 On `feature/transport` (this commit):

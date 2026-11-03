@@ -59,12 +59,11 @@ server and the client's routes (dial on demand and reuse, shared cold
 dials, reconciliation, the no-progress deadline, the probe dial), health
 with backoff, the three broadcasts, and reverse dial with maintained
 peers are done too (`COMPLETED.md`, gate 205 + 1 + 6). The two-process
-test passes too (`dannan_interop_tests`, 7). Left of step 2's gate: the
-frame capture of one session compared byte for byte with Macha's own (the
-in-process interop cases already compare the channel's bytes under fixed
-keys; a capture across two processes needs the session keys exported, a
-test seam to settle), then merge to `develop` and tag `0.1.0`. Waiting on
-Tom, item 8, does not block it. Each from the transport table's rows with Macha's
+test passes too (`dannan_interop_tests`, 7). The frame capture
+is done too (`Interop.DannansFramesAreMachasByteForByte`, gate 206 + 1 +
+8): step 2's gate is whole. Next: merge `feature/transport` to `develop`,
+`develop` to `main`, tag `0.1.0`, then step 3 in `../macha` (tell the Macha
+session first). Waiting on Tom, item 8, does not block it. Each from the transport table's rows with Macha's
 `tests/test_rpc_cluster.cpp` cases as the model; then the two-process
 test against the Macha binary.
 
@@ -135,6 +134,9 @@ first.
    the port gate; the two-process test is written here at step 2.
 6. Settled: GoogleTest 1.18.0 from MacPorts (`gtest`), the only one on
    the laptop.
+7. **The design doc's "starts in-tree" paragraph** (Repository, build,
+   versioning), which Tom's decision supersedes: his edit of the Claude
+   Doc, after which the rendering is re-made.
 8. **What a frame of a type this node does not host should do**
    (found by the two-process test, 2026-11-03). Protocol 23's rule, in
    Macha and in Dannan, is per type: a type the receiver does not know may
@@ -151,9 +153,6 @@ first.
    traffic this node will simply decline. That accepts more than Macha
    0.91.2 does for unknown numbers, and changes no byte. Until Tom
    decides, the strict rule stands.
-7. **The design doc's "starts in-tree" paragraph** (Repository, build,
-   versioning), which Tom's decision supersedes: his edit of the Claude
-   Doc, after which the rendering is re-made.
 
 ## How to prove it
 
