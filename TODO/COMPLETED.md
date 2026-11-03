@@ -12,6 +12,14 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
 
+## 2026-11-03, night -- the node opens its custody
+
+`NodeConfig::custody` names a key source; the node opens its custody at
+construction (refusing to start, in the operator's terms, if it was never
+made or does not open). `Identity` gains `has_custody`, `node_public_key`,
+`sign` and `derive_local(label)`; `derive_key` (cluster-wide) now returns a
+`Secret`. **Gate: `dannan_tests` 366, `dagda_tests` 1.**
+
 ## 2026-11-03, night -- the roster feed and the incarnation
 
 - The node record carries the node's incarnation (its durability epoch)

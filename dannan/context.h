@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "dannan/contract/time_source.h"
+#include "dannan/identity/key_custody.h"
 #include "dannan/membership/node_record.h"
 #include "dannan/net/client.h"
 #include "dannan/net/fanout.h"
@@ -213,9 +214,19 @@ class Identity {
   virtual identity::NodeId id() const = 0;
   // Fresh every process: peers tell a restart from a reconnect.
   virtual identity::NodeId durability_epoch() const = 0;
-  // A key for the hosted system's own use, derived from the cluster key
-  // under its label.
-  virtual std::array<uint8_t, 32> derive_key(std::string_view label) const = 0;
+  // A key for the hosted system's own use, the same on every node of the
+  // cluster: derived from the cluster key under its label, in secure memory.
+  virtual identity::Secret derive_key(std::string_view label) const = 0;
+
+  // The node's own key, from its custody (NodeConfig::custody), when it has
+  // one: its public key (SubjectPublicKeyInfo; empty without custody), a
+  // signature by it, and keys for node-local use derived from custody's
+  // seal root under a label (Dagda's node-local spaces). The last two throw
+  // std::logic_error without custody.
+  virtual bool has_custody() const = 0;
+  virtual identity::Bytes node_public_key() const = 0;
+  virtual identity::Bytes sign(std::span<const uint8_t> message) const = 0;
+  virtual identity::Secret derive_local(std::string_view label) const = 0;
 };
 
 // Memory, by work class.

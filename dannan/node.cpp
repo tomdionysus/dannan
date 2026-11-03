@@ -180,8 +180,24 @@ class Node::IdentityNoun final : public Identity {
   explicit IdentityNoun(const Node& node) : _node(node) {}
   identity::NodeId id() const override { return _node._identity.id; }
   identity::NodeId durability_epoch() const override { return _node._identity.durability_epoch; }
-  std::array<uint8_t, 32> derive_key(std::string_view label) const override { return _node._identity.key.derive(label); }
+  identity::Secret derive_key(std::string_view label) const override {
+    auto key = _node._identity.key.derive(label);
+    identity::Secret out(key);
+    identity::cleanse(key);
+    return out;
+  }
+  bool has_custody() const override { return _node._custody.has_value(); }
+  identity::Bytes node_public_key() const override { return _node._custody ? _node._custody->node_key().public_key() : identity::Bytes{}; }
+  identity::Bytes sign(std::span<const uint8_t> message) const override { return custody().node_key().sign(message); }
+  identity::Secret derive_local(std::string_view label) const override { return custody().derive(label); }
 
+ private:
+  const identity::KeyCustody& custody() const {
+    if (!_node._custody) throw std::logic_error("this node has no key custody (NodeConfig::custody)");
+    return *_node._custody;
+  }
+
+ public:
  private:
   const Node& _node;
 };
@@ -294,6 +310,7 @@ Node::Node(asio::io_context& io, NodeConfig config)
       _config(std::move(config)),
       _lock(_config.state_path),
       _identity(_config.state_path, _config.key),
+      _custody(_config.custody ? std::optional<identity::KeyCustody>(identity::KeyCustody::open(_config.state_path, *_config.custody)) : std::nullopt),
       _inbound(_config.inbound, _config.state_path, _config.wall, _config.reprobe_while_capable, _config.reprobe_while_incapable, _config.heartbeat),
       _members(initial_self(_config, _identity.id, _identity.durability_epoch, _inbound.capable()), _config.dead_after,
                _config.state_path / "membership" / "known-nodes.bin", _config.forget_after, _config.time, _config.wall),

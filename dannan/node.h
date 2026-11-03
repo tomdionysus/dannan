@@ -50,6 +50,9 @@ struct NodeConfig {
   // Seeds, not masters: exchanged with every heartbeat.
   std::vector<net::Endpoint> bootstrap;
   reach::Inbound inbound = reach::Inbound::automatic;
+  // The node's key custody (identity/key_custody.h), opened at start; it
+  // must have been made (KeyCustody::create). Nothing: no node key.
+  std::optional<identity::KeySource> custody;
   // Whether this node forwards circuits for others (the relay capability).
   bool relay = false;
   // Level 0: a forced path class (tests, the compose bed); nothing:
@@ -211,6 +214,7 @@ class Node final : public Context {
   NodeConfig _config;
   identity::StateLock _lock;
   identity::NodeIdentity _identity;
+  std::optional<identity::KeyCustody> _custody;
   reach::InboundResolver _inbound;
   membership::Membership _members;
   status::TelemetryStore _telemetry;
