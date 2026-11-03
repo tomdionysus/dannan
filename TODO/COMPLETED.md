@@ -7,6 +7,37 @@ left green. `ACTIVE.md` is the plan and this is the record.
 
 None. Dannan has no code yet.
 
+## 2026-11-03, evening -- step 2: reassembly, the outbound queue, the Asio session
+
+On `feature/transport` (`9d51b5f` and this commit):
+
+- `MessageAssembler` (bounds in incomplete messages, their bytes and each
+  message; classes rise, never fall; notifications in one frame; bytes
+  charged as reassembly until the message's last copy goes), refusals as
+  the APIs state them (`error_reply`, `refusal_of`, `try_later`), and the
+  `OutboundQueue` (most urgent class first, equal classes by turns frame
+  by frame, the limits and the small-message reserve, promotion and
+  cancellation both ways including mid-transfer, notifications told
+  whether they went, 0.91.3's reply rule).
+- `Session` on Asio: one authenticated connection on a strand, the
+  reader through the opener and the assembler, the writer one sealed
+  fragment at a time; calls admitted or refused synchronously with the
+  reason, completions posted to the caller's executor; inbound requests
+  answered through a `Reply`; notifications; transfer controls; close
+  marked at once, so nothing is admitted after it; a throwing handler
+  answers 500 and the session lives (a gap the tests found: it ended the
+  session); traffic by class. The async dial and accept handshakes.
+- Test mistakes found and fixed on the way: a fixture whose close
+  handlers outlived it, a helper whose completion reached a finished
+  frame, a budget test that let the 256-message queue bind before the
+  512-reply budget (the queue is the tighter limit while calls pile up
+  unwritten; Macha's own note says so).
+- Interop: the Asio session as acceptor answers Macha's dialler with a
+  reply fragmented at a 4 KiB frame, and calls it with an even id that
+  Macha answers.
+- **Gate: `dannan_tests` 158, `dagda_tests` 1, `dannan_interop_tests` 6,
+  all passed**; the session cases 100 times over with no failure.
+
 ## 2026-11-03, evening -- step 2 begun: the channel, proven against Macha
 
 On `feature/transport` (two commits, `ca9ffdd` and this one):

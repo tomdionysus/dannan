@@ -53,11 +53,16 @@ Step 2, the transport on Asio (Next, 2), is under
 way on `feature/transport` off `develop`: crypto, the cluster key, the
 node record, the open route table and the sans-I/O channel are done and
 proven byte for byte against Macha 0.91.2 (`dannan_interop_tests`, built
-against a pinned export: `COMPLETED.md` has how). Next on that branch:
-the Asio session (reader and writer over the channel, priority queue,
-fragments and reassembly), then the client and server, each from the
-transport table's rows with Macha's `tests/test_rpc_cluster.cpp` cases
-as the model.
+against a pinned export: `COMPLETED.md` has how). Reassembly, the outbound
+queue and the Asio session are done too (`COMPLETED.md`). Next on that
+branch: the client (routes per peer and lane, dial on demand and reuse,
+shared cold dials, simultaneous-dial reconciliation, the no-progress
+deadline per lane, health and backoff, the three broadcasts, reverse dial
+and maintained peers, the probe dial) and the server (accept, the
+pre-auth bound, session reaping with a count, request classes and
+workers), each from the transport table's rows with Macha's
+`tests/test_rpc_cluster.cpp` cases as the model; then the two-process
+test against the Macha binary.
 
 Read in this order: this file to the end of Standing rules;
 `2026-11-02-dannan-plan.md` whole; the inventory; the head of

@@ -21,6 +21,7 @@ add_library(dannan SHARED
   net/message.cpp
   net/outbound.cpp
   net/routes.cpp
+  net/session.cpp
   sched/memory_limit.cpp
   sched/retained_memory.cpp
   sched/work.cpp
