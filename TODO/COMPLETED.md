@@ -12,6 +12,19 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
 
+## 2026-11-03, night -- fuzz targets
+
+`dannan/fuzz/`: a target per parser of untrusted bytes, each with seeds
+that authenticate, so a mutator reaches past the MAC: the hello, the ack,
+a frame, the node record, telemetry sets, identity resets, a channel's
+interest advert, and every level 0 and dial-back payload. Each may throw
+only what its parser documents. `Fuzz.EveryTargetSurvivesMutatedAndRandomInputs`
+runs every target over its seeds, 3000 mutations and 500 random inputs on
+each gate (no finding). `DANNAN_BUILD_FUZZING` builds `dannan_fuzz_<file>`
+binaries: libFuzzer with ASan and UBSan where the compiler has libFuzzer
+(not Apple's clang; no MacPorts clang is installed), a replay driver
+otherwise. **Gate: `dannan_tests` 367, `dagda_tests` 1.**
+
 ## 2026-11-03, night -- the node opens its custody
 
 `NodeConfig::custody` names a key source; the node opens its custody at
