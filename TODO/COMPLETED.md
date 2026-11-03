@@ -7,6 +7,30 @@ left green. `ACTIVE.md` is the plan and this is the record.
 
 None. Dannan has no code yet.
 
+## 2026-11-03, evening -- step 0: the repository and its skeleton
+
+- First commit `2a923f5` on `main` (the plan and project files);
+  `develop` branched. `CLAUDE.md` is not committed: Tom's global
+  gitignore excludes it.
+- The skeleton: `project(dannan VERSION 0.1.0)`; shared libraries
+  `dannan` and `dagda` (Dagda links Dannan, never the reverse); GoogleTest
+  binaries `dannan_tests` and `dagda_tests` behind `DANNAN_BUILD_TESTING`;
+  `DANNAN_WARNINGS_AS_ERRORS`; clang `-Wthread-safety`; the design's
+  directory layout; `dannan-version --version` printing the repository
+  version from the generated `dannan/version.h`; `LICENSE` (GPLv3) and
+  `docs/principles-and-laws.md` (verbatim from Macha `a547ddf`, one
+  provenance line). Fixtures: the gate and the free-port allocator.
+- Every dependency from MacPorts: Boost 1.88 (`/opt/local/libexec/boost/1.88`),
+  OpenSSL 3.6.5, GoogleTest 1.18.0 (Tom installed it the same evening;
+  Homebrew's copy unlinked). Configure:
+
+  ```
+  cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DDANNAN_BUILD_TESTING=ON \
+    -DDANNAN_WARNINGS_AS_ERRORS=ON -DCMAKE_PREFIX_PATH="/opt/local/libexec/boost/1.88;/opt/local"
+  ```
+- **Gate: `dannan_tests` 7, `dagda_tests` 1, all passed**, Release,
+  warnings as errors, AppleClang.
+
 ## 2026-11-03, evening -- the plan reversed: here first
 
 - Tom: "I misplanned. It should be here first." The in-tree decision of

@@ -47,18 +47,11 @@ configure line for Macha is in `COMPLETED.md`).
 
 ## Resume here (2026-11-03, evening)
 
-Written for a session starting from nothing. The repository has no
-commits. The next session is **step 0**, the first commit and the build
-skeleton, then **step 1**, the vocabulary. In order:
-
-1. Commit this plan and the project files on `main`, branch `develop`
-   (Waiting on Tom, 4: the first commit is Tom's to ask for).
-2. GoogleTest from MacPorts (Waiting on Tom, 6).
-3. Step 0 (Next, 0): CMake with the two libraries and two test binaries,
-   Boost.Asio and OpenSSL from `/opt/local`, `docs/principles-and-laws.md`,
-   the test fixtures, `--version`.
-4. Step 1 (Next, 1): the vocabulary, each inventory row it covers written
-   as a GoogleTest case first and watched to fail.
+Written for a session starting from nothing. Step 0 is done
+(`COMPLETED.md`): the skeleton builds against MacPorts and the gate is
+7 + 1. The next session is **step 1**, the vocabulary (Next, 1), on
+`develop`: each inventory row it covers written as a GoogleTest case
+first and watched to fail, then the code.
 
 Read in this order: this file to the end of Standing rules;
 `2026-11-02-dannan-plan.md` whole; the inventory; the head of
@@ -117,18 +110,16 @@ first.
    is flaky on macOS at the baseline (1 run in 5), and
    `maintenance_trace/test_trace_backend_offline_and_back` on macnessa
    (Macha session, 1 in 3). Both are with the Macha session.
-4. **The first commit of this repository**: `main` with the plan,
-   `CLAUDE.md`, `CONTRIBUTING.md`, `.clang-format`, `.gitignore` and
-   `basemind.toml`; `develop` branched from it. Ready; not done, because
-   a commit is asked for, never assumed.
+4. Settled: the first commit is `2a923f5` on `main`; `develop` branched.
+   `CLAUDE.md` stays uncommitted (Tom's global gitignore excludes it).
+   Tom (2026-11-03): commit at each completed milestone without asking;
+   no attribution lines, ever.
 5. Settled: Tom had the Macha session delete the morning's leftovers in
    `../macha` (the goldens branch, the two-process script, the 0.91.2
    worktree and its runs). The goldens are rewritten at step 3 as part of
    the port gate; the two-process test is written here at step 2.
-6. **GoogleTest from MacPorts** (`sudo port install gtest`, 1.18.0;
-   the port is `gtest`, not `googletest`), and Homebrew's `googletest`
-   unlinked (`brew unlink googletest`): its headers are at
-   `/usr/local/include/gtest` today and would be found first.
+6. Settled: GoogleTest 1.18.0 from MacPorts (`gtest`), the only one on
+   the laptop.
 7. **The design doc's "starts in-tree" paragraph** (Repository, build,
    versioning), which Tom's decision supersedes: his edit of the Claude
    Doc, after which the rendering is re-made.
@@ -438,8 +429,8 @@ under Waiting on Tom.
 - [x] `CLAUDE.md`, `CONTRIBUTING.md`, `.clang-format`, `basemind.toml`,
       `.gitignore`; a "Dannan extraction" section in Macha's
       `TODO/ACTIVE.md`.
-- [ ] The first commit on `main`; `develop` branched (Waiting on Tom, 4).
-- [ ] The build skeleton: `CMakeLists.txt` with `project(dannan VERSION
+- [x] The first commit on `main` (`2a923f5`); `develop` branched.
+- [x] The build skeleton (2026-11-03): `CMakeLists.txt` with `project(dannan VERSION
       0.1.0)`, two shared libraries `dannan` and `dagda`, GoogleTest
       binaries `dannan_tests` and `dagda_tests` behind
       `-DDANNAN_BUILD_TESTING=ON`, `-DDANNAN_WARNINGS_AS_ERRORS=ON`, Boost
@@ -450,12 +441,13 @@ under Waiting on Tom.
       `dagda/` with `domain/`, `store/`, `ledger/`, `heads/`, `lease/`,
       `contract/`, `test/`); `--version` from a tiny `dannan-version`
       executable or a test, agreeing with the tag.
-- [ ] `docs/principles-and-laws.md`: a verbatim copy of Macha's, with one
+- [x] `docs/principles-and-laws.md`: a verbatim copy of Macha's, with one
       provenance line; cited by number from here on.
-- [ ] The test fixtures under `dannan/test/`: an in-process cluster of
-      Dannan nodes, a gate, a stepped time source, a free-port allocator
-      with per-case port blocks, and the forked-process isolation Macha's
-      runner gives, as a fixture where a case needs it.
+- [x] The first test fixtures under `dannan/test/fixtures/`: the gate and
+      the free-port allocator (2026-11-03). Arriving with the steps that
+      give them something to stand on: the stepped time source (step 1,
+      with `TimeSource`), the in-process cluster of Dannan nodes (step 2,
+      with the transport), forked-process isolation where a case needs it.
 
 ### 1. The vocabulary (step 1)
 
