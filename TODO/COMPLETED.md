@@ -12,6 +12,37 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
 
+## 2026-11-03, night -- step 4b, part 1: identity v1 and status
+
+On `feature/control-plane` (this commit):
+
+- `identity::StateLock` (an exclusive flock on `.macha.lock`, the name
+  protocol 23's so Macha and a Dannan node on one path exclude each
+  other), `load_or_create_node_id` (`node-id`, owner-only, durable) and
+  `NodeIdentity` (key, id, a fresh durability epoch per process). Macha's
+  storage-layout marker stays Macha's (the store's).
+- `status::Telemetry`: protocol 23's tagged TEL3 record as ordered fields;
+  Dannan fills the core fields (identity, the record's figures, process
+  figures, peers, transport counts, traffic with rates over the interval)
+  and the hosted system adds its own through a callback; a layout orders
+  them (`protocol23_layout`, core and hosted interleaved). Unknown fields
+  are kept as they came; core widths and the phase are checked.
+  `TelemetryStore`: per-node ordering (sequence within a boot, a new boot
+  unless over a minute older), identity resets, `recent`, `views`, the
+  persisted set (at most 1024, a corrupt file ignored). Time injected.
+- `status::ActivityClocks` (presence per work class, bytes per frame,
+  lock-free), `status::NodeEvents` (monotonic counts; `topology` is
+  Dannan's, a hosted system names its own kinds, at most 32),
+  `status::Surface` (the design's Status noun: `publish`, `counter`,
+  `snapshot`), and observations (log-linear histograms, a bounded
+  registry injected per node rather than a process global, one JSON line
+  per window and event, a rotated log, a recorder thread).
+- Interop: `Interop.TelemetryRecordsCrossBothWaysByteForByte` (a full
+  Macha record decodes and re-encodes to the same bytes; one Dannan builds
+  in the layout equals Macha's) and `Interop.ObservationLinesAreMachas`
+  (windows, events and route labels, escapes included).
+- **Gate: `dannan_tests` 256, `dagda_tests` 1, `dannan_interop_tests` 12.**
+
 ## 2026-11-03, night -- step 4a: membership and placement
 
 On `feature/control-plane` (this commit):
