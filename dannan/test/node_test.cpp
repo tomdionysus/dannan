@@ -119,7 +119,7 @@ TEST(Node, TwoNodesFormOneCluster) {
 // A hosted system that is nothing but a counter: a user type registered
 // through the Context, called across the cluster, its count in Status.
 TEST(Node, ACounterRunsOnIt) {
-  constexpr net::MessageType add{300};
+  constexpr net::MessageType add{1300};
   Pair pair({}, [&](Node& a) {
     std::atomic<uint64_t>* total = &a.context().status().counter("counter.total");
     a.context().routes().add(add, {"counter_add", net::Lanes::control, net::Frames::control_only, false},
@@ -149,12 +149,12 @@ TEST(Node, ACounterRunsOnIt) {
   }
   EXPECT_EQ(pair.a->context().status().snapshot().counters.at("counter.total"), 15u);
   // Routes are fixed once a node has started.
-  EXPECT_THROW(pair.a->context().routes().add(net::MessageType{302}, {"late", net::Lanes::control, net::Frames::any, false}, {}), std::logic_error);
+  EXPECT_THROW(pair.a->context().routes().add(net::MessageType{1302}, {"late", net::Lanes::control, net::Frames::any, false}, {}), std::logic_error);
 }
 
 // A call never waits past its deadline.
 TEST(Node, ACallEndsAtItsDeadline) {
-  constexpr net::MessageType slow{301};
+  constexpr net::MessageType slow{1301};
   std::promise<void> release;
   auto released = release.get_future().share();
   Pair pair({}, [&](Node& a) {
@@ -240,8 +240,8 @@ TEST(Node, ReportsItsContextVersion) {
   EXPECT_EQ(pair.a->context().version(), context_version);
 }
 
-constexpr net::MessageType echo_type{310};
-constexpr net::MessageType news_type{311};
+constexpr net::MessageType echo_type{1310};
+constexpr net::MessageType news_type{1311};
 
 // Routes are bound and unbound while the node runs, as a subsystem starts
 // and stops; an unbound type answers 501; unbinding waits for calls in
@@ -276,6 +276,37 @@ TEST(Node, RoutesBindAndUnbindWhileRunning) {
   outcome = pair.b->context().routes().call_and_wait(a, echo_type, {3}, FrameType::control, 5s);
   EXPECT_EQ(net::refusal_of(*outcome.reply)->status, 501);
   EXPECT_EQ(outcome.peer.id, a.id);
+}
+
+// A hosted system's adverts ride in its record: set through the Context,
+// they reach every peer's roster by gossip, a change raises a topology
+// event there, and placement can be narrowed to the nodes carrying one and
+// weighed by another.
+TEST(Node, AdvertsReachPeersAndSteerPlacement) {
+  Pair pair;
+  pair.b->start();
+  const auto a = pair.a->context().identity().id();
+  const auto b = pair.b->context().identity().id();
+  ASSERT_TRUE(eventually([&] { return knows(*pair.a, b) && knows(*pair.b, a); }));
+  const auto topology = pair.b->context().events().count(status::NodeEvents::topology);
+  pair.a->context().nodes().advertise("capacity", membership::u64_advert(4096));
+  const auto advertised = [&] {
+    for (const auto& node : pair.b->context().nodes().active())
+      if (node.id == a) return node.advert_u64("capacity") == 4096u;
+    return false;
+  };
+  EXPECT_TRUE(eventually(advertised));
+  EXPECT_TRUE(eventually([&] { return pair.b->context().events().count(status::NodeEvents::topology) > topology; }));
+  const placement::Scheme scheme{"test/fallback", "test/extra-domain", "capacity"};
+  const std::vector<uint8_t> key(32, 7);
+  const auto placed = pair.b->context().nodes().placement(key, 1, scheme, "capacity");
+  ASSERT_EQ(placed.size(), 1u);
+  EXPECT_EQ(placed.front().id, a);
+  EXPECT_EQ(pair.b->context().nodes().placement(key, 2, scheme).size(), 2u);
+  EXPECT_THROW(pair.b->context().nodes().placement(key, 1, placement::Scheme{}), std::invalid_argument);
+  pair.a->context().nodes().withdraw("capacity");
+  EXPECT_TRUE(eventually([&] { return pair.b->context().nodes().placement(key, 1, scheme, "capacity").empty(); }));
+  EXPECT_THROW(pair.a->context().nodes().advertise("", {}), std::invalid_argument);
 }
 
 // The three broadcasts reach every CONTROL route; none dials.
@@ -333,7 +364,7 @@ TEST(Node, ExposesTelemetryReadinessDiagnosticsActivityAndObservations) {
 // A worker blocked in a call is released before it is joined: outbound
 // calls are cancelled first, the rest of the node after.
 TEST(Node, CancellingOutboundCallsReleasesAWaitingWorker) {
-  constexpr net::MessageType slow{312};
+  constexpr net::MessageType slow{1312};
   std::promise<void> release;
   auto released = release.get_future().share();
   Pair pair({}, [&](Node& a) {

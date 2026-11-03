@@ -16,13 +16,11 @@
 namespace dannan::identity {
 
 // An exclusive lock on a state path, held for the process's life: taken
-// before any state file is read, so two processes never share one. The
-// file's name is protocol 23's, so a Macha process and a Dannan node on
-// one path exclude each other. Throws std::runtime_error if the path is
-// already in use.
+// before any state file is read, so two processes never share one. Throws
+// std::runtime_error if the path is already in use.
 class StateLock {
  public:
-  explicit StateLock(const std::filesystem::path& root, std::string_view name = ".macha.lock");
+  explicit StateLock(const std::filesystem::path& root, std::string_view name = ".dannan.lock");
   ~StateLock();
   StateLock(const StateLock&) = delete;
   StateLock& operator=(const StateLock&) = delete;

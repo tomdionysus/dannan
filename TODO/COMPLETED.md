@@ -12,6 +12,43 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
 
+## 2026-11-03, night -- wire v1
+
+On `feature/wire-v1` (this commit). Tom approved the draft
+(`TODO/2026-11-03-dannan-wire-v1.md`, "Continue please") with its
+recommendations. Dannan now speaks its own wire, sections 1 to 4:
+
+- Handshake v1 (`net/channel.*`): a version range in the hello, the
+  server picks the highest common version and refuses none; labels
+  `dannan/hello/1`, `dannan/ack/1`, `dannan/session/1`; the ack carries
+  the observed address (`Established::observed`); a purpose byte and a
+  16-byte path token inside the hello, checked by an acceptor that
+  expects a punched or relayed connection (`Expected`), refused by a
+  listening server. Frame magic `DN` 0x0001. Cluster key labels
+  `dannan/auth/1`, `dannan/cluster-id/1`.
+- Node record v1 (`membership/node_record.*`): id, host, port, failure
+  domain, seen, capabilities (inbound, relay), path class, up to 16
+  candidates, up to 64 adverts. The store's figures and flags are gone:
+  a hosted system advertises them (`Nodes::advertise`, `withdraw`), a
+  change makes the record newer and raises a topology event on peers.
+- Placement takes a `Scheme` (both salts named by the caller, capacity
+  from a named advert) and `with_advert` narrows candidates;
+  `Nodes::placement(key, copies, scheme, only_advertising)`.
+- Core message numbers 1 to 16 and replies 100 to 107, error 127,
+  including level 0's (punch and relay); user types from 1024, a number
+  below refused at registration.
+- Files: `DNNMEM01` (the whole record per node), `DNNTEL01` (fields
+  renumbered, hosted from 1024, no store fields), `DNNRST01`,
+  `DNNINB01`, `.dannan.lock`; UPnP description "Dannan".
+- Retired with protocol 23 by the decision: `dannan_interop_tests` (13
+  cases), `tools/macha_types.h`. `dannan-node` is rebuilt on
+  `dannan::Node` with an echo on each lane and JSON status lines, for the
+  compose bed; `TwoProcess.ANodeProcessAndANodeHereFormOneCluster` runs
+  it as a child and proves membership, telemetry and calls both ways on
+  both lanes.
+- **Gate: `dannan_tests` 315, `dagda_tests` 1**; node, client, reverse
+  dial and two-process cases 10 times over.
+
 ## 2026-11-03, night -- step 5, part 2: the Context closed against Macha's use
 
 On `feature/wire-v1` (this commit). Tom: Macha is the first customer; the

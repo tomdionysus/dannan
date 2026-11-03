@@ -46,13 +46,13 @@ struct Server::Handshaking {
   asio::strand<asio::any_io_executor> strand;
   Session::Socket socket;
   asio::steady_timer timer;
-  std::string remote_host;
+  Endpoint remote;
 
-  Handshaking(asio::io_context& io, asio::ip::tcp::socket& tcp, std::string remote)
+  Handshaking(asio::io_context& io, asio::ip::tcp::socket& tcp, Endpoint from)
       : strand(asio::make_strand(io.get_executor())),
         socket(strand, Session::Socket::protocol_type(tcp.local_endpoint().protocol().family(), SOCK_STREAM), tcp.release()),
         timer(strand),
-        remote_host(std::move(remote)) {}
+        remote(std::move(from)) {}
 
   // On the strand.
   void close() {
@@ -123,7 +123,7 @@ void Server::admit(asio::ip::tcp::socket tcp) {
     // Past the bound the socket closes as it goes out of scope.
     if (_stopped || _handshaking.size() >= _options.max_pre_auth) return;
     peer_socket_options(tcp.native_handle());
-    connection = std::make_shared<Handshaking>(_io, tcp, remote.address().to_string());
+    connection = std::make_shared<Handshaking>(_io, tcp, Endpoint{remote.address().to_string(), remote.port()});
     _handshaking.emplace(connection.get(), connection);
     _operations += 1;
   }
@@ -132,7 +132,7 @@ void Server::admit(asio::ip::tcp::socket tcp) {
     connection->timer.async_wait([connection](const boost::system::error_code& error) {
       if (!error) connection->close();
     });
-    async_accept_handshake(connection->socket, _options.key, _options.local(), _options.max_frame, connection->remote_host,
+    async_accept_handshake(connection->socket, _options.key, _options.local(), _options.max_frame, connection->remote,
                            [this, connection](std::exception_ptr error, Established session) { established(connection, error, std::move(session)); });
   });
 }

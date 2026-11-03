@@ -54,17 +54,19 @@ has every milestone with its gate). `develop` holds the same tree;
 1, `dannan_interop_tests` 8 (the configure line is under "How to prove
 it").
 
-Step 4a (membership and placement) is done on `feature/control-plane`
-(`COMPLETED.md`, gate 230 + 1 + 10). Steps 4 and 5 are done (gate 305 + 1 + 13): the control plane, and the
-node with `dannan::Context`, closed against Macha's every use of its
-network layer (`TODO/2026-11-03-macha-on-context-audit.md`; the advert
-map waits for the wire). Dannan has its own wire from version 1
-(Decisions). Waiting on Tom: approval of
-`TODO/2026-11-03-dannan-wire-v1.md` (the v1 wire and level 0). Then: wire
-v1 in code with the advert map, level 0 (`reach/`: candidates, path
-classes, punch, relay), and the Docker compose test bed. Identity (step
-10) waits; the port steps wait for the Macha agent and Dagda is
-another project (Decisions, 2026-11-03 night).
+Steps 4 and 5 are done: the control plane, and the node with
+`dannan::Context`, closed against Macha's every use of its network layer
+(`TODO/2026-11-03-macha-on-context-audit.md`). Wire v1 is in code on
+`feature/wire-v1` (gate: `dannan_tests` 315, `dagda_tests` 1; the Macha
+interop suite is retired with protocol 23, Decisions): the version range,
+Dannan's labels and magics, the node record v1 with capabilities, path
+class, candidates and the advert map (`Nodes::advertise`), the renumbered
+core types with user types from 1024, the observed address in the ack and
+the path token inside the hello. Next: level 0 (`reach/`: candidates from
+the observed address, path classes, the punch broker, relay) and the
+Docker compose test bed. Identity (step 10) waits; the port steps wait
+for the Macha agent and Dagda is another project (Decisions, 2026-11-03
+night).
 
 Read in this order: this file to the end of Standing rules;
 `2026-11-02-dannan-plan.md` whole; the inventory; the head of
@@ -362,10 +364,17 @@ words, so a session does not re-derive it.
   to use it. This supersedes "the one rule"'s byte-for-byte protocol 23 and
   "No byte moves": nothing of protocol 23 binds Dannan (versions, labels,
   magics, record layouts, message numbers). Dannan does everything to
-  maintain the PHY (reachability included). Level 0's wire is drafted in
-  `TODO/2026-11-03-dannan-wire-v1.md` for Tom's approval before code.
-  Docker is used for the compose test bed and nothing else. Identity
-  (step 10) waits.
+  maintain the PHY (reachability included). Level 0's wire is
+  `TODO/2026-11-03-dannan-wire-v1.md`. Docker is used for the compose test
+  bed and nothing else. Identity (step 10) waits.
+- (2026-11-03 night, Tom: "Continue please" on the draft) **Wire v1 as
+  drafted, with the draft's recommendations.** The Macha interop suite
+  (`dannan_interop_tests`), `tools/macha_types.h` and `dannan-node`'s Macha
+  script go with protocol 23; "a test is never deleted" is set aside for
+  them by this decision, and a Dannan-only two-process test replaces the
+  cross-process proof. A punched or relayed connection proves its token
+  inside the hello (a purpose byte and a 16-byte token), so a stray
+  connection fails the handshake.
 - (2026-11-03 night, Tom) **Dagda is its own project, with its own agent.**
   Steps 7 and 8 leave this plan; the `dagda/` stub here goes when that
   project starts. **Macha is not moving yet:** the port steps (3, 6) are

@@ -434,7 +434,8 @@ struct AcceptState {
   identity::ClusterKey key;
   membership::NodeRecord local;
   size_t max_frame;
-  std::string remote_host;
+  Endpoint remote;
+  std::optional<Expected> expected;
   std::array<uint8_t, 4> length{};
   Bytes body;
   Bytes reply;
@@ -455,10 +456,11 @@ void refuse(const std::shared_ptr<State>& state, const std::string& why) {
 }  // namespace
 
 void async_dial_handshake(Session::Socket& socket, const identity::ClusterKey& key, membership::NodeRecord local, size_t max_frame, Lane lane,
-                          HandshakeDone done) {
+                          HandshakeDone done, Purpose purpose, PathToken token) {
   std::shared_ptr<DialState> state;
   try {
-    state = std::make_shared<DialState>(DialState{socket, std::make_unique<ClientHandshake>(key, std::move(local), max_frame, lane), {}, {}, std::move(done)});
+    state = std::make_shared<DialState>(
+        DialState{socket, std::make_unique<ClientHandshake>(key, std::move(local), max_frame, lane, purpose, token), {}, {}, std::move(done)});
   } catch (...) {
     return done(std::current_exception(), {});
   }
@@ -483,9 +485,10 @@ void async_dial_handshake(Session::Socket& socket, const identity::ClusterKey& k
   });
 }
 
-void async_accept_handshake(Session::Socket& socket, const identity::ClusterKey& key, membership::NodeRecord local, size_t max_frame, std::string remote_host,
-                            HandshakeDone done) {
-  auto state = std::make_shared<AcceptState>(AcceptState{socket, key, std::move(local), max_frame, std::move(remote_host), {}, {}, {}, {}, std::move(done)});
+void async_accept_handshake(Session::Socket& socket, const identity::ClusterKey& key, membership::NodeRecord local, size_t max_frame, Endpoint remote,
+                            HandshakeDone done, std::optional<Expected> expected) {
+  auto state = std::make_shared<AcceptState>(
+      AcceptState{socket, key, std::move(local), max_frame, std::move(remote), std::move(expected), {}, {}, {}, {}, std::move(done)});
   asio::async_read(socket, asio::buffer(state->length), [state](const boost::system::error_code& error, size_t) {
     if (error) return refuse(state, "handshake read: " + error.message());
     const auto size = blob_length(state->length);
@@ -494,7 +497,7 @@ void async_accept_handshake(Session::Socket& socket, const identity::ClusterKey&
     asio::async_read(state->socket, asio::buffer(state->body), [state](const boost::system::error_code& error, size_t) {
       if (error) return refuse(state, "handshake read: " + error.message());
       try {
-        auto reply = server_handshake(state->key, state->local, state->max_frame, state->body, state->remote_host);
+        auto reply = server_handshake(state->key, state->local, state->max_frame, state->body, state->remote, state->expected ? &*state->expected : nullptr);
         state->reply = std::move(reply.response_blob);
         state->session = std::move(reply.session);
       } catch (...) {

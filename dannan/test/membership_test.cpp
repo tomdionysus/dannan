@@ -7,8 +7,8 @@
 
 // The roster: the inventory's "Membership" table. Direct liveness within
 // dead_after counts and gossip does not; forgetting at the horizon; the
-// persisted roster (protocol 23's MACHMEM4, byte for byte); identity
-// association resets; flags; all_known_reachable. Time is stepped.
+// persisted roster (DNNMEM01, byte for byte); identity association resets;
+// capabilities and adverts; all_known_reachable. Time is stepped.
 
 #include "dannan/membership/membership.h"
 
@@ -76,37 +76,62 @@ TEST(Membership, IgnoresIncompleteRecordsAndItself) {
 }
 
 // The newer record wins; a direct observation of an older one only refreshes
-// liveness, so gossip that superseded a handshake's flags is not undone.
+// liveness, so gossip that superseded a handshake's record is not undone.
 TEST(Membership, TheNewerRecordWinsAndDirectOnlyRefreshes) {
   Clocks clocks;
   auto members = make(clocks);
   auto first = node(2, "10.0.0.2");
   first.seen_unix_ms = 100;
-  first.flags = flags_for(false, true);
+  first.capabilities = 0;
   members.observe(first);
   auto older = first;
   older.seen_unix_ms = 50;
-  older.flags = flags_default;
+  older.capabilities = capability_inbound;
   members.observe(older, true);
   EXPECT_FALSE(members.inbound_capable(first.id));
   EXPECT_TRUE(members.directly_reachable(first.id));
   auto newer = first;
   newer.seen_unix_ms = 200;
-  newer.flags = flags_default;
+  newer.capabilities = capability_inbound;
   members.observe(newer);
   EXPECT_TRUE(members.inbound_capable(first.id));
 }
 
-TEST(Membership, UnknownNodesReportCapableAndSelfReportsItsOwnFlags) {
+TEST(Membership, UnknownNodesReportCapableAndSelfReportsItsOwnCapabilities) {
   Clocks clocks;
   auto members = make(clocks);
   EXPECT_TRUE(members.inbound_capable(node(9).id));
-  EXPECT_TRUE(members.hosts_extents(node(9).id));
-  EXPECT_TRUE(members.set_flags(false, false));
-  EXPECT_FALSE(members.set_flags(false, false));
+  EXPECT_TRUE(members.set_inbound_capable(false));
+  EXPECT_FALSE(members.set_inbound_capable(false));
   EXPECT_FALSE(members.inbound_capable(node(1).id));
-  EXPECT_FALSE(members.hosts_extents(node(1).id));
-  EXPECT_EQ(members.self().flags, flags_for(false, false));
+  EXPECT_TRUE(members.set_capabilities(capability_relay));
+  EXPECT_TRUE(members.self().relays());
+  EXPECT_FALSE(members.self().inbound_capable());
+  EXPECT_TRUE(members.set_path_class(PathClass::punchable));
+  EXPECT_EQ(members.self().path_class, PathClass::punchable);
+}
+
+// The hosted system's adverts ride in the record; every change makes the
+// record newer, so gossip carries it. Bounded: 64 adverts, keys of 1 to 256
+// bytes, values of at most 1 KiB.
+TEST(Membership, AdvertsRideInTheRecordAndAreBounded) {
+  Clocks clocks;
+  auto members = make(clocks);
+  const auto before = members.self().seen_unix_ms;
+  clocks.wall.advance(5ms);
+  EXPECT_TRUE(members.set_advert("capacity", u64_advert(1000)));
+  EXPECT_FALSE(members.set_advert("capacity", u64_advert(1000)));
+  EXPECT_EQ(members.self().advert_u64("capacity"), 1000u);
+  EXPECT_GT(members.self().seen_unix_ms, before);
+  EXPECT_TRUE(members.clear_advert("capacity"));
+  EXPECT_FALSE(members.clear_advert("capacity"));
+  EXPECT_FALSE(members.self().advert("capacity"));
+  EXPECT_THROW(members.set_advert("", {}), std::invalid_argument);
+  EXPECT_THROW(members.set_advert(std::string(257, 'k'), {}), std::invalid_argument);
+  EXPECT_THROW(members.set_advert("big", net::Bytes(1025, 0)), std::invalid_argument);
+  for (int i = 0; i < 64; ++i) members.set_advert("k" + std::to_string(i), {});
+  EXPECT_THROW(members.set_advert("one-more", {}), std::invalid_argument);
+  EXPECT_NO_THROW(members.set_advert("k0", net::Bytes{1}));
 }
 
 // Unheard of for the horizon (never under twice dead_after): forgotten.
@@ -130,15 +155,18 @@ TEST(Membership, ForgetsAtTheHorizonAndOldGossipDoesNotTeachBack) {
   EXPECT_TRUE(listed(members.all(), peer.id));
 }
 
-// Persisted under the state path, in protocol 23's MACHMEM4 layout; a
-// reloaded node is known but not active until it is heard from.
+// Persisted under the state path, the whole record kept; a reloaded node
+// is known but not active until it is heard from.
 TEST(Membership, ThePersistedRosterReloads) {
   Clocks clocks;
   test::TempDir dir;
   const auto path = dir.path() / "known-nodes";
   auto peer = node(2, "10.0.0.2");
   peer.failure_domain = "site-b";
-  peer.flags = flags_for(false, true);
+  peer.capabilities = 0;
+  peer.path_class = PathClass::relay_only;
+  peer.candidates = {{"198.51.100.4", 40001, true, 77}};
+  peer.adverts["capacity"] = u64_advert(5);
   peer.seen_unix_ms = 1234;
   {
     auto members = make(clocks, path);
@@ -151,22 +179,22 @@ TEST(Membership, ThePersistedRosterReloads) {
   const auto found = *std::find_if(all.begin(), all.end(), [&](const NodeRecord& n) { return n.id == peer.id; });
   EXPECT_EQ(found.host, "10.0.0.2");
   EXPECT_EQ(found.failure_domain, "site-b");
-  EXPECT_EQ(found.flags, flags_for(false, true));
+  EXPECT_EQ(found, peer);
   EXPECT_EQ(found.seen_unix_ms, 1234u);
   EXPECT_FALSE(listed(reloaded.active(), peer.id));
   EXPECT_FALSE(reloaded.inbound_capable(peer.id));
 }
 
-// The file's bytes, field by field: magic, count, then per node id, host,
-// failure domain, port, seen, flags, last heard; then the resets.
-TEST(Membership, TheRosterFileIsProtocol23sLayout) {
+// The file's bytes: magic, count, then per node its record as the wire
+// carries it and when this node last heard of it; then the resets.
+TEST(Membership, TheRosterFileLayout) {
   Clocks clocks;
   test::TempDir dir;
   const auto path = dir.path() / "known-nodes";
   auto peer = node(2, "h", 7);
   peer.failure_domain = "d";
   peer.seen_unix_ms = 5;
-  peer.flags = 3;
+  peer.capabilities = 3;
   {
     auto members = make(clocks, path);
     members.observe(peer, true);
@@ -174,14 +202,9 @@ TEST(Membership, TheRosterFileIsProtocol23sLayout) {
   std::ifstream input(path, std::ios::binary);
   const std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
   net::Writer expected;
-  for (const char c : std::string("MACHMEM4")) expected.u8(static_cast<uint8_t>(c));
+  for (const char c : std::string("DNNMEM01")) expected.u8(static_cast<uint8_t>(c));
   expected.u32(1);
-  expected.raw(peer.id.bytes);
-  expected.string("h");
-  expected.string("d");
-  expected.u16(7);
-  expected.u64(5);
-  expected.u8(3);
+  encode(expected, peer);
   expected.u64(clocks.wall.unix_ms());
   expected.u32(0);
   EXPECT_EQ(bytes, expected.data());
@@ -191,7 +214,7 @@ TEST(Membership, ACorruptRosterRefusesToLoad) {
   Clocks clocks;
   test::TempDir dir;
   const auto path = dir.path() / "known-nodes";
-  std::ofstream(path, std::ios::binary) << "MACHMEMX garbage";
+  std::ofstream(path, std::ios::binary) << "DNNMEMXX garbage";
   EXPECT_THROW(make(clocks, path), net::DecodeError);
 }
 
@@ -250,8 +273,8 @@ TEST(IdentityReset, MatchesItsEndpointAndNode) {
   EXPECT_EQ(reset.key(), "[10.0.0.2]:*");
 }
 
-// Gossiped as protocol 23's MACHIDR1 set.
-TEST(IdentityReset, EncodesAsProtocol23AndRoundTrips) {
+// Gossiped as a DNNRST01 set.
+TEST(IdentityReset, EncodesAndRoundTrips) {
   IdentityReset reset;
   reset.host = "h";
   reset.port = 7;
@@ -262,7 +285,7 @@ TEST(IdentityReset, EncodesAsProtocol23AndRoundTrips) {
   reset.reason = "r";
   const auto bytes = encode_identity_resets({reset});
   net::Writer expected;
-  for (const char c : std::string("MACHIDR1")) expected.u8(static_cast<uint8_t>(c));
+  for (const char c : std::string("DNNRST01")) expected.u8(static_cast<uint8_t>(c));
   expected.u32(1);
   expected.string("h");
   expected.u16(7);
@@ -286,11 +309,11 @@ TEST(Membership, AllKnownReachableExcludesPairsThatCannotMeet) {
   members.observe(node(2, "10.0.0.2"), true);
   EXPECT_TRUE(members.all_known_reachable());
   auto silent = node(3, "10.0.0.3");
-  silent.flags = flags_for(false, true);
+  silent.capabilities = 0;
   silent.seen_unix_ms = clocks.wall.unix_ms();
   members.observe(silent);
   EXPECT_FALSE(members.all_known_reachable());
-  members.set_flags(false, true);
+  members.set_inbound_capable(false);
   EXPECT_TRUE(members.all_known_reachable());
 }
 

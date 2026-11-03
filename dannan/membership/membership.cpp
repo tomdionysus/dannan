@@ -18,11 +18,7 @@ namespace dannan::membership {
 namespace {
 
 using Magic = std::array<uint8_t, 8>;
-constexpr Magic magic_v1{'M', 'A', 'C', 'H', 'M', 'E', 'M', '1'};
-constexpr Magic magic_v2{'M', 'A', 'C', 'H', 'M', 'E', 'M', '2'};
-// v3 adds each node's flags; v4 the wall time this node last heard of it.
-constexpr Magic magic_v3{'M', 'A', 'C', 'H', 'M', 'E', 'M', '3'};
-constexpr Magic magic_v4{'M', 'A', 'C', 'H', 'M', 'E', 'M', '4'};
+constexpr Magic magic{'D', 'N', 'N', 'M', 'E', 'M', '0', '1'};
 // How far a last-heard time may move before the roster is rewritten for it.
 constexpr uint64_t heard_persist_step_ms = 60ull * 60 * 1000;
 constexpr uint32_t max_nodes = 65536;
@@ -48,53 +44,40 @@ void Membership::load() {
   if (!input || (size && !input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(size))))
     throw std::runtime_error("cannot read known-node roster " + _path.string());
   net::Reader reader(bytes);
-  const auto magic = reader.fixed<8>();
-  const bool v4 = magic == magic_v4;
-  const bool v3 = v4 || magic == magic_v3;
-  const bool v2 = v3 || magic == magic_v2;
-  if (!v2 && magic != magic_v1) throw net::DecodeError("bad known-node roster magic");
+  if (reader.fixed<8>() != magic) throw net::DecodeError("bad known-node roster magic");
   const auto count = reader.u32();
   if (count > max_nodes) throw net::DecodeError("too many known nodes");
   // Known, not live: a reloaded node is active only once heard from again.
   const auto stale = _time->now() - _dead_after - std::chrono::milliseconds(1);
   for (uint32_t i = 0; i < count; ++i) {
-    NodeRecord node;
-    node.id.bytes = reader.fixed<16>();
-    node.host = reader.string(4096);
-    node.failure_domain = reader.string(4096);
-    node.port = reader.u16();
-    if (v2) node.seen_unix_ms = reader.u64();
-    if (v3) node.flags = reader.u8();
-    // A roster without last-heard times starts the wait now.
-    const uint64_t heard = v4 ? reader.u64() : _wall->unix_ms();
+    auto node = decode(reader);
+    const uint64_t heard = reader.u64();
     if (node.id == identity::NodeId{} || node.id == _self.id || node.host.empty() || !node.port) throw net::DecodeError("bad known-node roster entry");
     const auto id = node.id;
     if (!_nodes.emplace(id, Known{std::move(node), stale, std::nullopt, heard, heard}).second) throw net::DecodeError("duplicate known-node roster entry");
   }
-  if (v2) {
-    const auto resets = reader.u32();
-    if (resets > max_resets) throw net::DecodeError("too many identity association resets");
-    for (uint32_t i = 0; i < resets; ++i) {
-      IdentityReset reset;
-      reset.host = reader.string(4096);
-      reset.port = reader.u16();
-      reset.stale_node_id.bytes = reader.fixed<16>();
-      reset.epoch = reader.u64();
-      reset.reset_unix_ms = reader.u64();
-      reset.reset_by.bytes = reader.fixed<16>();
-      reset.reason = reader.string(4096);
-      if (reset.host.empty() || !reset.epoch) throw net::DecodeError("bad identity association reset");
-      const auto key = reset.key();
-      if (!_resets.emplace(key, std::move(reset)).second) throw net::DecodeError("duplicate identity association reset");
-    }
-    std::erase_if(_nodes, [&](const auto& item) DANNAN_REQUIRES(_mutex) {
-      const auto& node = item.second.record;
-      return std::any_of(_resets.begin(), _resets.end(), [&](const auto& held) {
-        const auto& reset = held.second;
-        return reset.matches_endpoint(node.host, node.port) && reset.matches_node(node.id) && node.seen_unix_ms <= reset.reset_unix_ms;
-      });
-    });
+  const auto resets = reader.u32();
+  if (resets > max_resets) throw net::DecodeError("too many identity association resets");
+  for (uint32_t i = 0; i < resets; ++i) {
+    IdentityReset reset;
+    reset.host = reader.string(4096);
+    reset.port = reader.u16();
+    reset.stale_node_id.bytes = reader.fixed<16>();
+    reset.epoch = reader.u64();
+    reset.reset_unix_ms = reader.u64();
+    reset.reset_by.bytes = reader.fixed<16>();
+    reset.reason = reader.string(4096);
+    if (reset.host.empty() || !reset.epoch) throw net::DecodeError("bad identity association reset");
+    const auto key = reset.key();
+    if (!_resets.emplace(key, std::move(reset)).second) throw net::DecodeError("duplicate identity association reset");
   }
+  std::erase_if(_nodes, [&](const auto& item) DANNAN_REQUIRES(_mutex) {
+    const auto& node = item.second.record;
+    return std::any_of(_resets.begin(), _resets.end(), [&](const auto& held) {
+      const auto& reset = held.second;
+      return reset.matches_endpoint(node.host, node.port) && reset.matches_node(node.id) && node.seen_unix_ms <= reset.reset_unix_ms;
+    });
+  });
   reader.finish();
 }
 
@@ -107,16 +90,10 @@ Membership::Encoded Membership::encode_locked() {
   for (const auto& [_, known] : _nodes) ordered.push_back(&known);
   std::sort(ordered.begin(), ordered.end(), [](const Known* a, const Known* b) { return a->record.id < b->record.id; });
   net::Writer writer;
-  writer.raw(magic_v4);
+  writer.raw(magic);
   writer.u32(static_cast<uint32_t>(ordered.size()));
   for (const auto* known : ordered) {
-    const auto& node = known->record;
-    writer.raw(node.id.bytes);
-    writer.string(node.host);
-    writer.string(node.failure_domain);
-    writer.u16(node.port);
-    writer.u64(node.seen_unix_ms);
-    writer.u8(node.flags);
+    encode(writer, known->record);
     writer.u64(known->last_heard_unix_ms);
   }
   std::vector<const IdentityReset*> resets;
@@ -154,19 +131,6 @@ NodeRecord Membership::self() const {
   return out;
 }
 
-void Membership::set_usage(uint64_t used) {
-  contract::Lock lock(_mutex);
-  _self.used = used;
-  _self.seen_unix_ms = _wall->unix_ms();
-}
-
-void Membership::set_storage(uint64_t used, uint64_t capacity) {
-  contract::Lock lock(_mutex);
-  _self.used = used;
-  _self.capacity = capacity;
-  _self.seen_unix_ms = _wall->unix_ms();
-}
-
 void Membership::set_endpoint(std::string host, uint16_t port) {
   if (host.empty() || !port) throw std::invalid_argument("a membership endpoint needs a host and a port");
   contract::Lock lock(_mutex);
@@ -175,17 +139,55 @@ void Membership::set_endpoint(std::string host, uint16_t port) {
   _self.seen_unix_ms = _wall->unix_ms();
 }
 
-void Membership::set_metadata_generation(uint64_t generation) {
+bool Membership::set_capabilities(uint32_t capabilities) {
   contract::Lock lock(_mutex);
-  _self.metadata_generation = std::max(_self.metadata_generation, generation);
+  if (_self.capabilities == capabilities) return false;
+  _self.capabilities = capabilities;
   _self.seen_unix_ms = _wall->unix_ms();
+  return true;
 }
 
-bool Membership::set_flags(bool inbound_capable, bool hosts_extents) {
+bool Membership::set_inbound_capable(bool capable) {
   contract::Lock lock(_mutex);
-  const auto flags = flags_for(inbound_capable, hosts_extents);
-  if (_self.flags == flags) return false;
-  _self.flags = flags;
+  const auto capabilities = capable ? _self.capabilities | capability_inbound : _self.capabilities & ~capability_inbound;
+  if (_self.capabilities == capabilities) return false;
+  _self.capabilities = capabilities;
+  _self.seen_unix_ms = _wall->unix_ms();
+  return true;
+}
+
+bool Membership::set_path_class(PathClass path) {
+  contract::Lock lock(_mutex);
+  if (_self.path_class == path) return false;
+  _self.path_class = path;
+  _self.seen_unix_ms = _wall->unix_ms();
+  return true;
+}
+
+bool Membership::set_candidates(std::vector<Candidate> candidates) {
+  if (candidates.size() > max_candidates) throw std::invalid_argument("too many candidates");
+  contract::Lock lock(_mutex);
+  if (_self.candidates == candidates) return false;
+  _self.candidates = std::move(candidates);
+  _self.seen_unix_ms = _wall->unix_ms();
+  return true;
+}
+
+bool Membership::set_advert(const std::string& key, net::Bytes value) {
+  if (key.empty() || key.size() > max_advert_key) throw std::invalid_argument("an advert key is 1 to 256 bytes");
+  if (value.size() > max_advert_value) throw std::invalid_argument("an advert is at most 1 KiB");
+  contract::Lock lock(_mutex);
+  const auto found = _self.adverts.find(key);
+  if (found != _self.adverts.end() && found->second == value) return false;
+  if (found == _self.adverts.end() && _self.adverts.size() >= max_adverts) throw std::invalid_argument("a node advertises at most 64 things");
+  _self.adverts[key] = std::move(value);
+  _self.seen_unix_ms = _wall->unix_ms();
+  return true;
+}
+
+bool Membership::clear_advert(const std::string& key) {
+  contract::Lock lock(_mutex);
+  if (!_self.adverts.erase(key)) return false;
   _self.seen_unix_ms = _wall->unix_ms();
   return true;
 }
@@ -195,13 +197,6 @@ bool Membership::inbound_capable(const identity::NodeId& id) const {
   if (id == _self.id) return _self.inbound_capable();
   const auto found = _nodes.find(id);
   return found == _nodes.end() || found->second.record.inbound_capable();
-}
-
-bool Membership::hosts_extents(const identity::NodeId& id) const {
-  contract::Lock lock(_mutex);
-  if (id == _self.id) return _self.hosts_extents();
-  const auto found = _nodes.find(id);
-  return found == _nodes.end() || found->second.record.hosts_extents();
 }
 
 void Membership::observe(NodeRecord record, bool direct) {
@@ -229,7 +224,8 @@ void Membership::observe(NodeRecord record, bool direct) {
     } else {
       auto& known = found->second;
       const bool association_changed = known.record.host != record.host || known.record.port != record.port ||
-                                       known.record.failure_domain != record.failure_domain || known.record.flags != record.flags;
+                                       known.record.failure_domain != record.failure_domain || known.record.capabilities != record.capabilities ||
+                                       known.record.path_class != record.path_class;
       // A handshake carries the record as it was then, which gossip may have
       // superseded: the newer record wins, direct only refreshes liveness.
       const bool newer = record.seen_unix_ms > known.record.seen_unix_ms;

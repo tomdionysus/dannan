@@ -1,6 +1,8 @@
 # Dannan wire v1 (draft for Tom's approval)
 
-Status: DRAFT, 2026-11-03. Nothing here is coded until Tom approves it.
+Status: APPROVED, 2026-11-03 night (Tom: "Continue please"), with section 8's
+recommendations: the interop suite goes, the token rides inside the hello.
+Sections 1 to 4 are in code; 5 to 7 are level 0's work.
 
 Tom, 2026-11-03: Dannan is a new project, not an extension of Macha; its
 protocol versions start at 1; Dannan does everything to maintain the PHY.

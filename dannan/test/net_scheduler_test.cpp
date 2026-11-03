@@ -29,11 +29,11 @@ namespace {
 using namespace std::chrono_literals;
 using sched::FrameType;
 
-constexpr MessageType have_object{3};
-constexpr MessageType get_object{4};
-constexpr MessageType put_object{5};
-constexpr MessageType put_commit{30};
-constexpr MessageType accept_commit{31};
+constexpr MessageType have_object{2003};
+constexpr MessageType get_object{2004};
+constexpr MessageType put_object{2005};
+constexpr MessageType put_commit{1030};
+constexpr MessageType accept_commit{1031};
 
 std::shared_ptr<const RouteTable> routes() {
   auto table = RouteTable::with_dannan_types();
@@ -127,7 +127,7 @@ TEST(Scheduler, OrderedWorkKeepsEachPeersOrderAndRunsPeersSideBySide) {
     } else {
       second_peer_ran = true;
     }
-    return Handled::processed({message::bool_reply, Bytes{1}, {}});
+    return Handled::processed({message::ok, Bytes{1}, {}});
   });
   auto a1 = ask(scheduler, peer(1), 1, put_commit, FrameType::control, Bytes{1});
   ASSERT_TRUE(first.wait_for_entries(1));
@@ -159,7 +159,7 @@ TEST(Scheduler, ControlClassOrderedWorkGoesFirstAndKeepsAQuarterOfTheQueue) {
     if (tag == 1) first.enter_and_wait();
     std::lock_guard lock(mutex);
     order.push_back(tag);
-    return Handled::processed({message::bool_reply, Bytes{1}, {}});
+    return Handled::processed({message::ok, Bytes{1}, {}});
   });
   auto running = ask(scheduler, peer(1), 1, put_commit, FrameType::speculative, Bytes{1});
   ASSERT_TRUE(first.wait_for_entries(1));
@@ -257,7 +257,7 @@ TEST(Scheduler, ACancelledQueuedRequestNeverRuns) {
   RequestScheduler scheduler(routes(), limits, [&](const membership::NodeRecord&, FrameType, const Message& request) {
     ++ran;
     if (request.payload.front() == 1) gate.enter_and_wait();
-    return Handled::processed({message::bool_reply, Bytes{1}, {}});
+    return Handled::processed({message::ok, Bytes{1}, {}});
   });
   auto running = ask(scheduler, peer(1), 1, put_commit, FrameType::control, Bytes{1});
   ASSERT_TRUE(gate.wait_for_entries(1));
@@ -315,7 +315,7 @@ TEST(Scheduler, StoppingFinishesRunningWorkAndDropsTheQueue) {
   auto scheduler = std::make_unique<RequestScheduler>(routes(), limits, [&](const membership::NodeRecord&, FrameType, const Message&) {
     ++ran;
     gate.enter_and_wait();
-    return Handled::processed({message::bool_reply, Bytes{1}, {}});
+    return Handled::processed({message::ok, Bytes{1}, {}});
   });
   auto running = ask(*scheduler, peer(1), 1, put_commit, FrameType::control, Bytes{1});
   ASSERT_TRUE(gate.wait_for_entries(1));
@@ -337,17 +337,17 @@ TEST(Scheduler, StoppingFinishesRunningWorkAndDropsTheQueue) {
 // itself with 501. Each is counted per type, so traffic a node does not host
 // shows in its stats without every handler building the refusal.
 TEST(Scheduler, AHandlerSaysWhetherItProcessedFailedOrDidNotRecognise) {
-  constexpr MessageType foreign{999};
+  constexpr MessageType foreign{1999};
   RequestScheduler scheduler(routes(), ServerLimits{}, [](const membership::NodeRecord&, FrameType, const Message& request) {
     if (request.type == foreign) return Handled::unrecognised();
     if (request.payload == Bytes{2}) return Handled::failed(409, "conflict", "already there");
-    return Handled::processed({message::bool_reply, Bytes{1}, {}});
+    return Handled::processed({message::ok, Bytes{1}, {}});
   });
   auto done = ask(scheduler, peer(1), 1, have_object, FrameType::control, Bytes{1});
   auto failed = ask(scheduler, peer(1), 3, have_object, FrameType::control, Bytes{2});
   auto unknown = ask(scheduler, peer(1), 5, foreign, FrameType::control);
   for (auto* future : {&done, &failed, &unknown}) ASSERT_TRUE(answered_within(*future, 2s));
-  EXPECT_EQ(done.get().type, message::bool_reply);
+  EXPECT_EQ(done.get().type, message::ok);
   const auto refusal = refusal_of(failed.get());
   ASSERT_TRUE(refusal);
   EXPECT_EQ(refusal->status, 409);
@@ -373,10 +373,10 @@ TEST(Scheduler, AnUnrecognisedNotificationIsCountedAndAnswersNothing) {
     ran.set_value();
     return Handled::unrecognised();
   });
-  scheduler.submit(peer(1), Frame{0, FrameType::speculative, {MessageType{998}, {}, {}}}, Reply{});
+  scheduler.submit(peer(1), Frame{0, FrameType::speculative, {MessageType{1998}, {}, {}}}, Reply{});
   ASSERT_EQ(ran.get_future().wait_for(2s), std::future_status::ready);
   for (int spin = 0; spin < 200 && scheduler.stats().message_timings.empty(); ++spin) std::this_thread::sleep_for(5ms);
-  EXPECT_EQ(scheduler.stats().message_timings.at(MessageType{998}).unrecognised, 1u);
+  EXPECT_EQ(scheduler.stats().message_timings.at(MessageType{1998}).unrecognised, 1u);
 }
 
 // A throw is a failure: answered 500 and counted as one.

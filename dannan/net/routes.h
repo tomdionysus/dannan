@@ -9,17 +9,17 @@
 
 #include <cstdint>
 #include <map>
-#include <set>
 #include <string>
 
 #include "dannan/sched/work.h"
 
 namespace dannan::net {
 
-// A wire message type: a 16-bit number. The space is open: Dannan reserves
-// its own numbers, and every hosted system registers its own at start. The
-// numbers protocol 23 uses never move.
+// A wire message type: a 16-bit number. Dannan's core types are below
+// first_user_type, the rest are the hosted systems', each registered at
+// start with its own rules (wire v1, section 4).
 enum class MessageType : uint16_t {};
+inline constexpr uint16_t first_user_type = 1024;
 
 // A session carries one lane: CONTROL for membership, heads, leases, notices
 // and small calls; DATA for object payloads; or a probe, which only proves a
@@ -27,26 +27,34 @@ enum class MessageType : uint16_t {};
 enum class Lane : uint8_t { control = 1, data = 2, probe = 3 };
 const char* lane_name(Lane) noexcept;
 
-// Dannan's own types: the transport's, membership's, telemetry's and
-// reachability's, with their protocol-23 numbers.
+// Dannan's own types, with their wire v1 numbers: requests from 1,
+// replies from 100.
 namespace message {
 inline constexpr MessageType ping{1};
 inline constexpr MessageType members{2};
-inline constexpr MessageType session_retire{12};
-inline constexpr MessageType promote_read_ahead{14};
-inline constexpr MessageType promote_foreground{15};
-inline constexpr MessageType cancel_transfer{16};
-inline constexpr MessageType telemetry{24};
-inline constexpr MessageType identity_resets{25};
-inline constexpr MessageType dial_request{43};
-inline constexpr MessageType dial_back_probe{44};
+inline constexpr MessageType session_retire{3};
+inline constexpr MessageType promote_read_ahead{4};
+inline constexpr MessageType promote_foreground{5};
+inline constexpr MessageType cancel_transfer{6};
+inline constexpr MessageType telemetry{7};
+inline constexpr MessageType identity_resets{8};
+inline constexpr MessageType dial_request{9};
+inline constexpr MessageType dial_back{10};
+inline constexpr MessageType punch_request{11};
+inline constexpr MessageType punch_go{12};
+inline constexpr MessageType relay_open{13};
+inline constexpr MessageType relay_offer{14};
+inline constexpr MessageType relay_data{15};
+inline constexpr MessageType relay_close{16};
 inline constexpr MessageType ok{100};
-inline constexpr MessageType error{101};
-inline constexpr MessageType members_reply{102};
-inline constexpr MessageType bool_reply{103};
-inline constexpr MessageType telemetry_reply{109};
-inline constexpr MessageType identity_resets_reply{110};
-inline constexpr MessageType dial_back_probe_reply{120};
+inline constexpr MessageType members_reply{101};
+inline constexpr MessageType telemetry_reply{102};
+inline constexpr MessageType identity_resets_reply{103};
+inline constexpr MessageType dial_back_reply{104};
+inline constexpr MessageType punch_reply{105};
+inline constexpr MessageType relay_open_reply{106};
+inline constexpr MessageType relay_offer_reply{107};
+inline constexpr MessageType error{127};
 }  // namespace message
 
 // Which lanes a type may travel on.
@@ -77,22 +85,24 @@ struct Registration {
 class RouteTable {
  public:
   // A table holding Dannan's core types, which keep Dannan's rules. Every
-  // other number is a user type, registered by a hosted system with its own
-  // rules, or not registered on this node at all.
+  // number from first_user_type is a user type, registered by a hosted
+  // system with its own rules, or not registered on this node at all.
   static RouteTable with_dannan_types();
 
-  // Registers `type`. Throws std::invalid_argument if the number is taken or
-  // retired. Not thread-safe: registration happens before the node starts.
+  // Registers a user type. Throws std::invalid_argument for a number below
+  // first_user_type or one already taken. Not thread-safe: registration
+  // happens before the node starts.
   void add(MessageType type, Registration registration);
 
   // The registration, or null for a type nobody registered.
   const Registration* find(MessageType type) const noexcept;
   // Whether `type` may travel on `lane` in `frame`: a core or registered
-  // type by its registration; a user type nobody registered here is not
-  // policed (any class, either lane), since it is the user's to accept or
-  // decline. Nothing travels on the probe lane.
+  // type by its registration; a type nobody registered here is not policed
+  // (any class, either lane), since a user type is the user's to accept or
+  // decline and a core number this version does not know is a newer
+  // peer's, answered as unrecognised. Nothing travels on the probe lane.
   bool allowed(MessageType type, Lane lane, sched::FrameType frame) const noexcept;
-  // One of Dannan's own types.
+  // Below first_user_type: Dannan's, known to this version or not.
   bool is_core(MessageType type) const noexcept;
   bool is_notification(MessageType type) const noexcept;
   bool is_fast_control(MessageType type) const noexcept;
@@ -101,8 +111,9 @@ class RouteTable {
   std::string name(MessageType type) const;
 
  private:
+  void add_core(MessageType type, Registration registration);
+
   std::map<MessageType, Registration> _types;
-  std::set<MessageType> _core;
 };
 
 }  // namespace dannan::net

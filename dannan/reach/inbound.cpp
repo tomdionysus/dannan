@@ -17,7 +17,7 @@
 namespace dannan::reach {
 namespace {
 
-constexpr std::array<uint8_t, 8> magic{'M', 'A', 'C', 'H', 'I', 'N', 'B', '1'};
+constexpr std::array<uint8_t, 8> magic{'D', 'N', 'N', 'I', 'N', 'B', '0', '1'};
 
 }  // namespace
 

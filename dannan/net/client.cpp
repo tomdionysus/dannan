@@ -330,8 +330,8 @@ void Client::reverse_expired(const RouteKey& key, const std::shared_ptr<asio::st
 }
 
 bool Client::capable_locked(const identity::NodeId& peer) const {
-  const auto found = _peer_flags.find(peer);
-  return found == _peer_flags.end() || (found->second & membership::flag_inbound_capable) != 0;
+  const auto found = _peer_capabilities.find(peer);
+  return found == _peer_capabilities.end() || (found->second & membership::capability_inbound) != 0;
 }
 
 bool Client::local_capable() const { return _options.local().inbound_capable(); }
@@ -339,7 +339,7 @@ bool Client::local_capable() const { return _options.local().inbound_capable(); 
 void Client::note_peer(const membership::NodeRecord& peer) {
   if (peer.id == identity::NodeId{}) return;
   contract::Lock lock(_mutex);
-  _peer_flags[peer.id] = peer.flags;
+  _peer_capabilities[peer.id] = peer.capabilities;
 }
 
 void Client::set_maintained_peers(std::function<std::vector<membership::NodeRecord>()> peers) {
@@ -352,7 +352,7 @@ void Client::request_lane(const membership::NodeRecord& peer, Lane lane) {
   {
     contract::Lock lock(_mutex);
     if (_stopped) return;
-    _peer_flags[peer.id] = peer.flags;
+    _peer_capabilities[peer.id] = peer.capabilities;
     _requested[{peer.id, lane}] = peer;
     ++_stats.dial_requests_received;
     ++_operations;
@@ -617,7 +617,7 @@ void Client::dialled(const std::string& key, const Target& target, Lane lane, st
     if (session && !stopped) {
       const RouteKey route_key{session->peer().id, lane};
       _endpoint_ids[target.endpoint] = route_key.first;
-      _peer_flags[route_key.first] = session->peer().flags;
+      _peer_capabilities[route_key.first] = session->peer().capabilities;
       auto& slot = _outbound[route_key];
       if (slot && slot->usable() && slot != session) {
         // Two of this end's dials to one peer and lane: both ends keep the
@@ -662,7 +662,7 @@ void Client::admit(const std::shared_ptr<Session>& session) {
     contract::Lock lock(_mutex);
     if (_stopped) return;
     if (peer.port) _endpoint_ids[{peer.host, peer.port}] = peer.id;
-    _peer_flags[peer.id] = peer.flags;
+    _peer_capabilities[peer.id] = peer.capabilities;
     auto& slot = _inbound[key];
     if (slot && slot != session && slot->usable()) {
       // Two sessions from one peer on one lane: both ends keep the one with

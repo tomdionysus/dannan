@@ -11,6 +11,7 @@
 #include <cmath>
 #include <limits>
 #include <set>
+#include <stdexcept>
 #include <string>
 
 #include "dannan/identity/crypto.h"
@@ -154,15 +155,16 @@ struct Domain {
 
 // Failure domains in name order, each node alone in one if it names none;
 // nodes within a domain in id order.
-std::vector<Domain> domains_of(const std::vector<NodeRecord>& nodes) {
+std::vector<Domain> domains_of(const std::vector<NodeRecord>& nodes, const std::string& advert) {
   std::vector<Domain> out;
   for (const auto& node : nodes) {
+    const auto capacity = capacity_of(node, advert);
     const auto name = node.failure_domain.empty() ? "node:" + identity::to_string(node.id) : "domain:" + node.failure_domain;
     const auto found = std::find_if(out.begin(), out.end(), [&](const Domain& d) { return d.name == name; });
     if (found == out.end()) {
-      out.push_back({name, node.capacity, {node}});
+      out.push_back({name, capacity, {node}});
     } else {
-      found->capacity = saturating_add(found->capacity, node.capacity);
+      found->capacity = saturating_add(found->capacity, capacity);
       found->nodes.push_back(node);
     }
   }
@@ -177,39 +179,42 @@ std::vector<uint64_t> capacities(const std::vector<Domain>& domains) {
   return out;
 }
 
-std::vector<uint64_t> capacities(const std::vector<NodeRecord>& nodes) {
+std::vector<uint64_t> capacities(const std::vector<NodeRecord>& nodes, const std::string& advert) {
   std::vector<uint64_t> out;
-  for (const auto& node : nodes) out.push_back(node.capacity);
+  for (const auto& node : nodes) out.push_back(capacity_of(node, advert));
   return out;
 }
 
-NodeRecord within(std::span<const uint8_t> key, const Domain& domain) {
+NodeRecord within(std::span<const uint8_t> key, const Domain& domain, const std::string& advert) {
   if (domain.nodes.size() == 1) return domain.nodes.front();
   const auto inner = identity::sha256(concat(key, text(domain.name)));
-  const auto picked = sample(inner.bytes, capacities(domain.nodes), 1);
+  const auto picked = sample(inner.bytes, capacities(domain.nodes, advert), 1);
   return domain.nodes[picked.empty() ? 0 : picked.front()];
 }
 
 // Weighted rendezvous: -ln(u) / capacity with u uniform in (0, 1) from the
 // hash; the lowest wins. A node with no capacity weighs 1.
-long double fallback_score(std::span<const uint8_t> key, const NodeRecord& node, std::string_view salt) {
+long double fallback_score(std::span<const uint8_t> key, const NodeRecord& node, std::string_view salt, const std::string& advert) {
   const auto hash = identity::sha256(concat(concat(key, text(salt)), node.id.bytes));
   uint64_t value = 0;
   for (size_t i = 0; i < 8; ++i) value = (value << 8) | hash.bytes[i];
   const long double u = (static_cast<long double>(value) + 1.0L) / (static_cast<long double>(std::numeric_limits<uint64_t>::max()) + 2.0L);
-  const long double weight = node.capacity ? static_cast<long double>(node.capacity) : 1.0L;
+  const auto capacity = capacity_of(node, advert);
+  const long double weight = capacity ? static_cast<long double>(capacity) : 1.0L;
   return -std::log(u) / weight;
 }
 
-void sort_by_fallback(std::vector<NodeRecord>& nodes, std::span<const uint8_t> key, std::string_view salt) {
+void sort_by_fallback(std::vector<NodeRecord>& nodes, std::span<const uint8_t> key, std::string_view salt, const std::string& advert) {
   std::sort(nodes.begin(), nodes.end(), [&](const NodeRecord& a, const NodeRecord& b) {
-    const auto as = fallback_score(key, a, salt);
-    const auto bs = fallback_score(key, b, salt);
+    const auto as = fallback_score(key, a, salt, advert);
+    const auto bs = fallback_score(key, b, salt, advert);
     return as != bs ? as < bs : a.id < b.id;
   });
 }
 
 }  // namespace
+
+uint64_t capacity_of(const NodeRecord& node, const std::string& advert) { return advert.empty() ? 0 : node.advert_u64(advert).value_or(0); }
 
 std::vector<NodeRecord> rendezvous(std::span<const uint8_t> key, const std::vector<NodeRecord>& nodes, size_t count) {
   std::vector<std::pair<identity::Hash256, const NodeRecord*>> scored;
@@ -234,19 +239,21 @@ std::vector<NodeRecord> rendezvous(std::span<const uint8_t> key, const std::vect
   return out;
 }
 
-std::vector<NodeRecord> by_capacity(std::span<const uint8_t> key, const std::vector<NodeRecord>& nodes, size_t count, const Salts& salts) {
+std::vector<NodeRecord> by_capacity(std::span<const uint8_t> key, const std::vector<NodeRecord>& nodes, size_t count, const Scheme& scheme) {
+  if (scheme.fallback_salt.empty() || scheme.extra_domain_salt.empty()) throw std::invalid_argument("a placement scheme names both its salts");
   if (nodes.empty() || !count) return {};
+  const auto& advert = scheme.capacity_advert;
   count = std::min(count, nodes.size());
   if (count == 1) {
     auto out = nodes;
-    sort_by_fallback(out, shard_bytes(key), salts.fallback);
+    sort_by_fallback(out, shard_bytes(key), scheme.fallback_salt, advert);
     return out;
   }
-  const auto domains = domains_of(nodes);
+  const auto domains = domains_of(nodes, advert);
   std::vector<NodeRecord> out;
   std::set<identity::NodeId> chosen;
   for (const auto index : sample(key, capacities(domains), std::min(count, domains.size()))) {
-    auto node = within(key, domains[index]);
+    auto node = within(key, domains[index], advert);
     if (chosen.insert(node.id).second) out.push_back(std::move(node));
   }
   // Fewer domains than copies: one node from every domain is in; the rest
@@ -256,23 +263,23 @@ std::vector<NodeRecord> by_capacity(std::span<const uint8_t> key, const std::vec
     for (const auto& node : nodes)
       if (!chosen.contains(node.id)) remaining.push_back(node);
     std::sort(remaining.begin(), remaining.end(), [](const auto& a, const auto& b) { return a.id < b.id; });
-    const auto extra_key = identity::sha256(concat(key, text(salts.extra_domain)));
-    for (const auto index : sample(extra_key.bytes, capacities(remaining), count - out.size()))
+    const auto extra_key = identity::sha256(concat(key, text(scheme.extra_domain_salt)));
+    for (const auto index : sample(extra_key.bytes, capacities(remaining, advert), count - out.size()))
       if (chosen.insert(remaining[index].id).second) out.push_back(remaining[index]);
   }
   std::vector<NodeRecord> fallback;
   for (const auto& node : nodes)
     if (!chosen.contains(node.id)) fallback.push_back(node);
-  sort_by_fallback(fallback, key, salts.fallback);
+  sort_by_fallback(fallback, key, scheme.fallback_salt, advert);
   out.insert(out.end(), fallback.begin(), fallback.end());
   return out;
 }
 
-uint64_t logical_capacity(const std::vector<NodeRecord>& nodes, size_t replicas) {
+uint64_t logical_capacity(const std::vector<NodeRecord>& nodes, size_t replicas, const std::string& capacity_advert) {
   if (nodes.empty() || !replicas) return 0;
   replicas = std::min(replicas, nodes.size());
-  const auto domains = domains_of(nodes);
-  const auto level = water_level(domains.size() >= replicas ? capacities(domains) : capacities(nodes), replicas);
+  const auto domains = domains_of(nodes, capacity_advert);
+  const auto level = water_level(domains.size() >= replicas ? capacities(domains) : capacities(nodes, capacity_advert), replicas);
   if (!level.numerator) return 0;
   const u128 value = level.numerator / level.denominator;
   return value > std::numeric_limits<uint64_t>::max() ? std::numeric_limits<uint64_t>::max() : static_cast<uint64_t>(value);
@@ -289,10 +296,10 @@ std::vector<NodeRecord> order_commit_replicas(std::vector<NodeRecord> replicas, 
   return replicas;
 }
 
-std::vector<NodeRecord> extent_candidates(const std::vector<NodeRecord>& nodes) {
+std::vector<NodeRecord> with_advert(const std::vector<NodeRecord>& nodes, const std::string& key) {
   std::vector<NodeRecord> out;
   for (const auto& node : nodes)
-    if (node.hosts_extents()) out.push_back(node);
+    if (node.adverts.contains(key)) out.push_back(node);
   return out;
 }
 

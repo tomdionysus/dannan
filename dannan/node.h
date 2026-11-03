@@ -49,9 +49,8 @@ struct NodeConfig {
   // Seeds, not masters: exchanged with every heartbeat.
   std::vector<net::Endpoint> bootstrap;
   reach::Inbound inbound = reach::Inbound::automatic;
-  // Whether this node hosts extents, given whether it is inbound-capable:
-  // the hosted system's answer. A bare node hosts none.
-  std::function<bool(bool inbound_capable)> hosts_extents = [](bool) { return false; };
+  // Whether this node forwards circuits for others (the relay capability).
+  bool relay = false;
   // What recovers before the node is ready, by name.
   std::vector<std::string> planes;
   std::string version;
@@ -78,7 +77,7 @@ struct NodeConfig {
   uint64_t reassembly_reserve_bytes = 32ull << 20;
   // The hosted system's own telemetry fields, added to each local record.
   std::function<void(status::Telemetry&)> telemetry_fields;
-  std::vector<uint16_t> telemetry_layout = status::protocol23_layout();
+  std::vector<uint16_t> telemetry_layout;
   // Null: UPnP not built, the lookup and the self-probe their defaults.
   std::shared_ptr<reach::Gateway> gateway;
   reach::ExternalIpLookup external_ip;
@@ -92,7 +91,7 @@ struct NodeConfig {
 // state path, the roster, public connectivity and the inbound answer,
 // telemetry, the transport's client and server, the control routes
 // (ping, members, telemetry, identity_resets, dial_request,
-// dial_back_probe), and three loops: membership (exchange with seeds and
+// dial_back, punch and relay), and three loops: membership (exchange with seeds and
 // known peers every heartbeat, forget at the horizon), telemetry (refresh,
 // gossip at most once a second), connectivity (the advertised endpoint and
 // the inbound answer by dial-back). The node is reachable before it is

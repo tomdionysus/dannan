@@ -34,9 +34,9 @@ namespace dannan::status {
 enum class Phase : uint8_t { starting, recovering, ready };
 const char* phase_name(Phase) noexcept;
 
-// Protocol 23's field numbers. Dannan fills the core ones; the rest (from
-// 9 to 13, 18, 25, 28 to 42 there) are the hosted system's, carried as they
-// come.
+// Dannan's field numbers: the core ones are below first_hosted and filled
+// by Dannan; a hosted system numbers its own from first_hosted, and they
+// are carried as they come.
 namespace field {
 inline constexpr uint16_t node_id = 1;
 inline constexpr uint16_t boot_id = 2;
@@ -46,27 +46,22 @@ inline constexpr uint16_t version = 5;
 inline constexpr uint16_t host = 6;
 inline constexpr uint16_t failure_domain = 7;
 inline constexpr uint16_t port = 8;
-inline constexpr uint16_t storage_capacity = 9;
-inline constexpr uint16_t storage_used = 10;
-inline constexpr uint16_t metadata_generation = 13;
-inline constexpr uint16_t uptime_ms = 14;
-inline constexpr uint16_t rss_bytes = 15;
-inline constexpr uint16_t process_cpu_milli_percent = 16;
-inline constexpr uint16_t load1_milli = 17;
-inline constexpr uint16_t peers_known = 19;
-inline constexpr uint16_t peers_active = 20;
-inline constexpr uint16_t connections_created = 21;
-inline constexpr uint16_t connections_reused = 22;
-inline constexpr uint16_t connections_canonical = 23;
-inline constexpr uint16_t phase = 24;
-inline constexpr uint16_t cpu_cores = 26;
-inline constexpr uint16_t memory_total_bytes = 27;
-inline constexpr uint16_t node_name = 43;
-inline constexpr uint16_t traffic = 44;
+inline constexpr uint16_t uptime_ms = 9;
+inline constexpr uint16_t rss_bytes = 10;
+inline constexpr uint16_t process_cpu_milli_percent = 11;
+inline constexpr uint16_t load1_milli = 12;
+inline constexpr uint16_t peers_known = 13;
+inline constexpr uint16_t peers_active = 14;
+inline constexpr uint16_t connections_created = 15;
+inline constexpr uint16_t connections_reused = 16;
+inline constexpr uint16_t connections_canonical = 17;
+inline constexpr uint16_t phase = 18;
+inline constexpr uint16_t cpu_cores = 19;
+inline constexpr uint16_t memory_total_bytes = 20;
+inline constexpr uint16_t node_name = 21;
+inline constexpr uint16_t traffic = 22;
+inline constexpr uint16_t first_hosted = 1024;
 }  // namespace field
-
-// The order protocol 23 writes its fields in, core and hosted interleaved.
-const std::vector<uint16_t>& protocol23_layout();
 
 // One frame class's traffic: totals since start and the rate over the last
 // interval.
@@ -127,7 +122,7 @@ class Telemetry {
   std::vector<Field> _fields;
 };
 
-// Protocol 23's encodings (MACHTEL3): one record, or a set of them.
+// The encodings (DNNTEL01): one record, or a set of them.
 // Decoding throws net::DecodeError for a bad magic, a core field of the
 // wrong width, a phase out of range, a zero sequence, or over 65536
 // records.
@@ -170,13 +165,13 @@ class TelemetryStore {
   // be read is ignored: telemetry is observational, never a reason not to
   // start.
   TelemetryStore(identity::NodeId self, std::filesystem::path persisted_path = {}, const contract::TimeSource* time = &contract::steady_time_source(),
-                 const contract::WallClock* wall = &contract::system_wall_clock(), std::vector<uint16_t> layout = protocol23_layout());
+                 const contract::WallClock* wall = &contract::system_wall_clock(), std::vector<uint16_t> layout = {});
   TelemetryStore(const TelemetryStore&) = delete;
   TelemetryStore& operator=(const TelemetryStore&) = delete;
 
   // Builds this node's next record: the core fields from `figures` and the
-  // process, the hosted system's from `extra`, in the layout's order; stored
-  // and returned.
+  // process, the hosted system's from `extra`; the fields `layout` names
+  // first, in its order, the rest as set. Stored and returned.
   Telemetry refresh_local(const LocalFigures& figures, const std::function<void(Telemetry&)>& extra = {});
 
   // A record heard of. Within one boot a higher sequence wins; a new boot
