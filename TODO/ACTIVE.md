@@ -151,6 +151,13 @@ first.
 8. Settled (Tom, 2026-11-03): core message types are Dannan's; the rest
    are user-definable and under the user's control. See Decisions.
 
+9. **Revoking a single node at once** (Lugh, 2026-11-03 night): Lugh needs
+   a removed node refused immediately. Step 10's design (cluster CA, node
+   certificates) says a compromised node is cut off by rotation; immediate
+   per-node revocation is not designed. Also asked: whether the Context
+   offers completion tokens or awaitables beside callbacks (Lugh is built
+   on asio::awaitable).
+
 ## How to prove it
 
 Two gates, and both are run.
