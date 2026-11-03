@@ -825,6 +825,9 @@ void Client::stop() {
     _stopped = true;
     reverse.swap(_reverse);
     timers.assign(_reverse_timers.begin(), _reverse_timers.end());
+    // The heartbeat's cancel below touches this object: counted, so stop()
+    // waits for it.
+    ++_operations;
     for (auto* table : {&_outbound, &_inbound}) {
       for (auto& [_, session] : *table) routes.push_back(session);
       table->clear();
@@ -832,7 +835,10 @@ void Client::stop() {
     dialling.assign(_dialling.begin(), _dialling.end());
     waiting.swap(_dials);
   }
-  asio::post(_health_strand, [this] { _heartbeat.cancel(); });
+  asio::post(_health_strand, [this] {
+    _heartbeat.cancel();
+    end_operation();
+  });
   for (auto& session : routes) session->close("client stopped");
   for (auto& attempt : dialling) asio::post(attempt->strand, [attempt] { attempt->abort(); });
   for (auto& [_, calls] : waiting)

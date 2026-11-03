@@ -70,7 +70,8 @@ Server::Server(asio::io_context& io, std::string listen_host, uint16_t port, Ser
       _options(std::move(options)),
       _scheduler(_options.routes, _options.limits, std::move(handler), _options.memory, _options.time),
       _admitted(std::move(admitted)),
-      _acceptor(io) {
+      // On a strand: its accept handler and stop()'s close never run at once.
+      _acceptor(asio::make_strand(io)) {
   if (!_options.traffic) _options.traffic = std::make_shared<TransportTraffic>();
 }
 
@@ -187,10 +188,14 @@ void Server::stop() {
     _stopped = true;
     for (auto& [_, session] : _sessions) sessions.push_back(session);
     for (auto& [_, connection] : _handshaking) handshaking.push_back(connection);
+    // The acceptor's close below touches this object: counted, so the wait
+    // covers it.
+    ++_operations;
   }
   asio::post(_acceptor.get_executor(), [this] {
     boost::system::error_code ignored;
     _acceptor.close(ignored);
+    end_operation();
   });
   for (auto& connection : handshaking) asio::post(connection->strand, [connection] { connection->close(); });
   for (auto& session : sessions) session->close("server stopping");
