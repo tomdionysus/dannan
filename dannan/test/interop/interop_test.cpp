@@ -16,16 +16,26 @@
 #include <boost/asio/io_context.hpp>
 #include <fstream>
 #include <future>
+#include <map>
+#include <random>
 #include <thread>
 
+#include "cluster/membership.hpp"
 #include "cluster/net.hpp"
+#include "cluster/placement.hpp"
+#include "cluster/telemetry.hpp"
 #include "codec.hpp"
 #include "crypto.hpp"
 #include "dannan/identity/cluster_key.h"
+#include "dannan/membership/membership.h"
 #include "dannan/membership/node_record.h"
 #include "dannan/net/channel.h"
 #include "dannan/net/session.h"
+#include "dannan/placement/placement.h"
+#include "dannan/status/observation.h"
+#include "dannan/status/telemetry.h"
 #include "dannan/test/fixtures/temp_dir.h"
+#include "observation.hpp"
 #include "types.hpp"
 
 namespace dannan {
@@ -412,6 +422,236 @@ TEST(Interop, DannansFramesAreMachasByteForByte) {
   }
   sender.join();
   ::shutdown(pair.ours, SHUT_RDWR);
+}
+
+// The persisted roster, both ways: what one writes the other loads.
+TEST(Interop, TheRosterFileIsSharedWithMacha) {
+  test::TempDir dir;
+  const auto ours_path = dir.path() / "ours";
+  const auto theirs_path = dir.path() / "theirs";
+  auto self = ours_sample();
+  auto peer = ours_sample();
+  peer.host = "10.1.2.3";
+  auto other = ours_sample();
+  other.host = "10.1.2.4";
+  other.flags = membership::flags_default;
+  membership::IdentityReset reset;
+  reset.host = "10.9.9.9";
+  reset.epoch = 3;
+  reset.reset_unix_ms = 77;
+  reset.reason = "replaced";
+  {
+    membership::Membership ours(self, std::chrono::seconds(30), ours_path);
+    ours.observe(peer, true);
+    ours.observe(other, true);
+    ours.apply_identity_reset(reset);
+  }
+  macha::Membership theirs(theirs_of(self), std::chrono::seconds(30), ours_path);
+  const auto loaded = theirs.all();
+  ASSERT_EQ(loaded.size(), 3u);
+  for (const auto& expected : {peer, other}) {
+    const auto found = std::find_if(loaded.begin(), loaded.end(), [&](const macha::NodeInfo& n) { return n.id.bytes == expected.id.bytes; });
+    ASSERT_NE(found, loaded.end());
+    EXPECT_EQ(found->host, expected.host);
+    EXPECT_EQ(found->flags, expected.flags);
+    EXPECT_EQ(found->failure_domain, expected.failure_domain);
+  }
+  ASSERT_EQ(theirs.identity_resets().size(), 1u);
+  EXPECT_EQ(theirs.identity_resets().front().reason, "replaced");
+
+  {
+    macha::Membership writer(theirs_of(self), std::chrono::seconds(30), theirs_path);
+    writer.observe(theirs_of(peer), true);
+  }
+  membership::Membership back(self, std::chrono::seconds(30), theirs_path);
+  const auto all = back.all();
+  ASSERT_EQ(all.size(), 2u);
+  EXPECT_EQ(all[1].id, peer.id);
+  EXPECT_EQ(all[1].flags, peer.flags);
+}
+
+// Placement decides as Macha's does, key for key, over random rosters: same
+// owners in the same order, same fallbacks, same capacity, same commit order.
+TEST(Interop, PlacementDecidesAsMachasDoes) {
+  std::mt19937_64 random(20261103);
+  const std::vector<std::string> domain_names{"", "", "a", "b", "c"};
+  for (int round = 0; round < 400; ++round) {
+    std::vector<membership::NodeRecord> ours;
+    std::vector<macha::NodeInfo> theirs;
+    const auto count = 1 + random() % 9;
+    for (size_t i = 0; i < count; ++i) {
+      auto n = ours_sample();
+      n.capacity = random() % 4 == 0 ? 0 : random() % (1ull << 40);
+      n.failure_domain = domain_names[random() % domain_names.size()];
+      ours.push_back(n);
+      theirs.push_back(theirs_of(n));
+    }
+    for (int k = 0; k < 20; ++k) {
+      std::vector<uint8_t> key(k % 5 == 0 ? 3 : 32);
+      for (auto& byte : key) byte = static_cast<uint8_t>(random());
+      for (size_t replicas = 0; replicas <= 4; ++replicas) {
+        const auto ours_by_capacity = placement::by_capacity(key, ours, replicas);
+        const auto theirs_by_capacity = macha::capacity_placement_nodes(key, theirs, replicas);
+        ASSERT_EQ(ours_by_capacity.size(), theirs_by_capacity.size());
+        for (size_t i = 0; i < ours_by_capacity.size(); ++i) ASSERT_EQ(ours_by_capacity[i].id.bytes, theirs_by_capacity[i].id.bytes) << "round " << round;
+        const auto ours_rendezvous = placement::rendezvous(key, ours, replicas);
+        const auto theirs_rendezvous = macha::rendezvous_nodes(key, theirs, replicas);
+        ASSERT_EQ(ours_rendezvous.size(), theirs_rendezvous.size());
+        for (size_t i = 0; i < ours_rendezvous.size(); ++i) ASSERT_EQ(ours_rendezvous[i].id.bytes, theirs_rendezvous[i].id.bytes);
+      }
+    }
+    for (size_t replicas = 0; replicas <= 4; ++replicas)
+      ASSERT_EQ(placement::logical_capacity(ours, replicas), macha::placement_logical_capacity(theirs, replicas));
+    std::map<identity::NodeId, std::chrono::milliseconds> rtt;
+    for (const auto& n : ours)
+      if (random() % 2) rtt[n.id] = std::chrono::milliseconds(random() % 5);
+    const auto ours_order =
+        placement::order_commit_replicas(ours, ours.front().id, [&](const identity::NodeId& id) -> std::optional<std::chrono::milliseconds> {
+          const auto found = rtt.find(id);
+          return found == rtt.end() ? std::nullopt : std::optional(found->second);
+        });
+    macha::NodeId local;
+    local.bytes = ours.front().id.bytes;
+    const auto theirs_order = macha::order_commit_replicas(theirs, local, [&](const macha::NodeId& id) -> std::optional<std::chrono::milliseconds> {
+      identity::NodeId mine;
+      mine.bytes = id.bytes;
+      const auto found = rtt.find(mine);
+      return found == rtt.end() ? std::nullopt : std::optional(found->second);
+    });
+    for (size_t i = 0; i < ours_order.size(); ++i) ASSERT_EQ(ours_order[i].id.bytes, theirs_order[i].id.bytes);
+  }
+}
+
+// Telemetry, grandfathered: a full Macha record decodes in Dannan and
+// re-encodes to the same bytes, every field Macha's kept as it came; and a
+// record Dannan builds in protocol 23's layout reads in Macha as written.
+TEST(Interop, TelemetryRecordsCrossBothWaysByteForByte) {
+  macha::NodeTelemetry theirs;
+  theirs.node_id.bytes = ours_sample().id.bytes;
+  theirs.boot_id.bytes = ours_sample().id.bytes;
+  theirs.sequence = 42;
+  theirs.observed_unix_ms = 1793700000123ull;
+  theirs.version = "0.91.2";
+  theirs.host = "10.0.0.7";
+  theirs.failure_domain = "site-a";
+  theirs.port = 7437;
+  theirs.storage_capacity = 10ull << 40;
+  theirs.storage_used = 3ull << 30;
+  theirs.cache_capacity = 1 << 20;
+  theirs.cache_used = 1 << 10;
+  theirs.metadata_generation = 99;
+  theirs.uptime_ms = 5000;
+  theirs.rss_bytes = 1 << 28;
+  theirs.process_cpu_milli_percent = 1234;
+  theirs.load1_milli = 900;
+  theirs.storage_backends_online = 2;
+  theirs.peers_known = 3;
+  theirs.peers_active = 2;
+  theirs.rpc_connections_created = 7;
+  theirs.rpc_connections_reused = 70;
+  theirs.rpc_connections_canonical = 4;
+  theirs.phase = macha::NodePhase::recovering;
+  theirs.api_endpoint = "http://10.0.0.7:7438";
+  theirs.cpu_cores = 8;
+  theirs.memory_total_bytes = 16ull << 30;
+  theirs.playback_startup_timeout_ms = 15000;
+  theirs.playback_segment_timeout_ms = 6000;
+  theirs.playback_max_sessions = 64;
+  theirs.playback_max_transcodes_per_account = 2;
+  theirs.playback_start_failed_retention_ms = 60000;
+  theirs.playback_transcode_rates.push_back({"video", "h264", 8, 1080, 1500, 12, 1});
+  theirs.node_name = "media-node-2";
+  theirs.traffic_window_ms = 10000;
+  theirs.traffic.push_back({1, 100, 200, 10, 20});
+  theirs.traffic.push_back({4, 300, 400, 30, 40});
+  theirs.cache_hits = 5;
+  theirs.cache_misses = 6;
+  theirs.cache_evictions = 7;
+  const auto macha_bytes = macha::encode_telemetry_set({theirs});
+
+  const auto decoded = status::decode_telemetry_set(macha_bytes);
+  ASSERT_EQ(decoded.size(), 1u);
+  EXPECT_EQ(status::encode_telemetry_set(decoded), macha_bytes);
+  EXPECT_EQ(decoded[0].sequence(), 42u);
+  EXPECT_EQ(decoded[0].host(), "10.0.0.7");
+  EXPECT_EQ(decoded[0].phase(), status::Phase::recovering);
+  EXPECT_EQ(decoded[0].traffic().size(), 2u);
+
+  // Dannan building the same record: its core fields, and Macha's own added
+  // by the hosted system, put in protocol 23's order.
+  status::Telemetry built;
+  built.set_bytes(status::field::node_id, theirs.node_id.bytes);
+  built.set_bytes(status::field::boot_id, theirs.boot_id.bytes);
+  built.set_u64(status::field::sequence, 42);
+  built.set_u64(status::field::observed_unix_ms, theirs.observed_unix_ms);
+  built.set_text(status::field::version, "0.91.2");
+  built.set_text(status::field::host, "10.0.0.7");
+  built.set_text(status::field::failure_domain, "site-a");
+  built.set_u16(status::field::port, 7437);
+  built.set_u64(status::field::storage_capacity, theirs.storage_capacity);
+  built.set_u64(status::field::storage_used, theirs.storage_used);
+  built.set_u64(status::field::metadata_generation, 99);
+  built.set_u64(status::field::uptime_ms, 5000);
+  built.set_u64(status::field::rss_bytes, theirs.rss_bytes);
+  built.set_u32(status::field::process_cpu_milli_percent, 1234);
+  built.set_u32(status::field::load1_milli, 900);
+  built.set_u32(status::field::peers_known, 3);
+  built.set_u32(status::field::peers_active, 2);
+  built.set_u64(status::field::connections_created, 7);
+  built.set_u64(status::field::connections_reused, 70);
+  built.set_u64(status::field::connections_canonical, 4);
+  built.set_phase(status::Phase::recovering);
+  built.set_u32(status::field::cpu_cores, 8);
+  built.set_u64(status::field::memory_total_bytes, theirs.memory_total_bytes);
+  built.set_text(status::field::node_name, "media-node-2");
+  built.set_traffic(10000, {{1, 100, 200, 10, 20}, {4, 300, 400, 30, 40}});
+  // What Macha adds as a hosted system, in any order: the layout sorts it.
+  for (const auto& [id, value] : decoded[0].fields()) {
+    if (!built.get(id)) built.set_bytes(id, value);
+  }
+  built.order_by(status::protocol23_layout());
+  EXPECT_EQ(status::encode_telemetry_set({built}), macha_bytes);
+  const auto back = macha::decode_telemetry_set(status::encode_telemetry_set({built}));
+  ASSERT_EQ(back.size(), 1u);
+  EXPECT_EQ(back[0].playback_transcode_rates.size(), 1u);
+  EXPECT_EQ(back[0].cache_evictions, 7u);
+}
+
+// The observation log's lines are Macha's, byte for byte.
+TEST(Interop, ObservationLinesAreMachas) {
+  std::mt19937_64 random(7);
+  status::ObservationSnapshot ours;
+  macha::ObservationSnapshot theirs;
+  for (const auto* name : {"rpc ping", "api GET /api/v1/status", "esc \"\\\n\x01", "empty"}) {
+    status::HistogramSnapshot h;
+    macha::HistogramSnapshot m;
+    if (std::string(name) != "empty")
+      for (int i = 0; i < 50; ++i) {
+        const auto b = random() % status::bucket_count;
+        h.buckets[b] += 1;
+        m.buckets[b] += 1;
+        h.count += 1;
+        m.count += 1;
+      }
+    h.sum = m.sum = random() % 100000;
+    h.max = m.max = random();
+    ours.histograms[name] = h;
+    theirs.histograms[name] = m;
+  }
+  ours.counters["a"] = theirs.counters["a"] = 3;
+  ours.counters["zero"] = theirs.counters["zero"] = 0;
+  const std::map<std::string, uint64_t> gauges{{"q", 9}, {"b", 1}};
+  EXPECT_EQ(status::render_window(1, 2, "0.1.0", ours, gauges), macha::render_observation_window(1, 2, "0.1.0", theirs, gauges));
+  const status::ObservationEvent event{5, "shutdown", {{"ms", 9}, {"n", 1}}, {{"why", "line\nbreak"}}};
+  macha::ObservationEvent theirs_event;
+  theirs_event.unix_ms = 5;
+  theirs_event.name = "shutdown";
+  theirs_event.numbers = event.numbers;
+  theirs_event.texts = event.texts;
+  EXPECT_EQ(status::render_event(event), macha::render_observation_event(theirs_event));
+  for (const auto& [method, path] :
+       std::vector<std::pair<std::string, std::string>>{{"GET", "/api/v1/a/B/c/d"}, {"PUT", "/x"}, {"TRACE", "/api/v2"}, {"DELETE", "/api/v1/sessions/0123"}})
+    EXPECT_EQ(status::route_label(method, path), macha::observation_route_label(method, path));
 }
 }  // namespace
 }  // namespace dannan

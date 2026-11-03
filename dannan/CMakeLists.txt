@@ -14,7 +14,10 @@ add_library(dannan SHARED
   identity/crypto.cpp
   identity/durable_file.cpp
   identity/node_id.cpp
+  identity/node_identity.cpp
   membership/node_record.cpp
+  membership/identity_reset.cpp
+  membership/membership.cpp
   net/assembler.cpp
   net/channel.cpp
   net/client.cpp
@@ -25,10 +28,23 @@ add_library(dannan SHARED
   net/scheduler.cpp
   net/server.cpp
   net/session.cpp
+  placement/placement.cpp
+  reach/connectivity.cpp
+  reach/dial_back.cpp
+  reach/external_ip.cpp
+  reach/inbound.cpp
+  reach/upnp.cpp
   sched/memory_limit.cpp
   sched/retained_memory.cpp
   sched/work.cpp
   status/log.cpp
+  status/activity.cpp
+  status/events.cpp
+  status/observation.cpp
+  status/surface.cpp
+  status/telemetry.cpp
+  supervise/supervised.cpp
+  supervise/supervisor.cpp
   version.cpp
 )
 target_include_directories(dannan
@@ -38,7 +54,7 @@ target_include_directories(dannan
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}>
 )
 target_link_libraries(dannan
-  PUBLIC Boost::headers OpenSSL::Crypto Threads::Threads
+  PUBLIC Boost::headers OpenSSL::SSL OpenSSL::Crypto Threads::Threads
   PRIVATE dannan_warnings
 )
 set_target_properties(dannan PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR})

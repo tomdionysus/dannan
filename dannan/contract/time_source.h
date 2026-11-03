@@ -8,6 +8,7 @@
 #pragma once
 
 #include <chrono>
+#include <cstdint>
 
 namespace dannan::contract {
 
@@ -37,6 +38,29 @@ class SteadyTimeSource final : public TimeSource {
 inline const TimeSource& steady_time_source() noexcept {
   static const SteadyTimeSource source;
   return source;
+}
+
+// Wall-clock milliseconds since the Unix epoch, for what is recorded or
+// gossiped as a date (when a node was last heard of, when a reset was made).
+// Never used to decide a deadline: that is the steady TimeSource's. Tests
+// hand in a stepped one.
+class WallClock {
+ public:
+  virtual ~WallClock() = default;
+  // Waits on nothing; thread-safe.
+  virtual uint64_t unix_ms() const noexcept = 0;
+};
+
+class SystemWallClock final : public WallClock {
+ public:
+  uint64_t unix_ms() const noexcept override {
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+  }
+};
+
+inline const WallClock& system_wall_clock() noexcept {
+  static const SystemWallClock clock;
+  return clock;
 }
 
 }  // namespace dannan::contract
