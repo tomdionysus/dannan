@@ -12,6 +12,14 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
 
+## 2026-11-03, night -- signing
+
+`identity/signing.*`, the stack's one home for signatures: ES256 (P-256,
+SHA-256, 64-byte r || s as JOSE wants) and Ed25519; `SigningKey`
+(generate, from PKCS#8, to PKCS#8 in secure memory, SubjectPublicKeyInfo,
+sign); `verify`, which treats anything malformed as false. **Gate:
+`dannan_tests` 341, `dagda_tests` 1.**
+
 ## 2026-11-03, night -- the compose bed passes; secure memory
 
 On `feature/wire-v1` (this commit):

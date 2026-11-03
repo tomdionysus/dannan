@@ -16,6 +16,7 @@ add_library(dannan SHARED
   identity/node_id.cpp
   identity/node_identity.cpp
   identity/secure_memory.cpp
+  identity/signing.cpp
   membership/node_record.cpp
   membership/identity_reset.cpp
   membership/membership.cpp
