@@ -14,6 +14,7 @@ add_library(dannan SHARED
   identity/crypto.cpp
   identity/durable_file.cpp
   identity/node_id.cpp
+  identity/node_identity.cpp
   membership/node_record.cpp
   membership/identity_reset.cpp
   membership/membership.cpp
@@ -32,6 +33,11 @@ add_library(dannan SHARED
   sched/retained_memory.cpp
   sched/work.cpp
   status/log.cpp
+  status/activity.cpp
+  status/events.cpp
+  status/observation.cpp
+  status/surface.cpp
+  status/telemetry.cpp
   version.cpp
 )
 target_include_directories(dannan

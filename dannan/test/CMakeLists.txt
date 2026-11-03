@@ -18,6 +18,7 @@ add_executable(dannan_tests
   fixtures_test.cpp
   identity_crypto_test.cpp
   identity_durable_file_test.cpp
+  identity_node_identity_test.cpp
   membership_test.cpp
   placement_test.cpp
   net_assembler_test.cpp
@@ -33,6 +34,9 @@ add_executable(dannan_tests
   sched_walk_retry_test.cpp
   sched_work_test.cpp
   status_log_test.cpp
+  status_observation_test.cpp
+  status_surface_test.cpp
+  status_telemetry_test.cpp
   version_test.cpp
 )
 target_link_libraries(dannan_tests PRIVATE dannan dannan_test_fixtures GTest::gtest_main dannan_warnings)
