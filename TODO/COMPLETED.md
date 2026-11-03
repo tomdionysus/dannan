@@ -12,6 +12,14 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
 
+## 2026-11-03, night -- JSON log lines
+
+`status::JsonSink` beside `ConsoleSink`: one object per line (`time`,
+`level`, `scope`, `message`), the same UTC time and filtering, the message
+escaped as JSON requires; `LogFormat` and `parse_log_format("text"|"json")`,
+`console_sink(format, level)`. Asked by Lugh; a stack need, since every node
+is shipped alike. **Gate: `dannan_tests` 373, `dagda_tests` 1.**
+
 ## 2026-11-03, night -- level 0's last rules: placement and the relay budget
 
 - `placement::Scheme::demote_relay_only`: bulk placement told of level 0
