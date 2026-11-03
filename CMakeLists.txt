@@ -25,7 +25,7 @@ option(DANNAN_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 
 # Asio is header-only; 1.87 is AthenaSIP's floor and the two must agree.
 find_package(Boost 1.87 CONFIG REQUIRED COMPONENTS headers)
-find_package(OpenSSL 3 REQUIRED COMPONENTS Crypto)
+find_package(OpenSSL 3 REQUIRED COMPONENTS Crypto SSL)
 find_package(Threads REQUIRED)
 
 add_library(dannan_warnings INTERFACE)

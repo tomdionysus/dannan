@@ -21,6 +21,8 @@ add_executable(dannan_tests
   identity_node_identity_test.cpp
   membership_test.cpp
   placement_test.cpp
+  reach_test.cpp
+  reach_upnp_test.cpp
   net_assembler_test.cpp
   net_channel_test.cpp
   net_client_test.cpp
