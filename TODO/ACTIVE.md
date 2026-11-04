@@ -47,9 +47,9 @@ configure line for Macha is in `COMPLETED.md`).
 
 ## Resume here (2026-11-04)
 
-Written for a session starting from nothing. Dannan **0.4.0** is released
-(`main`, annotated tag `0.4.0`, pushed to `origin` at Tom's word,
-2026-11-04). 0.2.0 gave wire v1 (Dannan's own, from version 1), level 0
+Written for a session starting from nothing. Dannan **0.4.1** is released
+(`main`, annotated tag `0.4.1`; 0.4.0 pushed to `origin` at Tom's word,
+2026-11-04, 0.4.1 not pushed). 0.2.0 gave wire v1 (Dannan's own, from version 1), level 0
 (path classes, brokered punches, relays, moving up a class, the relay's
 DATA budget, placement told a peer's path class), channels (notify,
 stream, bulk), the roster-change feed with incarnations, and the stack's
@@ -63,9 +63,9 @@ beside v1, CA-signed revocation, `dannan-ca`, the scope seam;
 count, `Nodes::absent_since`). 0.4.0 adds `dannan::config` (the settings
 reader every node binary shares, on yaml-cpp), percent-encoding
 (`dannan::encoding`), `x25519_public`, `Principal ==`, and a peer's
-certificate and the CA through the Context. Installed for
-`find_package(dannan 0.4 CONFIG)`. Work continues on `feature/wire-v1`,
-merged into `develop` at each milestone. Gate: `dannan_tests` 422.
+certificate and the CA through the Context; 0.4.1 adds
+`Readiness::declare`. Installed for `find_package(dannan 0.4 CONFIG)`. Work continues on `feature/wire-v1`,
+merged into `develop` at each milestone. Gate: `dannan_tests` 423.
 
 Dannan is one of a stack: Dagda (`../dagda`, the store), Lugh (`../lugh`,
 the directory) and Lir (`../lir`, MQTT events) are hosted systems on it,
@@ -74,7 +74,9 @@ each with its own session; what each owns is
 `CONTRIBUTING.md`. Lugh pins 0.3.0 (Lugh `db34a34`, 353 tests in debug,
 ASan and TSan, no change needed); Dagda pins 0.3.0 (320 tests, every
 stand-in for Dannan gone, nothing more wanted from 0.3.x for its step);
-Lir moves to it at its own pace. Tom decided (via Dagda, 2026-11-04) that
+Lir builds on 0.4.0 (`lir-node` reads its settings through
+`dannan::config`, and its own percent decoder is gone for
+`dannan::encoding`). Tom decided (via Dagda, 2026-11-04) that
 Dagda's domain keys are wrapped to an X25519 key each node derives from
 custody (`derive_local("dagda/wrap/1")`), its public half advertised and
 signed with `Identity::sign`, not to the certificate's P-256 key: Dannan

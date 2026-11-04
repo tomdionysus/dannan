@@ -5,6 +5,11 @@ left green. `ACTIVE.md` is the plan and this is the record.
 
 ## Releases
 
+- **0.4.1** (2026-11-04, `main`, tag `0.4.1`, not pushed; Tom: "continue,
+  inform other projects when done"): `status::Readiness::declare`, a
+  hosted system's planes declared before the node starts. A patch so
+  `find_package(dannan 0.4 CONFIG)` takes it unchanged. Gate
+  `dannan_tests` 423; pre-release ASan/UBSan and TSan 423 each, no report.
 - **0.4.0** (2026-11-04, `main`, tag `0.4.0`, pushed; Tom: "commit,
   merge, cut a tag, push"): `dannan::config`, the settings reader every
   node binary shares (yaml-cpp, a new dependency, Tom's call), with
@@ -45,6 +50,17 @@ left green. `ACTIVE.md` is the plan and this is the record.
   processes against Macha's binary). Gate `dannan_tests` 206,
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
+
+## 2026-11-04 -- readiness planes declared by the hosted system
+
+For Dagda (step 7a): `status::Readiness::declare(plane)`, through
+`context().readiness()`, callable until the node starts
+(`close_declarations()` at `Node::start`), so a hosted system declares its
+own planes beside `NodeConfig::planes` and the node is still never ready
+before every plane is known; after start it throws `std::logic_error`, as
+`routes().add` does. `Node.AHostedSystemDeclaresItsPlanesBeforeStart`
+(`7a3866c`). Gate `dannan_tests` 423. Lir builds on 0.4.0 (its settings
+through `dannan::config`, its percent decoder gone); Dagda pins 0.4.0.
 
 ## 2026-11-04 -- one settings reader for every node binary; Dagda's step 6 asks
 
