@@ -25,6 +25,17 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
 
+## 2026-11-04 -- the compose bed in GoogleTest
+
+`test/compose/compose_test.cpp`, `dannan_compose_tests`, built with
+`DANNAN_BUILD_COMPOSE_TESTS`: the bed's driver in GoogleTest (Tom: no
+Python), through `test::ChildProcess` and the nodes' JSON status lines, the
+same phases as before; a failed docker command's stderr is quoted in the
+failure. `scenario.py` is deleted. Its first run found that 0.2.0's
+Dockerfile did not copy the new `cmake/` directory, so the image could not
+configure (the bed is opt-in, outside the gate; the tag's library is
+unaffected); fixed. It then passed every phase in 5.5 minutes.
+
 ## 2026-11-04 -- the child process fixture
 
 `dannan/test/fixtures/child_process.h` (`test::ChildProcess`), moved out of

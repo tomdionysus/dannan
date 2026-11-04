@@ -16,6 +16,7 @@ RUN pacman -Syu --noconfirm --needed cmake ninja clang boost openssl iproute2 ip
 
 WORKDIR /src
 COPY CMakeLists.txt ./
+COPY cmake cmake
 COPY dannan dannan
 COPY dagda dagda
 COPY tools tools
