@@ -1,6 +1,10 @@
 # Dannan: closing the Macha port list
 
-Status: respec, 2026-11-04 night, not yet built. It answers section 5.2 of
+Status: respec, 2026-11-04 night, being built. Tom's confirmation came relayed by
+the Macha session, with these rulings: the Pi measurements and the real IGD run
+stay on hold; a Macha case whose subject becomes Dannan's may be retired against a
+named `dannan_tests` case, so the seams in item 3 are built only where a
+Macha-visible behaviour needs them; two cutovers, transport first. It answers section 5.2 of
 `../macha/TODO/2026-11-04-dannan-dagda-port-evaluation.md` and the fuller list
 the Macha session sent the same night, relayed as Tom's instruction: Macha is
 the source of truth for the port, and where Dannan differs from Macha's
@@ -81,8 +85,8 @@ membership and propagation do.
 
 **Will do:**
 
-- `dial_hook`, `send_hook` and `admit_hook` on `NodeConfig`, with Macha's meaning:
-  `send` may refuse a call or report the route gone; `admit` wraps the install.
+- `dial_hook` on `NodeConfig`. Send and admit seams only if the port's case
+  mapping finds a Macha-visible behaviour that needs them.
 - `WaitGuard` created by the node and reached through the Context.
 - `ObservationRecorder` owned by the node, started first, writing
   `observation/observations.jsonl` (64 MiB, one minute), with hosted gauges
