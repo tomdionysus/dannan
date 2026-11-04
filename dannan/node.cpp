@@ -62,6 +62,7 @@ class Node::NodesNoun final : public Nodes {
   NodeRecord self() const override { return _node._members.self(); }
   std::vector<NodeRecord> roster() const override { return _node._members.all(); }
   std::vector<NodeRecord> active() const override { return _node._members.active(); }
+  std::optional<contract::TimePoint> absent_since(const identity::NodeId& node) const override { return _node._members.absent_since(node); }
   bool directly_reachable(const identity::NodeId& node) const override { return _node._members.directly_reachable(node); }
   bool inbound_capable(const identity::NodeId& node) const override { return _node._members.inbound_capable(node); }
   RosterSnapshot snapshot() const override {
