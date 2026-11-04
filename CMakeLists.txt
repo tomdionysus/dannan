@@ -8,7 +8,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 # One number for the repository: both libraries, the tag and --version.
-project(dannan VERSION 0.1.0 LANGUAGES CXX)
+project(dannan VERSION 0.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -28,6 +28,8 @@ option(DANNAN_BUILD_FUZZING "Build each fuzz target as its own binary (libFuzzer
 find_package(Boost 1.87 CONFIG REQUIRED COMPONENTS headers)
 find_package(OpenSSL 3 REQUIRED COMPONENTS Crypto SSL)
 find_package(Threads REQUIRED)
+# Where an install puts things; before any target names its install paths.
+include(GNUInstallDirs)
 
 add_library(dannan_warnings INTERFACE)
 target_compile_options(dannan_warnings INTERFACE -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wno-sign-conversion)
