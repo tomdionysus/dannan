@@ -11,6 +11,7 @@
 add_library(dannan SHARED
   contract/thread_safety.cpp
   identity/argon2.cpp
+  identity/certificate.cpp
   identity/cluster_key.cpp
   identity/crypto.cpp
   identity/durable_file.cpp
