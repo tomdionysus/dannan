@@ -63,8 +63,8 @@ count, `Nodes::absent_since`). 0.4.0 adds `dannan::config` (the settings
 reader every node binary shares, on yaml-cpp), percent-encoding
 (`dannan::encoding`), `x25519_public`, `Principal ==`, and a peer's
 certificate and the CA through the Context; 0.4.1 adds
-`Readiness::declare`. Installed for `find_package(dannan 0.4 CONFIG)`. Work continues on `feature/wire-v1`,
-merged into `develop` at each milestone. Gate: `dannan_tests` 423.
+`Readiness::declare`. Installed for `find_package(dannan 0.4 CONFIG)`. New work branches off `develop` as
+`feature/<short-name>`, merged back at each milestone. Gate: `dannan_tests` 423.
 
 Dannan is one of a stack: Dagda (`../dagda`, the store), Lugh (`../lugh`,
 the directory) and Lir (`../lir`, MQTT events) are hosted systems on it,
