@@ -504,6 +504,9 @@ TEST(Node, AdvertsReachPeersAndSteerPlacement) {
   const auto b = pair.b->context().identity().id();
   ASSERT_TRUE(eventually([&] { return knows(*pair.a, b) && knows(*pair.b, a); }));
   const auto topology = pair.b->context().events().count(status::NodeEvents::topology);
+  // Membership moved when A joined, and an advert does not move it.
+  const auto members = pair.b->context().events().count(status::NodeEvents::membership);
+  EXPECT_GT(members, 0u);
   pair.a->context().nodes().advertise("capacity", membership::u64_advert(4096));
   const auto advertised = [&] {
     for (const auto& node : pair.b->context().nodes().active())
@@ -512,6 +515,7 @@ TEST(Node, AdvertsReachPeersAndSteerPlacement) {
   };
   EXPECT_TRUE(eventually(advertised));
   EXPECT_TRUE(eventually([&] { return pair.b->context().events().count(status::NodeEvents::topology) > topology; }));
+  EXPECT_EQ(pair.b->context().events().count(status::NodeEvents::membership), members);
   const placement::Scheme scheme{"test/fallback", "test/extra-domain", "capacity"};
   const std::vector<uint8_t> key(32, 7);
   const auto placed = pair.b->context().nodes().placement(key, 1, scheme, "capacity");

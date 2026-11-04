@@ -35,12 +35,15 @@ NodeRecord initial_self(const NodeConfig& config, const identity::NodeId& id, co
   return self;
 }
 
-// What a topology event is for: where a node is, what it does, and what
-// it advertises; its liveness and candidates are not.
-bool shape_changed(const NodeRecord& before, const NodeRecord& after) {
+// What a membership event is for: where a node is, what it does, and how
+// it is reached; its liveness and candidates are not.
+bool place_changed(const NodeRecord& before, const NodeRecord& after) {
   return before.host != after.host || before.port != after.port || before.failure_domain != after.failure_domain || before.incarnation != after.incarnation ||
-         before.capabilities != after.capabilities || before.path_class != after.path_class || before.adverts != after.adverts;
+         before.capabilities != after.capabilities || before.path_class != after.path_class;
 }
+
+// What a topology event is for: the same, and what the node advertises.
+bool shape_changed(const NodeRecord& before, const NodeRecord& after) { return place_changed(before, after) || before.adverts != after.adverts; }
 
 std::vector<identity::NodeId> ids_of(const std::vector<NodeRecord>& nodes) {
   std::vector<identity::NodeId> out;
@@ -634,6 +637,7 @@ const char* roster_change_name(RosterChange::Kind kind) noexcept {
 
 void Node::topology_changed(bool quiet) {
   std::vector<RosterChange> changes;
+  bool membership = false;
   {
     contract::Lock lock(_watch_mutex);
     std::map<identity::NodeId, NodeRecord> now;
@@ -641,18 +645,25 @@ void Node::topology_changed(bool quiet) {
       if (node.id != _identity.id) now.emplace(node.id, std::move(node));
     for (const auto& [id, node] : now) {
       const auto before = _told.find(id);
-      if (before == _told.end())
+      if (before == _told.end()) {
         changes.push_back({RosterChange::Kind::joined, node});
-      else if (shape_changed(before->second, node))
+        membership = true;
+      } else if (shape_changed(before->second, node)) {
         changes.push_back({RosterChange::Kind::changed, node});
+        membership = membership || place_changed(before->second, node);
+      }
     }
     for (const auto& [id, node] : _told)
-      if (!now.contains(id)) changes.push_back({RosterChange::Kind::left, node});
+      if (!now.contains(id)) {
+        changes.push_back({RosterChange::Kind::left, node});
+        membership = true;
+      }
     _told = std::move(now);
     for (const auto& [_, watcher] : _watchers)
       for (const auto& change : changes) asio::post(watcher.executor, [handler = watcher.handler, change] { handler(change); });
   }
   if (!quiet || !changes.empty()) _events.notify(status::NodeEvents::topology);
+  if (membership) _events.notify(status::NodeEvents::membership);
 }
 
 void Node::observe_direct(const NodeRecord& peer) {
