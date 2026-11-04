@@ -25,6 +25,16 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
 
+## 2026-11-04 -- ChildProcess for a command's process tests
+
+Asked by Lugh, whose process tests move into GoogleTest: `ChildOptions`
+(the whole environment replaced; bytes on standard input, written on a
+thread of its own over a socket so a child that never reads cannot hold
+the test or SIGPIPE it, /dev/null otherwise; standard output and error on a
+pseudo-terminal), `read_all(deadline)` for raw output, `signal(number)`.
+Existing callers unchanged. libutil linked on Linux for the terminal.
+**Gate: `dannan_tests` 379.**
+
 ## 2026-11-04 -- the dagda/ stub removed
 
 Dagda has its own repository and took what it needed (its session, step 0

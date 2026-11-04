@@ -9,7 +9,7 @@
 # the stepped clock. Header-only, included as "dannan/test/fixtures/x.h".
 add_library(dannan_test_fixtures INTERFACE)
 target_include_directories(dannan_test_fixtures INTERFACE ${PROJECT_SOURCE_DIR})
-target_link_libraries(dannan_test_fixtures INTERFACE GTest::gtest Threads::Threads)
+target_link_libraries(dannan_test_fixtures INTERFACE GTest::gtest Threads::Threads $<$<PLATFORM_ID:Linux>:util>)
 # Tests write only inside the build tree.
 target_compile_definitions(dannan_test_fixtures INTERFACE DANNAN_TEST_TEMP_ROOT="${PROJECT_BINARY_DIR}/test-tmp")
 
