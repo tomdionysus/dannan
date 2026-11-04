@@ -27,6 +27,15 @@ class Readiness {
  public:
   explicit Readiness(std::vector<std::string> planes = {}, const contract::WallClock* wall = &contract::system_wall_clock());
 
+  // Declares a plane, not yet ready, for a hosted system that recovers
+  // state of its own: callable until the node starts (close_declarations),
+  // so a node is never ready before every plane it will have is known.
+  // Declaring one already declared does nothing. Throws
+  // std::invalid_argument for an empty name, std::logic_error once closed.
+  void declare(const std::string& plane);
+  // The node starting: the planes are fixed from here.
+  void close_declarations();
+
   void control_plane(bool online);
   bool control_plane_online() const;
   // Throws std::invalid_argument for a plane not declared.
@@ -54,6 +63,7 @@ class Readiness {
   std::condition_variable _changed;
   std::map<std::string, bool> _planes DANNAN_GUARDED_BY(_mutex);
   bool _online DANNAN_GUARDED_BY(_mutex) = false;
+  bool _closed DANNAN_GUARDED_BY(_mutex) = false;
   bool _failed DANNAN_GUARDED_BY(_mutex) = false;
   std::string _error DANNAN_GUARDED_BY(_mutex);
   uint64_t _ready_unix_ms DANNAN_GUARDED_BY(_mutex) = 0;
