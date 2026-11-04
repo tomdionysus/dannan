@@ -22,6 +22,7 @@ endif()
 
 option(DANNAN_BUILD_TESTING "Build dannan_tests and dagda_tests (GoogleTest)" OFF)
 option(DANNAN_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
+option(DANNAN_BUILD_COMPOSE_TESTS "Build dannan_compose_tests, the Docker NAT bed's driver (needs DANNAN_BUILD_TESTING)" OFF)
 option(DANNAN_BUILD_FUZZING "Build each fuzz target as its own binary (libFuzzer where the compiler has it)" OFF)
 
 # Asio is header-only; 1.87 is AthenaSIP's floor and the two must agree.
@@ -55,4 +56,7 @@ if(DANNAN_BUILD_TESTING)
   find_package(GTest 1.14 CONFIG REQUIRED)
   add_subdirectory(dannan/test)
   add_subdirectory(dagda/test)
+  if(DANNAN_BUILD_COMPOSE_TESTS)
+    add_subdirectory(test/compose)
+  endif()
 endif()
