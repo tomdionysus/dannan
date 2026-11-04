@@ -25,6 +25,25 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
 
+## 2026-11-04 -- sched::DutyShare, and a membership event count
+
+For Dagda (step 3):
+
+- `sched::DutyShare` (`dannan/sched/duty_share.h`): a background loop's
+  duty cycle by weight, from what Macha's `WeightedLoaderService` does
+  (inventory: background pacing). Work-conserving while nothing contends;
+  while something does, one slice then a rest of active time x
+  foreground:background; weights at least one, a rest at most a day, so
+  never starved; setup counted active but not charged; several workers
+  charge once, at the last. Time is passed in. 7 tests.
+- `status::NodeEvents::membership`: moves when a node joins or leaves the
+  active roster, or its place, capabilities, path class or incarnation
+  changes; never on adverts, which still move `topology`. Dagda's survey
+  re-asks on it instead. `NodeEvents::dannan_kinds` (2) now bounds the
+  hosted system's kinds; `NodeEvents.KindsAreBounded` counts from it.
+
+Gate `dannan_tests` 406.
+
 ## 2026-11-04 -- a call's deadline cancels it; Time gives source and executor
 
 For Dagda (step 3a works round both today):
