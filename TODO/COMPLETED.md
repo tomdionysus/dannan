@@ -12,6 +12,16 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
 
+## 2026-11-04 -- creating a file that is never replaced
+
+`identity::durable_create_file`: durable_replace_file's guarantees, ending
+in `link()`, which refuses an existing name atomically, so of two creators
+exactly one wins; an existing file is refused with `filesystem_error`
+(`errc::file_exists`) and left untouched, and no temporary is left behind.
+Lugh asked; it also closed a race in `KeyCustody::create`, which checked
+for custody and then renamed over it, so two inits at once could both
+make custody. **Gate: `dannan_tests` 375, `dagda_tests` 1.**
+
 ## 2026-11-03, night -- JSON log lines
 
 `status::JsonSink` beside `ConsoleSink`: one object per line (`time`,
