@@ -189,7 +189,14 @@ std::optional<Secret> KeyCustody::create(const std::filesystem::path& state, con
   file.fixed(sealed.nonce);
   file.fixed(sealed.tag);
   file.bytes(sealed.ciphertext);
-  durable_replace_file(custody_path(state), std::string_view(reinterpret_cast<const char*>(file.data().data()), file.data().size()));
+  // Created, never replaced: two inits racing cannot both make custody.
+  try {
+    durable_create_file(custody_path(state), std::string_view(reinterpret_cast<const char*>(file.data().data()), file.data().size()));
+  } catch (const std::filesystem::filesystem_error& error) {
+    if (error.code() == std::errc::file_exists)
+      throw std::runtime_error("key custody already exists at " + custody_path(state).string() + ": it is never replaced");
+    throw;
+  }
   return root;
 }
 
