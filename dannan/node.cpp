@@ -356,6 +356,7 @@ Node::Node(asio::io_context& io, NodeConfig config)
       _telemetry(_identity.id, _config.state_path / "telemetry" / "last-known.bin", _config.time, _config.wall, _config.telemetry_layout),
       _readiness(_config.planes, _config.wall),
       _activity(_config.time),
+      _threads(std::chrono::seconds(1), std::chrono::seconds(60), _config.wall, _config.time),
       _memory(_config.memory_bytes, _config.control_reserve_bytes, _config.foreground_reserve_bytes, _config.loader_reserve_bytes,
               _config.reassembly_reserve_bytes),
       _nodes(std::make_unique<NodesNoun>(*this)),

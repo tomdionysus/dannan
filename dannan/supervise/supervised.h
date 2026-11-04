@@ -40,8 +40,9 @@ struct SupervisedThreadStatus {
 class SupervisedThreads {
  public:
   explicit SupervisedThreads(std::chrono::milliseconds initial = std::chrono::seconds(1), std::chrono::milliseconds ceiling = std::chrono::seconds(60),
-                             const contract::WallClock* wall = &contract::system_wall_clock())
-      : _initial(initial), _ceiling(ceiling), _wall(wall) {}
+                             const contract::WallClock* wall = &contract::system_wall_clock(),
+                             const contract::TimeSource* time = &contract::steady_time_source())
+      : _initial(initial), _ceiling(ceiling), _wall(wall), _time(time) {}
 
   // A service loop: `body` runs until `stop`; if it throws it runs again
   // after a backoff (doubling from initial to the ceiling, back to initial
@@ -67,6 +68,7 @@ class SupervisedThreads {
   const std::chrono::milliseconds _initial;
   const std::chrono::milliseconds _ceiling;
   const contract::WallClock* const _wall;
+  const contract::TimeSource* const _time;
   mutable contract::Mutex _mutex;
   std::map<std::string, SupervisedThreadStatus, std::less<>> _statuses DANNAN_GUARDED_BY(_mutex);
 };

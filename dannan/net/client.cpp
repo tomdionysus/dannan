@@ -79,6 +79,11 @@ struct Watchdog : std::enable_shared_from_this<Watchdog> {
   }
 };
 
+// What a timer should sleep for to look again at `at`, in `time`'s time.
+std::chrono::milliseconds sleep_towards(const contract::TimeSource& time, contract::TimePoint at) {
+  return time.wake_within(std::max(std::chrono::ceil<std::chrono::milliseconds>(at - time.now()), std::chrono::milliseconds(0)));
+}
+
 // How good a session's path is: direct (or reverse dialled) over punched
 // over relayed.
 int path_rank(Purpose purpose) {
@@ -1085,12 +1090,14 @@ std::optional<std::chrono::milliseconds> Client::peer_latency(const identity::No
 struct Client::Probe {
   std::weak_ptr<Session> session;
   Lane lane;
-  contract::Clock::time_point deadline;
+  contract::TimePoint deadline;
   asio::steady_timer timer;
-  contract::Clock::time_point sent{};
+  contract::TimePoint sent{};
+  contract::TimePoint give_up_at{};
+  uint64_t awaiting = 0;  // the ping this attempt waits on; 0 once answered
   bool stalled = false;
   std::string last_error;
-  Probe(asio::strand<asio::io_context::executor_type>& strand, std::weak_ptr<Session> session, Lane lane, contract::Clock::time_point deadline)
+  Probe(asio::strand<asio::io_context::executor_type>& strand, std::weak_ptr<Session> session, Lane lane, contract::TimePoint deadline)
       : session(std::move(session)), lane(lane), deadline(deadline), timer(strand) {}
 };
 
@@ -1105,7 +1112,12 @@ void Client::start() {
 }
 
 void Client::arm_heartbeat() {
-  _heartbeat.expires_after(_options.heartbeat);
+  _next_heartbeat = _options.time->now() + _options.heartbeat;
+  await_heartbeat();
+}
+
+void Client::await_heartbeat() {
+  _heartbeat.expires_after(sleep_towards(*_options.time, _next_heartbeat));
   _heartbeat.async_wait([this](const boost::system::error_code& error) {
     bool stopped;
     {
@@ -1113,6 +1125,7 @@ void Client::arm_heartbeat() {
       stopped = _stopped;
     }
     if (error || stopped) return end_operation();
+    if (_options.time->now() < _next_heartbeat) return await_heartbeat();
     open_lanes();
     health_pass();
     arm_heartbeat();
@@ -1121,7 +1134,7 @@ void Client::arm_heartbeat() {
 
 void Client::health_pass() {
   std::vector<std::shared_ptr<Probe>> probes;
-  const auto deadline = contract::Clock::now() + _options.dead_after;
+  const auto deadline = _options.time->now() + _options.dead_after;
   {
     contract::Lock lock(_mutex);
     std::set<RouteKey> seen;
@@ -1149,7 +1162,7 @@ void Client::attempt(const std::shared_ptr<Probe>& probe) {
   const auto session = probe->session.lock();
   if (stopped || !session || !session->usable()) return end_operation();
   probe->stalled = false;
-  probe->sent = contract::Clock::now();
+  probe->sent = _options.time->now();
   const auto admitted =
       session->call(message::ping, {}, sched::FrameType::control, _health_strand, [this, probe](CallOutcome outcome) { answered(probe, std::move(outcome)); });
   if (!admitted.refused.empty()) {
@@ -1157,21 +1170,31 @@ void Client::attempt(const std::shared_ptr<Probe>& probe) {
     return retry(probe);
   }
   // A third of the liveness budget per attempt, leaving room to retry.
-  probe->timer.expires_after(std::max(_options.dead_after / 3, std::chrono::milliseconds(100)));
-  probe->timer.async_wait([probe, id = admitted.request_id](const boost::system::error_code& error) {
-    if (error) return;
+  probe->give_up_at = probe->sent + std::max(_options.dead_after / 3, std::chrono::milliseconds(100));
+  probe->awaiting = admitted.request_id;
+  await_ping(probe);
+}
+
+void Client::await_ping(const std::shared_ptr<Probe>& probe) {
+  probe->timer.expires_after(sleep_towards(*_options.time, probe->give_up_at));
+  // Answered, the operation may have ended and this client gone: only the
+  // probe is touched until `awaiting` says otherwise.
+  probe->timer.async_wait([this, probe, id = probe->awaiting](const boost::system::error_code& error) {
+    if (error || probe->awaiting != id) return;
+    if (_options.time->now() < probe->give_up_at) return await_ping(probe);
     probe->stalled = true;
     if (const auto live = probe->session.lock()) live->cancel(id);
   });
 }
 
 void Client::answered(const std::shared_ptr<Probe>& probe, CallOutcome outcome) {
+  probe->awaiting = 0;
   probe->timer.cancel();
   const auto session = probe->session.lock();
   // An answer is proof of life however late it comes.
   if (outcome.reply && outcome.reply->type == message::ok) {
     if (probe->lane == Lane::control && session) {
-      const auto sample = std::chrono::duration<double, std::milli>(contract::Clock::now() - probe->sent).count();
+      const auto sample = std::chrono::duration<double, std::milli>(_options.time->now() - probe->sent).count();
       {
         contract::Lock lock(_mutex);
         auto [slot, fresh] = _latency_ms.try_emplace(session->peer().id, sample);
@@ -1193,14 +1216,27 @@ void Client::answered(const std::shared_ptr<Probe>& probe, CallOutcome outcome) 
 
 void Client::retry(const std::shared_ptr<Probe>& probe) {
   constexpr auto pause = std::chrono::milliseconds(50);
-  if (contract::Clock::now() + pause >= probe->deadline) {
+  const auto resume_at = _options.time->now() + pause;
+  if (resume_at >= probe->deadline) {
     // Close exactly the route this probe was on: a replacement the peer
     // opened meanwhile is not touched.
     if (const auto session = probe->session.lock()) session->close("liveness failure: " + probe->last_error);
     return end_operation();
   }
-  probe->timer.expires_after(pause);
-  probe->timer.async_wait([this, probe](const boost::system::error_code&) { attempt(probe); });
+  await_retry(probe, resume_at);
+}
+
+void Client::await_retry(const std::shared_ptr<Probe>& probe, contract::TimePoint resume_at) {
+  probe->timer.expires_after(sleep_towards(*_options.time, resume_at));
+  probe->timer.async_wait([this, probe, resume_at](const boost::system::error_code& error) {
+    bool stopped;
+    {
+      contract::Lock lock(_mutex);
+      stopped = _stopped;
+    }
+    if (!error && !stopped && _options.time->now() < resume_at) return await_retry(probe, resume_at);
+    attempt(probe);
+  });
 }
 
 void Client::stop() {

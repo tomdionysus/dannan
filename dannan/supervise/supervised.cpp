@@ -60,10 +60,10 @@ void SupervisedThreads::loop(std::string_view name, std::stop_token stop, const 
   status::set_thread_name(name);
   size_t consecutive = 0;
   while (!stop.stop_requested()) {
-    const auto started = contract::Clock::now();
+    const auto started = _time->now();
     if (run(name, body).empty()) return;
     // A long healthy run earns a fresh backoff.
-    consecutive = contract::Clock::now() - started > _ceiling ? 1 : consecutive + 1;
+    consecutive = _time->now() - started > _ceiling ? 1 : consecutive + 1;
     adjust(name, 0, 1);
     {
       std::mutex mutex;

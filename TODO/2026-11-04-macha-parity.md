@@ -128,15 +128,24 @@ everything else the CONTROL one. So the per-route option reproduces it exactly.
 
 ## 5. Injected time
 
-**Confirmed, and wider than listed.** `client.cpp:63`, `:1124`, `:1152`, `:1174`,
-`:1196` as named, and also `reach/connectivity.cpp:46-70` and
-`supervise/supervised.cpp:63-66`. The server's and `reach/paths.cpp`'s timers need
-the same look.
+**Built.** The heartbeat, the ping give-up, the retry pause and the round-trip
+sample read the node's `TimeSource`, as does `SupervisedThreads`' "long healthy
+run". `TimeSource::wake_within` says how long a timer may sleep: exact on the real
+clock, so production keeps one timer per wait, and short on a stepped source. Cases:
+`Health.TheHeartbeatFollowsTheInjectedTime`,
+`Health.ALivenessBudgetIsSpentInTheInjectedTime`,
+`Health.StoppingEndsAProbeWaitingOnStoppedTime`,
+`Client.TheNoProgressDeadlineFollowsTheInjectedTime`,
+`SupervisedThreads.ALongRunInTheInjectedTimeEarnsAFreshBackoff`.
 
-**Will do:** decisions read the node's `TimeSource`; Asio timers only wake the
-loop, and a stepped source can drive the same tick. The tests that depend on real
-waits move to stepped time. `sched/retained_memory.cpp:127` stays on the real
-clock: it is a condition-variable deadline, not a decision.
+**Correction to the first reading:** the watchdog already decided by injected time
+(`Session::idle_for`); `client.cpp:63` only sets its wake. Its new case pins that.
+
+**Left on the real clock, on purpose:** bounds on real I/O (connect, handshake,
+path and reverse-dial timeouts, `reach/connectivity.cpp`'s socket deadline) and the
+condition-variable deadline in `sched/retained_memory.cpp`. `Routes::call`'s
+deadline and `Time::after` are still real timers too, which a hosted system testing
+on stepped time should know.
 
 ## 6. A measured gate
 

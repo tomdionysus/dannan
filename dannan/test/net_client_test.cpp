@@ -23,6 +23,7 @@
 #include "dannan/net/client.h"
 #include "dannan/net/server.h"
 #include "dannan/test/fixtures/gate.h"
+#include "dannan/test/fixtures/stepped_time.h"
 #include "dannan/test/fixtures/temp_dir.h"
 
 namespace dannan::net {
@@ -395,6 +396,81 @@ TEST(Health, APeerThatStopsAnsweringLosesItsRoute) {
   b.hang_pings = 1000;
   EXPECT_TRUE(eventually([&] { return !a.client->has_route(b.self.id, Lane::control); }));
   EXPECT_TRUE(eventually([&] { return b.server->sessions() == 0; }));
+}
+
+// The health loop's decisions read the injected time: with a real clock these
+// budgets would take an hour.
+TEST(Health, TheHeartbeatFollowsTheInjectedTime) {
+  Io io;
+  test::SteppedTime time;
+  ClientOptions tuning;
+  tuning.time = &time;
+  tuning.heartbeat = 1h;
+  tuning.dead_after = 3h;
+  Node a(io, tuning), b(io);
+  ASSERT_TRUE(call(a, b.self).reply);
+  EXPECT_FALSE(a.client->peer_latency(b.self.id).has_value());
+  time.advance(1h);
+  EXPECT_TRUE(eventually([&] { return a.client->peer_latency(b.self.id).has_value(); }));
+}
+
+TEST(Health, ALivenessBudgetIsSpentInTheInjectedTime) {
+  Io io;
+  test::SteppedTime time;
+  ClientOptions tuning;
+  tuning.time = &time;
+  tuning.heartbeat = 1h;
+  tuning.dead_after = 3h;
+  Node a(io, tuning), b(io);
+  ASSERT_TRUE(call(a, b.self).reply);
+  b.hang_pings = 1000;
+  time.advance(1h);
+  ASSERT_TRUE(b.gate.wait_for_entries(1));
+  // Time standing still spends none of the budget, however often it is read.
+  const auto reads = time.reads();
+  ASSERT_TRUE(eventually([&] { return time.reads() > reads + 20; }));
+  EXPECT_TRUE(a.client->has_route(b.self.id, Lane::control));
+  EXPECT_TRUE(eventually([&] {
+    time.advance(5min);
+    return !a.client->has_route(b.self.id, Lane::control);
+  }));
+}
+
+TEST(Health, StoppingEndsAProbeWaitingOnStoppedTime) {
+  Io io;
+  test::SteppedTime time;
+  ClientOptions tuning;
+  tuning.time = &time;
+  tuning.heartbeat = 1h;
+  tuning.dead_after = 3h;
+  Node a(io, tuning), b(io);
+  ASSERT_TRUE(call(a, b.self).reply);
+  b.hang_pings = 1000;
+  time.advance(1h);
+  ASSERT_TRUE(b.gate.wait_for_entries(1));
+  a.client->stop();
+  EXPECT_FALSE(a.client->has_route(b.self.id, Lane::control));
+}
+
+// The watchdog decides by the injected time too, though a timer wakes it.
+TEST(Client, TheNoProgressDeadlineFollowsTheInjectedTime) {
+  Io io;
+  test::SteppedTime time;
+  ClientOptions tuning;
+  tuning.time = &time;
+  tuning.heartbeat = 2h;
+  tuning.dead_after = 6h;
+  tuning.control_no_progress = 1h;
+  Node a(io, tuning), b(io);
+  ASSERT_TRUE(call(a, b.self).reply);
+  std::thread stepper([&] {
+    b.gate.wait_for_entries(1);
+    time.advance(1h);
+  });
+  const auto stalled = call(a, b.self, slow);
+  stepper.join();
+  EXPECT_FALSE(stalled.reply);
+  EXPECT_NE(stalled.failure.find("cancelled for retry"), std::string::npos) << stalled.failure;
 }
 
 membership::NodeRecord unreachable(Io& io) {
