@@ -40,6 +40,7 @@ add_executable(dannan_tests
   net_scheduler_test.cpp
   net_server_test.cpp
   net_session_test.cpp
+  sched_duty_share_test.cpp
   sched_memory_test.cpp
   sched_walk_retry_test.cpp
   sched_work_test.cpp
