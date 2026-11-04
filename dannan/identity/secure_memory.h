@@ -21,7 +21,12 @@ namespace dannan::identity {
 // Bytes on pages of their own: locked in RAM so they are never swapped
 // (where the process may lock memory), kept out of core dumps and out of
 // forked children (where the platform offers it), and wiped before the
-// pages are released. Fixed size, zeroed at the start. Movable, never
+// pages are released.
+//
+// Not inherited across fork(), on purpose: in a forked child those pages
+// are not mapped, so touching or freeing a parent's SecureBytes, Secret or
+// SecureBuffer there crashes. A forked child (a fork-based test, a helper)
+// makes or derives its own keys. Fixed size, zeroed at the start. Movable, never
 // copied. Not thread-safe; owned by one component.
 class SecureBytes {
  public:
