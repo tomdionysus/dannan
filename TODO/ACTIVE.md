@@ -70,7 +70,8 @@ Dannan is one of a stack: Dagda (`../dagda`, the store), Lugh (`../lugh`,
 the directory) and Lir (`../lir`, MQTT events) are hosted systems on it,
 each with its own session; what each owns is
 `../dagda/TODO/2026-11-03-stack.md`, and the rules for all are
-`CONTRIBUTING.md`. Lugh pins 0.4.1 (Lugh `65cf596`; it reads its settings through
+`CONTRIBUTING.md`. Ogma (`../libogma`) is just a library, not part of the stack
+(Tom, 2026-11-04). Lugh pins 0.4.1 (Lugh `65cf596`; it reads its settings through
 `dannan::config` and decodes with `dannan::encoding`, its own copies gone); Dagda is on 0.4.1 (389 tests; it
 declares its own readiness planes, every stand-in for Dannan gone,
 nothing more wanted for now);
