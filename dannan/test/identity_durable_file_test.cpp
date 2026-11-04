@@ -11,9 +11,13 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <sstream>
+#include <thread>
+#include <vector>
 
 #include "dannan/identity/durable_file.h"
 #include "dannan/test/fixtures/temp_dir.h"
@@ -68,6 +72,61 @@ TEST(DurableFile, AFailureLeavesTheOldStateAndNoDebris) {
   EXPECT_THROW(durable_replace_file(path, "x"), std::runtime_error);
   EXPECT_TRUE(std::filesystem::is_directory(path));
   EXPECT_EQ(entries(dir.path()), 1u);
+}
+
+// Made once and never replaced: an existing file is refused, distinguishably,
+// and left as it was; no temporary is left behind.
+TEST(DurableCreateFile, NeverReplacesAndSaysSo) {
+  test::TempDir dir;
+  const auto path = dir.path() / "sub" / "keyring";
+  durable_create_file(path, "first");
+  try {
+    durable_create_file(path, "second");
+    FAIL();
+  } catch (const std::filesystem::filesystem_error& error) {
+    EXPECT_EQ(error.code(), std::errc::file_exists);
+  }
+  std::ifstream input(path);
+  EXPECT_EQ(std::string((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>()), "first");
+  EXPECT_EQ(std::distance(std::filesystem::directory_iterator(path.parent_path()), std::filesystem::directory_iterator()), 1);
+  EXPECT_EQ(std::filesystem::status(path).permissions() & std::filesystem::perms::all,
+            std::filesystem::perms::owner_read | std::filesystem::perms::owner_write);
+}
+
+// Of creators racing on one name, exactly one wins.
+TEST(DurableCreateFile, OfRacingCreatorsExactlyOneWins) {
+  test::TempDir dir;
+  const auto path = dir.path() / "once";
+  std::atomic<int> won{0}, refused{0};
+  std::vector<std::thread> racers;
+  for (int i = 0; i < 8; ++i)
+    racers.emplace_back([&, i] {
+      try {
+        durable_create_file(path, "racer " + std::to_string(i));
+        ++won;
+      } catch (const std::filesystem::filesystem_error&) {
+        ++refused;
+      }
+    });
+  for (auto& racer : racers) racer.join();
+  EXPECT_EQ(won.load(), 1);
+  EXPECT_EQ(refused.load(), 7);
+  EXPECT_EQ(std::distance(std::filesystem::directory_iterator(dir.path()), std::filesystem::directory_iterator()), 1);
+}
+
+// The directories a write makes are owner-only, like the file; one that
+// was there is left as it was.
+TEST(DurableFile, MakesItsDirectoriesOwnerOnly) {
+  test::TempDir dir;
+  std::filesystem::create_directories(dir.path() / "kept");
+  std::filesystem::permissions(dir.path() / "kept",
+                               std::filesystem::perms::owner_all | std::filesystem::perms::group_read | std::filesystem::perms::group_exec);
+  durable_create_file(dir.path() / "kept" / "a" / "b" / "custody", "x");
+  const auto all = std::filesystem::perms::all;
+  EXPECT_EQ(std::filesystem::status(dir.path() / "kept" / "a").permissions() & all, std::filesystem::perms::owner_all);
+  EXPECT_EQ(std::filesystem::status(dir.path() / "kept" / "a" / "b").permissions() & all, std::filesystem::perms::owner_all);
+  EXPECT_EQ(std::filesystem::status(dir.path() / "kept").permissions() & all,
+            std::filesystem::perms::owner_all | std::filesystem::perms::group_read | std::filesystem::perms::group_exec);
 }
 
 }  // namespace

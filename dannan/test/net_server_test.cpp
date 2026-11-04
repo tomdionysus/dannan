@@ -105,14 +105,14 @@ CallOutcome call(Io& io, Session& session, MessageType type) {
   auto future = done->get_future();
   const auto admitted =
       session.call(type, {}, FrameType::control, io.context.get_executor(), [done](CallOutcome outcome) { done->set_value(std::move(outcome)); });
-  if (!admitted.refused.empty()) return {std::nullopt, admitted.refused};
-  if (future.wait_for(5s) != std::future_status::ready) return {std::nullopt, "timed out"};
+  if (!admitted.refused.empty()) return {std::nullopt, admitted.refused, {}};
+  if (future.wait_for(5s) != std::future_status::ready) return {std::nullopt, "timed out", {}};
   return future.get();
 }
 
 RequestHandler members_reply() {
   return [](const membership::NodeRecord&, FrameType, const Message& request) {
-    return Message{request.type == message::members ? message::members_reply : message::ok, {}, {}};
+    return Handled::processed({request.type == message::members ? message::members_reply : message::ok, {}, {}});
   };
 }
 

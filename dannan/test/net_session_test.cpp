@@ -64,7 +64,7 @@ membership::NodeRecord record(const std::string& host) {
 
 std::shared_ptr<const RouteTable> table() {
   auto routes = RouteTable::with_dannan_types();
-  routes.add(MessageType{5}, {"put_object", Lanes::data, Frames::not_control, false});
+  routes.add(MessageType{1029}, {"put_object", Lanes::data, Frames::not_control, false});
   return std::make_shared<const RouteTable>(std::move(routes));
 }
 
@@ -94,7 +94,7 @@ struct Pair {
       else
         dialled.set_value(std::move(done));
     });
-    async_accept_handshake(sb, key, record("10.0.0.2"), max_frame, "127.0.0.1", [&](std::exception_ptr error, Established done) {
+    async_accept_handshake(sb, key, record("10.0.0.2"), max_frame, {"127.0.0.1", 1}, [&](std::exception_ptr error, Established done) {
       if (error)
         accepted.set_exception(error);
       else
@@ -142,8 +142,8 @@ CallOutcome call_and_wait(Session& session, MessageType type, Bytes payload, Fra
   auto done = std::make_shared<std::promise<CallOutcome>>();
   auto future = done->get_future();
   const auto admitted = session.call(type, std::move(payload), frame, executor, [done](CallOutcome outcome) { done->set_value(std::move(outcome)); });
-  if (!admitted.refused.empty()) return CallOutcome{std::nullopt, admitted.refused};
-  if (future.wait_for(10s) != std::future_status::ready) return CallOutcome{std::nullopt, "test timed out"};
+  if (!admitted.refused.empty()) return CallOutcome{std::nullopt, admitted.refused, {}};
+  if (future.wait_for(10s) != std::future_status::ready) return CallOutcome{std::nullopt, "test timed out", {}};
   return future.get();
 }
 
@@ -196,7 +196,7 @@ TEST(Session, ALargeMessageCrossesInFragments) {
   Pair pair(io, echo(), echo(), Lane::data, 4096);
   Bytes big(1 << 20);
   for (size_t i = 0; i < big.size(); ++i) big[i] = static_cast<uint8_t>(i * 31);
-  const auto result = call_and_wait(*pair.dialler, MessageType{5}, big, FrameType::loader, io.context.get_executor());
+  const auto result = call_and_wait(*pair.dialler, MessageType{1029}, big, FrameType::loader, io.context.get_executor());
   ASSERT_TRUE(result.reply);
   EXPECT_EQ(result.reply->payload, big);
 }
@@ -291,7 +291,7 @@ TEST(Session, ACancelledCallIsToldSoAndThePeerToo) {
   holding.cancelled = [&](uint64_t id) { peer_heard.set_value(id); };
   Pair pair(io, echo(), std::move(holding));
   std::promise<CallOutcome> outcome;
-  const auto admitted = pair.dialler->call(MessageType{999}, {}, FrameType::control, io.context.get_executor(),
+  const auto admitted = pair.dialler->call(MessageType{1999}, {}, FrameType::control, io.context.get_executor(),
                                            [&](CallOutcome result) { outcome.set_value(std::move(result)); });
   auto reply = held_reply.get_future().get();
   pair.dialler->cancel(admitted.request_id);
@@ -329,7 +329,7 @@ TEST(Session, APromotionReachesThePeer) {
   holding.promoted = [&](uint64_t id, FrameType frame) { promoted.set_value({id, frame}); };
   Pair pair(io, echo(), std::move(holding), Lane::data);
   std::promise<CallOutcome> outcome;
-  const auto admitted = pair.dialler->call(MessageType{5}, Bytes{1}, FrameType::speculative, io.context.get_executor(),
+  const auto admitted = pair.dialler->call(MessageType{1029}, Bytes{1}, FrameType::speculative, io.context.get_executor(),
                                            [&](CallOutcome result) { outcome.set_value(std::move(result)); });
   auto reply = held_reply.get_future().get();
   pair.dialler->promote(admitted.request_id, FrameType::foreground);
@@ -375,7 +375,7 @@ TEST(Session, ACallOnAClosedSessionIsRefusedAndNeverCompletesInline) {
 TEST(Session, CountsTrafficByClassInBothDirections) {
   Io io;
   Pair pair(io, echo(), echo(), Lane::data);
-  ASSERT_TRUE(call_and_wait(*pair.dialler, MessageType{5}, Bytes(10000, 1), FrameType::loader, io.context.get_executor()).reply);
+  ASSERT_TRUE(call_and_wait(*pair.dialler, MessageType{1029}, Bytes(10000, 1), FrameType::loader, io.context.get_executor()).reply);
   const auto loader = static_cast<size_t>(FrameType::loader);
   // Both sessions share one count here: what went out came in.
   EXPECT_EQ(pair.traffic->out_bytes[loader].load(), pair.traffic->in_bytes[loader].load());
@@ -445,13 +445,55 @@ TEST(Session, ClosingFromAnotherThreadMidTransferIsSafe) {
   for (int round = 0; round < 20; ++round) {
     Pair pair(io, echo(), echo(), Lane::data, 4096);
     auto done = std::make_shared<std::promise<CallOutcome>>();
-    pair.dialler->call(MessageType{5}, Bytes(2 << 20, 9), FrameType::loader, io.context.get_executor(),
+    pair.dialler->call(MessageType{1029}, Bytes(2 << 20, 9), FrameType::loader, io.context.get_executor(),
                        [done](CallOutcome outcome) { done->set_value(std::move(outcome)); });
     while (pair.traffic->out_bytes[static_cast<size_t>(FrameType::loader)].load() < 64 * 1024) std::this_thread::yield();
     pair.dialler->close("closed mid-transfer");
     const auto outcome = done->get_future().get();
     EXPECT_FALSE(outcome.reply);
   }
+}
+
+// A user type's notification is the user's: it reaches the handler whether or
+// not this node registered the type; Dannan decides nothing about it.
+TEST(Session, AnUnregisteredUserNotificationReachesTheHandler) {
+  Io io;
+  std::promise<Frame> arrived;
+  SessionHandlers handlers;
+  handlers.request = [&](Frame frame, Reply reply) {
+    EXPECT_FALSE(reply);
+    arrived.set_value(std::move(frame));
+  };
+  Pair pair(io, echo(), handlers);
+  pair.dialler->notify({MessageType{1999}, Bytes{1, 2}, {}}, FrameType::speculative, io.context.get_executor());
+  auto future = arrived.get_future();
+  ASSERT_EQ(future.wait_for(5s), std::future_status::ready);
+  const auto frame = future.get();
+  EXPECT_EQ(frame.message.type, MessageType{1999});
+  EXPECT_EQ(frame.message.payload, Bytes({1, 2}));
+  EXPECT_TRUE(pair.acceptor->usable());
+}
+
+// A call refused because the session retired or closed under it keeps its
+// payload, so the client can route it again without having copied it.
+TEST(Session, ARefusedCallKeepsItsPayload) {
+  Io io;
+  Pair pair(io, echo(), echo());
+  pair.dialler->retire();
+  Bytes payload(1000, 7);
+  const auto admitted = pair.dialler->call(message::members, std::move(payload), FrameType::control, io.context.get_executor(), [](CallOutcome) {});
+  EXPECT_EQ(admitted.refused, "peer channel is retiring");
+  EXPECT_EQ(payload, Bytes(1000, 7));
+}
+
+// A reply says who answered: the peer's record as the handshake carried it.
+TEST(Session, AReplyNamesThePeer) {
+  Io io;
+  Pair pair(io, echo(), echo());
+  const auto outcome = call_and_wait(*pair.dialler, message::members, {}, FrameType::control, io.context.get_executor());
+  ASSERT_TRUE(outcome.reply);
+  EXPECT_EQ(outcome.peer.id, pair.dialler->peer().id);
+  EXPECT_EQ(outcome.peer.host, "10.0.0.2");
 }
 
 }  // namespace

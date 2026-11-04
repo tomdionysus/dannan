@@ -23,7 +23,7 @@ namespace {
 
 using sched::FrameType;
 
-Message msg(size_t bytes, MessageType type = MessageType{5}) { return {type, Bytes(bytes, 0x5a), {}}; }
+Message msg(size_t bytes, MessageType type = MessageType{1029}) { return {type, Bytes(bytes, 0x5a), {}}; }
 
 // Sends everything queued, one fragment at a time; returns the request ids
 // in the order their fragments left.
@@ -126,7 +126,7 @@ TEST(Outbound, AReplyIsNeverDroppedForCapacity) {
   OutboundQueue queue;
   for (size_t i = 0; i < max_outbound_messages; ++i) queue.push(2 * i + 1, FrameType::control, msg(10, message::ping), false);
   queue.register_inbound(2, FrameType::control);
-  EXPECT_TRUE(queue.push(2, FrameType::control, msg(10, message::bool_reply), true));
+  EXPECT_TRUE(queue.push(2, FrameType::control, msg(10, message::ok), true));
   EXPECT_EQ(queue.size(), max_outbound_messages + 1);
   std::optional<MessageType> type;
   Bytes payload;  // copied: a fragment's span lives only until written()

@@ -29,28 +29,45 @@ class DecodeError : public std::runtime_error {
   using std::runtime_error::runtime_error;
 };
 
-class Writer {
+// Writes into a growable byte buffer: Bytes for what goes on the wire, a
+// SecureBuffer (identity/secure_memory.h) for a record holding secrets, so
+// its plaintext never sits in ordinary memory before it is sealed.
+template <class Buffer>
+class BasicWriter {
  public:
   void u8(uint8_t value) { _data.push_back(value); }
-  void u16(uint16_t value);
-  void u32(uint32_t value);
-  void u64(uint64_t value);
+  void u16(uint16_t value) {
+    _data.push_back(static_cast<uint8_t>(value >> 8));
+    _data.push_back(static_cast<uint8_t>(value));
+  }
+  void u32(uint32_t value) {
+    for (int shift = 24; shift >= 0; shift -= 8) _data.push_back(static_cast<uint8_t>(value >> shift));
+  }
+  void u64(uint64_t value) {
+    for (int shift = 56; shift >= 0; shift -= 8) _data.push_back(static_cast<uint8_t>(value >> shift));
+  }
   void i64(int64_t value) { u64(static_cast<uint64_t>(value)); }
   void raw(std::span<const uint8_t> bytes) { _data.insert(_data.end(), bytes.begin(), bytes.end()); }
   // Throws std::length_error past 2^32 - 1 bytes.
-  void bytes(std::span<const uint8_t> bytes);
+  void bytes(std::span<const uint8_t> value) {
+    if (value.size() > 0xffffffffull) throw std::length_error("encoded blob too large");
+    u32(static_cast<uint32_t>(value.size()));
+    raw(value);
+  }
   void string(const std::string& value) { bytes({reinterpret_cast<const uint8_t*>(value.data()), value.size()}); }
   template <size_t N>
   void fixed(const std::array<uint8_t, N>& value) {
     raw(value);
   }
 
-  const Bytes& data() const noexcept { return _data; }
-  Bytes take() noexcept { return std::move(_data); }
+  const Buffer& data() const noexcept { return _data; }
+  Buffer take() noexcept { return std::move(_data); }
 
  private:
-  Bytes _data;
+  Buffer _data;
 };
+
+using Writer = BasicWriter<Bytes>;
 
 // Reads from a buffer the caller keeps alive. Every read with a length takes
 // a maximum, checked before anything is copied or allocated, so a peer

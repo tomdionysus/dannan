@@ -1,0 +1,8 @@
+build
+build-*
+.git
+.cache
+.basemind
+TODO
+docs
+*.md

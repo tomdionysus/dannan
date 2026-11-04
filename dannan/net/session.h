@@ -51,6 +51,8 @@ enum class Role : uint8_t { dialler, acceptor };
 struct CallOutcome {
   std::optional<Message> reply;
   std::string failure;
+  // Who answered: the peer's record as its handshake carried it.
+  membership::NodeRecord peer;
 };
 
 // Whether a call was admitted: its request id, or why not ("peer pending
@@ -120,8 +122,10 @@ class Session : public std::enable_shared_from_this<Session> {
 
   // Places a call. Admitted, its completion is posted to `executor` exactly
   // once: the reply, or why none came (closed, cancelled). Refused, nothing
-  // is posted and the admission says why. Waits on nothing.
-  Admission call(MessageType type, Bytes payload, sched::FrameType frame, boost::asio::any_io_executor executor, std::function<void(CallOutcome)> done);
+  // is posted and the admission says why; refused as closed or retiring,
+  // `payload` is left as it was, so the caller can route it again. Waits on
+  // nothing.
+  Admission call(MessageType type, Bytes&& payload, sched::FrameType frame, boost::asio::any_io_executor executor, std::function<void(CallOutcome)> done);
   // Sends a notification; `sent` (optional) is posted to `executor` with
   // whether it was written. Throws OutboundRefused when the queue will not
   // take it.
@@ -216,8 +220,10 @@ class Session : public std::enable_shared_from_this<Session> {
 // socket).
 using HandshakeDone = std::function<void(std::exception_ptr, Established)>;
 void async_dial_handshake(Session::Socket& socket, const identity::ClusterKey& key, membership::NodeRecord local, size_t max_frame, Lane lane,
-                          HandshakeDone done);
-void async_accept_handshake(Session::Socket& socket, const identity::ClusterKey& key, membership::NodeRecord local, size_t max_frame, std::string remote_host,
-                            HandshakeDone done);
+                          HandshakeDone done, Purpose purpose = Purpose::ordinary, PathToken token = {});
+// `remote` is where the connection came from; `expected`, for a punched or
+// relayed connection, what its hello must carry.
+void async_accept_handshake(Session::Socket& socket, const identity::ClusterKey& key, membership::NodeRecord local, size_t max_frame, Endpoint remote,
+                            HandshakeDone done, std::optional<Expected> expected = std::nullopt);
 
 }  // namespace dannan::net

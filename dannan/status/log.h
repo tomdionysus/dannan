@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include <iosfwd>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -36,18 +37,43 @@ class LogSink {
 
 // stderr, one line per record: "2026-11-03 18:40:01Z WARN scope: message".
 // UTC, because nodes run in different timezones and their journals are
-// compared side by side.
+// compared side by side. `out` is for tests.
 class ConsoleSink final : public LogSink {
  public:
-  explicit ConsoleSink(LogLevel level = LogLevel::info) : _level(level) {}
+  explicit ConsoleSink(LogLevel level = LogLevel::info, std::ostream* out = nullptr) : _level(level), _out(out) {}
   bool enabled(LogLevel level) const noexcept override;
   void write(LogLevel, std::string_view scope, std::string_view message) override;
 
  private:
   const LogLevel _level;
-  // Held across the write to stderr.
+  std::ostream* const _out;
+  // Held across the write.
   contract::IoMutex _mutex;
 };
+
+// stderr, one JSON object per line, for a log shipper:
+// {"time":"2026-11-03T18:40:01Z","level":"WARN","scope":"net","message":"..."}.
+// The same UTC time and filtering as ConsoleSink; the message escaped as
+// JSON requires, control characters included. Every node of the stack runs
+// under systemd and is shipped alike, so this is the stack's, not one
+// project's. `out` is for tests.
+class JsonSink final : public LogSink {
+ public:
+  explicit JsonSink(LogLevel level = LogLevel::info, std::ostream* out = nullptr) : _level(level), _out(out) {}
+  bool enabled(LogLevel level) const noexcept override;
+  void write(LogLevel, std::string_view scope, std::string_view message) override;
+
+ private:
+  const LogLevel _level;
+  std::ostream* const _out;
+  contract::IoMutex _mutex;
+};
+
+// How a node writes its log: "text" (ConsoleSink) or "json" (JsonSink), in
+// any case. Throws std::invalid_argument naming the accepted spellings.
+enum class LogFormat : unsigned char { text, json };
+LogFormat parse_log_format(std::string_view);
+std::shared_ptr<LogSink> console_sink(LogFormat format, LogLevel level);
 
 // A component's logger: the node's sink and the component's short scope
 // name, so every line says which component wrote it. Cheap to copy.

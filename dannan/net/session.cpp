@@ -146,7 +146,9 @@ void Session::deliver(Frame frame) {
         _retiring = true;
       }
       settle();
-    } else if (_routes->is_notification(type) && _handlers.request) {
+    } else if (_handlers.request && (_routes->is_notification(type) || !_routes->find(type))) {
+      // A registered notification, or a user type nobody here registered:
+      // the user's to take or ignore.
       try {
         _handlers.request(std::move(frame), Reply{});
       } catch (...) {
@@ -164,7 +166,9 @@ void Session::deliver(Frame frame) {
       pending = std::move(found->second);
       _pending.erase(found);
     }
-    asio::post(pending.executor, [done = std::move(pending.done), message = std::move(frame.message)]() mutable { done(CallOutcome{std::move(message), {}}); });
+    asio::post(pending.executor, [done = std::move(pending.done), message = std::move(frame.message), peer = _established.peer]() mutable {
+      done(CallOutcome{std::move(message), {}, std::move(peer)});
+    });
     settle();
     return;
   }
@@ -213,7 +217,7 @@ void Session::queue_control(MessageType type, uint64_t target) {
   }
 }
 
-Admission Session::call(MessageType type, Bytes payload, sched::FrameType frame, asio::any_io_executor executor, std::function<void(CallOutcome)> done) {
+Admission Session::call(MessageType type, Bytes&& payload, sched::FrameType frame, asio::any_io_executor executor, std::function<void(CallOutcome)> done) {
   Admission out;
   {
     contract::Lock lock(_mutex);
@@ -277,7 +281,7 @@ void Session::cancel(uint64_t request_id) {
     }
     _queue.cancel_outgoing(request_id);
   }
-  if (pending) asio::post(pending->executor, [done = std::move(pending->done)] { done(CallOutcome{std::nullopt, "RPC cancelled"}); });
+  if (pending) asio::post(pending->executor, [done = std::move(pending->done)] { done(CallOutcome{std::nullopt, "RPC cancelled", {}}); });
   queue_control(message::cancel_transfer, request_id);
   settle();
 }
@@ -351,7 +355,7 @@ bool Session::mark_closed(const std::string& why) {
     // a fragment of it outside the lock.
   }
   for (auto& [_, call] : pending)
-    asio::post(call.executor, [done = std::move(call.done), why] { done(CallOutcome{std::nullopt, "peer channel closed: " + why}); });
+    asio::post(call.executor, [done = std::move(call.done), why] { done(CallOutcome{std::nullopt, "peer channel closed: " + why, {}}); });
   return true;
 }
 
@@ -430,7 +434,8 @@ struct AcceptState {
   identity::ClusterKey key;
   membership::NodeRecord local;
   size_t max_frame;
-  std::string remote_host;
+  Endpoint remote;
+  std::optional<Expected> expected;
   std::array<uint8_t, 4> length{};
   Bytes body;
   Bytes reply;
@@ -451,10 +456,11 @@ void refuse(const std::shared_ptr<State>& state, const std::string& why) {
 }  // namespace
 
 void async_dial_handshake(Session::Socket& socket, const identity::ClusterKey& key, membership::NodeRecord local, size_t max_frame, Lane lane,
-                          HandshakeDone done) {
+                          HandshakeDone done, Purpose purpose, PathToken token) {
   std::shared_ptr<DialState> state;
   try {
-    state = std::make_shared<DialState>(DialState{socket, std::make_unique<ClientHandshake>(key, std::move(local), max_frame, lane), {}, {}, std::move(done)});
+    state = std::make_shared<DialState>(
+        DialState{socket, std::make_unique<ClientHandshake>(key, std::move(local), max_frame, lane, purpose, token), {}, {}, std::move(done)});
   } catch (...) {
     return done(std::current_exception(), {});
   }
@@ -479,9 +485,10 @@ void async_dial_handshake(Session::Socket& socket, const identity::ClusterKey& k
   });
 }
 
-void async_accept_handshake(Session::Socket& socket, const identity::ClusterKey& key, membership::NodeRecord local, size_t max_frame, std::string remote_host,
-                            HandshakeDone done) {
-  auto state = std::make_shared<AcceptState>(AcceptState{socket, key, std::move(local), max_frame, std::move(remote_host), {}, {}, {}, {}, std::move(done)});
+void async_accept_handshake(Session::Socket& socket, const identity::ClusterKey& key, membership::NodeRecord local, size_t max_frame, Endpoint remote,
+                            HandshakeDone done, std::optional<Expected> expected) {
+  auto state = std::make_shared<AcceptState>(
+      AcceptState{socket, key, std::move(local), max_frame, std::move(remote), std::move(expected), {}, {}, {}, {}, std::move(done)});
   asio::async_read(socket, asio::buffer(state->length), [state](const boost::system::error_code& error, size_t) {
     if (error) return refuse(state, "handshake read: " + error.message());
     const auto size = blob_length(state->length);
@@ -490,7 +497,7 @@ void async_accept_handshake(Session::Socket& socket, const identity::ClusterKey&
     asio::async_read(state->socket, asio::buffer(state->body), [state](const boost::system::error_code& error, size_t) {
       if (error) return refuse(state, "handshake read: " + error.message());
       try {
-        auto reply = server_handshake(state->key, state->local, state->max_frame, state->body, state->remote_host);
+        auto reply = server_handshake(state->key, state->local, state->max_frame, state->body, state->remote, state->expected ? &*state->expected : nullptr);
         state->reply = std::move(reply.response_blob);
         state->session = std::move(reply.session);
       } catch (...) {

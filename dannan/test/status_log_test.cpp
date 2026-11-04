@@ -10,6 +10,8 @@
 
 #include <gtest/gtest.h>
 
+#include <regex>
+#include <sstream>
 #include <stdexcept>
 #include <vector>
 
@@ -70,6 +72,37 @@ TEST(ConsoleSink, EnablesItsLevelAndAbove) {
   EXPECT_TRUE(sink.enabled(LogLevel::warn));
   EXPECT_TRUE(sink.enabled(LogLevel::error));
   EXPECT_TRUE(ConsoleSink(LogLevel::all).enabled(LogLevel::all));
+}
+
+// The text sink: UTC time, level, scope and message on one line.
+TEST(ConsoleSink, WritesOneLinePerRecord) {
+  std::ostringstream out;
+  ConsoleSink sink(LogLevel::info, &out);
+  ScopedLogger(std::shared_ptr<LogSink>(&sink, [](LogSink*) {}), "net").warn("a peer left");
+  EXPECT_TRUE(std::regex_match(out.str(), std::regex(R"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\dZ WARN net: a peer left\n)"))) << out.str();
+}
+
+// The JSON sink: one object per line for a shipper, the same time and
+// filtering, the message escaped as JSON requires.
+TEST(JsonSink, WritesOneObjectPerLineEscaped) {
+  std::ostringstream out;
+  auto sink = std::make_shared<JsonSink>(LogLevel::info, &out);
+  const ScopedLogger logger(std::shared_ptr<LogSink>(sink.get(), [](LogSink*) {}), "lugh.oauth");
+  logger.debug("not written");
+  logger.error("a \"quoted\" \\ path\nand a tab\t and \x01");
+  EXPECT_TRUE(std::regex_match(
+      out.str(),
+      std::regex(
+          R"re(\{"time":"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ","level":"ERROR","scope":"lugh\.oauth","message":"a \\"quoted\\" \\\\ path\\nand a tab\\t and \\u0001"\}\n)re")))
+      << out.str();
+}
+
+TEST(LogFormat, ParsesTextAndJsonInAnyCase) {
+  EXPECT_EQ(parse_log_format("text"), LogFormat::text);
+  EXPECT_EQ(parse_log_format("JSON"), LogFormat::json);
+  EXPECT_THROW(parse_log_format("xml"), std::invalid_argument);
+  EXPECT_NE(dynamic_cast<JsonSink*>(console_sink(LogFormat::json, LogLevel::info).get()), nullptr);
+  EXPECT_NE(dynamic_cast<ConsoleSink*>(console_sink(LogFormat::text, LogLevel::info).get()), nullptr);
 }
 
 }  // namespace

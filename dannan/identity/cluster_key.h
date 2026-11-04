@@ -14,18 +14,16 @@
 
 namespace dannan::identity {
 
-// The secret every node of a cluster shares, until protocol 25 replaces it
-// with certificates: the degenerate cluster CA with one node class. Its
-// derivation is protocol 23's, labels included, so a Dannan node and a
-// Macha node holding the same file are one cluster:
+// The secret every node of a cluster shares, until certificates replace it
+// (the degenerate cluster CA with one node class). Wire v1's derivation:
 //
 //   master      SHA-256 of the file, trailing CR and LF removed
-//   auth        HKDF-SHA256(master, no salt, "macha/auth/v1")
+//   auth        HKDF-SHA256(master, no salt, "dannan/auth/1")
 //   cluster_id  the first 16 bytes of HKDF-SHA256(master, no salt,
-//               "macha/cluster-id/v1")
+//               "dannan/cluster-id/1")
 //
-// A hosted system derives its own keys from master under its own labels
-// (Dagda's storage key is "macha/storage/v1"); Dannan names none of them.
+// A hosted system derives its own keys from master under its own labels;
+// Dannan names none of them.
 struct ClusterKey {
   std::array<uint8_t, 32> master{};
   std::array<uint8_t, 32> auth{};
