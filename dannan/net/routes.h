@@ -19,7 +19,8 @@ namespace dannan::net {
 // first_user_type, the rest are the hosted systems', each registered at
 // start with its own rules (wire v1, section 4).
 enum class MessageType : uint16_t {};
-inline constexpr uint16_t first_user_type = 1024;
+// Tom, 2026-11-04: user types from 512, registered freely.
+inline constexpr uint16_t first_user_type = 512;
 
 // A session carries one lane: CONTROL for membership, heads, leases, notices
 // and small calls; DATA for object payloads; or a probe, which only proves a

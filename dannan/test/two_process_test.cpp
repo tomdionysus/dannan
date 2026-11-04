@@ -11,13 +11,7 @@
 // calls the other's echo on both lanes, so each side has dialled the other
 // and served a call over its own lanes.
 
-#include <fcntl.h>
 #include <gtest/gtest.h>
-#include <poll.h>
-#include <signal.h>
-#include <spawn.h>
-#include <sys/wait.h>
-#include <unistd.h>
 
 #include <boost/asio/io_context.hpp>
 #include <chrono>
@@ -28,9 +22,8 @@
 #include <vector>
 
 #include "dannan/node.h"
+#include "dannan/test/fixtures/child_process.h"
 #include "dannan/test/fixtures/temp_dir.h"
-
-extern char** environ;
 
 namespace dannan {
 namespace {
@@ -39,66 +32,6 @@ using namespace std::chrono_literals;
 
 constexpr net::MessageType echo_control{1024};
 constexpr net::MessageType echo_data{1025};
-
-// A child process, its stdout piped to the test, ended with SIGTERM (then
-// SIGKILL) when the test is done.
-class Child {
- public:
-  Child(const std::vector<std::string>& argv, const std::filesystem::path& log) {
-    posix_spawn_file_actions_t actions;
-    posix_spawn_file_actions_init(&actions);
-    int fds[2] = {-1, -1};
-    if (::pipe(fds) != 0) throw std::runtime_error("pipe failed");
-    posix_spawn_file_actions_adddup2(&actions, fds[1], STDOUT_FILENO);
-    posix_spawn_file_actions_addclose(&actions, fds[0]);
-    posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, log.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    std::vector<char*> args;
-    for (const auto& arg : argv) args.push_back(const_cast<char*>(arg.c_str()));
-    args.push_back(nullptr);
-    const int spawned = posix_spawn(&_pid, args[0], &actions, nullptr, args.data(), environ);
-    posix_spawn_file_actions_destroy(&actions);
-    ::close(fds[1]);
-    _out = fds[0];
-    if (spawned != 0) throw std::runtime_error("could not start " + argv[0]);
-  }
-  ~Child() {
-    if (_out >= 0) ::close(_out);
-    if (_pid <= 0) return;
-    ::kill(_pid, SIGTERM);
-    for (int i = 0; i < 200; ++i) {
-      if (::waitpid(_pid, nullptr, WNOHANG) == _pid) return;
-      std::this_thread::sleep_for(50ms);
-    }
-    ::kill(_pid, SIGKILL);
-    ::waitpid(_pid, nullptr, 0);
-  }
-  Child(const Child&) = delete;
-  Child& operator=(const Child&) = delete;
-
-  // The next line the child writes, or nothing by the deadline.
-  std::optional<std::string> line(std::chrono::steady_clock::time_point deadline) {
-    for (;;) {
-      if (const auto end = _buffer.find('\n'); end != std::string::npos) {
-        auto out = _buffer.substr(0, end);
-        _buffer.erase(0, end + 1);
-        return out;
-      }
-      const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
-      if (left <= 0) return std::nullopt;
-      pollfd ready{_out, POLLIN, 0};
-      if (::poll(&ready, 1, static_cast<int>(left)) <= 0) return std::nullopt;
-      char chunk[4096];
-      const auto got = ::read(_out, chunk, sizeof(chunk));
-      if (got <= 0) return std::nullopt;
-      _buffer.append(chunk, static_cast<size_t>(got));
-    }
-  }
-
- private:
-  pid_t _pid = -1;
-  int _out = -1;
-  std::string _buffer;
-};
 
 struct Io {
   boost::asio::io_context context;
@@ -121,28 +54,28 @@ net::Handled answer(const membership::NodeRecord&, sched::FrameType, const net::
 TEST(TwoProcess, ANodeProcessAndANodeHereFormOneCluster) {
   test::TempDir dir;
   std::ofstream(dir.path() / "cluster.key") << "two process";
-  Child child({DANNAN_NODE_BINARY,
-               "--key",
-               (dir.path() / "cluster.key").string(),
-               "--state",
-               (dir.path() / "child").string(),
-               "--listen",
-               "127.0.0.1",
-               "--advertise",
-               "127.0.0.1",
-               "--port",
-               "0",
-               "--inbound",
-               "yes",
-               "--heartbeat-ms",
-               "200",
-               "--status-ms",
-               "200",
-               "--echo-ms",
-               "200",
-               "--seconds",
-               "60"},
-              dir.path() / "child.log");
+  test::ChildProcess child({DANNAN_NODE_BINARY,
+                            "--key",
+                            (dir.path() / "cluster.key").string(),
+                            "--state",
+                            (dir.path() / "child").string(),
+                            "--listen",
+                            "127.0.0.1",
+                            "--advertise",
+                            "127.0.0.1",
+                            "--port",
+                            "0",
+                            "--inbound",
+                            "yes",
+                            "--heartbeat-ms",
+                            "200",
+                            "--status-ms",
+                            "200",
+                            "--echo-ms",
+                            "200",
+                            "--seconds",
+                            "60"},
+                           dir.path() / "child.log");
   const auto deadline = std::chrono::steady_clock::now() + 30s;
   std::smatch match;
   std::string child_id;

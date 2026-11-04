@@ -70,16 +70,16 @@ TEST(RouteTable, ARegistrationTakesItsNumberOnce) {
   EXPECT_THROW(routes.add(message::ping, {"ping", Lanes::control, Frames::control_only, false}), std::invalid_argument);
 }
 
-// 1 to 1023 are Dannan's, known to this version or not: a hosted system
-// numbers its types from 1024.
-TEST(RouteTable, UserTypesStartAt1024) {
+// 1 to 511 are Dannan's, known to this version or not: a hosted system
+// numbers its types from 512, freely (Tom, 2026-11-04).
+TEST(RouteTable, UserTypesStartAt512) {
   auto routes = RouteTable::with_dannan_types();
-  EXPECT_EQ(first_user_type, 1024);
-  for (const uint16_t reserved : {uint16_t{0}, uint16_t{17}, uint16_t{500}, uint16_t{1023}})
+  EXPECT_EQ(first_user_type, 512);
+  for (const uint16_t reserved : {uint16_t{0}, uint16_t{17}, uint16_t{500}, uint16_t{511}})
     EXPECT_THROW(routes.add(MessageType{reserved}, {"x", Lanes::control, Frames::control_only, false}), std::invalid_argument);
-  EXPECT_NO_THROW(routes.add(MessageType{1024}, {"first", Lanes::control, Frames::control_only, false}));
+  EXPECT_NO_THROW(routes.add(MessageType{512}, {"first", Lanes::control, Frames::control_only, false}));
   EXPECT_TRUE(routes.is_core(MessageType{17}));
-  EXPECT_FALSE(routes.is_core(MessageType{1024}));
+  EXPECT_FALSE(routes.is_core(MessageType{512}));
 }
 
 // Core types are Dannan's and keep Dannan's rules; every other number is a

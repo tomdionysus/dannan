@@ -29,7 +29,7 @@ Changed:
 | HKDF/MAC labels | `macha/auth/v1`, `client/v15`, `server/v15`, `macha/session/v15`, `macha/cluster-id/v1` | `dannan/auth/1`, `dannan/hello/1`, `dannan/ack/1`, `dannan/session/1`, `dannan/cluster-id/1` |
 | Frame magic | `0x4d433133` ("MC13") | `0x444e0001` ("DN", wire 1) |
 | Node record | Macha's NodeInfo, store figures inline, a flags byte | section 3: identity, endpoint, domain, capabilities, reachability, and an advertisement map for whatever a hosted system advertises |
-| Message numbers | Macha's | section 4: core 1 to 1023, user 1024 up |
+| Message numbers | Macha's | section 4: core 1 to 511, user 512 up (Tom, 2026-11-04) |
 | Telemetry, roster file, resets, inbound file magics | `MACHTEL3`, `MACHMEM4`, `MACHIDR1`, `MACHINB1` | `DNNTEL01`, `DNNMEM01`, `DNNRST01`, `DNNINB01`; telemetry keeps its tagged layout, field numbers renumbered, store fields gone (hosted fields from 1024) |
 | UPnP description | "Macha <id>" | "Dannan <id>" |
 | `.macha.lock` | | `.dannan.lock` |
@@ -95,7 +95,7 @@ placement stays generic.
 
 ## 4. Message numbers
 
-Core (Dannan's, 1 to 1023; a hosted system's from 1024):
+Core (Dannan's, 1 to 511; a hosted system's from 512, registered freely):
 
 | # | Name | Lane, class | Payload |
 |---|---|---|---|

@@ -282,6 +282,8 @@ class Client {
   void dialled(const std::string& key, const Target& target, Lane lane, std::shared_ptr<Session> session, std::string why);
   std::shared_ptr<Session> route_locked(const identity::NodeId& peer, Lane lane) DANNAN_REQUIRES(_mutex);
   void reconcile_locked(const RouteKey& key, Retire& retire) DANNAN_REQUIRES(_mutex);
+  // Retires the losers, remembering them so stop() closes them too.
+  void retire_sessions(Retire& retire) DANNAN_EXCLUDES(_mutex);
   void end_operation();
   // Records a dial's outcome against its address and lane: a failure backs
   // off 250 ms doubling to 4 s, a success clears it.
@@ -327,6 +329,8 @@ class Client {
   std::condition_variable _idle;
   std::map<RouteKey, std::shared_ptr<Session>> _outbound DANNAN_GUARDED_BY(_mutex);
   std::map<RouteKey, std::shared_ptr<Session>> _inbound DANNAN_GUARDED_BY(_mutex);
+  // Sessions retired off the tables but not yet closed: they may hold calls.
+  std::vector<std::weak_ptr<Session>> _retiring DANNAN_GUARDED_BY(_mutex);
   // Dials in flight by peer (or address) and lane, with the calls waiting
   // on each.
   std::map<std::string, std::vector<Call>> _dials DANNAN_GUARDED_BY(_mutex);

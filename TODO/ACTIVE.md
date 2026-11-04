@@ -45,7 +45,7 @@ plugin contract `API_VERSION` 24; two live nodes, neither production. The
 laptop is on MacPorts for everything (Boost 1.88 the only Boost; the
 configure line for Macha is in `COMPLETED.md`).
 
-## Resume here (2026-11-03, night)
+## Resume here (2026-11-04)
 
 Written for a session starting from nothing. Steps 0, 1 and 2 are done
 and released as `0.1.0` (`main`, tag `0.1.0`, not pushed; `COMPLETED.md`
@@ -407,6 +407,26 @@ words, so a session does not re-derive it.
   frame only) for unknown numbers; no byte changes. Follows from it, Tom's
   question the same night: a handler reports whether it processed the
   message, failed, or does not recognise it.
+- (2026-11-04, Tom, asked in turn) **The stack's open questions, settled:**
+  - Tag `0.2.0` (wire v1, level 0, channels, the roster feed, the
+    foundations) with CMake install and export targets, so Dagda, Lugh
+    and Lir use `find_package(dannan)` and pin a tag.
+  - Message numbers: Dannan's core types are 1 to 511; user types start at
+    512 and are registered freely, with no blocks per system; a clash
+    shows at registration.
+  - Scope: Dannan declares `contract::ScopeSource` and `Identity::verify`;
+    Lugh installs the source; Dagda's write-floor replicas and every other
+    hosted system check through it.
+  - Lugh's data is two domains: `lugh/scope` (every node a member) and
+    `lugh/secrets` (Lugh nodes members, others blind at most).
+  - One process per node: a product binary links Dannan (and Dagda) and is
+    a node; several may share a machine; each advertises what it hosts.
+  - Node revocation in step 10: a CA-signed, grow-only revocation record,
+    gossiped and persisted, refused at every handshake, sessions closed.
+  - Authentication in Lir is pluggable, as everywhere else; a Lugh plugin
+    depends on Lugh. Token verification does not move into Dannan.
+  - HTTP stays each hosted system's (the plan's rule); no shared HTTPS
+    stack.
 - (2026-11-03 night, Tom) **One stack, no duplicated code.** Dagda and
   Lugh use Dannan as their network layer; Lugh uses Dagda as its
   datastore. No code is duplicated between the three projects: what more

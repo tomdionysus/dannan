@@ -8,6 +8,7 @@
 #include "dannan/identity/durable_file.h"
 
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <atomic>
@@ -78,9 +79,15 @@ void sync_directory(const std::filesystem::path& directory) {
   ::close(dir);
 }
 
+// Makes each missing directory owner-only (0700), as the file inside will
+// be; existing ones are left as they are.
 std::filesystem::path directory_of(const std::filesystem::path& path) {
   const auto directory = path.parent_path().empty() ? std::filesystem::path(".") : path.parent_path();
-  std::filesystem::create_directories(directory);
+  std::filesystem::path made;
+  for (const auto& part : directory) {
+    made /= part;
+    if (::mkdir(made.c_str(), 0700) != 0 && errno != EEXIST) fail("cannot create durable state directory " + made.string());
+  }
   return directory;
 }
 

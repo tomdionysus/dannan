@@ -5,12 +5,72 @@ left green. `ACTIVE.md` is the plan and this is the record.
 
 ## Releases
 
+- **0.2.0** (2026-11-04, `main`, tag `0.2.0`, Tom: "Tag 0.2.0 + install"):
+  wire v1 (Dannan's own, from version 1), level 0 (path classes, brokered
+  punches, relays, moving up a class, the relay's DATA budget, placement
+  told a peer's path class; the compose bed passes through real NATs),
+  channels (notify, stream, bulk), the roster-change feed and incarnations,
+  and the stack's foundations (secure memory and buffers, signing,
+  Argon2id, node key custody, durable create, JSON logs, the shared
+  fixtures); `find_package(dannan 0.2 CONFIG)` and `dannan::dannan`. Gate
+  `dannan_tests` 378, `dagda_tests` 1. Pre-release ASan/UBSan clean;
+  TSan reported no race. The first sanitizer run found a bug (a call left
+  on a retired session outlived `Client::stop()`), fixed with its test
+  before the tag; the second showed only a test's timing budget, widened.
+  Not pushed.
 - **0.1.0** (2026-11-03, `main` at `bafb91e`, tag `0.1.0`): step 1's
   vocabulary and step 2's transport on Asio, protocol 23 byte for byte
   with Macha (in process against the pinned 0.91.2 export, and two
   processes against Macha's binary). Gate `dannan_tests` 206,
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
+
+## 2026-11-04 -- the child process fixture
+
+`dannan/test/fixtures/child_process.h` (`test::ChildProcess`), moved out of
+the two-process test for Lir's process tests: stdout piped and read a line
+at a time by deadline, stderr to a log, `wait(deadline)` giving the exit
+code or 128 plus the signal, `terminate()`; SIGTERM then SIGKILL when it
+goes. **Gate: `dannan_tests` 378, `dagda_tests` 1.**
+
+## 2026-11-04 -- what the 0.2.0 sanitizer run found
+
+The pre-release ASan/UBSan and TSan runs reported no sanitizer finding,
+and one failing test each:
+
+- **A bug** (ASan run, `Node.CancellingOutboundCallsReleasesAWaitingWorker`
+  waited out its 30 s deadline): a session retired off the client's route
+  table by reconciliation (crossing dials) keeps its pending calls, and
+  `Client::stop()` closed only the sessions still on the table, so a call on
+  a retired session outlived the cancellation. The client now remembers the
+  sessions it retires until they close, and `stop()` closes them too.
+  `Client.StoppingFailsACallOnARetiredSession` sets the case up exactly (the
+  test node can decline to adopt inbound sessions) and was shown to fail
+  without the fix.
+- **A margin** (TSan run, `LevelZero.ANodeIsObservedFromAFixedLocalPort`):
+  `observe_from` waited its timeout plus one second for its own timer's
+  answer; under TSan the answer came later. It returned an error, never
+  hung; the wait is now twice the timeout plus a second.
+
+**Gate: `dannan_tests` 377, `dagda_tests` 1.**
+
+## 2026-11-04 -- Tom's stack decisions; install targets; 0.2.0 prepared
+
+- Tom settled the stack's questions (Decisions, 2026-11-04): tag 0.2.0
+  with install targets; user message types from 512, registered freely;
+  the scope seam Dannan's; Lugh's two domains; one process per node;
+  CA-signed node revocation in step 10; authentication in Lir pluggable;
+  HTTP each system's own.
+- `first_user_type` is 512 (wire v1 section 4 updated).
+- Durable writes make the directories they create owner-only (0700);
+  existing ones are left alone (Lugh asked).
+- CMake install and export: `find_package(dannan 0.2 CONFIG)`,
+  `dannan::dannan`, headers in their tree under `include/dannan` (the test
+  fixtures too; a consumer defines `DANNAN_TEST_TEMP_ROOT`), dependencies
+  found by the config file, versions compatible within a minor. Proved by
+  installing into `build/install-check` and building a consumer against it.
+- The project version is 0.2.0.
+- **Gate: `dannan_tests` 376, `dagda_tests` 1.**
 
 ## 2026-11-04 -- creating a file that is never replaced
 
