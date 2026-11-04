@@ -38,6 +38,29 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
 
+## 2026-11-04 -- one settings reader for every node binary; Dagda's step 6 asks
+
+- `dannan::config` (`dannan/config/config.h`, `e375b08`), Tom's answer to
+  Lir's request: Lugh's layered reader lifted into Dannan on yaml-cpp (a new
+  dependency, his call). A binary declares its settings (dotted key, kind:
+  value, list or toggle, flag, variable); the reader layers the defaults,
+  the file (`--config`/`-c`, the binary's variable, or an installed path
+  if it exists), `secrets.yaml` beside it, the environment and the flags,
+  each over the one before, says where each value came from, and reports
+  keys nothing reads. Typed reads refuse a bad value in the same words from
+  any layer, naming it. 6 tests.
+- `dannan-node` reads through it (`30ce4dc`): every flag as before, and a
+  file and `DANNAN_NODE_*`. `TwoProcess.TheNodeReadsAConfigurationFile`;
+  the bed's image installs yaml-cpp.
+- For Dagda's step 6: `identity::x25519_public` (RFC 7748's vector,
+  `fba0977`); `contract::Principal` compares with `==` (`fcd1a6f`);
+  `Nodes::certificate(node)`, the certificate a peer proved in its latest
+  v2 handshake with this node (none if never, by key only, or revoked), and
+  `Identity::ca_certificate()` (`45477bb`). No wire change: the client's
+  `established` hook now carries the whole `Established`.
+
+Gate `dannan_tests` 418.
+
 ## 2026-11-04 -- the compose bed over certificates alone
 
 `ComposeBed.CertificatesAloneThroughRealNats` (`test/compose/`): the six-node
