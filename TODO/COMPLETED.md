@@ -25,6 +25,17 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
 
+## 2026-11-04 -- contract::Unlocked, and secure memory across fork
+
+For Dagda (`LocalStore` drops its lock around device I/O, as Macha did):
+`contract::Unlocked` in `contract/thread_safety.h` releases a held `Lock`
+for its scope and retakes it, annotated so the analysis rejects touching
+what the mutex guards inside (proved by a scratch compile: the one write
+inside the scope is flagged, the ones around it are not). `secure_memory.h`
+now says secure memory is deliberately not inherited across `fork()`: a
+forked child that touches or frees a parent's `Secret` crashes. Gate
+`dannan_tests` 397 (`35d14e0`, merged to `develop`).
+
 ## 2026-11-04 -- identity, slice 4: scope; step 10 done
 
 `contract/scope.h`: `Principal` (a node, or a directory principal),
