@@ -18,8 +18,10 @@
 #include <string>
 #include <vector>
 
+#include "dannan/contract/scope.h"
 #include "dannan/contract/time_source.h"
 #include "dannan/identity/key_custody.h"
+#include "dannan/identity/revocations.h"
 #include "dannan/membership/node_record.h"
 #include "dannan/net/client.h"
 #include "dannan/net/fanout.h"
@@ -227,6 +229,23 @@ class Identity {
   virtual identity::Bytes node_public_key() const = 0;
   virtual identity::Bytes sign(std::span<const uint8_t> message) const = 0;
   virtual identity::Secret derive_local(std::string_view label) const = 0;
+
+  // Certificates (wire version 2): this node's, when it has one; and a
+  // revocation the cluster's CA signed, applied here at once (the revoked
+  // node's sessions closed) and passed to every active peer, each asked
+  // within the node's connect timeout. Throws std::invalid_argument for a
+  // revocation the CA did not sign, std::logic_error on a node without
+  // certificates.
+  virtual std::optional<identity::Certificate> certificate() const = 0;
+  virtual void revoke(const identity::Revocation& revocation) = 0;
+  virtual std::vector<identity::Revocation> revocations() const = 0;
+
+  // Scope (contract/scope.h): the source the directory installs (Lugh), and
+  // the check every hosted system makes through it before it stores a write
+  // (Dagda's write-floor replicas among them). Without a source, this node
+  // and any node of the cluster may write, and nobody else. Never waits.
+  virtual void install_scope_source(std::shared_ptr<const contract::ScopeSource> source) = 0;
+  virtual contract::ScopeDecision verify(const contract::Principal& principal, std::string_view prefix) const = 0;
 };
 
 // Memory, by work class.
@@ -269,6 +288,7 @@ class Context {
   virtual const Nodes& nodes() const = 0;
   virtual Routes& routes() = 0;
   virtual Channels& channels() = 0;
+  virtual Identity& identity() = 0;
   virtual const Identity& identity() const = 0;
   virtual Budget& budget() = 0;
   virtual Faults& faults() = 0;

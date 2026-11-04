@@ -17,6 +17,7 @@ add_executable(dannan_tests
   contract_test.cpp
   fixtures_test.cpp
   fuzz_smoke_test.cpp
+  identity_certificate_test.cpp
   identity_crypto_test.cpp
   identity_durable_file_test.cpp
   identity_key_custody_test.cpp
@@ -44,6 +45,7 @@ add_executable(dannan_tests
   sched_work_test.cpp
   status_log_test.cpp
   status_observation_test.cpp
+  status_process_test.cpp
   status_surface_test.cpp
   status_telemetry_test.cpp
   supervise_test.cpp
@@ -71,5 +73,5 @@ endforeach()
 target_compile_definitions(dannan_tests PRIVATE DANNAN_TEST_PLUGIN_DIR="${DANNAN_TEST_PLUGIN_DIR}")
 
 # The two-process test runs dannan-node as a child.
-target_compile_definitions(dannan_tests PRIVATE DANNAN_NODE_BINARY="$<TARGET_FILE:dannan-node>")
-add_dependencies(dannan_tests dannan-node)
+target_compile_definitions(dannan_tests PRIVATE DANNAN_NODE_BINARY="$<TARGET_FILE:dannan-node>" DANNAN_CA_BINARY="$<TARGET_FILE:dannan-ca>")
+add_dependencies(dannan_tests dannan-node dannan-ca)

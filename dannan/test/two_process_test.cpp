@@ -145,5 +145,112 @@ TEST(TwoProcess, ANodeProcessAndANodeHereFormOneCluster) {
   node.stop();
 }
 
+// The operator's flow for certificates (TODO/2026-11-04-identity.md,
+// section 4), by the binaries alone: dannan-ca makes a CA; each node makes
+// its custody and shows its identity; the CA certifies each; the two meet
+// on certificates alone and answer each other on both lanes. A revocation
+// is written and reads back.
+TEST(TwoProcess, AnOperatorCertifiesTwoNodesThatMeetOnCertificatesAlone) {
+  test::TempDir dir;
+  const auto deadline = [] { return std::chrono::steady_clock::now() + 30s; };
+  const std::vector<std::string> env{"CA_PASS=the ca passphrase", "NODE_PASS=a node passphrase"};
+  const auto run = [&](std::vector<std::string> argv, const std::string& log) {
+    test::ChildOptions options;
+    options.environment = env;
+    test::ChildProcess child(argv, dir.path() / log, options);
+    auto out = child.read_all(deadline());
+    return std::make_pair(child.wait(deadline()), out);
+  };
+  const auto ca_dir = (dir.path() / "ca").string();
+  ASSERT_EQ(run({DANNAN_CA_BINARY, "init", "--dir", ca_dir, "--name", "two process", "--passphrase-env", "CA_PASS"}, "init.log").first, 0);
+  const auto shown_ca = run({DANNAN_CA_BINARY, "show", ca_dir + "/ca.pem"}, "show-ca.log");
+  EXPECT_NE(shown_ca.second.find("a CA"), std::string::npos) << shown_ca.second;
+
+  std::vector<std::string> certificates;
+  std::vector<std::string> ids;
+  for (const auto* name : {"one", "two"}) {
+    const auto state = (dir.path() / name).string();
+    ASSERT_EQ(run({DANNAN_NODE_BINARY, "--state", state, "--init-custody", "--custody-passphrase-env", "NODE_PASS"}, std::string(name) + "-init.log").first, 0);
+    const auto [shown, identity_json] =
+        run({DANNAN_NODE_BINARY, "--state", state, "--show-identity", "--custody-passphrase-env", "NODE_PASS"}, std::string(name) + "-show.log");
+    ASSERT_EQ(shown, 0);
+    std::smatch match;
+    ASSERT_TRUE(std::regex_search(identity_json, match, std::regex(R"re("id":"([0-9a-f]{32})","public_key":"([0-9a-f]+)")re"))) << identity_json;
+    ids.push_back(match[1]);
+    const auto [issued, pem] = run({DANNAN_CA_BINARY, "issue", "--dir", ca_dir, "--passphrase-env", "CA_PASS", "--node", match[1], "--public-key", match[2]},
+                                   std::string(name) + "-issue.log");
+    ASSERT_EQ(issued, 0);
+    const auto path = (dir.path() / (std::string(name) + ".pem")).string();
+    std::ofstream(path) << pem;
+    certificates.push_back(path);
+  }
+
+  test::ChildOptions running;
+  running.environment = env;
+  const auto node_args = [&](size_t which, const std::string& extra_port, std::vector<std::string> more) {
+    std::vector<std::string> argv{DANNAN_NODE_BINARY,
+                                  "--state",
+                                  (dir.path() / (which == 0 ? "one" : "two")).string(),
+                                  "--listen",
+                                  "127.0.0.1",
+                                  "--advertise",
+                                  "127.0.0.1",
+                                  "--port",
+                                  extra_port,
+                                  "--inbound",
+                                  "yes",
+                                  "--heartbeat-ms",
+                                  "200",
+                                  "--status-ms",
+                                  "200",
+                                  "--echo-ms",
+                                  "200",
+                                  "--seconds",
+                                  "60",
+                                  "--custody-passphrase-env",
+                                  "NODE_PASS",
+                                  "--ca",
+                                  ca_dir + "/ca.pem",
+                                  "--certificate",
+                                  certificates[which],
+                                  "--no-cluster-key"};
+    argv.insert(argv.end(), more.begin(), more.end());
+    return argv;
+  };
+  test::ChildProcess one(node_args(0, "0", {}), dir.path() / "one.log", running);
+  uint16_t port = 0;
+  const auto until = deadline();
+  while (auto line = one.line(until)) {
+    std::smatch match;
+    if (std::regex_search(*line, match, std::regex(R"re("event":"listening","id":"[0-9a-f]{32}","port":([0-9]+))re"))) {
+      port = static_cast<uint16_t>(std::stoi(match[1]));
+      break;
+    }
+  }
+  ASSERT_NE(port, 0) << "node one did not start; its log is " << (dir.path() / "one.log");
+  test::ChildProcess two(node_args(1, "0", {"--bootstrap", "127.0.0.1:" + std::to_string(port)}), dir.path() / "two.log", running);
+  bool met = false;
+  std::string last;
+  const auto meeting = deadline();
+  while (auto line = two.line(meeting)) {
+    last = *line;
+    if (line->find(ids[0]) != std::string::npos && line->find("\"control\":\"ok\"") != std::string::npos &&
+        line->find("\"data\":\"ok\"") != std::string::npos) {
+      met = true;
+      break;
+    }
+  }
+  EXPECT_TRUE(met) << last;
+
+  const auto revocation = (dir.path() / "two.revoked").string();
+  ASSERT_EQ(run({DANNAN_CA_BINARY, "revoke", "--dir", ca_dir, "--passphrase-env", "CA_PASS", "--node", ids[1], "--reason", "retired", "--out", revocation},
+                "revoke.log")
+                .first,
+            0);
+  const auto shown = run({DANNAN_CA_BINARY, "show", revocation}, "show-revocation.log");
+  EXPECT_NE(shown.second.find(ids[1]), std::string::npos) << shown.second;
+  EXPECT_NE(shown.second.find("every certificate"), std::string::npos) << shown.second;
+}
+
 }  // namespace
 }  // namespace dannan

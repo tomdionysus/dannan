@@ -11,12 +11,14 @@
 add_library(dannan SHARED
   contract/thread_safety.cpp
   identity/argon2.cpp
+  identity/certificate.cpp
   identity/cluster_key.cpp
   identity/crypto.cpp
   identity/durable_file.cpp
   identity/key_custody.cpp
   identity/node_id.cpp
   identity/node_identity.cpp
+  identity/revocations.cpp
   identity/secure_memory.cpp
   identity/signing.cpp
   membership/node_record.cpp
@@ -47,6 +49,7 @@ add_library(dannan SHARED
   status/activity.cpp
   status/events.cpp
   status/observation.cpp
+  status/process.cpp
   status/readiness.cpp
   status/surface.cpp
   status/telemetry.cpp

@@ -18,12 +18,6 @@ constexpr uint32_t frame_magic = 0x444e0001;
 constexpr uint8_t flag_first = 0x01;
 constexpr uint8_t flag_last = 0x02;
 
-Bytes label(const char* prefix, std::span<const uint8_t> data) {
-  Bytes out(reinterpret_cast<const uint8_t*>(prefix), reinterpret_cast<const uint8_t*>(prefix) + std::strlen(prefix));
-  out.insert(out.end(), data.begin(), data.end());
-  return out;
-}
-
 Bytes framed(const Bytes& body) {
   Writer writer;
   writer.u32(static_cast<uint32_t>(body.size()));
@@ -43,7 +37,7 @@ Bytes session_info(std::span<const uint8_t> transcript, const identity::NodeId& 
 
 // Both directions' keys, bound to the transcript, both ids and both nonces.
 // The client sends with c2s; the server with s2c.
-std::pair<std::array<uint8_t, 32>, std::array<uint8_t, 32>> derive_keys(std::array<uint8_t, 32> shared, const identity::ClusterKey& key, const Bytes& hello,
+std::pair<std::array<uint8_t, 32>, std::array<uint8_t, 32>> derive_keys(std::array<uint8_t, 32> shared, std::span<const uint8_t> salt, const Bytes& hello,
                                                                         const Bytes& ack, const identity::NodeId& client, const identity::NodeId& server,
                                                                         const std::array<uint8_t, 32>& client_nonce,
                                                                         const std::array<uint8_t, 32>& server_nonce) {
@@ -59,7 +53,7 @@ std::pair<std::array<uint8_t, 32>, std::array<uint8_t, 32>> derive_keys(std::arr
   s2c.raw(session_info(transcript, client, server, "s2c"));
   s2c.fixed(client_nonce);
   s2c.fixed(server_nonce);
-  auto out = std::make_pair(identity::hkdf_sha256(shared, key.auth, c2s.data()), identity::hkdf_sha256(shared, key.auth, s2c.data()));
+  auto out = std::make_pair(identity::hkdf_sha256(shared, salt, c2s.data()), identity::hkdf_sha256(shared, salt, s2c.data()));
   identity::cleanse(shared);
   return out;
 }
@@ -89,7 +83,47 @@ auto refusing(F&& f) {
   }
 }
 
+constexpr uint8_t proof_by_key = 1;
+constexpr uint8_t proof_by_certificate = 2;
+
+Bytes concat(std::initializer_list<std::span<const uint8_t>> parts) {
+  Bytes out;
+  for (const auto& part : parts) out.insert(out.end(), part.begin(), part.end());
+  return out;
+}
+
+std::span<const uint8_t> text(const char* s) { return {reinterpret_cast<const uint8_t*>(s), std::strlen(s)}; }
+
+std::array<uint8_t, 16> key_cluster(const identity::ClusterKey& key) { return key.cluster_id; }
+
+// A peer's certificate, checked: this cluster's CA, the receiver's clock,
+// naming `node`, not revoked.
+identity::Certificate checked_certificate(const CertificateCredential& mine, std::span<const uint8_t> der, const identity::NodeId& node) {
+  identity::Certificate certificate = [&] {
+    try {
+      return identity::Certificate::from_der(der);
+    } catch (const std::runtime_error& error) {
+      throw HandshakeRefused(std::string("not a certificate: ") + error.what());
+    }
+  }();
+  if (const auto why = identity::check_node_certificate(certificate, mine.ca, mine.wall->unix_ms()); !why.empty()) throw HandshakeRefused(why);
+  if (certificate.node_id() != node) throw HandshakeRefused("the certificate names another node");
+  if (mine.revoked && mine.revoked(certificate)) throw HandshakeRefused("the certificate is revoked");
+  return certificate;
+}
+
+void check_signature(const identity::Certificate& certificate, std::span<const uint8_t> message, std::span<const uint8_t> signature) {
+  const auto key = certificate.public_key();
+  const auto algorithm = identity::algorithm_of_public_key(key);
+  if (!algorithm || !identity::verify(*algorithm, key, message, signature)) throw HandshakeRefused("the signature does not verify");
+}
+
 }  // namespace
+
+WireVersions Credentials::versions() const {
+  if (!key && !certificate) throw std::logic_error("credentials hold neither a cluster key nor a certificate");
+  return {static_cast<uint16_t>(key ? 1 : 2), static_cast<uint16_t>(certificate ? 2 : 1)};
+}
 
 const char* purpose_name(Purpose purpose) noexcept {
   switch (purpose) {
@@ -107,12 +141,16 @@ void validate_frame_limit(size_t size) {
   if (size < min_frame_size || size > max_frame_size) throw std::invalid_argument("max frame size must be 4K..4M");
 }
 
-ClientHandshake::ClientHandshake(const identity::ClusterKey& key, membership::NodeRecord local, size_t max_frame, Lane lane, Purpose purpose, PathToken token,
-                                 WireVersions versions)
-    : _key(key), _local(std::move(local)), _max_frame(max_frame), _lane(lane), _purpose(purpose), _versions(versions) {
+ClientHandshake::ClientHandshake(Credentials credentials, membership::NodeRecord local, size_t max_frame, Lane lane, Purpose purpose, PathToken token,
+                                 std::optional<WireVersions> versions)
+    : _credentials(std::move(credentials)), _local(std::move(local)), _max_frame(max_frame), _lane(lane), _purpose(purpose) {
   validate_frame_limit(_max_frame);
+  _versions = versions ? *versions : _credentials.versions();
   validate_versions(_versions);
   if (_purpose == Purpose::ordinary && token != PathToken{}) throw std::invalid_argument("an ordinary connection carries no path token");
+  const bool by_key = _credentials.key && _versions.min <= 1;
+  const bool by_certificate = _credentials.certificate && _versions.max >= 2;
+  if (!by_key && !by_certificate) throw std::invalid_argument("the credentials prove no version in the range");
   _nonce = random32();
   _ephemeral = identity::x25519_generate();
   Writer hello;
@@ -120,7 +158,6 @@ ClientHandshake::ClientHandshake(const identity::ClusterKey& key, membership::No
   hello.u16(_versions.max);
   hello.u32(static_cast<uint32_t>(_max_frame));
   hello.u8(static_cast<uint8_t>(_lane));
-  hello.fixed(_key.cluster_id);
   hello.fixed(_local.id.bytes);
   hello.fixed(_nonce);
   hello.fixed(_ephemeral.public_key);
@@ -130,7 +167,22 @@ ClientHandshake::ClientHandshake(const identity::ClusterKey& key, membership::No
   _hello = hello.take();
   Writer envelope;
   envelope.bytes(_hello);
-  envelope.fixed(identity::hmac_sha256(_key.auth, label("dannan/hello/1", _hello)));
+  envelope.u8(static_cast<uint8_t>((by_key ? 1 : 0) + (by_certificate ? 1 : 0)));
+  if (by_key) {
+    const auto& key = *_credentials.key;
+    const auto cluster = key_cluster(key);
+    envelope.u8(proof_by_key);
+    envelope.fixed(cluster);
+    envelope.fixed(identity::hmac_sha256(key.auth, concat({text("dannan/hello/1"), _hello, cluster})));
+  }
+  if (by_certificate) {
+    const auto& mine = *_credentials.certificate;
+    const auto cluster = identity::cluster_id_of(mine.ca);
+    envelope.u8(proof_by_certificate);
+    envelope.fixed(cluster);
+    envelope.bytes(mine.own.der());
+    envelope.bytes(mine.key.sign(concat({text("dannan/hello/2"), _hello, cluster})));
+  }
   _blob = framed(envelope.data());
 }
 
@@ -140,12 +192,6 @@ Established ClientHandshake::finish(std::span<const uint8_t> response) {
   return refusing([&] {
     Reader envelope(response);
     const auto ack = envelope.bytes(max_handshake_blob);
-    const auto mac = envelope.fixed<32>();
-    envelope.finish();
-    auto authenticated = label("dannan/ack/1", _hello);
-    authenticated.insert(authenticated.end(), ack.begin(), ack.end());
-    if (!identity::constant_time_equal(mac, identity::hmac_sha256(_key.auth, authenticated))) throw HandshakeRefused("peer auth failed");
-
     Reader reader(ack);
     const auto version = reader.u16();
     if (version < _versions.min || version > _versions.max) throw HandshakeRefused("peer chose a wire version outside our range");
@@ -163,9 +209,29 @@ Established ClientHandshake::finish(std::span<const uint8_t> response) {
     reader.finish();
     if (peer.id != server_id) throw HandshakeRefused("peer identity mismatch");
 
+    std::optional<identity::Certificate> peer_certificate;
+    Bytes salt;
+    if (version == 1) {
+      if (!_credentials.key) throw HandshakeRefused("peer chose version 1 without a cluster key here");
+      const auto mac = envelope.fixed<32>();
+      envelope.finish();
+      if (!identity::constant_time_equal(mac, identity::hmac_sha256(_credentials.key->auth, concat({text("dannan/ack/1"), _hello, ack}))))
+        throw HandshakeRefused("peer auth failed");
+      salt.assign(_credentials.key->auth.begin(), _credentials.key->auth.end());
+    } else {
+      if (!_credentials.certificate) throw HandshakeRefused("peer chose version 2 without a certificate here");
+      const auto der = envelope.bytes(max_handshake_blob);
+      const auto signature = envelope.bytes(512);
+      envelope.finish();
+      peer_certificate = checked_certificate(*_credentials.certificate, der, server_id);
+      check_signature(*peer_certificate, concat({text("dannan/ack/2"), _hello, ack}), signature);
+      const auto cluster = identity::cluster_id_of(_credentials.certificate->ca);
+      salt.assign(cluster.begin(), cluster.end());
+    }
+
     const auto shared = identity::x25519_shared(_ephemeral.private_key, server_public);
     identity::cleanse(_ephemeral.private_key);
-    auto [c2s, s2c] = derive_keys(shared, _key, _hello, ack, _local.id, peer.id, _nonce, server_nonce);
+    auto [c2s, s2c] = derive_keys(shared, salt, _hello, ack, _local.id, peer.id, _nonce, server_nonce);
     Established out;
     out.peer = std::move(peer);
     out.lane = _lane;
@@ -173,6 +239,7 @@ Established ClientHandshake::finish(std::span<const uint8_t> response) {
     out.version = version;
     out.purpose = _purpose;
     out.observed = std::move(observed);
+    out.peer_certificate = std::move(peer_certificate);
     out.keys.tx = c2s;
     out.keys.rx = s2c;
     out.keys.session_id = _nonce;
@@ -180,31 +247,50 @@ Established ClientHandshake::finish(std::span<const uint8_t> response) {
   });
 }
 
-ServerReply server_handshake(const identity::ClusterKey& key, const membership::NodeRecord& local, size_t max_frame, std::span<const uint8_t> envelope_bytes,
-                             const Endpoint& remote, const Expected* expected, WireVersions versions) {
+ServerReply server_handshake(const Credentials& credentials, const membership::NodeRecord& local, size_t max_frame, std::span<const uint8_t> envelope_bytes,
+                             const Endpoint& remote, const Expected* expected, std::optional<WireVersions> versions_given) {
   validate_frame_limit(max_frame);
+  const auto versions = versions_given ? *versions_given : credentials.versions();
   validate_versions(versions);
   return refusing([&] {
     Reader envelope(envelope_bytes);
     const auto hello = envelope.bytes(max_handshake_blob);
-    const auto mac = envelope.fixed<32>();
+    // The proofs, by kind; each names the cluster it proves.
+    struct Proof {
+      std::array<uint8_t, 16> cluster{};
+      std::array<uint8_t, 32> mac{};
+      Bytes der;
+      Bytes signature;
+    };
+    std::optional<Proof> by_key, by_certificate;
+    const auto proofs = envelope.u8();
+    if (proofs > 2) throw HandshakeRefused("too many proofs");
+    for (uint8_t i = 0; i < proofs; ++i) {
+      const auto kind = envelope.u8();
+      Proof proof;
+      proof.cluster = envelope.fixed<16>();
+      if (kind == proof_by_key) {
+        proof.mac = envelope.fixed<32>();
+        by_key = std::move(proof);
+      } else if (kind == proof_by_certificate) {
+        proof.der = envelope.bytes(max_handshake_blob);
+        proof.signature = envelope.bytes(512);
+        by_certificate = std::move(proof);
+      } else {
+        throw HandshakeRefused("unknown proof");
+      }
+    }
     envelope.finish();
-    if (!identity::constant_time_equal(mac, identity::hmac_sha256(key.auth, label("dannan/hello/1", hello)))) throw HandshakeRefused("client auth failed");
 
     Reader reader(hello);
     const auto their_min = reader.u16();
     const auto their_max = reader.u16();
     if (!their_min || their_min > their_max) throw HandshakeRefused("invalid wire version range");
-    const auto version = std::min(their_max, versions.max);
-    if (version < std::max(their_min, versions.min))
-      throw HandshakeRefused("no common wire version: ours " + std::to_string(versions.min) + ".." + std::to_string(versions.max) + ", theirs " +
-                             std::to_string(their_min) + ".." + std::to_string(their_max));
     const size_t peer_max = reader.u32();
     check_limit(peer_max);
     const auto lane_byte = reader.u8();
     if (lane_byte < 1 || lane_byte > 3) throw HandshakeRefused("invalid transport lane");
     const auto lane = static_cast<Lane>(lane_byte);
-    if (reader.fixed<16>() != key.cluster_id) throw HandshakeRefused("wrong cluster");
     identity::NodeId client_id{reader.fixed<16>()};
     const auto client_nonce = reader.fixed<32>();
     const auto client_public = reader.fixed<32>();
@@ -216,6 +302,39 @@ ServerReply server_handshake(const identity::ClusterKey& key, const membership::
     auto peer = membership::decode(reader);
     reader.finish();
     if (peer.id != client_id) throw HandshakeRefused("client identity mismatch");
+
+    // The highest version both speak that the hello proves for this cluster.
+    const auto top = std::min(their_max, versions.max);
+    const auto bottom = std::max(their_min, versions.min);
+    if (top < bottom)
+      throw HandshakeRefused("no common wire version: ours " + std::to_string(versions.min) + ".." + std::to_string(versions.max) + ", theirs " +
+                             std::to_string(their_min) + ".." + std::to_string(their_max));
+    uint16_t version = 0;
+    std::optional<identity::Certificate> peer_certificate;
+    std::string refused = "the hello proves no common version for this cluster";
+    for (uint16_t v = top; v >= bottom && !version; --v) {
+      if (v == 2 && credentials.certificate && by_certificate) {
+        const auto& mine = *credentials.certificate;
+        if (by_certificate->cluster != identity::cluster_id_of(mine.ca)) {
+          refused = "wrong cluster";
+        } else {
+          peer_certificate = checked_certificate(mine, by_certificate->der, client_id);
+          check_signature(*peer_certificate, concat({text("dannan/hello/2"), hello, by_certificate->cluster}), by_certificate->signature);
+          version = 2;
+        }
+      } else if (v == 1 && credentials.key && by_key) {
+        const auto& key = *credentials.key;
+        if (by_key->cluster != key_cluster(key)) {
+          refused = "wrong cluster";
+        } else if (!identity::constant_time_equal(by_key->mac, identity::hmac_sha256(key.auth, concat({text("dannan/hello/1"), hello, by_key->cluster})))) {
+          throw HandshakeRefused("client auth failed");
+        } else {
+          version = 1;
+        }
+      }
+      if (v == 1) break;
+    }
+    if (!version) throw HandshakeRefused(refused);
     if (!expected) {
       if (purpose != Purpose::ordinary) throw HandshakeRefused(std::string("a ") + purpose_name(purpose) + " connection nobody expected");
     } else if (purpose != expected->purpose || !identity::constant_time_equal(token, expected->token) || client_id != expected->peer) {
@@ -238,15 +357,23 @@ ServerReply server_handshake(const identity::ClusterKey& key, const membership::
     ack_writer.u16(remote.port);
     const auto ack = ack_writer.take();
 
-    auto authenticated = label("dannan/ack/1", hello);
-    authenticated.insert(authenticated.end(), ack.begin(), ack.end());
     Writer response;
     response.bytes(ack);
-    response.fixed(identity::hmac_sha256(key.auth, authenticated));
+    Bytes salt;
+    if (version == 1) {
+      response.fixed(identity::hmac_sha256(credentials.key->auth, concat({text("dannan/ack/1"), hello, ack})));
+      salt.assign(credentials.key->auth.begin(), credentials.key->auth.end());
+    } else {
+      const auto& mine = *credentials.certificate;
+      response.bytes(mine.own.der());
+      response.bytes(mine.key.sign(concat({text("dannan/ack/2"), hello, ack})));
+      const auto cluster = identity::cluster_id_of(mine.ca);
+      salt.assign(cluster.begin(), cluster.end());
+    }
 
     const auto shared = identity::x25519_shared(ephemeral.private_key, client_public);
     identity::cleanse(ephemeral.private_key);
-    auto [c2s, s2c] = derive_keys(shared, key, hello, ack, peer.id, local.id, client_nonce, server_nonce);
+    auto [c2s, s2c] = derive_keys(shared, salt, hello, ack, peer.id, local.id, client_nonce, server_nonce);
     ServerReply out;
     out.response_blob = framed(response.data());
     out.session.peer = std::move(peer);
@@ -254,6 +381,7 @@ ServerReply server_handshake(const identity::ClusterKey& key, const membership::
     out.session.max_frame = negotiated;
     out.session.version = version;
     out.session.purpose = purpose;
+    out.session.peer_certificate = std::move(peer_certificate);
     out.session.keys.tx = s2c;
     out.session.keys.rx = c2s;
     out.session.keys.session_id = client_nonce;

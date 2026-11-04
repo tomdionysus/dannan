@@ -200,7 +200,15 @@ std::optional<Secret> KeyCustody::create(const std::filesystem::path& state, con
   return root;
 }
 
-KeyCustody KeyCustody::open(const std::filesystem::path& state, const KeySource& source) {
+KeyCustody KeyCustody::open(const std::filesystem::path& state, const KeySource& source) { return open_with(state, source, nullptr); }
+
+std::pair<KeyCustody, std::optional<Secret>> KeyCustody::create_and_open(const std::filesystem::path& state, const KeySource& source) {
+  auto root = create(state, source);
+  auto custody = open_with(state, source, root ? &*root : nullptr);
+  return {std::move(custody), std::move(root)};
+}
+
+KeyCustody KeyCustody::open_with(const std::filesystem::path& state, const KeySource& source, const Secret* given) {
   const auto path = custody_path(state);
   if (!std::filesystem::exists(path)) throw std::runtime_error("no key custody at " + path.string() + ": make it once, with the node's init");
   const auto size = std::filesystem::file_size(path);
@@ -223,7 +231,8 @@ KeyCustody KeyCustody::open(const std::filesystem::path& state, const KeySource&
     const auto tag = reader.fixed<16>();
     const auto ciphertext = reader.bytes(max_file);
     reader.finish();
-    const auto root = root_for(header, source);
+    std::optional<Secret> computed;
+    const Secret& root = given ? *given : computed.emplace(root_for(header, source));
     const auto key = kek(root, header);
     SecureBuffer body;
     try {
