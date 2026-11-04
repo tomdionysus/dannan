@@ -48,13 +48,18 @@ void Membership::load() {
   const auto count = reader.u32();
   if (count > max_nodes) throw net::DecodeError("too many known nodes");
   // Known, not live: a reloaded node is active only once heard from again.
-  const auto stale = _time->now() - _dead_after - std::chrono::milliseconds(1);
+  // When it was last heard of comes back from the wall time persisted, so
+  // its absence keeps its length across the restart.
+  const auto now = _time->now();
+  const auto wall = _wall->unix_ms();
+  const auto stale = now - _dead_after - std::chrono::milliseconds(1);
   for (uint32_t i = 0; i < count; ++i) {
     auto node = decode(reader);
     const uint64_t heard = reader.u64();
     if (node.id == identity::NodeId{} || node.id == _self.id || node.host.empty() || !node.port) throw net::DecodeError("bad known-node roster entry");
     const auto id = node.id;
-    if (!_nodes.emplace(id, Known{std::move(node), stale, std::nullopt, heard, heard}).second) throw net::DecodeError("duplicate known-node roster entry");
+    const auto seen = wall > heard ? std::min(stale, now - std::chrono::milliseconds(wall - heard)) : stale;
+    if (!_nodes.emplace(id, Known{std::move(node), seen, std::nullopt, heard, heard}).second) throw net::DecodeError("duplicate known-node roster entry");
   }
   const auto resets = reader.u32();
   if (resets > max_resets) throw net::DecodeError("too many identity association resets");
@@ -289,6 +294,13 @@ std::vector<NodeRecord> Membership::active() const {
   for (const auto& [_, known] : _nodes)
     if (now - known.seen <= _dead_after) out.push_back(known.record);
   return out;
+}
+
+std::optional<contract::TimePoint> Membership::absent_since(const identity::NodeId& id) const {
+  contract::Lock lock(_mutex);
+  const auto found = _nodes.find(id);
+  if (found == _nodes.end() || _time->now() - found->second.seen <= _dead_after) return std::nullopt;
+  return found->second.seen;
 }
 
 bool Membership::directly_reachable(const identity::NodeId& id) const {
