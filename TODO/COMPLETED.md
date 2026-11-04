@@ -25,6 +25,21 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
 
+## 2026-11-04 -- identity, slice 1: certificates and revocations
+
+`identity/certificate.*` (`TODO/2026-11-04-identity.md`, sections 1 and 3):
+`Certificate` (X.509 through OpenSSL: DER and PEM, the SubjectPublicKeyInfo,
+the node id from a subjectAltName URI `dannan:node:<hex>`, serial,
+validity, CA or not, subject, fingerprint); `CertificateAuthority` (create:
+EC P-256, self-signed, CA:TRUE pathlen 0, keyCertSign; load from key and
+certificate; issue a node certificate over a node's key, CA:FALSE,
+digitalSignature, two years by default; revoke); `check_node_certificate`
+(issued by this CA, within validity at the receiver's clock, a leaf, naming
+a node); `cluster_id_of` (SHA-256 of the CA's key); `Revocation` signed by
+the CA (serial zero covers every certificate of the node), its set encoded
+as DNNREV01. `algorithm_of_public_key` beside `verify`. Certificates and
+revocation sets join the fuzz targets. **Gate: `dannan_tests` 385.**
+
 ## 2026-11-04 -- ChildProcess for a command's process tests
 
 Asked by Lugh, whose process tests move into GoogleTest: `ChildOptions`
