@@ -5,6 +5,19 @@ left green. `ACTIVE.md` is the plan and this is the record.
 
 ## Releases
 
+- **0.2.0** (2026-11-04, `main`, tag `0.2.0`, Tom: "Tag 0.2.0 + install"):
+  wire v1 (Dannan's own, from version 1), level 0 (path classes, brokered
+  punches, relays, moving up a class, the relay's DATA budget, placement
+  told a peer's path class; the compose bed passes through real NATs),
+  channels (notify, stream, bulk), the roster-change feed and incarnations,
+  and the stack's foundations (secure memory and buffers, signing,
+  Argon2id, node key custody, durable create, JSON logs, the shared
+  fixtures); `find_package(dannan 0.2 CONFIG)` and `dannan::dannan`. Gate
+  `dannan_tests` 378, `dagda_tests` 1. Pre-release ASan/UBSan clean;
+  TSan reported no race. The first sanitizer run found a bug (a call left
+  on a retired session outlived `Client::stop()`), fixed with its test
+  before the tag; the second showed only a test's timing budget, widened.
+  Not pushed.
 - **0.1.0** (2026-11-03, `main` at `bafb91e`, tag `0.1.0`): step 1's
   vocabulary and step 2's transport on Asio, protocol 23 byte for byte
   with Macha (in process against the pinned 0.91.2 export, and two

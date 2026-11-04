@@ -45,7 +45,7 @@ plugin contract `API_VERSION` 24; two live nodes, neither production. The
 laptop is on MacPorts for everything (Boost 1.88 the only Boost; the
 configure line for Macha is in `COMPLETED.md`).
 
-## Resume here (2026-11-03, night)
+## Resume here (2026-11-04)
 
 Written for a session starting from nothing. Steps 0, 1 and 2 are done
 and released as `0.1.0` (`main`, tag `0.1.0`, not pushed; `COMPLETED.md`
