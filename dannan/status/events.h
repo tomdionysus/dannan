@@ -22,13 +22,19 @@ namespace dannan::status {
 // What has happened on this node, one monotonic count per kind. Producers
 // only notify; consumers keep the counts they last saw and react to the
 // difference, so nothing calls out of a producer's thread and no consumer is
-// installed or removed. Dannan's own kind is topology (the roster changed);
-// a hosted system names its own (storage, metadata, claims) before it
-// starts. Thread-safe.
+// installed or removed. Dannan's own kinds are topology (the roster
+// changed: a node joined or left, or its place, capabilities, path class,
+// incarnation or adverts changed) and membership (the same less adverts,
+// for a consumer that re-asks peers and must not on every advert a busy
+// cluster changes). A hosted system names its own (storage, metadata,
+// claims) before it starts. Thread-safe.
 class NodeEvents {
  public:
   using Kind = size_t;
   static constexpr Kind topology = 0;
+  static constexpr Kind membership = 1;
+  // Dannan's kinds; a hosted system's are numbered after them.
+  static constexpr size_t dannan_kinds = 2;
   static constexpr size_t max_kinds = 32;
 
   // The kind with this name, made on first use. Throws std::length_error
@@ -45,7 +51,7 @@ class NodeEvents {
  private:
   std::array<std::atomic<uint64_t>, max_kinds> _counts{};
   mutable contract::Mutex _names_mutex;
-  std::vector<std::string> _names DANNAN_GUARDED_BY(_names_mutex){"topology"};
+  std::vector<std::string> _names DANNAN_GUARDED_BY(_names_mutex){"topology", "membership"};
   // Guards nothing: orders a notify against a waiter's check.
   contract::Mutex _wait_mutex;
   std::condition_variable _changed;
