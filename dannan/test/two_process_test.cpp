@@ -16,6 +16,7 @@
 #include <boost/asio/io_context.hpp>
 #include <chrono>
 #include <fstream>
+#include <iterator>
 #include <regex>
 #include <string>
 #include <thread>
@@ -150,6 +151,44 @@ TEST(TwoProcess, ANodeProcessAndANodeHereFormOneCluster) {
 // its custody and shows its identity; the CA certifies each; the two meet
 // on certificates alone and answer each other on both lanes. A revocation
 // is written and reads back.
+// dannan-node takes its settings from a file, secrets.yaml beside it and
+// the environment as well as flags, through the stack's one reader: the
+// file's port 1 (privileged, so binding it would fail) is overridden by
+// DANNAN_NODE_LISTEN_PORT=0, and the key's path comes from secrets.yaml.
+// A value that cannot be used stops it, naming the file.
+TEST(TwoProcess, TheNodeReadsAConfigurationFile) {
+  test::TempDir dir;
+  std::ofstream(dir.path() / "cluster.key") << "a two-process cluster key";
+  const auto config = (dir.path() / "node.yaml").string();
+  std::ofstream(config) << "node:\n  state: " << (dir.path() / "state").string()
+                        << "\nlisten:\n  address: 127.0.0.1\n  advertise: 127.0.0.1\n  port: 1\n  inbound: \"yes\"\ntiming:\n  seconds: 30\n";
+  std::ofstream(dir.path() / "secrets.yaml") << "cluster:\n  key: " << (dir.path() / "cluster.key").string() << "\n";
+  test::ChildOptions options;
+  options.environment = std::vector<std::string>{"DANNAN_NODE_LISTEN_PORT=0"};
+  {
+    test::ChildProcess node({DANNAN_NODE_BINARY, "--config", config}, dir.path() / "node.log", options);
+    bool listening = false;
+    const auto until = std::chrono::steady_clock::now() + 30s;
+    while (auto line = node.line(until)) {
+      std::smatch match;
+      if (std::regex_search(*line, match, std::regex(R"re("event":"listening","id":"[0-9a-f]{32}","port":([0-9]+))re"))) {
+        listening = std::stoi(match[1]) != 1;
+        break;
+      }
+    }
+    EXPECT_TRUE(listening) << "see " << (dir.path() / "node.log");
+  }
+  std::ofstream(config) << "node:\n  state: " << (dir.path() / "state").string() << "\nlisten:\n  port: seventy\n";
+  // Without the variable, which would win over the file's bad port.
+  test::ChildOptions plain;
+  plain.environment = std::vector<std::string>{};
+  test::ChildProcess refused({DANNAN_NODE_BINARY, "--config", config}, dir.path() / "refused.log", plain);
+  EXPECT_EQ(refused.wait(std::chrono::steady_clock::now() + 30s), 2);
+  std::ifstream log(dir.path() / "refused.log");
+  const std::string said((std::istreambuf_iterator<char>(log)), std::istreambuf_iterator<char>());
+  EXPECT_NE(said.find(config + ": listen.port is a number, 0 to 65535, not \"seventy\""), std::string::npos) << said;
+}
+
 TEST(TwoProcess, AnOperatorCertifiesTwoNodesThatMeetOnCertificatesAlone) {
   test::TempDir dir;
   const auto deadline = [] { return std::chrono::steady_clock::now() + 30s; };
