@@ -14,6 +14,8 @@
 #include <gtest/gtest.h>
 
 #include "dannan/identity/certificate.h"
+#include "dannan/identity/revocations.h"
+#include "dannan/test/fixtures/temp_dir.h"
 
 namespace dannan::identity {
 namespace {
@@ -122,6 +124,31 @@ TEST(Revocation, IsSignedByTheCaAndCoversWhatItNames) {
   auto bad = encode_revocations({one});
   bad[0] = 'X';
   EXPECT_THROW(decode_revocations(bad), net::DecodeError);
+}
+
+// A node's revocations: only the CA's are kept, each once; they survive a
+// restart; a file holding a forged one is refused rather than half read.
+TEST(RevocationStore, KeepsTheCasOnlyAndPersists) {
+  test::TempDir dir;
+  const auto ca = CertificateAuthority::create("c", now);
+  const auto other = CertificateAuthority::create("c", now);
+  const auto key = SigningKey::generate(SigningAlgorithm::es256).public_key();
+  const auto cert = ca.issue(node(8), key, 3, now);
+  const auto path = dir.path() / "identity" / "revocations";
+  {
+    RevocationStore store(ca.certificate(), path);
+    EXPECT_FALSE(store.revoked(cert));
+    const auto revocation = ca.revoke(node(8), 3, now, "lost");
+    const auto kept = store.add({revocation, other.revoke(node(9), 0, now, "forged"), revocation});
+    ASSERT_EQ(kept.size(), 1u);
+    EXPECT_TRUE(store.revoked(cert));
+    EXPECT_TRUE(store.add({revocation}).empty());
+  }
+  RevocationStore reloaded(ca.certificate(), path);
+  EXPECT_TRUE(reloaded.revoked(cert));
+  EXPECT_EQ(reloaded.all().size(), 1u);
+  // Another cluster's store refuses this file outright.
+  EXPECT_THROW(RevocationStore(other.certificate(), path), std::runtime_error);
 }
 
 }  // namespace
