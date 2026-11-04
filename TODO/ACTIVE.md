@@ -74,9 +74,9 @@ nothing shared is written twice (Decisions).
 
 The compose bed (`-DDANNAN_BUILD_COMPOSE_TESTS=ON`,
 `./build/dannan_compose_tests`, Docker running) proves level 0 through real
-NATs over cluster-key (v1) nodes; it is run by hand. Next: the bed over a
-certificate-only cluster (wire v2 and revocation through real NATs), then
-whatever the hosted systems find missing.
+NATs, over cluster-key (v1) nodes and over certificates alone (v2, with a
+revocation); it is run by hand. Next: whatever the hosted systems find
+missing.
 Macha is not touched until Tom says (Tom, 2026-11-04).
 
 Read in this order: this file to the end of Standing rules;

@@ -11,4 +11,8 @@
 find_package(GTest 1.14 CONFIG REQUIRED)
 add_executable(dannan_compose_tests compose_test.cpp)
 target_link_libraries(dannan_compose_tests PRIVATE dannan_test_fixtures GTest::gtest_main dannan_warnings)
-target_compile_definitions(dannan_compose_tests PRIVATE DANNAN_COMPOSE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+# The host's own dannan-node and dannan-ca make the certificate bed's
+# identities before it comes up, as an operator would.
+add_dependencies(dannan_compose_tests dannan-node dannan-ca)
+target_compile_definitions(dannan_compose_tests PRIVATE DANNAN_COMPOSE_DIR="${CMAKE_CURRENT_SOURCE_DIR}" DANNAN_NODE_BINARY="$<TARGET_FILE:dannan-node>"
+                                                        DANNAN_CA_BINARY="$<TARGET_FILE:dannan-ca>")
