@@ -76,8 +76,8 @@ system needs in its own shape stays in that system.
 - **Status.** Telemetry gossiped between nodes, readiness, counters,
   structured JSON logs, observations, and supervision of every thread.
 - **Shared foundations.** Secure memory, signing (ES256 and Ed25519),
-  X25519, Argon2id, durable files, the layered settings reader every node
-  binary uses, fuzz targets and test fixtures, written once here and used
+  X25519, Argon2id, durable files, percent-encoding, the layered settings
+  reader every node binary uses, fuzz targets and test fixtures, written once here and used
   by every project above.
 
 Dannan stores nothing on a hosted system's behalf and knows no file, key,
