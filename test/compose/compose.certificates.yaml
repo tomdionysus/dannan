@@ -1,0 +1,37 @@
+#
+# Dannan - The Distributed Substrate
+#
+# Copyright (C) 2026 Tom Cully <mail@tomcully.com>
+# Licensed under the GNU GPLv3 - see <https://www.gnu.org/licenses/gpl-3.0.html>
+#
+
+# Laid over compose.yaml: the same bed as a cluster of certificates alone
+# (wire version 2, no cluster key). The test makes each node's key custody,
+# the cluster's CA and every node's certificate before the bed comes up, in
+# DANNAN_IDENTITY_DIR: <dir>/ca.pem, <dir>/<node>/ (custody, node id,
+# node.pem), and <dir>/revocations once the test revokes a node. Each node
+# copies its own directory into its state at start (node.sh).
+
+x-identity: &identity
+  IDENTITY: certificate
+  CUSTODY_PASSPHRASE: ${DANNAN_CUSTODY_PASSPHRASE:?the test sets it}
+
+services:
+  hub1:
+    environment: {<<: *identity}
+    volumes: ["${DANNAN_IDENTITY_DIR:?the test sets it}:/identity:ro"]
+  hub2:
+    environment: {<<: *identity}
+    volumes: ["${DANNAN_IDENTITY_DIR:?the test sets it}:/identity:ro"]
+  a1:
+    environment: {<<: *identity}
+    volumes: ["${DANNAN_IDENTITY_DIR:?the test sets it}:/identity:ro"]
+  d1:
+    environment: {<<: *identity}
+    volumes: ["${DANNAN_IDENTITY_DIR:?the test sets it}:/identity:ro"]
+  b1:
+    environment: {<<: *identity}
+    volumes: ["${DANNAN_IDENTITY_DIR:?the test sets it}:/identity:ro"]
+  c1:
+    environment: {<<: *identity}
+    volumes: ["${DANNAN_IDENTITY_DIR:?the test sets it}:/identity:ro"]

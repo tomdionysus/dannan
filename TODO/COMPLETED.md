@@ -38,6 +38,21 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
 
+## 2026-11-04 -- the compose bed over certificates alone
+
+`ComposeBed.CertificatesAloneThroughRealNats` (`test/compose/`): the six-node
+bed as a cluster of certificates alone (wire v2, `--no-cluster-key`),
+`compose.certificates.yaml` laid over `compose.yaml`. The host's own
+`dannan-node` (`--init-custody`, `--show-identity`) and `dannan-ca` (`init`,
+`issue`) make every node's custody, the CA and the certificates first, as
+an operator would; `node.sh` takes its identity into its state at first
+start. Phases 1 and 2 as for v1 (one cluster, path classes, every pair's
+path and echo on both lanes); then c1 is revoked (`dannan-ca revoke`),
+handed to hub1 at a restart, and every other node drops c1 and keeps it out
+20 s later, the other five still as before. Passed first run (152 s); the
+v1 test, its setup now shared, passed again (63 s, image reused). Gate
+`dannan_tests` 408 (the bed is not in it).
+
 ## 2026-11-04 -- a node's absence, kept across a restart
 
 For Dagda (step 5, leases and takeover): `Nodes::absent_since(node)`, from
