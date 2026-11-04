@@ -134,8 +134,10 @@ class Routes {
   // Unbinds it. Waits for the handler's calls in flight to return.
   virtual void unbind(net::MessageType type) = 0;
   // Calls `peer`, dialling if need be; `done` is posted to `executor` once:
-  // the reply, or why none came, at the latest when `deadline` passes. The
-  // handle controls the call meanwhile. Waits on nothing.
+  // the reply, or why none came, at the latest when `deadline` passes. A
+  // call whose deadline passes is cancelled: its reply slot is freed and the
+  // peer told, and a reply that comes later is dropped. The handle controls
+  // the call meanwhile. Waits on nothing.
   virtual std::shared_ptr<net::CallHandle> call(const membership::NodeRecord& peer, net::MessageType type, net::Bytes payload, sched::FrameType frame,
                                                 std::chrono::milliseconds deadline, boost::asio::any_io_executor executor, Done done) = 0;
   virtual std::shared_ptr<net::CallHandle> call(const net::Endpoint& endpoint, net::MessageType type, net::Bytes payload, sched::FrameType frame,
@@ -270,12 +272,19 @@ class Faults {
   virtual void raise(std::string reason) = 0;
 };
 
-// The node's injected clocks, and a timer.
+// The node's injected clocks, its executor, and a timer.
 class Time {
  public:
   virtual ~Time() = default;
   virtual contract::TimePoint now() const = 0;
   virtual uint64_t unix_ms() const = 0;
+  // The time source behind now(), for a component that takes one: a test's
+  // stepped source reaches the hosted system through here. Lives as long as
+  // the node.
+  virtual const contract::TimeSource& source() const = 0;
+  // The node's io context's executor, for a hosted system's timers, strands
+  // and completions. Its handlers must not block.
+  virtual boost::asio::any_io_executor executor() const = 0;
   // Posts `fn` to the node's executor after `delay`. Waits on nothing.
   virtual void after(std::chrono::milliseconds delay, std::function<void()> fn) = 0;
 };
