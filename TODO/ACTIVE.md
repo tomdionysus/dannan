@@ -68,8 +68,9 @@ Dannan is one of a stack: Dagda (`../dagda`, the store), Lugh (`../lugh`,
 the directory) and Lir (`../lir`, MQTT events) are hosted systems on it,
 each with its own session; what each owns is
 `../dagda/TODO/2026-11-03-stack.md`, and the rules for all are
-`CONTRIBUTING.md`. They were on 0.2.0 (Lugh at a commit) and move to 0.3.0
-at their own pace. They send what they need from Dannan as messages;
+`CONTRIBUTING.md`. Lugh pins 0.3.0 (Lugh `db34a34`, 353 tests in debug,
+ASan and TSan, no change needed); Dagda and Lir move to it at their own
+pace. They send what they need from Dannan as messages;
 nothing shared is written twice (Decisions).
 
 The compose bed (`-DDANNAN_BUILD_COMPOSE_TESTS=ON`,
