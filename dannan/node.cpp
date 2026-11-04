@@ -362,7 +362,7 @@ void Node::start() {
   _frozen = std::make_shared<const net::RouteTable>(_table);
 
   net::ServerOptions server_options;
-  server_options.key = _identity.key;
+  server_options.credentials = _identity.key;
   server_options.local = [this] { return _members.self(); };
   server_options.max_frame = _config.max_frame;
   server_options.routes = _frozen;
@@ -379,7 +379,7 @@ void Node::start() {
       });
 
   net::ClientOptions client_options;
-  client_options.key = _identity.key;
+  client_options.credentials = _identity.key;
   client_options.local = [this] { return _members.self(); };
   client_options.max_frame = _config.max_frame;
   client_options.routes = _frozen;
@@ -408,7 +408,7 @@ void Node::start() {
   };
   _client = std::make_unique<net::Client>(_io, client_options);
   reach::PathsConfig paths;
-  paths.key = _identity.key;
+  paths.credentials = _identity.key;
   paths.connect_timeout = _config.connect_timeout;
   paths.punch_window = _config.punch_window;
   paths.relay = _config.relay;
