@@ -228,6 +228,23 @@ TEST(Node, ThePhaseFollowsTheDeclaredPlanes) {
   EXPECT_TRUE(eventually([&] { return pair.b->context().telemetry().local()->phase() == status::Phase::ready; }));
 }
 
+// A hosted system declares its own planes through the Context before the
+// node starts, beside those NodeConfig lists; once started, the planes are
+// fixed (Dagda asked, 2026-11-04).
+TEST(Node, AHostedSystemDeclaresItsPlanesBeforeStart) {
+  Pair pair([](NodeConfig& c) { c.planes = {"metadata"}; });
+  auto& readiness = pair.b->context().readiness();
+  readiness.declare("dagda.store");
+  readiness.declare("metadata");
+  EXPECT_THROW(readiness.declare(""), std::invalid_argument);
+  pair.b->start();
+  EXPECT_THROW(readiness.declare("late"), std::logic_error);
+  readiness.ready("metadata");
+  EXPECT_EQ(readiness.phase(), status::Phase::recovering);
+  readiness.ready("dagda.store");
+  EXPECT_EQ(readiness.phase(), status::Phase::ready);
+}
+
 // A reset made on one node reaches its peers.
 TEST(Node, AnIdentityResetPropagates) {
   Pair pair;
