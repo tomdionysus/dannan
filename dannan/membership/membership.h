@@ -80,6 +80,10 @@ class Membership {
   std::vector<NodeRecord> all() const;
   // Self first, then every node heard of within dead_after.
   std::vector<NodeRecord> active() const;
+  // When a node not heard of within dead_after was last heard of, on the
+  // steady clock; none for self, an active node, or one not known. Across a
+  // restart it is rebuilt from the wall time persisted with the roster.
+  std::optional<contract::TimePoint> absent_since(const identity::NodeId& id) const;
   // Self, or authenticated directly within dead_after.
   bool directly_reachable(const identity::NodeId& id) const;
   // Drops every node not heard of for the horizon; how many went.

@@ -18,8 +18,10 @@
 #include <string>
 #include <vector>
 
+#include "dannan/contract/scope.h"
 #include "dannan/contract/time_source.h"
 #include "dannan/identity/key_custody.h"
+#include "dannan/identity/revocations.h"
 #include "dannan/membership/node_record.h"
 #include "dannan/net/client.h"
 #include "dannan/net/fanout.h"
@@ -84,6 +86,12 @@ class Nodes {
   virtual std::vector<membership::NodeRecord> active() const = 0;
   // Both, from one reading.
   virtual RosterSnapshot snapshot() const = 0;
+  // When a node not heard of within dead_after (directly or by gossip) was
+  // last heard of, on the node's steady clock (Time::source()); none for
+  // this node, an active one, or one not known. It survives a restart: the
+  // roster keeps the wall time each node was last heard of, and a node
+  // forgotten at the horizon is no longer known. Waits on nothing.
+  virtual std::optional<contract::TimePoint> absent_since(const identity::NodeId& node) const = 0;
   // Authenticated directly within dead_after; gossip never counts.
   virtual bool directly_reachable(const identity::NodeId& node) const = 0;
   // Every known node directly reachable, pairs that cannot meet excepted.
@@ -132,8 +140,10 @@ class Routes {
   // Unbinds it. Waits for the handler's calls in flight to return.
   virtual void unbind(net::MessageType type) = 0;
   // Calls `peer`, dialling if need be; `done` is posted to `executor` once:
-  // the reply, or why none came, at the latest when `deadline` passes. The
-  // handle controls the call meanwhile. Waits on nothing.
+  // the reply, or why none came, at the latest when `deadline` passes. A
+  // call whose deadline passes is cancelled: its reply slot is freed and the
+  // peer told, and a reply that comes later is dropped. The handle controls
+  // the call meanwhile. Waits on nothing.
   virtual std::shared_ptr<net::CallHandle> call(const membership::NodeRecord& peer, net::MessageType type, net::Bytes payload, sched::FrameType frame,
                                                 std::chrono::milliseconds deadline, boost::asio::any_io_executor executor, Done done) = 0;
   virtual std::shared_ptr<net::CallHandle> call(const net::Endpoint& endpoint, net::MessageType type, net::Bytes payload, sched::FrameType frame,
@@ -227,6 +237,23 @@ class Identity {
   virtual identity::Bytes node_public_key() const = 0;
   virtual identity::Bytes sign(std::span<const uint8_t> message) const = 0;
   virtual identity::Secret derive_local(std::string_view label) const = 0;
+
+  // Certificates (wire version 2): this node's, when it has one; and a
+  // revocation the cluster's CA signed, applied here at once (the revoked
+  // node's sessions closed) and passed to every active peer, each asked
+  // within the node's connect timeout. Throws std::invalid_argument for a
+  // revocation the CA did not sign, std::logic_error on a node without
+  // certificates.
+  virtual std::optional<identity::Certificate> certificate() const = 0;
+  virtual void revoke(const identity::Revocation& revocation) = 0;
+  virtual std::vector<identity::Revocation> revocations() const = 0;
+
+  // Scope (contract/scope.h): the source the directory installs (Lugh), and
+  // the check every hosted system makes through it before it stores a write
+  // (Dagda's write-floor replicas among them). Without a source, this node
+  // and any node of the cluster may write, and nobody else. Never waits.
+  virtual void install_scope_source(std::shared_ptr<const contract::ScopeSource> source) = 0;
+  virtual contract::ScopeDecision verify(const contract::Principal& principal, std::string_view prefix) const = 0;
 };
 
 // Memory, by work class.
@@ -251,12 +278,19 @@ class Faults {
   virtual void raise(std::string reason) = 0;
 };
 
-// The node's injected clocks, and a timer.
+// The node's injected clocks, its executor, and a timer.
 class Time {
  public:
   virtual ~Time() = default;
   virtual contract::TimePoint now() const = 0;
   virtual uint64_t unix_ms() const = 0;
+  // The time source behind now(), for a component that takes one: a test's
+  // stepped source reaches the hosted system through here. Lives as long as
+  // the node.
+  virtual const contract::TimeSource& source() const = 0;
+  // The node's io context's executor, for a hosted system's timers, strands
+  // and completions. Its handlers must not block.
+  virtual boost::asio::any_io_executor executor() const = 0;
   // Posts `fn` to the node's executor after `delay`. Waits on nothing.
   virtual void after(std::chrono::milliseconds delay, std::function<void()> fn) = 0;
 };
@@ -269,6 +303,7 @@ class Context {
   virtual const Nodes& nodes() const = 0;
   virtual Routes& routes() = 0;
   virtual Channels& channels() = 0;
+  virtual Identity& identity() = 0;
   virtual const Identity& identity() const = 0;
   virtual Budget& budget() = 0;
   virtual Faults& faults() = 0;

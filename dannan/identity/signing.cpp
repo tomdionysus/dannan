@@ -138,6 +138,15 @@ Bytes SigningKey::sign(std::span<const uint8_t> message) const {
   return out;
 }
 
+evp_pkey_st* SigningKey::native_handle() const noexcept { return _key->pkey.get(); }
+
+std::optional<SigningAlgorithm> algorithm_of_public_key(std::span<const uint8_t> public_key) noexcept {
+  const unsigned char* cursor = public_key.data();
+  Pkey key(d2i_PUBKEY(nullptr, &cursor, static_cast<long>(public_key.size())), EVP_PKEY_free);
+  if (!key || cursor != public_key.data() + public_key.size()) return std::nullopt;
+  return algorithm_of(key.get());
+}
+
 bool verify(SigningAlgorithm algorithm, std::span<const uint8_t> public_key, std::span<const uint8_t> message, std::span<const uint8_t> signature) noexcept {
   if (signature.size() != 64) return false;
   const unsigned char* cursor = public_key.data();

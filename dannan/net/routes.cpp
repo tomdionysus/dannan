@@ -54,6 +54,8 @@ RouteTable RouteTable::with_dannan_types() {
   table.add_core(message::channel_publish, {"channel_publish", control, any, true, false, true});
   table.add_core(message::channel_replay, {"channel_replay", control, control_only, false, true});
   table.add_core(message::channel_bulk, {"channel_bulk", data, not_control, false});
+  // The CA's revocations, gossiped as identity resets are.
+  table.add_core(message::revocations, {"revocations", control, control_only, false});
   // Replies inherit their request's class.
   table.add_core(message::ok, {"ok", both, any, false});
   table.add_core(message::members_reply, {"members_reply", control, control_only, false});
@@ -64,6 +66,7 @@ RouteTable RouteTable::with_dannan_types() {
   table.add_core(message::relay_open_reply, {"relay_open_reply", control, control_only, false});
   table.add_core(message::relay_offer_reply, {"relay_offer_reply", control, control_only, false});
   table.add_core(message::channel_replay_reply, {"channel_replay_reply", control, control_only, false});
+  table.add_core(message::revocations_reply, {"revocations_reply", control, control_only, false});
   table.add_core(message::error, {"error", both, any, false});
   return table;
 }

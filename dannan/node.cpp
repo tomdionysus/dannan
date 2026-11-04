@@ -35,12 +35,15 @@ NodeRecord initial_self(const NodeConfig& config, const identity::NodeId& id, co
   return self;
 }
 
-// What a topology event is for: where a node is, what it does, and what
-// it advertises; its liveness and candidates are not.
-bool shape_changed(const NodeRecord& before, const NodeRecord& after) {
+// What a membership event is for: where a node is, what it does, and how
+// it is reached; its liveness and candidates are not.
+bool place_changed(const NodeRecord& before, const NodeRecord& after) {
   return before.host != after.host || before.port != after.port || before.failure_domain != after.failure_domain || before.incarnation != after.incarnation ||
-         before.capabilities != after.capabilities || before.path_class != after.path_class || before.adverts != after.adverts;
+         before.capabilities != after.capabilities || before.path_class != after.path_class;
 }
+
+// What a topology event is for: the same, and what the node advertises.
+bool shape_changed(const NodeRecord& before, const NodeRecord& after) { return place_changed(before, after) || before.adverts != after.adverts; }
 
 std::vector<identity::NodeId> ids_of(const std::vector<NodeRecord>& nodes) {
   std::vector<identity::NodeId> out;
@@ -59,6 +62,7 @@ class Node::NodesNoun final : public Nodes {
   NodeRecord self() const override { return _node._members.self(); }
   std::vector<NodeRecord> roster() const override { return _node._members.all(); }
   std::vector<NodeRecord> active() const override { return _node._members.active(); }
+  std::optional<contract::TimePoint> absent_since(const identity::NodeId& node) const override { return _node._members.absent_since(node); }
   bool directly_reachable(const identity::NodeId& node) const override { return _node._members.directly_reachable(node); }
   bool inbound_capable(const identity::NodeId& node) const override { return _node._members.inbound_capable(node); }
   RosterSnapshot snapshot() const override {
@@ -177,7 +181,7 @@ class Node::ChannelsNoun final : public Channels {
 
 class Node::IdentityNoun final : public Identity {
  public:
-  explicit IdentityNoun(const Node& node) : _node(node) {}
+  explicit IdentityNoun(Node& node) : _node(node) {}
   identity::NodeId id() const override { return _node._identity.id; }
   identity::NodeId durability_epoch() const override { return _node._identity.durability_epoch; }
   identity::Secret derive_key(std::string_view label) const override {
@@ -187,6 +191,36 @@ class Node::IdentityNoun final : public Identity {
     return out;
   }
   bool has_custody() const override { return _node._custody.has_value(); }
+  std::optional<identity::Certificate> certificate() const override { return _node._config.certificate; }
+  void revoke(const identity::Revocation& revocation) override {
+    if (!_node._revocations) throw std::logic_error("this node holds no certificates");
+    if (!identity::verify_revocation(revocation, *_node._config.ca_certificate)) throw std::invalid_argument("the revocation is not this cluster's CA's");
+    (void)_node.apply_revocations({revocation});
+    for (const auto& peer : _node._members.active())
+      if (peer.id != _node._identity.id) _node.exchange_revocations(peer, {peer.host, peer.port}, _node._config.connect_timeout);
+  }
+  void install_scope_source(std::shared_ptr<const contract::ScopeSource> source) override {
+    contract::Lock lock(_node._scope_mutex);
+    _node._scope = std::move(source);
+  }
+  contract::ScopeDecision verify(const contract::Principal& principal, std::string_view prefix) const override {
+    std::shared_ptr<const contract::ScopeSource> source;
+    {
+      contract::Lock lock(_node._scope_mutex);
+      source = _node._scope;
+    }
+    if (source) return source->may_write(principal, prefix);
+    // No directory: the cluster's own nodes, as a cluster key gives them
+    // today, and nobody else.
+    if (principal.kind != contract::Principal::Kind::node) return {false, 0, "no scope source is installed, and only the cluster's nodes may write"};
+    const auto id = identity::NodeId::parse(principal.id);
+    if (!id) return {false, 0, "not a node id"};
+    if (*id == _node._identity.id) return {true, 0, {}};
+    for (const auto& node : _node._members.all())
+      if (node.id == *id) return {true, 0, {}};
+    return {false, 0, "not a node of this cluster"};
+  }
+  std::vector<identity::Revocation> revocations() const override { return _node._revocations ? _node._revocations->all() : decltype(revocations()){}; }
   identity::Bytes node_public_key() const override { return _node._custody ? _node._custody->node_key().public_key() : identity::Bytes{}; }
   identity::Bytes sign(std::span<const uint8_t> message) const override { return custody().node_key().sign(message); }
   identity::Secret derive_local(std::string_view label) const override { return custody().derive(label); }
@@ -199,7 +233,7 @@ class Node::IdentityNoun final : public Identity {
 
  public:
  private:
-  const Node& _node;
+  Node& _node;
 };
 
 class Node::BudgetNoun final : public Budget {
@@ -255,6 +289,8 @@ class Node::TimeNoun final : public Time {
   explicit TimeNoun(Node& node) : _node(node) {}
   contract::TimePoint now() const override { return _node._config.time->now(); }
   uint64_t unix_ms() const override { return _node._config.wall->unix_ms(); }
+  const contract::TimeSource& source() const override { return *_node._config.time; }
+  asio::any_io_executor executor() const override { return _node._io.get_executor(); }
   void after(std::chrono::milliseconds delay, std::function<void()> fn) override {
     auto timer = std::make_shared<asio::steady_timer>(_node._io, delay);
     timer->async_wait([timer, fn = std::move(fn)](const boost::system::error_code& error) {
@@ -284,6 +320,7 @@ Nodes& Node::nodes() { return *_nodes; }
 const Nodes& Node::nodes() const { return *_nodes; }
 Routes& Node::routes() { return *_routes_noun; }
 Channels& Node::channels() { return *_channels; }
+Identity& Node::identity() { return *_identity_noun; }
 const Identity& Node::identity() const { return *_identity_noun; }
 Budget& Node::budget() { return *_budget; }
 Faults& Node::faults() { return *_faults; }
@@ -328,6 +365,25 @@ Node::Node(asio::io_context& io, NodeConfig config)
       _time(std::make_unique<TimeNoun>(*this)),
       _telemetry_noun(std::make_unique<TelemetryNoun>(*this)) {
   if (!_config.log) _config.log = std::make_shared<status::ConsoleSink>();
+  // How this node proves itself: a certificate (version 2), the cluster key
+  // (version 1), or both while a cluster moves.
+  if (_config.certificate) {
+    if (!_config.ca_certificate) throw std::invalid_argument("a node certificate needs the cluster's CA certificate (NodeConfig::ca_certificate)");
+    if (!_custody) throw std::invalid_argument("a node certificate needs the node's key custody (NodeConfig::custody)");
+    const auto& cert = *_config.certificate;
+    if (cert.node_id() != _identity.id)
+      throw std::invalid_argument("the certificate names node " + (cert.node_id() ? identity::to_string(*cert.node_id()) : std::string("none")) +
+                                  ", and this node is " + identity::to_string(_identity.id));
+    if (cert.public_key() != _custody->node_key().public_key()) throw std::invalid_argument("the certificate is not over this node's custody key");
+    if (const auto why = identity::check_node_certificate(cert, *_config.ca_certificate, _config.wall->unix_ms()); !why.empty())
+      throw std::invalid_argument("this node's certificate: " + why);
+    _revocations.emplace(*_config.ca_certificate, _config.state_path / "identity" / "revocations");
+    if (_revocations->revoked(cert)) throw std::invalid_argument("this node's certificate is revoked");
+    net::CertificateCredential credential{*_config.ca_certificate, cert, _custody->node_key(), {}, _config.wall};
+    credential.revoked = [this](const identity::Certificate& peer) { return _revocations->revoked(peer); };
+    _credentials.certificate = std::move(credential);
+  }
+  if (_config.use_cluster_key || !_config.certificate) _credentials.key = _identity.key;
   net::Fanout::Hooks hooks;
   hooks.self = [this] { return _members.self(); };
   hooks.roster = [this] { return _members.active(); };
@@ -362,7 +418,7 @@ void Node::start() {
   _frozen = std::make_shared<const net::RouteTable>(_table);
 
   net::ServerOptions server_options;
-  server_options.key = _identity.key;
+  server_options.credentials = _credentials;
   server_options.local = [this] { return _members.self(); };
   server_options.max_frame = _config.max_frame;
   server_options.routes = _frozen;
@@ -379,7 +435,7 @@ void Node::start() {
       });
 
   net::ClientOptions client_options;
-  client_options.key = _identity.key;
+  client_options.credentials = _credentials;
   client_options.local = [this] { return _members.self(); };
   client_options.max_frame = _config.max_frame;
   client_options.routes = _frozen;
@@ -408,7 +464,7 @@ void Node::start() {
   };
   _client = std::make_unique<net::Client>(_io, client_options);
   reach::PathsConfig paths;
-  paths.key = _identity.key;
+  paths.credentials = _credentials;
   paths.connect_timeout = _config.connect_timeout;
   paths.punch_window = _config.punch_window;
   paths.relay = _config.relay;
@@ -536,6 +592,15 @@ net::Handled Node::handle(const NodeRecord& peer, sched::FrameType frame, const 
     const auto ttl = std::max(_config.dead_after * 2, std::chrono::milliseconds(60000));
     return net::Handled::processed({m::telemetry_reply, status::encode_telemetry_set(_telemetry.recent(ttl, 64)), {}});
   }
+  if (type == m::revocations) {
+    if (!_revocations) return net::Handled::failed(501, "no_certificates", "this node holds no certificates");
+    try {
+      (void)apply_revocations(identity::decode_revocations(request.payload));
+    } catch (const net::DecodeError& error) {
+      return net::Handled::failed(400, "invalid_request", error.what());
+    }
+    return net::Handled::processed({m::revocations_reply, identity::encode_revocations(_revocations->all()), {}});
+  }
   if (type == m::identity_resets) {
     if (!request.payload.empty())
       for (const auto& reset : membership::decode_identity_resets(request.payload)) apply_identity_reset(reset);
@@ -573,6 +638,7 @@ const char* roster_change_name(RosterChange::Kind kind) noexcept {
 
 void Node::topology_changed(bool quiet) {
   std::vector<RosterChange> changes;
+  bool membership = false;
   {
     contract::Lock lock(_watch_mutex);
     std::map<identity::NodeId, NodeRecord> now;
@@ -580,18 +646,25 @@ void Node::topology_changed(bool quiet) {
       if (node.id != _identity.id) now.emplace(node.id, std::move(node));
     for (const auto& [id, node] : now) {
       const auto before = _told.find(id);
-      if (before == _told.end())
+      if (before == _told.end()) {
         changes.push_back({RosterChange::Kind::joined, node});
-      else if (shape_changed(before->second, node))
+        membership = true;
+      } else if (shape_changed(before->second, node)) {
         changes.push_back({RosterChange::Kind::changed, node});
+        membership = membership || place_changed(before->second, node);
+      }
     }
     for (const auto& [id, node] : _told)
-      if (!now.contains(id)) changes.push_back({RosterChange::Kind::left, node});
+      if (!now.contains(id)) {
+        changes.push_back({RosterChange::Kind::left, node});
+        membership = true;
+      }
     _told = std::move(now);
     for (const auto& [_, watcher] : _watchers)
       for (const auto& change : changes) asio::post(watcher.executor, [handler = watcher.handler, change] { handler(change); });
   }
   if (!quiet || !changes.empty()) _events.notify(status::NodeEvents::topology);
+  if (membership) _events.notify(status::NodeEvents::membership);
 }
 
 void Node::observe_direct(const NodeRecord& peer) {
@@ -632,17 +705,29 @@ std::shared_ptr<net::CallHandle> Node::place_call(std::optional<NodeRecord> peer
     });
     return std::make_shared<net::CallHandle>();
   }
-  // Whichever comes first, the answer or the deadline, is the one told.
+  // Whichever comes first, the answer or the deadline, is the one told. At
+  // the deadline the call is cancelled, so it holds no reply slot past it;
+  // the deadline may pass before the client hands back the handle, so the
+  // timer fires on the strand that hands it over.
   struct State {
     std::atomic<bool> finished{false};
     net::Client::Done done;
+    // On the strand.
+    std::shared_ptr<net::CallHandle> handle;
+    bool expired = false;
   };
   auto state = std::make_shared<State>();
   state->done = std::move(done);
   auto strand = asio::make_strand(_io);
   auto timer = std::make_shared<asio::steady_timer>(strand, deadline);
   timer->async_wait([state, executor, deadline](const boost::system::error_code& error) {
-    if (error || state->finished.exchange(true)) return;
+    if (error) return;
+    state->expired = true;
+    // The deadline is claimed before the cancel, whose own "cancelled"
+    // answer would otherwise race it to the caller.
+    const bool answered = state->finished.exchange(true);
+    if (state->handle) state->handle->cancel();
+    if (answered) return;
     asio::post(executor, [state, deadline] {
       state->done(net::CallOutcome{std::nullopt, "deadline of " + std::to_string(deadline.count()) + " ms passed before an answer", {}});
     });
@@ -652,8 +737,13 @@ std::shared_ptr<net::CallHandle> Node::place_call(std::optional<NodeRecord> peer
     if (state->finished.exchange(true)) return;
     state->done(std::move(outcome));
   };
-  if (peer) return _client->call(*peer, type, std::move(payload), frame, executor, std::move(finish));
-  return _client->call(endpoint, type, std::move(payload), frame, executor, std::move(finish));
+  auto handle = peer ? _client->call(*peer, type, std::move(payload), frame, executor, std::move(finish))
+                     : _client->call(endpoint, type, std::move(payload), frame, executor, std::move(finish));
+  asio::post(strand, [state, handle] {
+    state->handle = handle;
+    if (state->expired) handle->cancel();
+  });
+  return handle;
 }
 
 net::CallOutcome Node::call_wait(std::optional<NodeRecord> peer, const net::Endpoint& endpoint, net::MessageType type, net::Bytes payload,
@@ -668,10 +758,13 @@ net::CallOutcome Node::call_wait(std::optional<NodeRecord> peer, const net::Endp
 }
 
 void Node::exchange(std::optional<NodeRecord> peer, const net::Endpoint& endpoint) {
-  const auto outcome = call_wait(std::move(peer), endpoint, net::message::members, {}, _config.connect_timeout * 2);
+  const auto outcome = call_wait(peer, endpoint, net::message::members, {}, _config.connect_timeout * 2);
   if (!outcome.reply) throw std::runtime_error(outcome.failure);
   if (outcome.reply->type != net::message::members_reply) throw std::runtime_error("membership refused");
   merge(outcome.reply->payload);
+  // Revocations ride the exchange: a node that missed one learns it within
+  // a heartbeat.
+  exchange_revocations(std::move(peer), endpoint, _config.connect_timeout * 2);
 }
 
 void Node::sleep_until(std::stop_token stop, contract::TimePoint due) {
@@ -843,6 +936,34 @@ bool Node::apply_identity_reset(const membership::IdentityReset& reset) {
   if (_client) _client->invalidate_identity_association(reset);
   if (changed) topology_changed();
   return changed;
+}
+
+std::vector<identity::Revocation> Node::apply_revocations(const std::vector<identity::Revocation>& revocations) {
+  if (!_revocations) return {};
+  const auto kept = _revocations->add(revocations);
+  // At once: the revoked node's sessions close, and its next handshake is
+  // refused.
+  for (const auto& revocation : kept) {
+    if (revocation.node == _identity.id) continue;
+    if (_client) {
+      _client->close_route(revocation.node, net::Lane::control, "revoked");
+      _client->close_route(revocation.node, net::Lane::data, "revoked");
+    }
+  }
+  if (!kept.empty()) topology_changed();
+  return kept;
+}
+
+void Node::exchange_revocations(std::optional<NodeRecord> peer, const net::Endpoint& endpoint, std::chrono::milliseconds deadline) {
+  if (!_revocations) return;
+  const auto held = _revocations->all();
+  if (held.empty()) return;
+  const auto outcome = call_wait(std::move(peer), endpoint, net::message::revocations, identity::encode_revocations(held), deadline);
+  if (!outcome.reply || outcome.reply->type != net::message::revocations_reply) return;
+  try {
+    (void)apply_revocations(identity::decode_revocations(outcome.reply->payload));
+  } catch (const net::DecodeError&) {
+  }
 }
 
 void Node::propagate_identity_reset(const membership::IdentityReset& reset, std::chrono::milliseconds deadline) {

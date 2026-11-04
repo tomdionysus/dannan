@@ -10,6 +10,8 @@
 #include <condition_variable>
 #include <mutex>
 
+#include "dannan/status/process.h"
+
 namespace dannan::supervise {
 
 std::chrono::milliseconds SupervisedThreads::restart_delay(size_t consecutive, std::chrono::milliseconds initial, std::chrono::milliseconds ceiling) noexcept {
@@ -55,6 +57,7 @@ std::string SupervisedThreads::run(std::string_view name, const std::function<vo
 }
 
 void SupervisedThreads::loop(std::string_view name, std::stop_token stop, const std::function<void()>& body) noexcept {
+  status::set_thread_name(name);
   size_t consecutive = 0;
   while (!stop.stop_requested()) {
     const auto started = contract::Clock::now();

@@ -177,6 +177,45 @@ TEST(Node, ACallEndsAtItsDeadline) {
   release.set_value();
 }
 
+// A call whose deadline passes is cancelled, not left running: it holds no
+// reply slot after it (Dagda asked, 2026-11-04).
+TEST(Node, ACallFreesItsReplySlotAtItsDeadline) {
+  constexpr net::MessageType slow{1313};
+  std::promise<void> release;
+  auto released = release.get_future().share();
+  Pair pair({}, [&](Node& a) {
+    a.context().routes().add(slow, {"slow", net::Lanes::control, net::Frames::control_only, false},
+                             [released](const membership::NodeRecord&, FrameType, const net::Message&) {
+                               released.wait();
+                               return net::Handled::processed();
+                             });
+  });
+  pair.b->start();
+  // Placed first, so the deadline below finds the call pending on a session.
+  std::promise<net::CallOutcome> done;
+  auto handle = pair.b->context().routes().call(pair.a->context().nodes().self(), slow, {}, FrameType::control, 1500ms, pair.io.context.get_executor(),
+                                                [&](net::CallOutcome outcome) { done.set_value(std::move(outcome)); });
+  EXPECT_TRUE(eventually([&] { return handle->idle_for() != std::chrono::milliseconds::max(); }));
+  const auto outcome = done.get_future().get();
+  EXPECT_NE(outcome.failure.find("deadline"), std::string::npos) << outcome.failure;
+  EXPECT_TRUE(eventually([&] { return handle->idle_for() == std::chrono::milliseconds::max(); }));
+  release.set_value();
+}
+
+// The node's time source and executor reach the hosted system.
+TEST(Node, TheContextGivesTheTimeSourceAndExecutor) {
+  struct Fixed final : contract::TimeSource {
+    contract::TimePoint now() const noexcept override { return contract::TimePoint(1h); }
+  } fixed;
+  Pair pair([&](NodeConfig& c) { c.time = &fixed; });
+  auto& time = pair.b->context().time();
+  EXPECT_EQ(&time.source(), &fixed);
+  EXPECT_EQ(time.source().now(), contract::TimePoint(1h));
+  std::promise<void> ran;
+  boost::asio::post(time.executor(), [&] { ran.set_value(); });
+  EXPECT_EQ(ran.get_future().wait_for(5s), std::future_status::ready);
+}
+
 // Telemetry's phase follows readiness: recovering until every declared
 // plane is ready.
 TEST(Node, ThePhaseFollowsTheDeclaredPlanes) {
@@ -295,6 +334,122 @@ TEST(Node, OpensItsKeyCustody) {
   EXPECT_THROW(Node(io.context, missing), std::runtime_error);
 }
 
+// A node configured with a certificate: custody made, its id and key
+// certified by the cluster's CA.
+NodeConfig certified(const std::filesystem::path& state, const identity::CertificateAuthority& ca, std::vector<net::Endpoint> bootstrap,
+                     bool also_key = false) {
+  const auto source = identity::KeySource::typed_passphrase(
+      [] {
+        const std::string p = "node";
+        return identity::Secret(std::span(reinterpret_cast<const uint8_t*>(p.data()), p.size()));
+      },
+      identity::Argon2Costs{1024, 1, 1});
+  if (!identity::KeyCustody::exists(state)) (void)identity::KeyCustody::create(state, source);
+  const auto id = identity::load_or_create_node_id(state);
+  const auto key = identity::KeyCustody::open(state, source).node_key().public_key();
+  auto out = config(state, identity::ClusterKey{}, std::move(bootstrap));
+  out.custody = source;
+  out.ca_certificate = ca.certificate();
+  out.certificate = ca.issue(id, key, static_cast<uint64_t>(id.bytes[0]) + 1, out.wall->unix_ms() - 1000);
+  out.use_cluster_key = also_key;
+  return out;
+}
+
+// Wire version 2 end to end: nodes holding only certificates form a
+// cluster; a node of another CA is never let in; a revocation given to one
+// node closes the revoked node out everywhere within a heartbeat, and it
+// cannot come back.
+TEST(Node, CertificatesFormAClusterAndARevocationClosesANodeOut) {
+  Io io;
+  test::TempDir dir;
+  const auto ca = identity::CertificateAuthority::create(
+      "cluster", std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() - 60000);
+  Node a(io.context, certified(dir.path() / "a", ca, {}));
+  a.start();
+  const std::vector<net::Endpoint> seed{{"127.0.0.1", a.port()}};
+  Node b(io.context, certified(dir.path() / "b", ca, seed));
+  Node c(io.context, certified(dir.path() / "c", ca, seed));
+  b.start();
+  c.start();
+  const auto b_id = b.context().identity().id();
+  const auto c_id = c.context().identity().id();
+  EXPECT_TRUE(eventually([&] { return knows(a, b_id) && knows(a, c_id) && knows(b, c_id) && knows(c, b_id); }));
+  EXPECT_TRUE(b.context().identity().certificate());
+  // Another CA's node never gets in.
+  const auto stranger_ca = identity::CertificateAuthority::create("cluster", ca.certificate().not_before_unix_ms());
+  Node stranger(io.context, certified(dir.path() / "s", stranger_ca, seed));
+  stranger.start();
+  std::this_thread::sleep_for(500ms);
+  EXPECT_FALSE(knows(a, stranger.context().identity().id()));
+  stranger.stop();
+  // B is revoked, given to A alone; C learns it and both close B out.
+  const auto revocation = ca.revoke(b_id, 0, a.context().time().unix_ms(), "decommissioned");
+  a.context().identity().revoke(revocation);
+  EXPECT_TRUE(eventually([&] { return c.context().identity().revocations().size() == 1; }));
+  const auto c_record = c.context().nodes().self();
+  EXPECT_TRUE(eventually([&] { return !b.context().routes().call_and_wait(c_record, net::message::ping, {}, FrameType::control, 1s).reply; }));
+  const auto a_record = a.context().nodes().self();
+  EXPECT_FALSE(b.context().routes().call_and_wait(a_record, net::message::ping, {}, FrameType::control, 1s).reply);
+  // Another CA's revocation is refused, never kept or passed on.
+  EXPECT_THROW(a.context().identity().revoke(stranger_ca.revoke(c_id, 0, 0, "not ours")), std::invalid_argument);
+  EXPECT_EQ(a.context().identity().revocations().size(), 1u);
+  c.stop();
+  b.stop();
+  a.stop();
+}
+
+// A node refuses to start on a certificate that is not its own: another
+// node's id, another key, or none of the CA's.
+TEST(Node, RefusesACertificateThatIsNotItsOwn) {
+  Io io;
+  test::TempDir dir;
+  const auto now_ms = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+  const auto ca = identity::CertificateAuthority::create("cluster", now_ms - 60000);
+  auto mine = certified(dir.path() / "a", ca, {});
+  auto theirs = certified(dir.path() / "b", ca, {});
+  auto wrong_node = mine;
+  wrong_node.certificate = theirs.certificate;
+  EXPECT_THROW(Node(io.context, wrong_node), std::invalid_argument);
+  auto wrong_key = mine;
+  wrong_key.certificate = ca.issue(identity::load_or_create_node_id(dir.path() / "a"),
+                                   identity::SigningKey::generate(identity::SigningAlgorithm::es256).public_key(), 99, now_ms - 1000);
+  EXPECT_THROW(Node(io.context, wrong_key), std::invalid_argument);
+  auto no_ca = mine;
+  no_ca.ca_certificate.reset();
+  EXPECT_THROW(Node(io.context, no_ca), std::invalid_argument);
+  EXPECT_NO_THROW(Node(io.context, mine));
+}
+
+// Scope: without a source only the cluster's nodes may write; the source
+// the directory installs then answers, with its evidence.
+TEST(Node, ChecksScopeThroughTheInstalledSource) {
+  Pair pair;
+  pair.b->start();
+  const auto b = pair.b->context().identity().id();
+  ASSERT_TRUE(eventually([&] { return knows(*pair.a, b); }));
+  auto& identity = pair.a->context().identity();
+  using contract::Principal;
+  EXPECT_TRUE(identity.verify({Principal::Kind::node, identity::to_string(identity.id())}, "lugh/scope").allowed);
+  EXPECT_TRUE(identity.verify({Principal::Kind::node, identity::to_string(b)}, "lugh/scope").allowed);
+  EXPECT_FALSE(identity.verify({Principal::Kind::node, identity::to_string(identity::NodeId::random())}, "x").allowed);
+  const auto refused = identity.verify({Principal::Kind::directory, "alice"}, "lugh/scope");
+  EXPECT_FALSE(refused.allowed);
+  EXPECT_NE(refused.why.find("no scope source"), std::string::npos);
+
+  struct Directory final : contract::ScopeSource {
+    contract::ScopeDecision may_write(const contract::Principal& principal, std::string_view prefix) const override {
+      const bool allowed = principal.id == "alice" && prefix.rfind("macha/alice/", 0) == 0;
+      return {allowed, 42, allowed ? std::string() : "outside alice's scope"};
+    }
+  };
+  identity.install_scope_source(std::make_shared<Directory>());
+  const auto granted = identity.verify({Principal::Kind::directory, "alice"}, "macha/alice/photos");
+  EXPECT_TRUE(granted.allowed);
+  EXPECT_EQ(granted.generation, 42u);
+  EXPECT_FALSE(identity.verify({Principal::Kind::directory, "alice"}, "macha/bob/").allowed);
+  EXPECT_FALSE(identity.verify({Principal::Kind::directory, "mallory"}, "macha/alice/").allowed);
+}
+
 TEST(Node, ReportsItsContextVersion) {
   Pair pair;
   EXPECT_EQ(pair.a->context().version(), context_version);
@@ -349,6 +504,9 @@ TEST(Node, AdvertsReachPeersAndSteerPlacement) {
   const auto b = pair.b->context().identity().id();
   ASSERT_TRUE(eventually([&] { return knows(*pair.a, b) && knows(*pair.b, a); }));
   const auto topology = pair.b->context().events().count(status::NodeEvents::topology);
+  // Membership moved when A joined, and an advert does not move it.
+  const auto members = pair.b->context().events().count(status::NodeEvents::membership);
+  EXPECT_GT(members, 0u);
   pair.a->context().nodes().advertise("capacity", membership::u64_advert(4096));
   const auto advertised = [&] {
     for (const auto& node : pair.b->context().nodes().active())
@@ -357,6 +515,7 @@ TEST(Node, AdvertsReachPeersAndSteerPlacement) {
   };
   EXPECT_TRUE(eventually(advertised));
   EXPECT_TRUE(eventually([&] { return pair.b->context().events().count(status::NodeEvents::topology) > topology; }));
+  EXPECT_EQ(pair.b->context().events().count(status::NodeEvents::membership), members);
   const placement::Scheme scheme{"test/fallback", "test/extra-domain", "capacity"};
   const std::vector<uint8_t> key(32, 7);
   const auto placed = pair.b->context().nodes().placement(key, 1, scheme, "capacity");

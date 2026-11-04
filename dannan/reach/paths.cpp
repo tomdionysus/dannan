@@ -284,7 +284,7 @@ membership::PathClass classify(const Observation& observation) {
   return membership::PathClass::relay_only;
 }
 
-std::pair<uint16_t, net::Endpoint> observe_from(asio::io_context& io, const identity::ClusterKey& key, const NodeRecord& local, uint16_t port,
+std::pair<uint16_t, net::Endpoint> observe_from(asio::io_context& io, const net::Credentials& key, const NodeRecord& local, uint16_t port,
                                                 const net::Endpoint& to, const identity::NodeId& expected, std::chrono::milliseconds timeout) {
   const auto remote = resolve(io, to);
   // Everything on one strand, so the timeout's close never races the
@@ -608,7 +608,7 @@ std::string Paths::try_punch(const NodeRecord& self, const NodeRecord& peer, net
       ++_stats.punches_tried;
     }
     try {
-      const auto [port, seen] = observe_from(_io, _config.key, self, 0, {broker.host, broker.port}, broker.id, _config.connect_timeout);
+      const auto [port, seen] = observe_from(_io, _config.credentials, self, 0, {broker.host, broker.port}, broker.id, _config.connect_timeout);
       const auto outcome = _caller(broker, m::punch_request, encode(PunchRequest{peer.id, lane, seen}), _config.connect_timeout * 3);
       if (!outcome.reply || outcome.reply->type != m::punch_reply) {
         why = "broker " + to_string(broker.id) + ": " + (outcome.reply ? "refused" : outcome.failure);
@@ -759,7 +759,7 @@ net::Handled Paths::punch_go(const NodeRecord& from, const net::Message& request
   }
   std::pair<uint16_t, net::Endpoint> observed;
   try {
-    observed = observe_from(_io, _config.key, self, 0, {from.host, from.port}, from.id, _config.connect_timeout);
+    observed = observe_from(_io, _config.credentials, self, 0, {from.host, from.port}, from.id, _config.connect_timeout);
   } catch (const std::exception& error) {
     return punch_refused(std::string("cannot observe this node's punch port: ") + error.what());
   }
@@ -931,7 +931,7 @@ std::optional<Observation> Paths::observe() {
     if (out.seen.size() == 2) break;
     if (peer.id == self.id || !peer.inbound_capable() || peer.host.empty() || !peer.port) continue;
     try {
-      const auto [port, seen] = observe_from(_io, _config.key, self, out.local_port, {peer.host, peer.port}, peer.id, _config.connect_timeout);
+      const auto [port, seen] = observe_from(_io, _config.credentials, self, out.local_port, {peer.host, peer.port}, peer.id, _config.connect_timeout);
       out.local_port = port;
       out.seen.push_back(seen);
     } catch (const std::exception&) {
