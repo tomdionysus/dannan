@@ -86,6 +86,12 @@ class Nodes {
   virtual std::vector<membership::NodeRecord> active() const = 0;
   // Both, from one reading.
   virtual RosterSnapshot snapshot() const = 0;
+  // When a node not heard of within dead_after (directly or by gossip) was
+  // last heard of, on the node's steady clock (Time::source()); none for
+  // this node, an active one, or one not known. It survives a restart: the
+  // roster keeps the wall time each node was last heard of, and a node
+  // forgotten at the horizon is no longer known. Waits on nothing.
+  virtual std::optional<contract::TimePoint> absent_since(const identity::NodeId& node) const = 0;
   // Authenticated directly within dead_after; gossip never counts.
   virtual bool directly_reachable(const identity::NodeId& node) const = 0;
   // Every known node directly reachable, pairs that cannot meet excepted.
