@@ -46,6 +46,17 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
 
+## 2026-11-04 -- readiness planes declared by the hosted system
+
+For Dagda (step 7a): `status::Readiness::declare(plane)`, through
+`context().readiness()`, callable until the node starts
+(`close_declarations()` at `Node::start`), so a hosted system declares its
+own planes beside `NodeConfig::planes` and the node is still never ready
+before every plane is known; after start it throws `std::logic_error`, as
+`routes().add` does. `Node.AHostedSystemDeclaresItsPlanesBeforeStart`
+(`7a3866c`). Gate `dannan_tests` 423. Lir builds on 0.4.0 (its settings
+through `dannan::config`, its percent decoder gone); Dagda pins 0.4.0.
+
 ## 2026-11-04 -- one settings reader for every node binary; Dagda's step 6 asks
 
 - `dannan::config` (`dannan/config/config.h`, `e375b08`), Tom's answer to

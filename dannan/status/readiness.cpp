@@ -17,6 +17,18 @@ Readiness::Readiness(std::vector<std::string> planes, const contract::WallClock*
   for (auto& plane : planes) _planes.emplace(std::move(plane), false);
 }
 
+void Readiness::declare(const std::string& plane) {
+  if (plane.empty()) throw std::invalid_argument("a readiness plane has a name");
+  contract::Lock lock(_mutex);
+  if (_closed) throw std::logic_error("readiness plane " + plane + " declared after the node started");
+  _planes.emplace(plane, false);
+}
+
+void Readiness::close_declarations() {
+  contract::Lock lock(_mutex);
+  _closed = true;
+}
+
 void Readiness::control_plane(bool online) {
   contract::Lock lock(_mutex);
   _online = online;

@@ -516,6 +516,7 @@ void Node::start() {
       std::make_unique<reach::PublicConnectivity>(_config.connectivity, _identity.id, net::Endpoint{_members.self().host, _bound_port}, _config.gateway,
                                                   _config.external_ip ? _config.external_ip : reach::ExternalIpLookup(reach::checkip_external_ip),
                                                   _config.self_probe ? _config.self_probe : reach::SelfProbe(reach::tcp_self_probe), _config.wall);
+  _readiness.close_declarations();
   _readiness.control_plane(true);
   _client->start();
 
