@@ -114,5 +114,20 @@ TEST(DurableCreateFile, OfRacingCreatorsExactlyOneWins) {
   EXPECT_EQ(std::distance(std::filesystem::directory_iterator(dir.path()), std::filesystem::directory_iterator()), 1);
 }
 
+// The directories a write makes are owner-only, like the file; one that
+// was there is left as it was.
+TEST(DurableFile, MakesItsDirectoriesOwnerOnly) {
+  test::TempDir dir;
+  std::filesystem::create_directories(dir.path() / "kept");
+  std::filesystem::permissions(dir.path() / "kept",
+                               std::filesystem::perms::owner_all | std::filesystem::perms::group_read | std::filesystem::perms::group_exec);
+  durable_create_file(dir.path() / "kept" / "a" / "b" / "custody", "x");
+  const auto all = std::filesystem::perms::all;
+  EXPECT_EQ(std::filesystem::status(dir.path() / "kept" / "a").permissions() & all, std::filesystem::perms::owner_all);
+  EXPECT_EQ(std::filesystem::status(dir.path() / "kept" / "a" / "b").permissions() & all, std::filesystem::perms::owner_all);
+  EXPECT_EQ(std::filesystem::status(dir.path() / "kept").permissions() & all,
+            std::filesystem::perms::owner_all | std::filesystem::perms::group_read | std::filesystem::perms::group_exec);
+}
+
 }  // namespace
 }  // namespace dannan::identity
