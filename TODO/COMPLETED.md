@@ -12,7 +12,7 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `identity::x25519_public`; `contract::Principal ==`;
   `Nodes::certificate(node)` and `Identity::ca_certificate()`.
   `find_package(dannan 0.4 CONFIG)`. Gate `dannan_tests` 422; both compose
-  beds pass. Pre-release ASan/UBSan: 422, no report.
+  beds pass. Pre-release ASan/UBSan and TSan: 422 each, no report.
 - **0.3.0** (2026-11-04, `main`, tag `0.3.0`, Tom: "commit, tag, merge"):
   identity (step 10: X.509 certificates through OpenSSL as wire version 2
   beside v1, CA-signed revocations gossiped and enforced, `dannan-ca`,
