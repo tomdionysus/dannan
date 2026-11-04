@@ -195,6 +195,27 @@ class Node::IdentityNoun final : public Identity {
     for (const auto& peer : _node._members.active())
       if (peer.id != _node._identity.id) _node.exchange_revocations(peer, {peer.host, peer.port}, _node._config.connect_timeout);
   }
+  void install_scope_source(std::shared_ptr<const contract::ScopeSource> source) override {
+    contract::Lock lock(_node._scope_mutex);
+    _node._scope = std::move(source);
+  }
+  contract::ScopeDecision verify(const contract::Principal& principal, std::string_view prefix) const override {
+    std::shared_ptr<const contract::ScopeSource> source;
+    {
+      contract::Lock lock(_node._scope_mutex);
+      source = _node._scope;
+    }
+    if (source) return source->may_write(principal, prefix);
+    // No directory: the cluster's own nodes, as a cluster key gives them
+    // today, and nobody else.
+    if (principal.kind != contract::Principal::Kind::node) return {false, 0, "no scope source is installed, and only the cluster's nodes may write"};
+    const auto id = identity::NodeId::parse(principal.id);
+    if (!id) return {false, 0, "not a node id"};
+    if (*id == _node._identity.id) return {true, 0, {}};
+    for (const auto& node : _node._members.all())
+      if (node.id == *id) return {true, 0, {}};
+    return {false, 0, "not a node of this cluster"};
+  }
   std::vector<identity::Revocation> revocations() const override { return _node._revocations ? _node._revocations->all() : decltype(revocations()){}; }
   identity::Bytes node_public_key() const override { return _node._custody ? _node._custody->node_key().public_key() : identity::Bytes{}; }
   identity::Bytes sign(std::span<const uint8_t> message) const override { return custody().node_key().sign(message); }

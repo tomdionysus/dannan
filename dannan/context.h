@@ -18,6 +18,7 @@
 #include <string>
 #include <vector>
 
+#include "dannan/contract/scope.h"
 #include "dannan/contract/time_source.h"
 #include "dannan/identity/key_custody.h"
 #include "dannan/identity/revocations.h"
@@ -238,6 +239,13 @@ class Identity {
   virtual std::optional<identity::Certificate> certificate() const = 0;
   virtual void revoke(const identity::Revocation& revocation) = 0;
   virtual std::vector<identity::Revocation> revocations() const = 0;
+
+  // Scope (contract/scope.h): the source the directory installs (Lugh), and
+  // the check every hosted system makes through it before it stores a write
+  // (Dagda's write-floor replicas among them). Without a source, this node
+  // and any node of the cluster may write, and nobody else. Never waits.
+  virtual void install_scope_source(std::shared_ptr<const contract::ScopeSource> source) = 0;
+  virtual contract::ScopeDecision verify(const contract::Principal& principal, std::string_view prefix) const = 0;
 };
 
 // Memory, by work class.
