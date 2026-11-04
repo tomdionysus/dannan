@@ -574,9 +574,9 @@ TEST(Client, TellsTheNodeOfEachSessionItDials) {
   std::mutex mutex;
   std::vector<identity::NodeId> seen;
   ClientOptions tuning;
-  tuning.established = [&](const membership::NodeRecord& peer) {
+  tuning.established = [&](const Established& session) {
     std::lock_guard lock(mutex);
-    seen.push_back(peer.id);
+    seen.push_back(session.peer.id);
   };
   Node a(io, tuning), b(io);
   ASSERT_TRUE(call(a, b.self).reply);
