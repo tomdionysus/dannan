@@ -15,6 +15,7 @@
 #include <gtest/gtest.h>
 
 #include <boost/asio/io_context.hpp>
+#include <cstdio>
 #include <fstream>
 #include <future>
 #include <thread>
@@ -74,6 +75,8 @@ struct Node {
   std::atomic<int> hang_pings{0};
   std::atomic<int> heard{0};
   std::atomic<bool> ignore_dial_requests{false};
+  // Whether the sessions peers open become this client's routes too.
+  std::atomic<bool> adopt_inbound{true};
   membership::NodeRecord self;
   std::unique_ptr<Server> server;
   std::unique_ptr<Client> client;
@@ -99,7 +102,9 @@ struct Node {
           if (request.type == message::ping && hang_pings.fetch_sub(1) > 0) gate.enter_and_wait();
           return Handled::processed({message::ok, request.payload, {}});
         },
-        [this](const std::shared_ptr<Session>& session) { client->admit(session); });
+        [this](const std::shared_ptr<Session>& session) {
+          if (adopt_inbound) client->admit(session);
+        });
     ClientOptions options = std::move(tuning);
     options.key = key;
     options.local = [this] { return self; };
@@ -224,6 +229,33 @@ TEST(Client, SimultaneousDialsSettleOnTheLowerIdsSession) {
     EXPECT_TRUE(call(a, b.self).reply);
     EXPECT_TRUE(call(b, a.self).reply);
   }
+}
+
+// A session retired off the route table may still hold a call waiting for
+// its answer; stopping the client fails that call at once too (found by
+// the 0.2.0 sanitizer run: it waited out its deadline).
+TEST(Client, StoppingFailsACallOnARetiredSession) {
+  Io io;
+  Node a(io), b(io);
+  auto& higher = a.self.id < b.self.id ? b : a;
+  auto& lower = a.self.id < b.self.id ? a : b;
+  // The higher id dials and leaves a call blocked at the lower id, which
+  // does not take that session as a route of its own.
+  lower.adopt_inbound = false;
+  auto done = std::make_shared<std::promise<CallOutcome>>();
+  auto pending = done->get_future();
+  higher.client->call(lower.self, slow, {}, FrameType::control, io.context.get_executor(),
+                      [done](CallOutcome outcome) { done->set_value(std::move(outcome)); });
+  ASSERT_TRUE(lower.gate.wait_for_entries(1));
+  // So the lower id dials back, and both ends keep its session: the
+  // higher's, holding the blocked call, is retired off the route table.
+  ASSERT_TRUE(call(lower, higher.self).reply);
+  ASSERT_TRUE(eventually([&] { return higher.client->stats().retired > 0; }));
+  const auto started = std::chrono::steady_clock::now();
+  higher.client->stop();
+  ASSERT_EQ(pending.wait_for(3s), std::future_status::ready) << "the call on the retired session outlived stop()";
+  EXPECT_FALSE(pending.get().reply);
+  EXPECT_LT(std::chrono::steady_clock::now() - started, 3s);
 }
 
 // A call that makes no progress for the lane's deadline fails, transiently,

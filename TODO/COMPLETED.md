@@ -12,6 +12,27 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
 
+## 2026-11-04 -- what the 0.2.0 sanitizer run found
+
+The pre-release ASan/UBSan and TSan runs reported no sanitizer finding,
+and one failing test each:
+
+- **A bug** (ASan run, `Node.CancellingOutboundCallsReleasesAWaitingWorker`
+  waited out its 30 s deadline): a session retired off the client's route
+  table by reconciliation (crossing dials) keeps its pending calls, and
+  `Client::stop()` closed only the sessions still on the table, so a call on
+  a retired session outlived the cancellation. The client now remembers the
+  sessions it retires until they close, and `stop()` closes them too.
+  `Client.StoppingFailsACallOnARetiredSession` sets the case up exactly (the
+  test node can decline to adopt inbound sessions) and was shown to fail
+  without the fix.
+- **A margin** (TSan run, `LevelZero.ANodeIsObservedFromAFixedLocalPort`):
+  `observe_from` waited its timeout plus one second for its own timer's
+  answer; under TSan the answer came later. It returned an error, never
+  hung; the wait is now twice the timeout plus a second.
+
+**Gate: `dannan_tests` 377, `dagda_tests` 1.**
+
 ## 2026-11-04 -- Tom's stack decisions; install targets; 0.2.0 prepared
 
 - Tom settled the stack's questions (Decisions, 2026-11-04): tag 0.2.0
