@@ -12,6 +12,14 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
 
+## 2026-11-04 -- the child process fixture
+
+`dannan/test/fixtures/child_process.h` (`test::ChildProcess`), moved out of
+the two-process test for Lir's process tests: stdout piped and read a line
+at a time by deadline, stderr to a log, `wait(deadline)` giving the exit
+code or 128 plus the signal, `terminate()`; SIGTERM then SIGKILL when it
+goes. **Gate: `dannan_tests` 378, `dagda_tests` 1.**
+
 ## 2026-11-04 -- what the 0.2.0 sanitizer run found
 
 The pre-release ASan/UBSan and TSan runs reported no sanitizer finding,
