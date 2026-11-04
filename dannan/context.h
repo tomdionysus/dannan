@@ -134,8 +134,10 @@ class Routes {
   // Unbinds it. Waits for the handler's calls in flight to return.
   virtual void unbind(net::MessageType type) = 0;
   // Calls `peer`, dialling if need be; `done` is posted to `executor` once:
-  // the reply, or why none came, at the latest when `deadline` passes. The
-  // handle controls the call meanwhile. Waits on nothing.
+  // the reply, or why none came, at the latest when `deadline` passes. A
+  // call whose deadline passes is cancelled: its reply slot is freed and the
+  // peer told, and a reply that comes later is dropped. The handle controls
+  // the call meanwhile. Waits on nothing.
   virtual std::shared_ptr<net::CallHandle> call(const membership::NodeRecord& peer, net::MessageType type, net::Bytes payload, sched::FrameType frame,
                                                 std::chrono::milliseconds deadline, boost::asio::any_io_executor executor, Done done) = 0;
   virtual std::shared_ptr<net::CallHandle> call(const net::Endpoint& endpoint, net::MessageType type, net::Bytes payload, sched::FrameType frame,
