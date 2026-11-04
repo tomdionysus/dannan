@@ -5,8 +5,8 @@ left green. `ACTIVE.md` is the plan and this is the record.
 
 ## Releases
 
-- **0.4.1** (2026-11-04, `main`, tag `0.4.1`, not pushed; Tom: "continue,
-  inform other projects when done"): `status::Readiness::declare`, a
+- **0.4.1** (2026-11-04, `main`, tag `0.4.1`, pushed at Tom's word;
+  Tom: "continue, inform other projects when done"): `status::Readiness::declare`, a
   hosted system's planes declared before the node starts. A patch so
   `find_package(dannan 0.4 CONFIG)` takes it unchanged. Gate
   `dannan_tests` 423; pre-release ASan/UBSan and TSan 423 each, no report.

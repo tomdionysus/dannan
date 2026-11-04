@@ -48,8 +48,8 @@ configure line for Macha is in `COMPLETED.md`).
 ## Resume here (2026-11-04)
 
 Written for a session starting from nothing. Dannan **0.4.1** is released
-(`main`, annotated tag `0.4.1`; 0.4.0 pushed to `origin` at Tom's word,
-2026-11-04, 0.4.1 not pushed). 0.2.0 gave wire v1 (Dannan's own, from version 1), level 0
+(`main`, annotated tag `0.4.1`, pushed to `origin` at Tom's word,
+2026-11-04). 0.2.0 gave wire v1 (Dannan's own, from version 1), level 0
 (path classes, brokered punches, relays, moving up a class, the relay's
 DATA budget, placement told a peer's path class), channels (notify,
 stream, bulk), the roster-change feed with incarnations, and the stack's
