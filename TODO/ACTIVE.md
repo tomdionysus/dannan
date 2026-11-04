@@ -13,11 +13,11 @@ Substrate Library Plan" (the library in full) and "Macha Core Extraction
 Plan" (the seams, now read as port steps). Both are rendered here as
 [`2026-11-02-dannan-plan.md`](2026-11-02-dannan-plan.md) and
 [`2026-11-02-macha-core-extraction-plan.md`](2026-11-02-macha-core-extraction-plan.md);
-the Claude Docs are the masters and the renderings are re-made when they
-change. Where the two differ the Dannan plan is the later and wins. One
-paragraph of the Dannan plan ("Repository, build, versioning": "Dannan
-starts in-tree in Macha") is superseded by Tom's decision above and
-waits on his edit of the doc (Waiting on Tom, 7). The port of Macha is
+these copies are the masters (Tom, 2026-11-04: the Claude Docs the
+projects started from are starters only, to be deleted, never read for
+direction or edited). Where the two differ the Dannan plan is the later
+and wins. The Dannan plan's "Repository, build, versioning" now says
+Dannan is its own repository from the start (Tom's decision above). The port of Macha is
 [`2026-11-03-macha-extraction.md`](2026-11-03-macha-extraction.md): its
 file table and each seam's "what must not change" and gate still hold,
 its direction is reversed, and a note at its head says how to read it.
@@ -47,30 +47,40 @@ configure line for Macha is in `COMPLETED.md`).
 
 ## Resume here (2026-11-04)
 
-Written for a session starting from nothing. Dannan **0.3.0** is released
-(`main`, annotated tag `0.3.0`, not pushed; Tom, 2026-11-04: "commit, tag,
-merge"). 0.2.0 gave wire v1 (Dannan's own, from version 1), level 0 (path
-classes, brokered punches, relays, moving up a class, the relay's DATA
-budget, placement told a peer's path class), channels (notify, stream,
-bulk), the roster-change feed with incarnations, and the stack's
+Written for a session starting from nothing. Dannan **0.4.0** is released
+(`main`, annotated tag `0.4.0`, pushed to `origin` at Tom's word,
+2026-11-04). 0.2.0 gave wire v1 (Dannan's own, from version 1), level 0
+(path classes, brokered punches, relays, moving up a class, the relay's
+DATA budget, placement told a peer's path class), channels (notify,
+stream, bulk), the roster-change feed with incarnations, and the stack's
 foundations (secure memory and buffers, signing, Argon2id, node key
 custody, durable create and replace, JSON logs, fuzz targets, the shared
-test fixtures). 0.3.0 adds identity (step 10: certificates as wire v2
+test fixtures). 0.3.0 added identity (step 10: certificates as wire v2
 beside v1, CA-signed revocation, `dannan-ca`, the scope seam;
-`TODO/2026-11-04-identity.md`) and what the hosted systems asked for:
-`contract::Unlocked`, a call cancelled at its deadline,
+`TODO/2026-11-04-identity.md`) and the hosted systems' first asks
+(`contract::Unlocked`, a call cancelled at its deadline,
 `Time::source()`/`executor()`, `sched::DutyShare`, the `membership` event
-count, `Nodes::absent_since`. Installed for `find_package(dannan 0.3
-CONFIG)`. Work continues on `feature/wire-v1`, merged into `develop` at
-each milestone. Gate: `dannan_tests` 408.
+count, `Nodes::absent_since`). 0.4.0 adds `dannan::config` (the settings
+reader every node binary shares, on yaml-cpp), percent-encoding
+(`dannan::encoding`), `x25519_public`, `Principal ==`, and a peer's
+certificate and the CA through the Context. Installed for
+`find_package(dannan 0.4 CONFIG)`. Work continues on `feature/wire-v1`,
+merged into `develop` at each milestone. Gate: `dannan_tests` 422.
 
 Dannan is one of a stack: Dagda (`../dagda`, the store), Lugh (`../lugh`,
 the directory) and Lir (`../lir`, MQTT events) are hosted systems on it,
 each with its own session; what each owns is
 `../dagda/TODO/2026-11-03-stack.md`, and the rules for all are
 `CONTRIBUTING.md`. Lugh pins 0.3.0 (Lugh `db34a34`, 353 tests in debug,
-ASan and TSan, no change needed); Dagda and Lir move to it at their own
-pace. They send what they need from Dannan as messages;
+ASan and TSan, no change needed); Dagda pins 0.3.0 (320 tests, every
+stand-in for Dannan gone, nothing more wanted from 0.3.x for its step);
+Lir moves to it at its own pace. Tom decided (via Dagda, 2026-11-04) that
+Dagda's domain keys are wrapped to an X25519 key each node derives from
+custody (`derive_local("dagda/wrap/1")`), its public half advertised and
+signed with `Identity::sign`, not to the certificate's P-256 key: Dannan
+gives no ECDH. Dagda's step 6 may ask for a peer's certificate public key
+through the Context or its record, and an X25519 public-from-private
+helper; neither is built until it asks. They send what they need from Dannan as messages;
 nothing shared is written twice (Decisions).
 
 The compose bed (`-DDANNAN_BUILD_COMPOSE_TESTS=ON`,
@@ -131,7 +141,8 @@ first.
    leases have a tagged release. Meanwhile Dannan serves Dagda, Lugh and
    Lir. Pushed at Tom's word the same day: `origin` is
    `git@github.com:tomdionysus/dannan.git`, holding main, develop and the
-   tags 0.1.0, 0.2.0, 0.3.0. Each later push still needs his ask.
+   tags 0.1.0, 0.2.0, 0.3.0 (0.4.0 pushed at his word too). Each later
+   push still needs his ask.
 
 1. **The suite counts on fi-1** at `0.91.2`, and at each Macha release
    the port makes, recorded in `COMPLETED.md`. A deploy-day act under
@@ -154,9 +165,9 @@ first.
    the port gate; the two-process test is written here at step 2.
 6. Settled: GoogleTest 1.18.0 from MacPorts (`gtest`), the only one on
    the laptop.
-7. **The design doc's "starts in-tree" paragraph** (Repository, build,
-   versioning), which Tom's decision supersedes: his edit of the Claude
-   Doc, after which the rendering is re-made.
+7. Settled (2026-11-04): the repository copies are the masters, so the
+   design's "starts in-tree" paragraph was corrected here to Tom's
+   decision that Dannan is its own repository.
 8. Settled (Tom, 2026-11-03): core message types are Dannan's; the rest
    are user-definable and under the user's control. See Decisions.
 
@@ -559,9 +570,9 @@ changes nothing it does not have to.
 - **Every step ends with the inventory updated**: each row it covered
   gains the Dannan or Dagda case that proves it here; each row a port
   touched keeps its Macha case as the port's gate.
-- **Nothing is published.** The design docs are Tom's Claude Docs; this
-  folder holds renderings. Pushing is a separate, explicit request, and so
-  is a commit.
+- **Nothing is published.** The design is in this folder, and these
+  copies are the masters (Tom, 2026-11-04). Pushing is a separate,
+  explicit request.
 - Code lookups in Macha and AthenaSIP go through basemind when it is up
   (all three trees carry `basemind.toml`); rescan after edits.
 - The Macha session (another Claude session on this machine, "Macha
@@ -580,7 +591,7 @@ under Waiting on Tom.
 ### 0. This repository (2026-11-03)
 
 - [x] `TODO/`: the plan, the record, the port proposal, the function
-      inventory, the two design renderings.
+      inventory, the two design documents (the masters since 2026-11-04).
 - [x] The design questions put to Tom and answered (Decisions).
 - [x] `CLAUDE.md`, `CONTRIBUTING.md`, `.clang-format`, `basemind.toml`,
       `.gitignore`; a "Dannan extraction" section in Macha's

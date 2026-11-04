@@ -5,6 +5,14 @@ left green. `ACTIVE.md` is the plan and this is the record.
 
 ## Releases
 
+- **0.4.0** (2026-11-04, `main`, tag `0.4.0`, pushed; Tom: "commit,
+  merge, cut a tag, push"): `dannan::config`, the settings reader every
+  node binary shares (yaml-cpp, a new dependency, Tom's call), with
+  `dannan-node` on it; percent-encoding (`dannan::encoding`);
+  `identity::x25519_public`; `contract::Principal ==`;
+  `Nodes::certificate(node)` and `Identity::ca_certificate()`.
+  `find_package(dannan 0.4 CONFIG)`. Gate `dannan_tests` 422; both compose
+  beds pass. Pre-release ASan/UBSan and TSan: 422 each, no report.
 - **0.3.0** (2026-11-04, `main`, tag `0.3.0`, Tom: "commit, tag, merge"):
   identity (step 10: X.509 certificates through OpenSSL as wire version 2
   beside v1, CA-signed revocations gossiped and enforced, `dannan-ca`,
@@ -37,6 +45,39 @@ left green. `ACTIVE.md` is the plan and this is the record.
   processes against Macha's binary). Gate `dannan_tests` 206,
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
+
+## 2026-11-04 -- one settings reader for every node binary; Dagda's step 6 asks
+
+- `dannan::config` (`dannan/config/config.h`, `e375b08`), Tom's answer to
+  Lir's request: Lugh's layered reader lifted into Dannan on yaml-cpp (a new
+  dependency, his call). A binary declares its settings (dotted key, kind:
+  value, list or toggle, flag, variable); the reader layers the defaults,
+  the file (`--config`/`-c`, the binary's variable, or an installed path
+  if it exists), `secrets.yaml` beside it, the environment and the flags,
+  each over the one before, says where each value came from, and reports
+  keys nothing reads. Typed reads refuse a bad value in the same words from
+  any layer, naming it. 6 tests.
+- `dannan-node` reads through it (`30ce4dc`): every flag as before, and a
+  file and `DANNAN_NODE_*`. `TwoProcess.TheNodeReadsAConfigurationFile`;
+  the bed's image installs yaml-cpp.
+- For Dagda's step 6: `identity::x25519_public` (RFC 7748's vector,
+  `fba0977`); `contract::Principal` compares with `==` (`fcd1a6f`);
+  `Nodes::certificate(node)`, the certificate a peer proved in its latest
+  v2 handshake with this node (none if never, by key only, or revoked), and
+  `Identity::ca_certificate()` (`45477bb`). No wire change: the client's
+  `established` hook now carries the whole `Established`.
+- Percent-encoding (`dannan/encoding/percent.h`), Tom via Lir: "it should
+  absolutely be in Dannan. everyone else should use it". Strict decoding
+  (RFC 3986: %XX only, '+' literal, a malformed escape throws) and form
+  decoding ('+' a space); encoding by a `PercentSet` of literal bytes
+  (presets unreserved, form, printable ASCII; keep and encode adjust it),
+  '%' always encoded and '+' too where a space is '+', so every encoding
+  decodes back; upper-case hex out, either case in. Replaces Lir's
+  `auth::percent_decode`, Lugh's `Router::percent_decode` and its coming
+  encoder, and at the port Macha's five. 4 tests.
+
+Gate `dannan_tests` 422. Both compose beds pass on this tree, the image
+rebuilt with yaml-cpp (v1 562 s with the build, certificates 68 s).
 
 ## 2026-11-04 -- the compose bed over certificates alone
 

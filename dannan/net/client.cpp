@@ -697,7 +697,7 @@ void Client::dialled(const std::string& key, const Target& target, Lane lane, st
     why = "client stopped";
   }
   retire_sessions(retire);
-  if (session && !stopped && _options.established) _options.established(session->peer());
+  if (session && !stopped && _options.established) _options.established(session->established());
   for (auto& call : waiting) {
     if (route)
       place(route, std::move(call), target);
@@ -936,7 +936,7 @@ void Client::install_dialled(const std::shared_ptr<Session>& session) {
     }
   }
   retire_sessions(retire);
-  if (_options.established) _options.established(peer);
+  if (_options.established) _options.established(session->established());
   if (timer) asio::post(_health_strand, [timer] { timer->cancel(); });
   for (auto& call : waiting) place(route, std::move(call), Target{key.first, {peer.host, peer.port}});
 }
