@@ -68,15 +68,16 @@ Dannan is one of a stack: Dagda (`../dagda`, the store), Lugh (`../lugh`,
 the directory) and Lir (`../lir`, MQTT events) are hosted systems on it,
 each with its own session; what each owns is
 `../dagda/TODO/2026-11-03-stack.md`, and the rules for all are
-`CONTRIBUTING.md`. They were on 0.2.0 (Lugh at a commit) and move to 0.3.0
-at their own pace. They send what they need from Dannan as messages;
+`CONTRIBUTING.md`. Lugh pins 0.3.0 (Lugh `db34a34`, 353 tests in debug,
+ASan and TSan, no change needed); Dagda and Lir move to it at their own
+pace. They send what they need from Dannan as messages;
 nothing shared is written twice (Decisions).
 
 The compose bed (`-DDANNAN_BUILD_COMPOSE_TESTS=ON`,
 `./build/dannan_compose_tests`, Docker running) proves level 0 through real
-NATs over cluster-key (v1) nodes; it is run by hand. Next: the bed over a
-certificate-only cluster (wire v2 and revocation through real NATs), then
-whatever the hosted systems find missing.
+NATs, over cluster-key (v1) nodes and over certificates alone (v2, with a
+revocation); it is run by hand. Next: whatever the hosted systems find
+missing.
 Macha is not touched until Tom says (Tom, 2026-11-04).
 
 Read in this order: this file to the end of Standing rules;
@@ -124,6 +125,13 @@ Two consequences that shape every step:
 
 Each stops something; a session that has lost its context sees them
 first.
+
+0. Tom, 2026-11-04 (after 0.3.0): the Macha port (steps 3, 6, 8) **not
+   yet**; the AthenaSIP port (step 11) **not yet**, until Dagda's heads and
+   leases have a tagged release. Meanwhile Dannan serves Dagda, Lugh and
+   Lir. Pushed at Tom's word the same day: `origin` is
+   `git@github.com:tomdionysus/dannan.git`, holding main, develop and the
+   tags 0.1.0, 0.2.0, 0.3.0. Each later push still needs his ask.
 
 1. **The suite counts on fi-1** at `0.91.2`, and at each Macha release
    the port makes, recorded in `COMPLETED.md`. A deploy-day act under

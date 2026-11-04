@@ -19,6 +19,13 @@
 //   4. a relay fails over: hub1 stops, the relayed pairs move to hub2, hub1
 //      returns.
 //
+// And the same bed as a cluster of certificates alone (wire version 2;
+// compose.certificates.yaml laid over it): the host's dannan-node and
+// dannan-ca make every node's custody, the CA and the certificates first,
+// as an operator would; phases 1 and 2 as above; then c1 is revoked,
+// handed to hub1 at a restart, and every other node drops it and keeps it
+// out (TODO/2026-11-04-identity.md, section 3).
+//
 // Its own binary, dannan_compose_tests, built with
 // -DDANNAN_BUILD_COMPOSE_TESTS=ON and run by hand with Docker running;
 // never in the per-commit gate (Tom, 2026-11-04: GoogleTest, opt-in).
@@ -29,8 +36,10 @@
 #include <cctype>
 #include <chrono>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iterator>
 #include <map>
 #include <optional>
 #include <string>
@@ -185,7 +194,12 @@ std::string expected_path(const std::string& a, const std::string& b) {
 
 class Bed {
  public:
-  Bed() : _file(std::string(DANNAN_COMPOSE_DIR) + "/compose.yaml") {}
+  // `overlays`: compose files laid over compose.yaml; `environment`:
+  // "NAME=value" for docker compose's interpolation.
+  explicit Bed(std::vector<std::string> overlays = {}, std::vector<std::string> environment = {}) : _environment(std::move(environment)) {
+    _files.push_back(std::string(DANNAN_COMPOSE_DIR) + "/compose.yaml");
+    for (const auto& overlay : overlays) _files.push_back(std::string(DANNAN_COMPOSE_DIR) + "/" + overlay);
+  }
   ~Bed() {
     if (!std::getenv("DANNAN_COMPOSE_KEEP")) (void)compose({"down", "-v", "--remove-orphans"}, 120s);
   }
@@ -193,7 +207,10 @@ class Bed {
   // docker compose with these arguments; its exit status, and what it
   // printed.
   std::pair<std::optional<int>, std::vector<std::string>> compose(std::vector<std::string> args, std::chrono::seconds within) {
-    std::vector<std::string> argv{"/usr/bin/env", "docker", "compose", "-f", _file};
+    std::vector<std::string> argv{"/usr/bin/env"};
+    argv.insert(argv.end(), _environment.begin(), _environment.end());
+    argv.insert(argv.end(), {"docker", "compose"});
+    for (const auto& file : _files) argv.insert(argv.end(), {"-f", file});
     argv.insert(argv.end(), args.begin(), args.end());
     const auto log = _dir.path() / "compose.log";
     std::vector<std::string> lines;
@@ -240,7 +257,8 @@ class Bed {
 
  private:
   TempDir _dir;
-  const std::string _file;
+  std::vector<std::string> _files;
+  const std::vector<std::string> _environment;
   std::string _failures;
 };
 
@@ -324,8 +342,9 @@ std::vector<std::string> all_nodes() {
   return out;
 }
 
-TEST(ComposeBed, LevelZeroThroughRealNats) {
-  Bed bed;
+// Builds the image (unless DANNAN_COMPOSE_NO_BUILD), brings the bed up, and
+// asserts phases 1 and 2.
+void up_and_settled(Bed& bed) {
   if (!std::getenv("DANNAN_COMPOSE_NO_BUILD")) {
     const auto [built, output] = bed.compose({"build", "hub1"}, 1800s);
     ASSERT_EQ(built, 0) << "the image did not build\n" << bed.failures();
@@ -333,11 +352,42 @@ TEST(ComposeBed, LevelZeroThroughRealNats) {
   (void)bed.compose({"down", "-v", "--remove-orphans"}, 120s);
   ASSERT_EQ(bed.compose({"up", "-d", "--pull", "never"}, 300s).first, 0) << "the bed did not come up\n" << bed.failures();
   const auto nodes = all_nodes();
-
   auto wrong = settle([&] { return problems(bed.snapshot(nodes), nodes, false); }, 180s);
   ASSERT_TRUE(wrong.empty()) << "one cluster, path classes:\n" << joined(wrong);
   wrong = settle([&] { return problems(bed.snapshot(nodes), nodes, true); }, 180s);
   ASSERT_TRUE(wrong.empty()) << "every pair's path and echo on both lanes:\n" << joined(wrong);
+}
+
+// Runs a host tool with `environment` added; what it printed on stdout.
+// Throws if it fails or takes over two minutes.
+std::string run(const std::vector<std::string>& args, const std::vector<std::string>& environment, const std::filesystem::path& log) {
+  std::vector<std::string> argv{"/usr/bin/env"};
+  argv.insert(argv.end(), environment.begin(), environment.end());
+  argv.insert(argv.end(), args.begin(), args.end());
+  ChildProcess child(argv, log);
+  const auto deadline = std::chrono::steady_clock::now() + 120s;
+  std::string out;
+  while (auto line = child.line(deadline)) out += *line + "\n";
+  if (child.wait(deadline) != 0) {
+    std::ifstream input(log);
+    throw std::runtime_error(args.front() + " " + args.at(1) +
+                             " failed: " + std::string((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>()));
+  }
+  return out;
+}
+
+// The text of `"key":"value"` in one line of JSON.
+std::string field(const std::string& line, const std::string& key) {
+  auto json = JsonReader(line).read();
+  return json ? json->text(key) : std::string();
+}
+
+TEST(ComposeBed, LevelZeroThroughRealNats) {
+  Bed bed;
+  up_and_settled(bed);
+  if (HasFatalFailure()) return;
+  const auto nodes = all_nodes();
+  std::vector<std::string> wrong;
 
   // A partition: d1's router stops, d1 drops out; it starts, d1 comes back.
   ASSERT_EQ(bed.compose({"stop", "router-d"}, 120s).first, 0);
@@ -370,6 +420,64 @@ TEST(ComposeBed, LevelZeroThroughRealNats) {
   ASSERT_EQ(bed.compose({"start", "hub1"}, 120s).first, 0);
   wrong = settle([&] { return problems(bed.snapshot(nodes), nodes, true); }, 180s);
   ASSERT_TRUE(wrong.empty()) << "all six as at the start:\n" << joined(wrong);
+}
+
+TEST(ComposeBed, CertificatesAloneThroughRealNats) {
+  // Under the build tree, which Docker shares; the CA's own key stays out
+  // of what the nodes are given.
+  TempDir identities;
+  TempDir authority;
+  const std::string passphrase = "DANNAN_CUSTODY_PASSPHRASE=dannan compose bed custody";
+  const auto log = authority.path() / "tools.log";
+  run({DANNAN_CA_BINARY, "init", "--dir", (authority.path() / "ca").string(), "--name", "dannan-bed", "--passphrase-env", "DANNAN_CUSTODY_PASSPHRASE"},
+      {passphrase}, log);
+  std::filesystem::copy_file(authority.path() / "ca" / "ca.pem", identities.path() / "ca.pem");
+  std::map<std::string, std::string> ids;
+  for (const auto& node : all_nodes()) {
+    const auto state = (identities.path() / node).string();
+    run({DANNAN_NODE_BINARY, "--state", state, "--init-custody", "--custody-passphrase-env", "DANNAN_CUSTODY_PASSPHRASE"}, {passphrase}, log);
+    const auto shown =
+        run({DANNAN_NODE_BINARY, "--state", state, "--show-identity", "--custody-passphrase-env", "DANNAN_CUSTODY_PASSPHRASE"}, {passphrase}, log);
+    ids[node] = field(shown, "id");
+    ASSERT_FALSE(ids[node].empty()) << shown;
+    const auto pem = run({DANNAN_CA_BINARY, "issue", "--dir", (authority.path() / "ca").string(), "--passphrase-env", "DANNAN_CUSTODY_PASSPHRASE", "--node",
+                          ids[node], "--public-key", field(shown, "public_key")},
+                         {passphrase}, log);
+    std::ofstream(identities.path() / node / "node.pem") << pem;
+  }
+
+  Bed bed({"compose.certificates.yaml"}, {passphrase, "DANNAN_IDENTITY_DIR=" + identities.path().string()});
+  up_and_settled(bed);
+  if (HasFatalFailure()) return;
+
+  // c1 revoked: the revocation handed to hub1 at a restart reaches every
+  // node, and none lists c1 again.
+  run({DANNAN_CA_BINARY, "revoke", "--dir", (authority.path() / "ca").string(), "--passphrase-env", "DANNAN_CUSTODY_PASSPHRASE", "--node", ids["c1"],
+       "--reason", "compose bed", "--out", (identities.path() / "revocations").string()},
+      {passphrase}, log);
+  ASSERT_EQ(bed.compose({"restart", "hub1"}, 120s).first, 0) << bed.failures();
+  std::vector<std::string> rest;
+  for (const auto& node : all_nodes())
+    if (node != "c1") rest.push_back(node);
+  const auto still_listing_c1 = [&] {
+    auto statuses = bed.snapshot(rest);
+    statuses["c1"] = bed.status("c1");
+    const auto names = names_of(statuses);
+    std::vector<std::string> out;
+    for (const auto& node : rest)
+      if (!statuses[node])
+        out.push_back(node + ": no status");
+      else if (peers(*statuses[node], names).contains("c1"))
+        out.push_back(node + " still lists c1");
+    return out;
+  };
+  auto wrong = settle(still_listing_c1, 180s);
+  ASSERT_TRUE(wrong.empty()) << "c1 dropped once revoked:\n" << joined(wrong);
+  std::this_thread::sleep_for(20s);
+  wrong = still_listing_c1();
+  ASSERT_TRUE(wrong.empty()) << "c1 kept out:\n" << joined(wrong);
+  wrong = settle([&] { return problems(bed.snapshot(rest), rest, true); }, 180s);
+  ASSERT_TRUE(wrong.empty()) << "the other five as before:\n" << joined(wrong);
 }
 
 }  // namespace
