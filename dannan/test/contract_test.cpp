@@ -82,5 +82,26 @@ TEST(Published, TheOldSnapshotLivesUntilItsLastHolderLetsGo) {
   EXPECT_TRUE(old.expired());
 }
 
+// A held lock released for a scope (device I/O in the middle of a section)
+// and retaken after: another thread can take the mutex meanwhile.
+TEST(Unlocked, ReleasesForItsScopeAndRetakes) {
+  struct Guarded {
+    Mutex mutex;
+    int value DANNAN_GUARDED_BY(mutex) = 0;
+  } state;
+  Lock lock(state.mutex);
+  state.value = 1;
+  {
+    Unlocked unlocked(lock, state.mutex);
+    std::thread other([&] {
+      Lock theirs(state.mutex);
+      state.value = 2;
+    });
+    other.join();
+  }
+  EXPECT_TRUE(lock.owns_lock());
+  EXPECT_EQ(state.value, 2);
+}
+
 }  // namespace
 }  // namespace dannan::contract

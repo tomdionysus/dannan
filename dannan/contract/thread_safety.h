@@ -137,6 +137,22 @@ class DANNAN_SCOPED_CAPABILITY Lock {
   std::unique_lock<std::mutex> _lock;
 };
 
+// Releases a held Lock for its scope and retakes it at the end: work that
+// must not hold the mutex (device I/O, a callback) in the middle of a
+// section that does. The analysis knows the mutex is not held inside, so
+// touching what it guards there is a compile error, and held again after.
+class DANNAN_SCOPED_CAPABILITY Unlocked {
+ public:
+  Unlocked(Lock& lock, Mutex& mutex) DANNAN_RELEASE(mutex) : _lock(lock) { _lock.unlock(); }
+  Unlocked(Lock& lock, IoMutex& mutex) DANNAN_RELEASE(mutex) : _lock(lock) { _lock.unlock(); }
+  ~Unlocked() DANNAN_RELEASE() { _lock.lock(); }
+  Unlocked(const Unlocked&) = delete;
+  Unlocked& operator=(const Unlocked&) = delete;
+
+ private:
+  Lock& _lock;
+};
+
 // Holds a SharedMutex or IoSharedMutex exclusively for its scope.
 class DANNAN_SCOPED_CAPABILITY WriteLock {
  public:
