@@ -1,11 +1,10 @@
 # Dannan - Active Work
 
-Last updated: 2026-11-03, evening. Dannan and Dagda are written in this
-repository, from the design, as their own libraries, and Macha is ported
-onto them piece by piece. That reverses the morning's "in-tree first"
-(Tom, 2026-11-03: "I misplanned. It should be here first."). Nothing is
-built yet: the repository has had `git init` and holds no commits.
-`COMPLETED.md` is the record; move items across as they land, with what
+Last updated: 2026-11-04. Dannan is written in this repository, from the
+design, as its own library, and Macha is ported onto it piece by piece.
+That reverses the morning's "in-tree first" (Tom, 2026-11-03: "I
+misplanned. It should be here first."). "Resume here" below says what is
+built. `COMPLETED.md` is the record; move items across as they land, with what
 shipped and the gate counts.
 
 The design is Tom's, 2026-11-02, in two documents: "Dannan: Distributed
@@ -71,8 +70,8 @@ Dannan is one of a stack: Dagda (`../dagda`, the store), Lugh (`../lugh`,
 the directory) and Lir (`../lir`, MQTT events) are hosted systems on it,
 each with its own session; what each owns is
 `../dagda/TODO/2026-11-03-stack.md`, and the rules for all are
-`CONTRIBUTING.md`. Lugh pins 0.3.0 (Lugh `db34a34`, 353 tests in debug,
-ASan and TSan, no change needed); Dagda is on 0.4.1 (389 tests; it
+`CONTRIBUTING.md`. Lugh pins 0.4.1 (Lugh `65cf596`; it reads its settings through
+`dannan::config` and decodes with `dannan::encoding`, its own copies gone); Dagda is on 0.4.1 (389 tests; it
 declares its own readiness planes, every stand-in for Dannan gone,
 nothing more wanted for now);
 Lir builds on 0.4.0 (`lir-node` reads its settings through
@@ -81,9 +80,8 @@ Lir builds on 0.4.0 (`lir-node` reads its settings through
 Dagda's domain keys are wrapped to an X25519 key each node derives from
 custody (`derive_local("dagda/wrap/1")`), its public half advertised and
 signed with `Identity::sign`, not to the certificate's P-256 key: Dannan
-gives no ECDH. Dagda's step 6 may ask for a peer's certificate public key
-through the Context or its record, and an X25519 public-from-private
-helper; neither is built until it asks. They send what they need from Dannan as messages;
+gives no ECDH. A peer's certificate through the Context and the X25519
+public-from-private helper shipped in 0.4.0. They send what they need from Dannan as messages;
 nothing shared is written twice (Decisions).
 
 The compose bed (`-DDANNAN_BUILD_COMPOSE_TESTS=ON`,
@@ -781,7 +779,7 @@ the period the extraction plan names. Macha release `0.94.0`. After this
 the door exists, and the second hosted system comes through it and
 nothing else.
 
-### 9. Level 0: reachability (step 9)
+### 9. Level 0: reachability (step 9) - done, compose bed only; the chaos cluster waits on Tom
 
 First the compose cluster (Tom: compose only): one machine, docker
 networks for NAT, a scenario runner for terminate, partition and clock
@@ -829,7 +827,7 @@ their copies:
 Lugh keeps what only Lugh needs: HMAC-SHA1, base32, base64url, JOSE.
 Argon2id moved here: custody stretches a passphrase with it too.
 
-### 10. Identity (step 10)
+### 10. Identity (step 10) - done 2026-11-04, released in 0.3.0
 
 Requirements from Lugh (2026-11-03 night), part of the step: a single
 node revoked and refused at once (proposed: a CA-signed, grow-only
