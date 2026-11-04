@@ -72,8 +72,9 @@ the directory) and Lir (`../lir`, MQTT events) are hosted systems on it,
 each with its own session; what each owns is
 `../dagda/TODO/2026-11-03-stack.md`, and the rules for all are
 `CONTRIBUTING.md`. Lugh pins 0.3.0 (Lugh `db34a34`, 353 tests in debug,
-ASan and TSan, no change needed); Dagda pins 0.3.0 (320 tests, every
-stand-in for Dannan gone, nothing more wanted from 0.3.x for its step);
+ASan and TSan, no change needed); Dagda is on 0.4.1 (389 tests; it
+declares its own readiness planes, every stand-in for Dannan gone,
+nothing more wanted for now);
 Lir builds on 0.4.0 (`lir-node` reads its settings through
 `dannan::config`, and its own percent decoder is gone for
 `dannan::encoding`). Tom decided (via Dagda, 2026-11-04) that
