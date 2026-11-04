@@ -56,8 +56,8 @@ and the stack's foundations (secure memory and buffers, signing, Argon2id,
 node key custody, durable create and replace, JSON logs, fuzz targets, the
 shared test fixtures), installed for `find_package(dannan 0.2 CONFIG)`.
 Work continues on `feature/wire-v1`, merged into `develop` at each
-milestone. Gate: `dannan_tests` 378, `dagda_tests` 1 (the `dagda/` stub
-goes next: Dagda has what it needs).
+milestone. Gate: `dannan_tests` 378 (the `dagda/` stub is gone: Dagda
+is its own project).
 
 Dannan is one of a stack: Dagda (`../dagda`, the store), Lugh (`../lugh`,
 the directory) and Lir (`../lir`, MQTT events) are hosted systems on it,

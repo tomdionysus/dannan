@@ -45,7 +45,7 @@ which discipline it follows.
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DDANNAN_BUILD_TESTING=ON \
   -DDANNAN_WARNINGS_AS_ERRORS=ON -DCMAKE_PREFIX_PATH="/opt/local/libexec/boost/1.88;/opt/local"
 cmake --build build -j8
-./build/dannan_tests && ./build/dagda_tests
+./build/dannan_tests
 ```
 
 Every fuzz target also runs in `dannan_tests` (`Fuzz.*`: seeds, mutations and

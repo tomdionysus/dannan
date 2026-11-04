@@ -18,7 +18,6 @@ WORKDIR /src
 COPY CMakeLists.txt ./
 COPY cmake cmake
 COPY dannan dannan
-COPY dagda dagda
 COPY tools tools
 RUN cmake -S . -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=clang++ -DDANNAN_WARNINGS_AS_ERRORS=ON \
  && cmake --build /build --target dannan-node

@@ -25,6 +25,16 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
 
+## 2026-11-04 -- the dagda/ stub removed
+
+Dagda has its own repository and took what it needed (its session, step 0
+done against 0.2.0's install). The stub goes: `dagda/` (the version stub
+and its one test), its CMake target, `dannan-version`'s use of it, the
+compose image's copy of it. Its removal also stops Dannan's build defining a
+`dagda` target that would collide with Dagda's own beside it. The test
+count loses that one test, by the decision that made Dagda its own project.
+**Gate: `dannan_tests` 378.**
+
 ## 2026-11-04 -- the compose bed in GoogleTest
 
 `test/compose/compose_test.cpp`, `dannan_compose_tests`, built with
