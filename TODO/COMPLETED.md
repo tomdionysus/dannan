@@ -58,8 +58,17 @@ left green. `ACTIVE.md` is the plan and this is the record.
   v2 handshake with this node (none if never, by key only, or revoked), and
   `Identity::ca_certificate()` (`45477bb`). No wire change: the client's
   `established` hook now carries the whole `Established`.
+- Percent-encoding (`dannan/encoding/percent.h`), Tom via Lir: "it should
+  absolutely be in Dannan. everyone else should use it". Strict decoding
+  (RFC 3986: %XX only, '+' literal, a malformed escape throws) and form
+  decoding ('+' a space); encoding by a `PercentSet` of literal bytes
+  (presets unreserved, form, printable ASCII; keep and encode adjust it),
+  '%' always encoded and '+' too where a space is '+', so every encoding
+  decodes back; upper-case hex out, either case in. Replaces Lir's
+  `auth::percent_decode`, Lugh's `Router::percent_decode` and its coming
+  encoder, and at the port Macha's five. 4 tests.
 
-Gate `dannan_tests` 418.
+Gate `dannan_tests` 422.
 
 ## 2026-11-04 -- the compose bed over certificates alone
 
