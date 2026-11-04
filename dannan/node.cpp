@@ -691,17 +691,26 @@ std::shared_ptr<net::CallHandle> Node::place_call(std::optional<NodeRecord> peer
     });
     return std::make_shared<net::CallHandle>();
   }
-  // Whichever comes first, the answer or the deadline, is the one told.
+  // Whichever comes first, the answer or the deadline, is the one told. At
+  // the deadline the call is cancelled, so it holds no reply slot past it;
+  // the deadline may pass before the client hands back the handle, so the
+  // timer fires on the strand that hands it over.
   struct State {
     std::atomic<bool> finished{false};
     net::Client::Done done;
+    // On the strand.
+    std::shared_ptr<net::CallHandle> handle;
+    bool expired = false;
   };
   auto state = std::make_shared<State>();
   state->done = std::move(done);
   auto strand = asio::make_strand(_io);
   auto timer = std::make_shared<asio::steady_timer>(strand, deadline);
   timer->async_wait([state, executor, deadline](const boost::system::error_code& error) {
-    if (error || state->finished.exchange(true)) return;
+    if (error) return;
+    state->expired = true;
+    if (state->handle) state->handle->cancel();
+    if (state->finished.exchange(true)) return;
     asio::post(executor, [state, deadline] {
       state->done(net::CallOutcome{std::nullopt, "deadline of " + std::to_string(deadline.count()) + " ms passed before an answer", {}});
     });
@@ -711,8 +720,13 @@ std::shared_ptr<net::CallHandle> Node::place_call(std::optional<NodeRecord> peer
     if (state->finished.exchange(true)) return;
     state->done(std::move(outcome));
   };
-  if (peer) return _client->call(*peer, type, std::move(payload), frame, executor, std::move(finish));
-  return _client->call(endpoint, type, std::move(payload), frame, executor, std::move(finish));
+  auto handle = peer ? _client->call(*peer, type, std::move(payload), frame, executor, std::move(finish))
+                     : _client->call(endpoint, type, std::move(payload), frame, executor, std::move(finish));
+  asio::post(strand, [state, handle] {
+    state->handle = handle;
+    if (state->expired) handle->cancel();
+  });
+  return handle;
 }
 
 net::CallOutcome Node::call_wait(std::optional<NodeRecord> peer, const net::Endpoint& endpoint, net::MessageType type, net::Bytes payload,

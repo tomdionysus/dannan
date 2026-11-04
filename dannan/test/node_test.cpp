@@ -177,6 +177,31 @@ TEST(Node, ACallEndsAtItsDeadline) {
   release.set_value();
 }
 
+// A call whose deadline passes is cancelled, not left running: it holds no
+// reply slot after it (Dagda asked, 2026-11-04).
+TEST(Node, ACallFreesItsReplySlotAtItsDeadline) {
+  constexpr net::MessageType slow{1313};
+  std::promise<void> release;
+  auto released = release.get_future().share();
+  Pair pair({}, [&](Node& a) {
+    a.context().routes().add(slow, {"slow", net::Lanes::control, net::Frames::control_only, false},
+                             [released](const membership::NodeRecord&, FrameType, const net::Message&) {
+                               released.wait();
+                               return net::Handled::processed();
+                             });
+  });
+  pair.b->start();
+  // Placed first, so the deadline below finds the call pending on a session.
+  std::promise<net::CallOutcome> done;
+  auto handle = pair.b->context().routes().call(pair.a->context().nodes().self(), slow, {}, FrameType::control, 1500ms, pair.io.context.get_executor(),
+                                                [&](net::CallOutcome outcome) { done.set_value(std::move(outcome)); });
+  EXPECT_TRUE(eventually([&] { return handle->idle_for() != std::chrono::milliseconds::max(); }));
+  const auto outcome = done.get_future().get();
+  EXPECT_NE(outcome.failure.find("deadline"), std::string::npos) << outcome.failure;
+  EXPECT_TRUE(eventually([&] { return handle->idle_for() == std::chrono::milliseconds::max(); }));
+  release.set_value();
+}
+
 // Telemetry's phase follows readiness: recovering until every declared
 // plane is ready.
 TEST(Node, ThePhaseFollowsTheDeclaredPlanes) {
