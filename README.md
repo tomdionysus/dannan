@@ -76,8 +76,9 @@ system needs in its own shape stays in that system.
 - **Status.** Telemetry gossiped between nodes, readiness, counters,
   structured JSON logs, observations, and supervision of every thread.
 - **Shared foundations.** Secure memory, signing (ES256 and Ed25519),
-  Argon2id, durable files, fuzz targets and test fixtures, written once here
-  and used by every project above.
+  X25519, Argon2id, durable files, percent-encoding, the layered settings
+  reader every node binary uses, fuzz targets and test fixtures, written once here and used
+  by every project above.
 
 Dannan stores nothing on a hosted system's behalf and knows no file, key,
 user or merge rule. A node can run Dannan alone, as a relay that holds the
@@ -119,8 +120,8 @@ Dannan and, where they share state, share it through Dagda.
 
 ### Build
 
-Dannan needs a C++20 compiler, CMake 3.24 or later, Boost 1.88 (Asio) and
-OpenSSL 3; GoogleTest for the tests.
+Dannan needs a C++20 compiler, CMake 3.24 or later, Boost 1.88 (Asio),
+OpenSSL 3 and yaml-cpp; GoogleTest for the tests.
 
 ```
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DDANNAN_BUILD_TESTING=ON
@@ -219,6 +220,14 @@ dannan-node --key cluster.key --state ./a --port 7437 --advertise 192.0.2.10
 dannan-node --key cluster.key --state ./b --port 7437 --advertise 192.0.2.11 \
   --bootstrap 192.0.2.10:7437 --echo-ms 2000
 ```
+
+Every option can also come from a YAML file, with the flags winning over
+it: `--config node.yaml`, or `$DANNAN_NODE_CONFIG`. A `secrets.yaml` beside
+the file, in the same shape, wins over the file, and each option has a
+`DANNAN_NODE_*` variable that wins over both. `--port 7437` is
+`listen: {port: 7437}` in the file and `DANNAN_NODE_LISTEN_PORT` in the
+environment. This is `dannan::config` (`dannan/config/config.h`), the one
+settings reader every node binary in the stack shares.
 
 ### Run a cluster on certificates
 

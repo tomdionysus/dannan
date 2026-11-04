@@ -11,7 +11,7 @@
 # configuration, which Arch packages and Debian stable does not yet.
 FROM archlinux:latest
 
-RUN pacman -Syu --noconfirm --needed cmake ninja clang boost openssl iproute2 iptables-nft python \
+RUN pacman -Syu --noconfirm --needed cmake ninja clang boost openssl yaml-cpp iproute2 iptables-nft python \
  && pacman -Scc --noconfirm
 
 WORKDIR /src

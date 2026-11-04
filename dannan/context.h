@@ -92,6 +92,11 @@ class Nodes {
   // roster keeps the wall time each node was last heard of, and a node
   // forgotten at the horizon is no longer known. Waits on nothing.
   virtual std::optional<contract::TimePoint> absent_since(const identity::NodeId& node) const = 0;
+  // The certificate `node` proved in its latest certificate handshake with
+  // this node (wire version 2), checked against the CA then; none for a
+  // node never met that way, one met only by cluster key, or one revoked
+  // since. Its public key verifies what the node signed. Waits on nothing.
+  virtual std::optional<identity::Certificate> certificate(const identity::NodeId& node) const = 0;
   // Authenticated directly within dead_after; gossip never counts.
   virtual bool directly_reachable(const identity::NodeId& node) const = 0;
   // Every known node directly reachable, pairs that cannot meet excepted.
@@ -245,6 +250,8 @@ class Identity {
   // revocation the CA did not sign, std::logic_error on a node without
   // certificates.
   virtual std::optional<identity::Certificate> certificate() const = 0;
+  // The cluster's CA certificate, on a node with certificates.
+  virtual std::optional<identity::Certificate> ca_certificate() const = 0;
   virtual void revoke(const identity::Revocation& revocation) = 0;
   virtual std::vector<identity::Revocation> revocations() const = 0;
 

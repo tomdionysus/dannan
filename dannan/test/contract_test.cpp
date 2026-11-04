@@ -17,6 +17,7 @@
 #include <thread>
 
 #include "dannan/contract/published.h"
+#include "dannan/contract/scope.h"
 #include "dannan/contract/time_source.h"
 #include "dannan/test/fixtures/stepped_time.h"
 
@@ -101,6 +102,13 @@ TEST(Unlocked, ReleasesForItsScopeAndRetakes) {
   }
   EXPECT_TRUE(lock.owns_lock());
   EXPECT_EQ(state.value, 2);
+}
+
+TEST(Principal, ComparesByKindAndId) {
+  const Principal node{Principal::Kind::node, "0123"};
+  EXPECT_EQ(node, (Principal{Principal::Kind::node, "0123"}));
+  EXPECT_NE(node, (Principal{Principal::Kind::directory, "0123"}));
+  EXPECT_NE(node, (Principal{Principal::Kind::node, "4567"}));
 }
 
 }  // namespace

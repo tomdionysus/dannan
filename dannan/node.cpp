@@ -63,6 +63,7 @@ class Node::NodesNoun final : public Nodes {
   std::vector<NodeRecord> roster() const override { return _node._members.all(); }
   std::vector<NodeRecord> active() const override { return _node._members.active(); }
   std::optional<contract::TimePoint> absent_since(const identity::NodeId& node) const override { return _node._members.absent_since(node); }
+  std::optional<identity::Certificate> certificate(const identity::NodeId& node) const override { return _node.peer_certificate(node); }
   bool directly_reachable(const identity::NodeId& node) const override { return _node._members.directly_reachable(node); }
   bool inbound_capable(const identity::NodeId& node) const override { return _node._members.inbound_capable(node); }
   RosterSnapshot snapshot() const override {
@@ -192,6 +193,7 @@ class Node::IdentityNoun final : public Identity {
   }
   bool has_custody() const override { return _node._custody.has_value(); }
   std::optional<identity::Certificate> certificate() const override { return _node._config.certificate; }
+  std::optional<identity::Certificate> ca_certificate() const override { return _node._config.ca_certificate; }
   void revoke(const identity::Revocation& revocation) override {
     if (!_node._revocations) throw std::logic_error("this node holds no certificates");
     if (!identity::verify_revocation(revocation, *_node._config.ca_certificate)) throw std::invalid_argument("the revocation is not this cluster's CA's");
@@ -431,6 +433,7 @@ void Node::start() {
       [this](const NodeRecord& peer, sched::FrameType frame, const net::Message& request) { return handle(peer, frame, request); },
       [this](const std::shared_ptr<net::Session>& session) {
         if (_client) _client->admit(session);
+        note_certificate(session->established());
         observe_direct(session->peer());
       });
 
@@ -448,7 +451,10 @@ void Node::start() {
   client_options.heartbeat = _config.heartbeat;
   client_options.dead_after = _config.dead_after;
   client_options.alive = [this](const NodeRecord& peer) { observe_direct(peer); };
-  client_options.established = [this](const NodeRecord& peer) { observe_direct(peer); };
+  client_options.established = [this](const net::Established& session) {
+    note_certificate(session);
+    observe_direct(session.peer);
+  };
   client_options.inbound.request = [this](const NodeRecord& peer, net::Frame frame, net::Reply reply) {
     _server->scheduler().submit(peer, std::move(frame), std::move(reply));
   };
@@ -665,6 +671,22 @@ void Node::topology_changed(bool quiet) {
   }
   if (!quiet || !changes.empty()) _events.notify(status::NodeEvents::topology);
   if (membership) _events.notify(status::NodeEvents::membership);
+}
+
+void Node::note_certificate(const net::Established& session) {
+  if (!session.peer_certificate) return;
+  contract::Lock lock(_certificates_mutex);
+  _peer_certificates.insert_or_assign(session.peer.id, *session.peer_certificate);
+}
+
+std::optional<identity::Certificate> Node::peer_certificate(const identity::NodeId& node) const {
+  std::optional<identity::Certificate> out;
+  {
+    contract::Lock lock(_certificates_mutex);
+    if (const auto found = _peer_certificates.find(node); found != _peer_certificates.end()) out = found->second;
+  }
+  if (out && _revocations && _revocations->revoked(*out)) return std::nullopt;
+  return out;
 }
 
 void Node::observe_direct(const NodeRecord& peer) {
