@@ -12,6 +12,24 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
 
+## 2026-11-04 -- Tom's stack decisions; install targets; 0.2.0 prepared
+
+- Tom settled the stack's questions (Decisions, 2026-11-04): tag 0.2.0
+  with install targets; user message types from 512, registered freely;
+  the scope seam Dannan's; Lugh's two domains; one process per node;
+  CA-signed node revocation in step 10; authentication in Lir pluggable;
+  HTTP each system's own.
+- `first_user_type` is 512 (wire v1 section 4 updated).
+- Durable writes make the directories they create owner-only (0700);
+  existing ones are left alone (Lugh asked).
+- CMake install and export: `find_package(dannan 0.2 CONFIG)`,
+  `dannan::dannan`, headers in their tree under `include/dannan` (the test
+  fixtures too; a consumer defines `DANNAN_TEST_TEMP_ROOT`), dependencies
+  found by the config file, versions compatible within a minor. Proved by
+  installing into `build/install-check` and building a consumer against it.
+- The project version is 0.2.0.
+- **Gate: `dannan_tests` 376, `dagda_tests` 1.**
+
 ## 2026-11-04 -- creating a file that is never replaced
 
 `identity::durable_create_file`: durable_replace_file's guarantees, ending
