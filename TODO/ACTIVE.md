@@ -425,6 +425,11 @@ words, so a session does not re-derive it.
     depends on Lugh. Token verification does not move into Dannan.
   - HTTP stays each hosted system's (the plan's rule); no shared HTTPS
     stack.
+- (2026-11-04, Tom, asked in turn) **Identity (step 10)**: certificates
+  are X.509 through OpenSSL; they are wire version 2 beside version 1 (a
+  node with both speaks both, so a cluster moves node by node); the CA key
+  is offline, used through a `dannan-ca` tool, never on a node. The design
+  is `TODO/2026-11-04-identity.md`.
 - (2026-11-03 night, Tom) **One stack, no duplicated code.** Dagda and
   Lugh use Dannan as their network layer; Lugh uses Dagda as its
   datastore. No code is duplicated between the three projects: what more
