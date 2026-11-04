@@ -83,5 +83,44 @@ TEST(ChildProcess, ReadsLinesAndReportsHowItEnded) {
   EXPECT_THROW(ChildProcess({"/no/such/binary"}, dir.path() / "none.log"), std::runtime_error);
 }
 
+// What process tests of a command need: its environment replaced, bytes on
+// its standard input, its raw output read to the end, a terminal for its
+// output, and any signal.
+TEST(ChildProcess, TakesAnEnvironmentInputAndATerminal) {
+  TempDir dir;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  ChildOptions only;
+  only.environment = std::vector<std::string>{"ONLY=this"};
+  ChildProcess env({"/usr/bin/env"}, dir.path() / "env.log", only);
+  EXPECT_EQ(env.read_all(deadline), "ONLY=this\n");
+  EXPECT_EQ(env.wait(deadline), 0);
+
+  ChildOptions typed;
+  typed.input = std::string("first\nsecond\n");
+  ChildProcess cat({"/bin/cat"}, dir.path() / "cat.log", typed);
+  EXPECT_EQ(cat.read_all(deadline), "first\nsecond\n");
+  EXPECT_EQ(cat.wait(deadline), 0);
+
+  // Raw bytes, line ends among them, are not split.
+  ChildProcess raw({"/usr/bin/printf", "a\\nb\\000c"}, dir.path() / "raw.log");
+  EXPECT_EQ(raw.read_all(deadline), std::string("a\nb\0c", 5));
+
+  ChildOptions on_terminal;
+  on_terminal.terminal = true;
+  ChildProcess tty({"/bin/sh", "-c", "if [ -t 1 ]; then echo terminal; else echo pipe; fi"}, dir.path() / "tty.log", on_terminal);
+  EXPECT_EQ(tty.line(deadline), "terminal");
+  ChildProcess piped({"/bin/sh", "-c", "if [ -t 1 ]; then echo terminal; else echo pipe; fi"}, dir.path() / "piped.log");
+  EXPECT_EQ(piped.line(deadline), "pipe");
+
+  ChildProcess interrupted({"/bin/sleep", "30"}, dir.path() / "sleep.log");
+  interrupted.signal(SIGINT);
+  EXPECT_EQ(interrupted.wait(deadline), 128 + SIGINT);
+
+  // A child that never reads its input does not hold the test.
+  ChildOptions ignored;
+  ignored.input = std::string(1 << 20, 'x');
+  ChildProcess deaf({"/bin/sleep", "30"}, dir.path() / "deaf.log", ignored);
+}
+
 }  // namespace
 }  // namespace dannan::test
