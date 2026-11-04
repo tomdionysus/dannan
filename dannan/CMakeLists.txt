@@ -11,12 +11,14 @@
 add_library(dannan SHARED
   contract/thread_safety.cpp
   identity/argon2.cpp
+  identity/certificate.cpp
   identity/cluster_key.cpp
   identity/crypto.cpp
   identity/durable_file.cpp
   identity/key_custody.cpp
   identity/node_id.cpp
   identity/node_identity.cpp
+  identity/revocations.cpp
   identity/secure_memory.cpp
   identity/signing.cpp
   membership/node_record.cpp
@@ -40,6 +42,7 @@ add_library(dannan SHARED
   reach/inbound.cpp
   reach/paths.cpp
   reach/upnp.cpp
+  sched/duty_share.cpp
   sched/memory_limit.cpp
   sched/retained_memory.cpp
   sched/work.cpp
@@ -47,6 +50,7 @@ add_library(dannan SHARED
   status/activity.cpp
   status/events.cpp
   status/observation.cpp
+  status/process.cpp
   status/readiness.cpp
   status/surface.cpp
   status/telemetry.cpp
@@ -69,7 +73,7 @@ target_link_libraries(dannan
 set_target_properties(dannan PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR} EXPORT_NAME dannan)
 add_library(dannan::dannan ALIAS dannan)
 
-# Installed for Dagda, Lugh and Lir: find_package(dannan 0.2 CONFIG), then
+# Installed for Dagda, Lugh and Lir: find_package(dannan 0.3 CONFIG), then
 # link dannan::dannan. Headers keep their tree, so "dannan/<subsystem>/x.h"
 # includes the same installed as in the tree; the test fixtures are shared
 # too, the tests and fuzz targets are not.

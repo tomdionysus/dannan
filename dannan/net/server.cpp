@@ -132,7 +132,7 @@ void Server::admit(asio::ip::tcp::socket tcp) {
     connection->timer.async_wait([connection](const boost::system::error_code& error) {
       if (!error) connection->close();
     });
-    async_accept_handshake(connection->socket, _options.key, _options.local(), _options.max_frame, connection->remote,
+    async_accept_handshake(connection->socket, _options.credentials, _options.local(), _options.max_frame, connection->remote,
                            [this, connection](std::exception_ptr error, Established session) { established(connection, error, std::move(session)); });
   });
 }

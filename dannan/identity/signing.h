@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 
 #include "dannan/identity/crypto.h"
@@ -17,6 +18,8 @@
 // Signatures, for the whole stack: step 10's cluster CA and node keys,
 // Lugh's token signing keys, anything that must prove who wrote it. One
 // home, so no project keeps its own (Tom, 2026-11-03).
+struct evp_pkey_st;
+
 namespace dannan::identity {
 
 // ES256: ECDSA over P-256 with SHA-256. Ed25519: EdDSA over Curve25519.
@@ -43,6 +46,10 @@ class SigningKey {
   // 64 bytes. Throws std::runtime_error if signing fails.
   Bytes sign(std::span<const uint8_t> message) const;
 
+  // The OpenSSL key, for this library's own signing in a standard format
+  // (X.509 certificates). Not for hosted systems.
+  evp_pkey_st* native_handle() const noexcept;
+
  private:
   struct Key;
   SigningKey(SigningAlgorithm algorithm, std::shared_ptr<Key> key) : _algorithm(algorithm), _key(std::move(key)) {}
@@ -55,5 +62,8 @@ class SigningKey {
 // SubjectPublicKeyInfo `public_key`. Malformed input is false, never an
 // exception: whatever arrives from outside is checked here.
 bool verify(SigningAlgorithm algorithm, std::span<const uint8_t> public_key, std::span<const uint8_t> message, std::span<const uint8_t> signature) noexcept;
+
+// Which algorithm a SubjectPublicKeyInfo is for; nothing for anything else.
+std::optional<SigningAlgorithm> algorithm_of_public_key(std::span<const uint8_t> public_key) noexcept;
 
 }  // namespace dannan::identity

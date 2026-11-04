@@ -14,10 +14,12 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <fstream>
 #include <tuple>
 
 #include "dannan/net/channel.h"
+#include "dannan/test/fixtures/stepped_time.h"
 #include "dannan/test/fixtures/temp_dir.h"
 
 namespace dannan::net {
@@ -123,34 +125,123 @@ TEST(Channel, AlteredHandshakeBytesAreRefused) {
   EXPECT_THROW(client.finish(body(reply.response_blob)), HandshakeRefused);
 }
 
-// Dannan's wire starts at version 1.
+// Dannan's wire starts at version 1: a cluster key proves version 1, a
+// certificate version 2 (TODO/2026-11-04-identity.md).
 TEST(Channel, TheWireVersionStartsAtOne) {
   EXPECT_EQ(min_wire_version, 1);
-  EXPECT_EQ(max_wire_version, 1);
+  EXPECT_EQ(max_wire_version, 2);
   const auto k = key("cluster");
   const auto pair = handshake(k, 65536, k, 65536);
   EXPECT_EQ(pair.client.version, 1);
   EXPECT_EQ(pair.server.version, 1);
+  EXPECT_FALSE(pair.client.peer_certificate);
 }
 
-// The server picks the highest version both speak; with none in common the
-// hello is refused, and nothing goes below either side's minimum.
-TEST(Channel, TheHighestCommonVersionIsChosenAndNoneIsRefused) {
+constexpr uint64_t now_ms = 1'800'000'000'000;
+
+// A cluster's CA and a node's certificate credential under it.
+struct Cluster {
+  identity::CertificateAuthority ca = identity::CertificateAuthority::create("test", now_ms);
+  test::SteppedWall wall{now_ms};
+  std::vector<identity::Revocation> revoked;
+  uint64_t serial = 1;
+
+  CertificateCredential credential(const membership::NodeRecord& node) {
+    auto key = identity::SigningKey::generate(identity::SigningAlgorithm::es256);
+    auto own = ca.issue(node.id, key.public_key(), serial++, now_ms);
+    CertificateCredential out{ca.certificate(), std::move(own), std::move(key), {}, &wall};
+    out.revoked = [this](const identity::Certificate& c) {
+      return std::any_of(revoked.begin(), revoked.end(), [&](const identity::Revocation& r) { return r.covers(c); });
+    };
+    return out;
+  }
+};
+
+Pair handshake(const Credentials& client, const membership::NodeRecord& a, const Credentials& server, const membership::NodeRecord& b) {
+  ClientHandshake hello(client, a, 65536, Lane::control);
+  auto reply = server_handshake(server, b, 65536, body(hello.hello_blob()), {"192.0.2.7", 1});
+  auto established = hello.finish(body(reply.response_blob));
+  return {std::move(established), std::move(reply.session)};
+}
+
+// Two nodes of one CA meet on version 2: each checks the other's
+// certificate and keeps it; the session works.
+TEST(Channel, CertificatesProveVersionTwo) {
+  Cluster cluster;
+  const auto a = node("10.0.0.1");
+  const auto b = node("10.0.0.2");
+  const auto pair = handshake(Credentials(cluster.credential(a)), a, Credentials(cluster.credential(b)), b);
+  EXPECT_EQ(pair.client.version, 2);
+  EXPECT_EQ(pair.server.version, 2);
+  ASSERT_TRUE(pair.client.peer_certificate && pair.server.peer_certificate);
+  EXPECT_EQ(pair.client.peer_certificate->node_id(), b.id);
+  EXPECT_EQ(pair.server.peer_certificate->node_id(), a.id);
+  EXPECT_EQ(pair.client.keys.tx, pair.server.keys.rx);
+  EXPECT_EQ(pair.client.keys.rx, pair.server.keys.tx);
+}
+
+// A cluster moving node by node: a node with both a key and a certificate
+// meets one with either; two with both use version 2; a node with only a
+// certificate and one with only a key share nothing.
+TEST(Channel, ANodeWithBothMeetsEither) {
+  Cluster cluster;
   const auto k = key("cluster");
-  const auto agree = [&](WireVersions client, WireVersions server) {
-    ClientHandshake hello(k, node("a"), 65536, Lane::control, Purpose::ordinary, {}, client);
-    auto reply = server_handshake(k, node("b"), 65536, body(hello.hello_blob()), {"h", 1}, nullptr, server);
-    const auto established = hello.finish(body(reply.response_blob));
-    EXPECT_EQ(established.version, reply.session.version);
-    return established.version;
+  const auto a = node("10.0.0.1");
+  const auto b = node("10.0.0.2");
+  const auto both = [&](const membership::NodeRecord& n) {
+    Credentials out(k);
+    out.certificate = cluster.credential(n);
+    return out;
   };
-  EXPECT_EQ(agree({1, 3}, {2, 5}), 3);
-  EXPECT_EQ(agree({2, 5}, {1, 3}), 3);
-  EXPECT_EQ(agree({1, 1}, {1, 4}), 1);
-  ClientHandshake old(k, node("a"), 65536, Lane::control, Purpose::ordinary, {}, {1, 2});
-  EXPECT_THROW(server_handshake(k, node("b"), 65536, body(old.hello_blob()), {"h", 1}, nullptr, {3, 4}), HandshakeRefused);
-  EXPECT_THROW(ClientHandshake(k, node("a"), 65536, Lane::control, Purpose::ordinary, {}, {2, 1}), std::invalid_argument);
-  EXPECT_THROW(ClientHandshake(k, node("a"), 65536, Lane::control, Purpose::ordinary, {}, {0, 1}), std::invalid_argument);
+  EXPECT_EQ(handshake(both(a), a, both(b), b).client.version, 2);
+  EXPECT_EQ(handshake(both(a), a, Credentials(k), b).client.version, 1);
+  EXPECT_EQ(handshake(Credentials(k), a, both(b), b).client.version, 1);
+  EXPECT_EQ(handshake(both(a), a, Credentials(cluster.credential(b)), b).client.version, 2);
+  ClientHandshake certificate_only(Credentials(cluster.credential(a)), a, 65536, Lane::control);
+  EXPECT_THROW(server_handshake(Credentials(k), b, 65536, body(certificate_only.hello_blob()), {"h", 1}), HandshakeRefused);
+  EXPECT_THROW(ClientHandshake(Credentials(k), a, 65536, Lane::control, Purpose::ordinary, {}, WireVersions{2, 2}), std::invalid_argument);
+  EXPECT_THROW(ClientHandshake(k, node("a"), 65536, Lane::control, Purpose::ordinary, {}, WireVersions{2, 1}), std::invalid_argument);
+  EXPECT_THROW(Credentials().versions(), std::logic_error);
+}
+
+// What a certificate must be, checked inside the handshake both ways:
+// this cluster's CA, the receiver's clock, the node the hello names, not
+// revoked.
+TEST(Channel, ACertificateIsCheckedBothWays) {
+  Cluster cluster;
+  Cluster other;
+  const auto a = node("10.0.0.1");
+  const auto b = node("10.0.0.2");
+  const Credentials server(cluster.credential(b));
+  // Another cluster's node.
+  EXPECT_THROW(handshake(Credentials(other.credential(a)), a, server, b), HandshakeRefused);
+  // A certificate naming another node than the hello's.
+  auto stolen = cluster.credential(node("10.0.0.9"));
+  EXPECT_THROW(handshake(Credentials(stolen), a, server, b), HandshakeRefused);
+  // Revoked, by serial or for the whole node.
+  auto credential = cluster.credential(a);
+  const auto serial = credential.own.serial();
+  cluster.revoked.push_back(cluster.ca.revoke(a.id, serial, now_ms, "lost"));
+  EXPECT_THROW(handshake(Credentials(credential), a, server, b), HandshakeRefused);
+  cluster.revoked.clear();
+  EXPECT_NO_THROW(handshake(Credentials(credential), a, server, b));
+  // Expired at the receiver's clock.
+  cluster.wall.advance(std::chrono::hours(24 * 365 * 3));
+  EXPECT_THROW(handshake(Credentials(cluster.credential(a)), a, server, b), HandshakeRefused);
+  cluster.wall.advance(-std::chrono::hours(24 * 365 * 3));
+  // And the client checks the server's the same way.
+  EXPECT_THROW(handshake(Credentials(cluster.credential(a)), a, Credentials(other.credential(b)), b), HandshakeRefused);
+}
+
+// The signature binds the hello: an altered byte is refused.
+TEST(Channel, ACertificateHelloCannotBeAltered) {
+  Cluster cluster;
+  const auto a = node("10.0.0.1");
+  const auto b = node("10.0.0.2");
+  ClientHandshake hello(Credentials(cluster.credential(a)), a, 65536, Lane::control);
+  auto bent = hello.hello_blob();
+  bent[30] ^= 1;
+  EXPECT_THROW(server_handshake(Credentials(cluster.credential(b)), b, 65536, body(bent), {"h", 1}), HandshakeRefused);
 }
 
 // The ack tells the client where the server's socket saw it come from:

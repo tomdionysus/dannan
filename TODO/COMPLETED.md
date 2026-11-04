@@ -5,6 +5,19 @@ left green. `ACTIVE.md` is the plan and this is the record.
 
 ## Releases
 
+- **0.3.0** (2026-11-04, `main`, tag `0.3.0`, Tom: "commit, tag, merge"):
+  identity (step 10: X.509 certificates through OpenSSL as wire version 2
+  beside v1, CA-signed revocations gossiped and enforced, `dannan-ca`,
+  node identity options on `dannan-node`, the scope seam), and what the
+  hosted systems asked for: `contract::Unlocked`, a call cancelled at its
+  deadline, `Time::source()` and `Time::executor()`, `sched::DutyShare`,
+  the `membership` event count, `Nodes::absent_since`.
+  `find_package(dannan 0.3 CONFIG)`. Gate `dannan_tests` 408. The first
+  pre-release sanitizer run found a race in the deadline cancel (the
+  cancel's own "RPC cancelled" could reach the caller before the
+  deadline; `Node.ACallEndsAtItsDeadline` failed under ASan and TSan),
+  fixed in `8b65dd1`; the second run clean: ASan/UBSan and TSan, 408 each,
+  no report. Not pushed.
 - **0.2.0** (2026-11-04, `main`, tag `0.2.0`, Tom: "Tag 0.2.0 + install"):
   wire v1 (Dannan's own, from version 1), level 0 (path classes, brokered
   punches, relays, moving up a class, the relay's DATA budget, placement
@@ -24,6 +37,184 @@ left green. `ACTIVE.md` is the plan and this is the record.
   processes against Macha's binary). Gate `dannan_tests` 206,
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
+
+## 2026-11-04 -- a node's absence, kept across a restart
+
+For Dagda (step 5, leases and takeover): `Nodes::absent_since(node)`, from
+`Membership::absent_since`: for a node not heard of within dead_after, the
+steady time it was last heard of; none for self, an active node, or one
+not known. A restart used to reload every known node as just past
+dead_after, losing how long it had been gone; it now rebuilds the steady
+time from the wall time the roster already persisted (DNNMEM01 unchanged),
+still never active until heard from again.
+`Membership.AbsenceSurvivesARestart` fails with the old reload and passes
+with the new. Gate `dannan_tests` 408.
+
+## 2026-11-04 -- sched::DutyShare, and a membership event count
+
+For Dagda (step 3):
+
+- `sched::DutyShare` (`dannan/sched/duty_share.h`): a background loop's
+  duty cycle by weight, from what Macha's `WeightedLoaderService` does
+  (inventory: background pacing). Work-conserving while nothing contends;
+  while something does, one slice then a rest of active time x
+  foreground:background; weights at least one, a rest at most a day, so
+  never starved; setup counted active but not charged; several workers
+  charge once, at the last. Time is passed in. 7 tests.
+- `status::NodeEvents::membership`: moves when a node joins or leaves the
+  active roster, or its place, capabilities, path class or incarnation
+  changes; never on adverts, which still move `topology`. Dagda's survey
+  re-asks on it instead. `NodeEvents::dannan_kinds` (2) now bounds the
+  hosted system's kinds; `NodeEvents.KindsAreBounded` counts from it.
+
+Gate `dannan_tests` 406.
+
+## 2026-11-04 -- a call's deadline cancels it; Time gives source and executor
+
+For Dagda (step 3a works round both today):
+
+- `Routes::call` whose deadline passes is now cancelled through its handle
+  (`Node::place_call`, `dannan/node.cpp`): its reply slot is freed and the
+  peer told, a later reply dropped. The deadline can pass before the client
+  hands back the handle, so the handover and the timer meet on one strand.
+  `Node.ACallFreesItsReplySlotAtItsDeadline` fails without it (the call
+  stayed pending past the deadline) and passes with it (`5f14127`).
+- `Time::source()` and `Time::executor()` on the Context: the node's
+  injected time source and its io context's executor, so a hosted system
+  takes neither beside the Context (`7c1501e`).
+
+Gate `dannan_tests` 399.
+
+## 2026-11-04 -- contract::Unlocked, and secure memory across fork
+
+For Dagda (`LocalStore` drops its lock around device I/O, as Macha did):
+`contract::Unlocked` in `contract/thread_safety.h` releases a held `Lock`
+for its scope and retakes it, annotated so the analysis rejects touching
+what the mutex guards inside (proved by a scratch compile: the one write
+inside the scope is flagged, the ones around it are not). `secure_memory.h`
+now says secure memory is deliberately not inherited across `fork()`: a
+forked child that touches or frees a parent's `Secret` crashes. Gate
+`dannan_tests` 397 (`35d14e0`, merged to `develop`).
+
+## 2026-11-04 -- identity, slice 4: scope; step 10 done
+
+`contract/scope.h`: `Principal` (a node, or a directory principal),
+`ScopeDecision` (allowed, the generation read as evidence, why not), and
+`ScopeSource` (answered from memory, never waiting), declared here as Tom
+settled. `Identity::install_scope_source` (Lugh installs it) and
+`Identity::verify` (every hosted system checks through it; Dagda's
+write-floor replicas among them). Without a source, this node and any node
+of the cluster may write, nobody else (Dagda's default). With slices 1 to
+3, identity (step 10) is in code: certificates, wire v2 beside v1,
+revocation held, gossiped and enforced, dannan-ca, and scope. **Gate:
+`dannan_tests` 396.**
+
+## 2026-11-04 -- identity, slice 3b: dannan-ca and the operator's flow
+
+- `dannan-ca init|issue|revoke|show`: the CA's key in key custody under its
+  directory (systemd credential or passphrase), its certificate `ca.pem`;
+  init prints a new credential root to stdout only; issue prints a node
+  certificate (random 63-bit serial unless given); revoke writes a signed
+  revocation; show reads a certificate or a revocation file.
+- `KeyCustody::create_and_open`: a new credential's root kept in memory to
+  open custody at once (dannan-ca init first staged it in a file, which
+  would have put it on disk in clear; caught before commit).
+- `CertificateAuthority::create` over a given key.
+- `dannan-node --init-custody`, `--show-identity`, `--ca`, `--certificate`,
+  `--no-cluster-key`, `--revocations`, custody by passphrase variable or
+  credential.
+- `TwoProcess.AnOperatorCertifiesTwoNodesThatMeetOnCertificatesAlone`: the
+  whole flow by the binaries: CA made, two nodes certified, meeting on
+  certificates alone with echo on both lanes, a revocation written and
+  shown. **Gate: `dannan_tests` 395.**
+
+## 2026-11-04 -- identity, slice 3: the node on certificates, and revocation
+
+- `identity::RevocationStore`: the CA's revocations only, each once,
+  persisted (DNNREV01) under the state path; a file holding a forged one is
+  refused rather than half read.
+- `NodeConfig::ca_certificate`, `certificate`, `use_cluster_key`: a node
+  proves itself by certificate (version 2), by the cluster key (version 1),
+  or both while a cluster moves. At construction the certificate must name
+  this node's id, be over its custody key, be the CA's and current, and not
+  be revoked, or the node refuses to start saying which.
+- Core type 20 `revocations` (reply 109): a node holding revocations sends
+  them with every member exchange and keeps what the peer answers with, so
+  one missed is learnt within a heartbeat. A new revocation closes the
+  revoked node's sessions at once; its next handshake is refused.
+- `Identity::certificate`, `revoke` (checked against the CA, applied, passed
+  to every active peer), `revocations`; the Context's `identity()` has a
+  mutable form.
+- **Gate: `dannan_tests` 394**; the certificate node cases 10 times.
+
+## 2026-11-04 -- identity, slice 2: wire version 2
+
+`net/channel.*`: `Credentials` (a cluster key, a certificate credential, or
+both; a key converts to one) replace the transport's key; a hello carries a
+proof per version it can prove, each naming its cluster (1: the cluster
+key's HMAC; 2: the node certificate and a signature by its key), and the
+server picks the highest version both speak that the hello proves for its
+own cluster. A certificate is checked both ways inside the handshake (this
+CA, the receiver's clock, the node the hello or ack names, not revoked) and
+kept as `Established::peer_certificate`; v2 session keys are salted with the
+cluster id. The cluster id left the hello's body, so 0.2.0 nodes do not meet
+later ones (nothing is deployed). `max_wire_version` is 2. The version 2
+hello joins the fuzz targets. **Gate: `dannan_tests` 391.**
+
+## 2026-11-04 -- process facts and timed spans, for Dagda
+
+Asked by Dagda (step 1a moved Macha's sealing onto Dannan and found what it
+lacked): `status/process.*` with `resident_bytes` and
+`physical_memory_bytes` (moved out of telemetry's private code) and
+`set_thread_name` (cut to the platform's limit); supervised threads name
+themselves; `status::ObservedDuration`, a span timed into a histogram of
+microseconds on the injected clock. **Gate: `dannan_tests` 388.**
+
+## 2026-11-04 -- identity, slice 1: certificates and revocations
+
+`identity/certificate.*` (`TODO/2026-11-04-identity.md`, sections 1 and 3):
+`Certificate` (X.509 through OpenSSL: DER and PEM, the SubjectPublicKeyInfo,
+the node id from a subjectAltName URI `dannan:node:<hex>`, serial,
+validity, CA or not, subject, fingerprint); `CertificateAuthority` (create:
+EC P-256, self-signed, CA:TRUE pathlen 0, keyCertSign; load from key and
+certificate; issue a node certificate over a node's key, CA:FALSE,
+digitalSignature, two years by default; revoke); `check_node_certificate`
+(issued by this CA, within validity at the receiver's clock, a leaf, naming
+a node); `cluster_id_of` (SHA-256 of the CA's key); `Revocation` signed by
+the CA (serial zero covers every certificate of the node), its set encoded
+as DNNREV01. `algorithm_of_public_key` beside `verify`. Certificates and
+revocation sets join the fuzz targets. **Gate: `dannan_tests` 385.**
+
+## 2026-11-04 -- ChildProcess for a command's process tests
+
+Asked by Lugh, whose process tests move into GoogleTest: `ChildOptions`
+(the whole environment replaced; bytes on standard input, written on a
+thread of its own over a socket so a child that never reads cannot hold
+the test or SIGPIPE it, /dev/null otherwise; standard output and error on a
+pseudo-terminal), `read_all(deadline)` for raw output, `signal(number)`.
+Existing callers unchanged. libutil linked on Linux for the terminal.
+**Gate: `dannan_tests` 379.**
+
+## 2026-11-04 -- the dagda/ stub removed
+
+Dagda has its own repository and took what it needed (its session, step 0
+done against 0.2.0's install). The stub goes: `dagda/` (the version stub
+and its one test), its CMake target, `dannan-version`'s use of it, the
+compose image's copy of it. Its removal also stops Dannan's build defining a
+`dagda` target that would collide with Dagda's own beside it. The test
+count loses that one test, by the decision that made Dagda its own project.
+**Gate: `dannan_tests` 378.**
+
+## 2026-11-04 -- the compose bed in GoogleTest
+
+`test/compose/compose_test.cpp`, `dannan_compose_tests`, built with
+`DANNAN_BUILD_COMPOSE_TESTS`: the bed's driver in GoogleTest (Tom: no
+Python), through `test::ChildProcess` and the nodes' JSON status lines, the
+same phases as before; a failed docker command's stderr is quoted in the
+failure. `scenario.py` is deleted. Its first run found that 0.2.0's
+Dockerfile did not copy the new `cmake/` directory, so the image could not
+configure (the bed is opt-in, outside the gate; the tag's library is
+unaffected); fixed. It then passed every phase in 5.5 minutes.
 
 ## 2026-11-04 -- the child process fixture
 

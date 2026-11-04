@@ -16,11 +16,7 @@
 #include <thread>
 
 #include "dannan/identity/durable_file.h"
-
-#if defined(__APPLE__)
-#include <mach/mach.h>
-#include <sys/sysctl.h>
-#endif
+#include "dannan/status/process.h"
 
 namespace dannan::status {
 namespace {
@@ -95,36 +91,6 @@ Telemetry decode_record(net::Reader& reader) {
   (void)out.traffic();  // validates the structured field
   if (!out.sequence()) throw net::DecodeError("telemetry sequence must be nonzero");
   return out;
-}
-
-uint64_t resident_bytes() {
-#if defined(__APPLE__)
-  mach_task_basic_info info{};
-  mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
-  if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO, reinterpret_cast<task_info_t>(&info), &count) != KERN_SUCCESS) return 0;
-  return info.resident_size;
-#elif defined(__linux__)
-  std::ifstream statm("/proc/self/statm");
-  uint64_t pages = 0, resident = 0;
-  if (!(statm >> pages >> resident)) return 0;
-  return resident * static_cast<uint64_t>(sysconf(_SC_PAGESIZE));
-#else
-  return 0;
-#endif
-}
-
-uint64_t physical_memory_bytes() {
-#if defined(__APPLE__)
-  uint64_t bytes = 0;
-  size_t size = sizeof(bytes);
-  return sysctlbyname("hw.memsize", &bytes, &size, nullptr, 0) == 0 ? bytes : 0;
-#elif defined(__linux__)
-  const auto pages = sysconf(_SC_PHYS_PAGES);
-  const auto page = sysconf(_SC_PAGESIZE);
-  return pages > 0 && page > 0 ? static_cast<uint64_t>(pages) * static_cast<uint64_t>(page) : 0;
-#else
-  return 0;
-#endif
 }
 
 uint32_t load1_milli() {

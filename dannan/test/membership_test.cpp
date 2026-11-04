@@ -64,6 +64,50 @@ TEST(Membership, DirectLivenessCountsAndGossipDoesNot) {
   EXPECT_TRUE(listed(members.active(), node(1).id));
 }
 
+// Absence on the steady clock: none while a node is heard of within
+// dead_after (or for self, or a node never known); once it is not, the time
+// it was last heard of, which a later hearing ends (Dagda asked, 2026-11-04).
+TEST(Membership, AbsenceIsTheTimeANodeWasLastHeardOf) {
+  Clocks clocks;
+  auto members = make(clocks);
+  const auto peer = node(2, "10.0.0.2");
+  members.observe(peer, true);
+  const auto heard = clocks.steady.now();
+  EXPECT_FALSE(members.absent_since(peer.id));
+  EXPECT_FALSE(members.absent_since(node(1).id));
+  EXPECT_FALSE(members.absent_since(node(9).id));
+  clocks.steady.advance(31s);
+  EXPECT_EQ(members.absent_since(peer.id), heard);
+  members.observe(peer, true);
+  EXPECT_FALSE(members.absent_since(peer.id));
+}
+
+// A restart keeps how long a node has really been gone: its absence is
+// rebuilt from the wall time it was last heard of, and it is not active.
+TEST(Membership, AbsenceSurvivesARestart) {
+  test::TempDir dir;
+  const auto path = dir.path() / "members";
+  Clocks clocks;
+  {
+    auto members = make(clocks, path);
+    members.observe(node(2, "10.0.0.2"), true);
+    members.observe(node(3, "10.0.0.3"), true);
+  }
+  clocks.wall.advance(10min);
+  Clocks later;
+  later.wall.advance(std::chrono::milliseconds(clocks.wall.unix_ms() - later.wall.unix_ms()));
+  auto members = make(later, path);
+  EXPECT_FALSE(listed(members.active(), node(2).id));
+  ASSERT_TRUE(members.absent_since(node(2).id));
+  EXPECT_EQ(later.steady.now() - *members.absent_since(node(2).id), std::chrono::duration_cast<contract::Clock::duration>(10min));
+  // Heard of only seconds before the restart: still absent, never active
+  // before it is heard from again.
+  Clocks soon;
+  auto again = Membership(node(1, "10.0.0.1"), 30s, path, std::chrono::milliseconds::max(), &soon.steady, &soon.wall);
+  EXPECT_FALSE(listed(again.active(), node(3).id));
+  EXPECT_TRUE(again.absent_since(node(3).id));
+}
+
 // A record without an address is no use to anyone; self is never a member.
 TEST(Membership, IgnoresIncompleteRecordsAndItself) {
   Clocks clocks;

@@ -12,10 +12,13 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
 
+#include "dannan/contract/time_source.h"
+#include "dannan/identity/certificate.h"
 #include "dannan/identity/cluster_key.h"
 #include "dannan/identity/crypto.h"
 #include "dannan/membership/node_record.h"
@@ -23,23 +26,30 @@
 #include "dannan/net/routes.h"
 #include "dannan/sched/work.h"
 
-// The authenticated channel, without I/O: wire v1's handshake and its
-// sealed frames as functions over bytes. The transport moves the bytes;
-// everything that decides whether they are right is here, where it can be
-// tested alone.
+// The authenticated channel, without I/O: the handshake and its sealed
+// frames as functions over bytes. The transport moves the bytes; everything
+// that decides whether they are right is here, where it can be tested alone.
 //
-// Handshake. The client sends a hello: the range of wire versions it
-// speaks, its frame limit, the lane, the cluster id, its node id, a fresh
-// nonce, an ephemeral X25519 key, why it connects (with the path token for
-// a punched or relayed session) and its node record, MACed with the
-// cluster's auth key under "dannan/hello/1". The server picks the highest
-// version both speak (none: refused) and answers with an ack: the version,
-// the smaller frame limit, the lane, its id, nonce, key and record, and the
-// address the connection came from as its socket saw it, MACed under
-// "dannan/ack/1" over hello and ack. Each side derives its send and receive
-// keys by HKDF over the X25519 secret, salted with the auth key, bound to
-// the transcript, both node ids and both nonces. The session id is the
-// client's nonce.
+// Handshake. The client's hello says the wire versions it speaks, its frame
+// limit, the lane, its node id, a fresh nonce, an ephemeral X25519 key, why
+// it connects (with the path token of a punched or relayed connection) and
+// its node record; then one proof per version it can prove, each naming the
+// cluster it proves membership of:
+//
+//   version 1: a cluster key's HMAC under "dannan/hello/1";
+//   version 2: the node's certificate and an ES256 or Ed25519 signature by
+//              its key under "dannan/hello/2" (TODO/2026-11-04-identity.md).
+//
+// The server picks the highest version both speak that the hello proves for
+// the server's own cluster (none: refused) and answers with an ack (the
+// version, the smaller frame limit, the lane, its id, nonce, key and record,
+// and the address the connection came from) proved the same way over hello
+// and ack. A certificate is checked against the cluster's CA at the
+// receiver's clock, must name the node the hello or ack names, and must not
+// be revoked. Each side derives its send and receive keys by HKDF over the
+// X25519 secret, salted with the proof's secret (v1) or the cluster id (v2),
+// bound to the transcript, both node ids and both nonces. The session id is
+// the client's nonce.
 //
 // Frames. A 28-byte header (magic, frame type, flags, message type, payload
 // size, counter, request id), a 12-byte nonce, a 16-byte tag, then the
@@ -51,7 +61,7 @@ namespace dannan::net {
 // range, the server picks the highest common version, and nothing is
 // negotiated below a node's own minimum.
 inline constexpr uint16_t min_wire_version = 1;
-inline constexpr uint16_t max_wire_version = 1;
+inline constexpr uint16_t max_wire_version = 2;
 inline constexpr size_t min_frame_size = 4 * 1024;
 inline constexpr size_t max_frame_size = 4 * 1024 * 1024;
 inline constexpr size_t max_handshake_blob = 16384;
@@ -85,6 +95,32 @@ struct Expected {
   identity::NodeId peer;
 };
 
+// A node certificate and what it is checked against (wire version 2).
+struct CertificateCredential {
+  identity::Certificate ca;
+  identity::Certificate own;
+  identity::SigningKey key;
+  // Whether a peer's certificate is revoked; null: none is.
+  std::function<bool(const identity::Certificate&)> revoked;
+  const contract::WallClock* wall = &contract::system_wall_clock();
+};
+
+// How a node proves itself and checks its peers: a cluster key (version 1),
+// a certificate (version 2), or both while a cluster moves from one to the
+// other. A cluster key converts to one.
+struct Credentials {
+  Credentials() = default;
+  Credentials(identity::ClusterKey cluster_key) : key(std::move(cluster_key)) {}  // NOLINT: a key is a credential
+  explicit Credentials(CertificateCredential certificate_credential) : certificate(std::move(certificate_credential)) {}
+
+  std::optional<identity::ClusterKey> key;
+  std::optional<CertificateCredential> certificate;
+
+  // The versions these prove: 1 with a key, 2 with a certificate. Throws
+  // std::logic_error with neither.
+  WireVersions versions() const;
+};
+
 // A handshake that did not authenticate or did not agree; the session ends.
 class HandshakeRefused : public std::runtime_error {
  public:
@@ -114,6 +150,8 @@ struct Established {
   // The client's side only: its own address as the server's socket saw it,
   // the received/rport idea; how a node learns its candidate addresses.
   Endpoint observed;
+  // Version 2: the peer's certificate, checked.
+  std::optional<identity::Certificate> peer_certificate;
   SessionKeys keys;
 };
 
@@ -125,10 +163,11 @@ void validate_frame_limit(size_t size);
 // pass its body to finish(). Single owner.
 class ClientHandshake {
  public:
-  // Throws std::invalid_argument for a frame limit outside 4K..4M, an empty
-  // or inverted version range, or a token without a purpose that takes one.
-  ClientHandshake(const identity::ClusterKey& key, membership::NodeRecord local, size_t max_frame, Lane lane, Purpose purpose = Purpose::ordinary,
-                  PathToken token = {}, WireVersions versions = {});
+  // Throws std::invalid_argument for a frame limit outside 4K..4M, a version
+  // range the credentials cannot prove, or a token without a purpose that
+  // takes one. `versions` defaults to what the credentials prove.
+  ClientHandshake(Credentials credentials, membership::NodeRecord local, size_t max_frame, Lane lane, Purpose purpose = Purpose::ordinary, PathToken token = {},
+                  std::optional<WireVersions> versions = std::nullopt);
   ~ClientHandshake();
   ClientHandshake(const ClientHandshake&) = delete;
   ClientHandshake& operator=(const ClientHandshake&) = delete;
@@ -139,7 +178,7 @@ class ClientHandshake {
   Established finish(std::span<const uint8_t> response);
 
  private:
-  identity::ClusterKey _key;
+  Credentials _credentials;
   membership::NodeRecord _local;
   size_t _max_frame;
   Lane _lane;
@@ -162,10 +201,11 @@ struct ServerReply {
 // none, and both go back as the observed address. A listening server
 // expects ordinary hellos (`expected` null); the acceptor of a punched or
 // relayed connection names what it expects, and anything else is refused.
-// Throws HandshakeRefused for a hello that does not authenticate or agree,
+// `versions` defaults to what the credentials prove. Throws
+// HandshakeRefused for a hello that does not authenticate or agree,
 // std::invalid_argument for a frame limit outside 4K..4M.
-ServerReply server_handshake(const identity::ClusterKey& key, const membership::NodeRecord& local, size_t max_frame, std::span<const uint8_t> hello,
-                             const Endpoint& remote, const Expected* expected = nullptr, WireVersions versions = {});
+ServerReply server_handshake(const Credentials& credentials, const membership::NodeRecord& local, size_t max_frame, std::span<const uint8_t> hello,
+                             const Endpoint& remote, const Expected* expected = nullptr, std::optional<WireVersions> versions = std::nullopt);
 
 struct WireFragment {
   uint64_t request_id = 0;

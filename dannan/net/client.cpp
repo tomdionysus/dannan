@@ -626,7 +626,7 @@ void Client::dial(Target target, Lane lane, std::function<void(std::shared_ptr<S
                                 peer_socket_options(attempt->tcp.native_handle());
                                 attempt->socket.emplace(attempt->strand, Session::Socket::protocol_type(to.protocol().family(), SOCK_STREAM),
                                                         attempt->tcp.release());
-                                async_dial_handshake(*attempt->socket, _options.key, _options.local(), _options.max_frame, lane,
+                                async_dial_handshake(*attempt->socket, _options.credentials, _options.local(), _options.max_frame, lane,
                                                      [this, attempt, target, lane, complete, failed](std::exception_ptr error, Established established) {
                                                        if (error) {
                                                          try {
@@ -892,9 +892,10 @@ void Client::adopt(int descriptor, int family, const identity::NodeId& peer, Lan
       finish("");
     };
     if (role == Role::dialler)
-      async_dial_handshake(*attempt->socket, _options.key, _options.local(), _options.max_frame, lane, handshaken, purpose, token);
+      async_dial_handshake(*attempt->socket, _options.credentials, _options.local(), _options.max_frame, lane, handshaken, purpose, token);
     else
-      async_accept_handshake(*attempt->socket, _options.key, _options.local(), _options.max_frame, Endpoint{}, handshaken, Expected{purpose, token, peer});
+      async_accept_handshake(*attempt->socket, _options.credentials, _options.local(), _options.max_frame, Endpoint{}, handshaken,
+                             Expected{purpose, token, peer});
   });
 }
 
