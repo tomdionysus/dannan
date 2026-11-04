@@ -142,14 +142,16 @@ TEST(LevelZero, ANodeIsObservedFromAFixedLocalPort) {
   membership::NodeRecord self;
   self.id = identity::NodeId::random();
   self.host = "127.0.0.1";
+  // What is observed, not how fast: a loaded, instrumented process (the
+  // full TSan suite) can take seconds over a loopback handshake.
   const auto port = test::free_port();
-  const auto [bound, seen] = observe_from(io.context, key, self, port, {"127.0.0.1", peer.port()}, peer.context().identity().id(), 2s);
+  const auto [bound, seen] = observe_from(io.context, key, self, port, {"127.0.0.1", peer.port()}, peer.context().identity().id(), 10s);
   EXPECT_EQ(bound, port);
   EXPECT_EQ(seen, (net::Endpoint{"127.0.0.1", port}));
   // From the same port to another peer: several connections leave from one
   // port, which is what tells an endpoint-independent mapping.
-  EXPECT_EQ(observe_from(io.context, key, self, port, {"127.0.0.1", other.port()}, other.context().identity().id(), 2s).second.port, port);
-  EXPECT_THROW(observe_from(io.context, key, self, 0, {"127.0.0.1", peer.port()}, id(9), 2s), std::runtime_error);
+  EXPECT_EQ(observe_from(io.context, key, self, port, {"127.0.0.1", other.port()}, other.context().identity().id(), 10s).second.port, port);
+  EXPECT_THROW(observe_from(io.context, key, self, 0, {"127.0.0.1", peer.port()}, id(9), 10s), std::runtime_error);
   other.stop();
   peer.stop();
 }
