@@ -48,6 +48,7 @@ add_library(dannan SHARED
   status/activity.cpp
   status/events.cpp
   status/observation.cpp
+  status/process.cpp
   status/readiness.cpp
   status/surface.cpp
   status/telemetry.cpp

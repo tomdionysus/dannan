@@ -45,6 +45,7 @@ add_executable(dannan_tests
   sched_work_test.cpp
   status_log_test.cpp
   status_observation_test.cpp
+  status_process_test.cpp
   status_surface_test.cpp
   status_telemetry_test.cpp
   supervise_test.cpp
