@@ -15,6 +15,7 @@
 #include <gtest/gtest.h>
 
 #include <boost/asio/io_context.hpp>
+#include <cstdio>
 #include <fstream>
 #include <future>
 #include <thread>
@@ -31,10 +32,10 @@ namespace asio = boost::asio;
 using namespace std::chrono_literals;
 using sched::FrameType;
 
-constexpr MessageType put_object{5};
-constexpr MessageType slow{200};
-constexpr MessageType sluggish{201};
-constexpr MessageType news{202};
+constexpr MessageType put_object{2005};
+constexpr MessageType slow{1200};
+constexpr MessageType sluggish{1201};
+constexpr MessageType news{1202};
 
 struct Io {
   asio::io_context context;
@@ -74,14 +75,16 @@ struct Node {
   std::atomic<int> hang_pings{0};
   std::atomic<int> heard{0};
   std::atomic<bool> ignore_dial_requests{false};
+  // Whether the sessions peers open become this client's routes too.
+  std::atomic<bool> adopt_inbound{true};
   membership::NodeRecord self;
   std::unique_ptr<Server> server;
   std::unique_ptr<Client> client;
 
-  explicit Node(Io& io, ClientOptions tuning = {}, uint8_t flags = membership::flags_default) : io(io) {
+  explicit Node(Io& io, ClientOptions tuning = {}, uint32_t capabilities = membership::capabilities_default) : io(io) {
     self.id = identity::NodeId::random();
     self.host = "127.0.0.1";
-    self.flags = flags;
+    self.capabilities = capabilities;
     const auto key = cluster_key();
     auto traffic = std::make_shared<TransportTraffic>();
     ServerOptions server_options;
@@ -92,14 +95,16 @@ struct Node {
     server = std::make_unique<Server>(
         io.context, "127.0.0.1", 0, server_options,
         [this](const membership::NodeRecord& peer, FrameType, const Message& request) {
-          if (request.type == message::dial_request) return ignore_dial_requests ? Message{message::ok, {}, {}} : client->handle_dial_request(peer, request);
+          if (request.type == message::dial_request) return ignore_dial_requests ? Handled::processed() : client->handle_dial_request(peer, request);
           if (request.type == slow) gate.enter_and_wait();
           if (request.type == sluggish) std::this_thread::sleep_for(300ms);
           if (request.type == news) ++heard;
           if (request.type == message::ping && hang_pings.fetch_sub(1) > 0) gate.enter_and_wait();
-          return Message{message::ok, request.payload, {}};
+          return Handled::processed({message::ok, request.payload, {}});
         },
-        [this](const std::shared_ptr<Session>& session) { client->admit(session); });
+        [this](const std::shared_ptr<Session>& session) {
+          if (adopt_inbound) client->admit(session);
+        });
     ClientOptions options = std::move(tuning);
     options.key = key;
     options.local = [this] { return self; };
@@ -125,7 +130,7 @@ CallOutcome call(Node& from, const membership::NodeRecord& to, MessageType type 
   auto done = std::make_shared<std::promise<CallOutcome>>();
   auto future = done->get_future();
   from.client->call(to, type, std::move(payload), frame, from.io.context.get_executor(), [done](CallOutcome outcome) { done->set_value(std::move(outcome)); });
-  if (future.wait_for(10s) != std::future_status::ready) return {std::nullopt, "test timed out"};
+  if (future.wait_for(10s) != std::future_status::ready) return {std::nullopt, "test timed out", {}};
   return future.get();
 }
 
@@ -224,6 +229,33 @@ TEST(Client, SimultaneousDialsSettleOnTheLowerIdsSession) {
     EXPECT_TRUE(call(a, b.self).reply);
     EXPECT_TRUE(call(b, a.self).reply);
   }
+}
+
+// A session retired off the route table may still hold a call waiting for
+// its answer; stopping the client fails that call at once too (found by
+// the 0.2.0 sanitizer run: it waited out its deadline).
+TEST(Client, StoppingFailsACallOnARetiredSession) {
+  Io io;
+  Node a(io), b(io);
+  auto& higher = a.self.id < b.self.id ? b : a;
+  auto& lower = a.self.id < b.self.id ? a : b;
+  // The higher id dials and leaves a call blocked at the lower id, which
+  // does not take that session as a route of its own.
+  lower.adopt_inbound = false;
+  auto done = std::make_shared<std::promise<CallOutcome>>();
+  auto pending = done->get_future();
+  higher.client->call(lower.self, slow, {}, FrameType::control, io.context.get_executor(),
+                      [done](CallOutcome outcome) { done->set_value(std::move(outcome)); });
+  ASSERT_TRUE(lower.gate.wait_for_entries(1));
+  // So the lower id dials back, and both ends keep its session: the
+  // higher's, holding the blocked call, is retired off the route table.
+  ASSERT_TRUE(call(lower, higher.self).reply);
+  ASSERT_TRUE(eventually([&] { return higher.client->stats().retired > 0; }));
+  const auto started = std::chrono::steady_clock::now();
+  higher.client->stop();
+  ASSERT_EQ(pending.wait_for(3s), std::future_status::ready) << "the call on the retired session outlived stop()";
+  EXPECT_FALSE(pending.get().reply);
+  EXPECT_LT(std::chrono::steady_clock::now() - started, 3s);
 }
 
 // A call that makes no progress for the lane's deadline fails, transiently,
@@ -449,7 +481,7 @@ TEST(Broadcast, NeverDials) {
   EXPECT_EQ(a.client->stats().dials, 0u);
 }
 
-constexpr uint8_t incapable = membership::flags_for(false, true);
+constexpr uint32_t incapable = 0;
 
 // A node that accepts no inbound connection is never dialled: with no
 // session of its own to ask over, a call to it fails at once.
@@ -533,6 +565,98 @@ TEST(ReverseDial, ACapableNodeMaintainsNothing) {
   other.client->set_maintained_peers([&] { return std::vector<membership::NodeRecord>{hub.self}; });
   std::this_thread::sleep_for(300ms);
   EXPECT_EQ(other.client->stats().dials, 0u);
+}
+
+// The node is told of each session this client dials, with the peer's
+// record, as of each session a peer opens: both are direct observations.
+TEST(Client, TellsTheNodeOfEachSessionItDials) {
+  Io io;
+  std::mutex mutex;
+  std::vector<identity::NodeId> seen;
+  ClientOptions tuning;
+  tuning.established = [&](const membership::NodeRecord& peer) {
+    std::lock_guard lock(mutex);
+    seen.push_back(peer.id);
+  };
+  Node a(io, tuning), b(io);
+  ASSERT_TRUE(call(a, b.self).reply);
+  ASSERT_TRUE(call(a, b.self, put_object, FrameType::foreground, Bytes(10, 1)).reply);
+  std::lock_guard lock(mutex);
+  EXPECT_EQ(seen, (std::vector<identity::NodeId>{b.self.id, b.self.id}));
+}
+
+// An identity reset closes the routes it covers and forgets the address's
+// node, so the next call dials afresh and checks who answers.
+TEST(Client, AnIdentityResetClosesTheRoutesItCovers) {
+  Io io;
+  Node a(io), b(io);
+  ASSERT_TRUE(call(a, b.self).reply);
+  membership::IdentityReset reset;
+  reset.host = b.self.host;
+  reset.port = b.self.port;
+  reset.stale_node_id = b.self.id;
+  reset.epoch = 1;
+  a.client->invalidate_identity_association(reset);
+  EXPECT_FALSE(a.client->has_route(b.self.id, Lane::control));
+  ASSERT_TRUE(call(a, b.self).reply);
+  EXPECT_EQ(a.client->stats().dials, 2u);
+}
+
+// A call's handle: cancelled before or after admission it completes at
+// once as cancelled; promoted it travels at the new class; idle_for says how
+// long the reply has been coming; aborted, the route goes with it.
+TEST(Client, ACallHandleCancelsPromotesAndAborts) {
+  Io io;
+  Node a(io), b(io);
+  auto done = std::make_shared<std::promise<CallOutcome>>();
+  auto handle = a.client->call(b.self, slow, {}, FrameType::control, io.context.get_executor(), [done](CallOutcome o) { done->set_value(std::move(o)); });
+  ASSERT_TRUE(b.gate.wait_for_entries(1));
+  std::this_thread::sleep_for(50ms);
+  EXPECT_GE(handle->idle_for(), 40ms);
+  handle->promote(FrameType::foreground);
+  handle->cancel();
+  auto future = done->get_future();
+  ASSERT_EQ(future.wait_for(2s), std::future_status::ready);
+  EXPECT_NE(future.get().failure.find("cancelled"), std::string::npos);
+  EXPECT_EQ(handle->idle_for(), std::chrono::milliseconds::max());
+  b.gate.open();
+  // Cancelled before the dial completes: never placed.
+  Node c(io);
+  auto early = std::make_shared<std::promise<CallOutcome>>();
+  auto pending =
+      a.client->call(c.self, message::ping, {}, FrameType::control, io.context.get_executor(), [early](CallOutcome o) { early->set_value(std::move(o)); });
+  pending->cancel();
+  auto early_future = early->get_future();
+  ASSERT_EQ(early_future.wait_for(5s), std::future_status::ready);
+  EXPECT_FALSE(early_future.get().reply);
+  // Aborted: the call fails and the session it was on is closed.
+  ASSERT_TRUE(call(a, b.self).reply);
+  auto aborted = std::make_shared<std::promise<CallOutcome>>();
+  b.hang_pings = 0;
+  auto to_abort =
+      a.client->call(b.self, slow, {}, FrameType::control, io.context.get_executor(), [aborted](CallOutcome o) { aborted->set_value(std::move(o)); });
+  ASSERT_TRUE(b.gate.wait_for_entries(2));
+  to_abort->abort();
+  ASSERT_EQ(aborted->get_future().wait_for(2s), std::future_status::ready);
+  EXPECT_TRUE(eventually([&] { return !a.client->has_route(b.self.id, Lane::control); }));
+}
+
+// A test's seam: a dial refused before it is made, as if the network were
+// down, earns the backoff a failed dial does.
+TEST(Client, ADialHookRefusesADial) {
+  Io io;
+  ClientOptions tuning;
+  tuning.dial_hook = [](const Endpoint& endpoint, Lane) { return endpoint.port % 2 ? std::string("link down") : std::string(); };
+  Node a(io, tuning), b(io);
+  const auto outcome = call(a, b.self);
+  if (b.self.port % 2) {
+    EXPECT_FALSE(outcome.reply);
+    EXPECT_NE(outcome.failure.find("link down"), std::string::npos) << outcome.failure;
+    EXPECT_EQ(a.client->stats().dials, 1u);
+    EXPECT_NE(call(a, b.self).failure.find("backoff"), std::string::npos);
+  } else {
+    EXPECT_TRUE(outcome.reply) << outcome.failure;
+  }
 }
 
 }  // namespace

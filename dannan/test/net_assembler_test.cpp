@@ -20,7 +20,7 @@ namespace {
 
 using sched::FrameType;
 
-WireFragment fragment(uint64_t id, bool first, bool last, size_t bytes, FrameType frame = FrameType::loader, MessageType type = MessageType{5}) {
+WireFragment fragment(uint64_t id, bool first, bool last, size_t bytes, FrameType frame = FrameType::loader, MessageType type = MessageType{1029}) {
   return WireFragment{id, frame, type, first, last, Bytes(bytes, 0x5a)};
 }
 
@@ -56,7 +56,7 @@ TEST(Assembler, RefusesFragmentsThatBreakTheSequence) {
   EXPECT_THROW(assembler.push(fragment(1, false, true, 1)), FrameRefused);
   EXPECT_FALSE(assembler.push(fragment(2, true, false, 1)));
   EXPECT_THROW(assembler.push(fragment(2, true, false, 1)), FrameRefused);
-  EXPECT_THROW(assembler.push(fragment(2, false, true, 1, FrameType::loader, MessageType{6})), FrameRefused);
+  EXPECT_THROW(assembler.push(fragment(2, false, true, 1, FrameType::loader, MessageType{1030})), FrameRefused);
 }
 
 // A message may be promoted on the way, never demoted.
