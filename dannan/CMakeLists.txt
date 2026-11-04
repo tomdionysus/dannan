@@ -10,6 +10,7 @@
 # "dannan/<subsystem>/x.h".
 add_library(dannan SHARED
   config/config.cpp
+  encoding/percent.cpp
   contract/thread_safety.cpp
   identity/argon2.cpp
   identity/certificate.cpp
