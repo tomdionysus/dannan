@@ -19,6 +19,9 @@ checked against the code at Dannan `811c448` and Macha's working tree. Each item
   its tests (item 1).
 - A measured number is recorded, never asserted, in the gate: no timing verdict
   in a test.
+- A Macha defect found while building this goes to the Macha session, not around
+  it: Macha fixes it first and Dannan matches the fixed behaviour (Tom's ruling,
+  relayed by the Macha session, 2026-11-04).
 
 ## 1. Macha's state files at cutover
 
