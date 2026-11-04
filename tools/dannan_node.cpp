@@ -25,6 +25,19 @@
 //               [--domain NAME] [--heartbeat-ms N] [--status-ms N]
 //               [--echo-ms N] [--reprobe-ms N] [--punch-ms N]
 //               [--path-class public|punchable|relay_only] [--seconds N]
+//               [CUSTODY] [--ca FILE --certificate FILE [--no-cluster-key]]
+//               [--revocations FILE]
+//   dannan-node --state DIR --init-custody CUSTODY
+//   dannan-node --state DIR --show-identity CUSTODY
+//
+// Certificates (wire version 2): --init-custody makes the node's key
+// custody (under a credential, printing the new root, hex, for
+// `systemd-creds encrypt`); --show-identity prints its node id and public
+// key as JSON, for `dannan-ca issue`; --ca and --certificate run it on the
+// certificate dannan-ca issued, --no-cluster-key by certificate alone.
+// CUSTODY is --custody-passphrase-env VAR or --custody-credential NAME
+// [--credentials-dir DIR]. --revocations applies a dannan-ca revocation file
+// at start and passes it on.
 
 #include <signal.h>
 
@@ -32,7 +45,10 @@
 #include <boost/asio/io_context.hpp>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <map>
 #include <mutex>
 #include <sstream>
@@ -94,6 +110,15 @@ struct Options {
   std::chrono::milliseconds punch{0};
   std::optional<membership::PathClass> path_class;
   int seconds = 0;
+  std::string custody_passphrase_env;
+  std::string custody_credential;
+  std::string credentials_dir;
+  std::string ca;
+  std::string certificate;
+  std::string revocations;
+  bool no_cluster_key = false;
+  bool init_custody = false;
+  bool show_identity = false;
 };
 
 net::Endpoint endpoint(const std::string& text) {
@@ -160,10 +185,32 @@ Options parse(int argc, char** argv) {
         throw std::runtime_error("--path-class is public, punchable or relay_only");
     } else if (option == "--seconds")
       out.seconds = std::stoi(value());
+    else if (option == "--custody-passphrase-env")
+      out.custody_passphrase_env = value();
+    else if (option == "--custody-credential")
+      out.custody_credential = value();
+    else if (option == "--credentials-dir")
+      out.credentials_dir = value();
+    else if (option == "--ca")
+      out.ca = value();
+    else if (option == "--certificate")
+      out.certificate = value();
+    else if (option == "--revocations")
+      out.revocations = value();
+    else if (option == "--no-cluster-key")
+      out.no_cluster_key = true;
+    else if (option == "--init-custody")
+      out.init_custody = true;
+    else if (option == "--show-identity")
+      out.show_identity = true;
     else
       throw std::runtime_error("unknown option " + option);
   }
-  if (out.key.empty() || out.state.empty()) throw std::runtime_error("--key and --state are required");
+  if (out.state.empty()) throw std::runtime_error("--state is required");
+  if (out.init_custody || out.show_identity) return out;
+  if (out.key.empty() && !out.no_cluster_key) throw std::runtime_error("--key is required, unless the node runs by certificate alone (--no-cluster-key)");
+  if (out.certificate.empty() != out.ca.empty()) throw std::runtime_error("--ca and --certificate go together");
+  if (out.no_cluster_key && out.certificate.empty()) throw std::runtime_error("--no-cluster-key needs --ca and --certificate");
   return out;
 }
 
@@ -247,6 +294,24 @@ std::string status_json(Node& node, EchoResults& results) {
 
 }  // namespace
 
+std::optional<identity::KeySource> custody_source(const Options& options) {
+  if (!options.custody_passphrase_env.empty()) {
+    const char* value = std::getenv(options.custody_passphrase_env.c_str());
+    if (!value || !*value) throw std::runtime_error("the passphrase variable " + options.custody_passphrase_env + " is empty");
+    const std::string passphrase(value);
+    return identity::KeySource::typed_passphrase(
+        [passphrase] { return identity::Secret(std::span(reinterpret_cast<const uint8_t*>(passphrase.data()), passphrase.size())); });
+  }
+  if (!options.custody_credential.empty()) return identity::KeySource::systemd_credential(options.custody_credential, options.credentials_dir);
+  return std::nullopt;
+}
+
+identity::Certificate read_certificate(const std::string& path) {
+  std::ifstream input(path);
+  if (!input) throw std::runtime_error("cannot read " + path);
+  return identity::Certificate::from_pem(std::string((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>()));
+}
+
 int main(int argc, char** argv) {
   Options options;
   try {
@@ -254,6 +319,26 @@ int main(int argc, char** argv) {
   } catch (const std::exception& error) {
     std::cerr << "dannan-node: " << error.what() << "\n";
     return 2;
+  }
+  if (options.init_custody || options.show_identity) {
+    try {
+      const auto source = custody_source(options);
+      if (!source) throw std::runtime_error("the custody's source: --custody-passphrase-env VAR or --custody-credential NAME");
+      if (options.init_custody) {
+        // The root of a new credential goes to stdout and nowhere else.
+        auto [custody, root] = identity::KeyCustody::create_and_open(options.state, *source);
+        (void)custody;
+        if (root) std::printf("%s\n", identity::hex(root->reveal()).c_str());
+        return 0;
+      }
+      const auto custody = identity::KeyCustody::open(options.state, *source);
+      std::printf("{\"id\":\"%s\",\"public_key\":\"%s\"}\n", identity::to_string(identity::load_or_create_node_id(options.state)).c_str(),
+                  identity::hex(custody.node_key().public_key()).c_str());
+      return 0;
+    } catch (const std::exception& error) {
+      std::cerr << "dannan-node: " << error.what() << "\n";
+      return 1;
+    }
   }
   signal(SIGPIPE, SIG_IGN);
   signal(SIGTERM, [](int) { stopping = true; });
@@ -268,7 +353,13 @@ int main(int argc, char** argv) {
   try {
     NodeConfig config;
     config.state_path = options.state;
-    config.key = identity::load_cluster_key(options.key);
+    if (!options.key.empty()) config.key = identity::load_cluster_key(options.key);
+    config.custody = custody_source(options);
+    if (!options.certificate.empty()) {
+      config.ca_certificate = read_certificate(options.ca);
+      config.certificate = read_certificate(options.certificate);
+      config.use_cluster_key = !options.no_cluster_key;
+    }
     config.listen_host = options.listen;
     config.advertise_host = options.advertise;
     config.port = options.port;
@@ -291,6 +382,13 @@ int main(int argc, char** argv) {
     node.context().routes().add(echo_control, {"echo_control", net::Lanes::control, net::Frames::any, false}, answer);
     node.context().routes().add(echo_data, {"echo_data", net::Lanes::data, net::Frames::not_control, false}, answer);
     node.start();
+    if (!options.revocations.empty()) {
+      std::ifstream input(options.revocations, std::ios::binary);
+      if (!input) throw std::runtime_error("cannot read " + options.revocations);
+      const std::string bytes((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+      for (const auto& revocation : identity::decode_revocations(std::span(reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size())))
+        node.context().identity().revoke(revocation);
+    }
     say("{\"event\":\"listening\",\"id\":" + quoted(identity::to_string(node.context().identity().id())) + ",\"port\":" + std::to_string(node.port()) + "}");
 
     EchoResults results;

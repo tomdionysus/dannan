@@ -68,6 +68,12 @@ class KeyCustody {
   // (wrong, or the file altered). Waits on the state device (and Argon2id).
   static KeyCustody open(const std::filesystem::path& state, const KeySource& source);
 
+  // Makes custody and opens it, the new credential root (if any) kept in
+  // memory rather than read back from where systemd will put it: for a
+  // tool that makes a key and uses it at once (dannan-ca init). The root is
+  // returned as create() returns it.
+  static std::pair<KeyCustody, std::optional<Secret>> create_and_open(const std::filesystem::path& state, const KeySource& source);
+
   const SigningKey& node_key() const noexcept { return _node_key; }
   // A key for a hosted system's node-local use, derived from the seal root
   // under `label` (its own: "dagda/node-local/1"). Throws
@@ -76,6 +82,7 @@ class KeyCustody {
 
  private:
   KeyCustody(SigningKey node_key, Secret seal_root) : _node_key(std::move(node_key)), _seal_root(std::move(seal_root)) {}
+  static KeyCustody open_with(const std::filesystem::path& state, const KeySource& source, const Secret* root);
 
   SigningKey _node_key;
   Secret _seal_root;

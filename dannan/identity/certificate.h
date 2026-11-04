@@ -102,6 +102,8 @@ class CertificateAuthority {
  public:
   // A new CA named `name`, valid from `now_unix_ms` for `validity`.
   static CertificateAuthority create(const std::string& name, uint64_t now_unix_ms, std::chrono::hours validity = default_ca_validity);
+  // Over a key it is given: the key held in custody, by dannan-ca.
+  static CertificateAuthority create(const std::string& name, uint64_t now_unix_ms, SigningKey key, std::chrono::hours validity = default_ca_validity);
   // Throws std::invalid_argument for a key that is not the certificate's,
   // or a certificate that is not a CA's.
   CertificateAuthority(SigningKey key, Certificate certificate);
