@@ -47,22 +47,25 @@ configure line for Macha is in `COMPLETED.md`).
 
 ## Resume here (2026-11-04)
 
-Written for a session starting from nothing. Dannan **0.3.0** is released
-(`main`, annotated tag `0.3.0`, not pushed; Tom, 2026-11-04: "commit, tag,
-merge"). 0.2.0 gave wire v1 (Dannan's own, from version 1), level 0 (path
-classes, brokered punches, relays, moving up a class, the relay's DATA
-budget, placement told a peer's path class), channels (notify, stream,
-bulk), the roster-change feed with incarnations, and the stack's
+Written for a session starting from nothing. Dannan **0.4.0** is released
+(`main`, annotated tag `0.4.0`, pushed to `origin` at Tom's word,
+2026-11-04). 0.2.0 gave wire v1 (Dannan's own, from version 1), level 0
+(path classes, brokered punches, relays, moving up a class, the relay's
+DATA budget, placement told a peer's path class), channels (notify,
+stream, bulk), the roster-change feed with incarnations, and the stack's
 foundations (secure memory and buffers, signing, Argon2id, node key
 custody, durable create and replace, JSON logs, fuzz targets, the shared
-test fixtures). 0.3.0 adds identity (step 10: certificates as wire v2
+test fixtures). 0.3.0 added identity (step 10: certificates as wire v2
 beside v1, CA-signed revocation, `dannan-ca`, the scope seam;
-`TODO/2026-11-04-identity.md`) and what the hosted systems asked for:
-`contract::Unlocked`, a call cancelled at its deadline,
+`TODO/2026-11-04-identity.md`) and the hosted systems' first asks
+(`contract::Unlocked`, a call cancelled at its deadline,
 `Time::source()`/`executor()`, `sched::DutyShare`, the `membership` event
-count, `Nodes::absent_since`. Installed for `find_package(dannan 0.3
-CONFIG)`. Work continues on `feature/wire-v1`, merged into `develop` at
-each milestone. Gate: `dannan_tests` 408.
+count, `Nodes::absent_since`). 0.4.0 adds `dannan::config` (the settings
+reader every node binary shares, on yaml-cpp), percent-encoding
+(`dannan::encoding`), `x25519_public`, `Principal ==`, and a peer's
+certificate and the CA through the Context. Installed for
+`find_package(dannan 0.4 CONFIG)`. Work continues on `feature/wire-v1`,
+merged into `develop` at each milestone. Gate: `dannan_tests` 422.
 
 Dannan is one of a stack: Dagda (`../dagda`, the store), Lugh (`../lugh`,
 the directory) and Lir (`../lir`, MQTT events) are hosted systems on it,
@@ -138,7 +141,8 @@ first.
    leases have a tagged release. Meanwhile Dannan serves Dagda, Lugh and
    Lir. Pushed at Tom's word the same day: `origin` is
    `git@github.com:tomdionysus/dannan.git`, holding main, develop and the
-   tags 0.1.0, 0.2.0, 0.3.0. Each later push still needs his ask.
+   tags 0.1.0, 0.2.0, 0.3.0 (0.4.0 pushed at his word too). Each later
+   push still needs his ask.
 
 1. **The suite counts on fi-1** at `0.91.2`, and at each Macha release
    the port makes, recorded in `COMPLETED.md`. A deploy-day act under

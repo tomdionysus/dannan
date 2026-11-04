@@ -5,6 +5,14 @@ left green. `ACTIVE.md` is the plan and this is the record.
 
 ## Releases
 
+- **0.4.0** (2026-11-04, `main`, tag `0.4.0`, pushed; Tom: "commit,
+  merge, cut a tag, push"): `dannan::config`, the settings reader every
+  node binary shares (yaml-cpp, a new dependency, Tom's call), with
+  `dannan-node` on it; percent-encoding (`dannan::encoding`);
+  `identity::x25519_public`; `contract::Principal ==`;
+  `Nodes::certificate(node)` and `Identity::ca_certificate()`.
+  `find_package(dannan 0.4 CONFIG)`. Gate `dannan_tests` 422; both compose
+  beds pass. Pre-release ASan/UBSan: 422, no report.
 - **0.3.0** (2026-11-04, `main`, tag `0.3.0`, Tom: "commit, tag, merge"):
   identity (step 10: X.509 certificates through OpenSSL as wire version 2
   beside v1, CA-signed revocations gossiped and enforced, `dannan-ca`,
