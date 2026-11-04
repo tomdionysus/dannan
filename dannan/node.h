@@ -53,6 +53,14 @@ struct NodeConfig {
   // The node's key custody (identity/key_custody.h), opened at start; it
   // must have been made (KeyCustody::create). Nothing: no node key.
   std::optional<identity::KeySource> custody;
+  // Certificates (wire version 2, TODO/2026-11-04-identity.md): the
+  // cluster's CA and this node's certificate, issued over its custody key
+  // and naming its node id; the node then proves itself by certificate.
+  // With `use_cluster_key` too it also speaks version 1 with `key`, while a
+  // cluster moves; without, by certificate alone. Checked at construction.
+  std::optional<identity::Certificate> ca_certificate;
+  std::optional<identity::Certificate> certificate;
+  bool use_cluster_key = true;
   // Whether this node forwards circuits for others (the relay capability).
   bool relay = false;
   // Level 0: a forced path class (tests, the compose bed); nothing:
@@ -164,6 +172,7 @@ class Node final : public Context {
   const Nodes& nodes() const override;
   Routes& routes() override;
   Channels& channels() override;
+  Identity& identity() override;
   const Identity& identity() const override;
   Budget& budget() override;
   Faults& faults() override;
@@ -203,6 +212,11 @@ class Node final : public Context {
   void telemetry_loop(std::stop_token stop);
   void connectivity_loop(std::stop_token stop);
   void apply_inbound(bool capable);
+  // Keeps the CA's revocations not yet held and closes the revoked nodes'
+  // sessions; what was new.
+  std::vector<identity::Revocation> apply_revocations(const std::vector<identity::Revocation>& revocations);
+  // Sends this node's revocations to a peer and keeps what it answers with.
+  void exchange_revocations(std::optional<membership::NodeRecord> peer, const net::Endpoint& endpoint, std::chrono::milliseconds deadline);
   // The roster changed, or may have: tells the watchers what changed since
   // they were last told, and counts a topology event (with `quiet`, only
   // when something did change: a node that went silent past dead_after).
@@ -217,6 +231,9 @@ class Node final : public Context {
   identity::StateLock _lock;
   identity::NodeIdentity _identity;
   std::optional<identity::KeyCustody> _custody;
+  // What this node proves itself with, and the CA's revocations it holds.
+  net::Credentials _credentials;
+  std::optional<identity::RevocationStore> _revocations;
   reach::InboundResolver _inbound;
   membership::Membership _members;
   status::TelemetryStore _telemetry;

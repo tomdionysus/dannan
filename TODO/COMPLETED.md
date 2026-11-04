@@ -25,6 +25,25 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
 
+## 2026-11-04 -- identity, slice 3: the node on certificates, and revocation
+
+- `identity::RevocationStore`: the CA's revocations only, each once,
+  persisted (DNNREV01) under the state path; a file holding a forged one is
+  refused rather than half read.
+- `NodeConfig::ca_certificate`, `certificate`, `use_cluster_key`: a node
+  proves itself by certificate (version 2), by the cluster key (version 1),
+  or both while a cluster moves. At construction the certificate must name
+  this node's id, be over its custody key, be the CA's and current, and not
+  be revoked, or the node refuses to start saying which.
+- Core type 20 `revocations` (reply 109): a node holding revocations sends
+  them with every member exchange and keeps what the peer answers with, so
+  one missed is learnt within a heartbeat. A new revocation closes the
+  revoked node's sessions at once; its next handshake is refused.
+- `Identity::certificate`, `revoke` (checked against the CA, applied, passed
+  to every active peer), `revocations`; the Context's `identity()` has a
+  mutable form.
+- **Gate: `dannan_tests` 394**; the certificate node cases 10 times.
+
 ## 2026-11-04 -- identity, slice 2: wire version 2
 
 `net/channel.*`: `Credentials` (a cluster key, a certificate credential, or
