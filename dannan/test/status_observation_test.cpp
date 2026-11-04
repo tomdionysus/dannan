@@ -138,5 +138,31 @@ TEST(Observation, TheRecorderWritesEventsThenTheWindow) {
   EXPECT_NE(lines[1].find(R"("gauges":{"g":1})"), std::string::npos);
 }
 
+// A span timed into a histogram of microseconds, on the injected clock:
+// recorded once, at stop() or the end of its scope; cancel() records none.
+TEST(ObservedDuration, TimesASpanOnTheInjectedClock) {
+  test::SteppedTime time;
+  Observations observations;
+  {
+    ObservedDuration span(observations, "store.barrier_us", &time);
+    time.advance(std::chrono::milliseconds(3));
+    EXPECT_EQ(span.elapsed_us(), 3000u);
+  }
+  {
+    ObservedDuration span(observations, "store.barrier_us", &time);
+    time.advance(std::chrono::microseconds(500));
+    span.stop();
+    time.advance(std::chrono::seconds(1));
+  }
+  {
+    ObservedDuration abandoned(observations, "store.barrier_us", &time);
+    abandoned.cancel();
+  }
+  const auto snapshot = observations.snapshot();
+  const auto& histogram = snapshot.histograms.at("store.barrier_us");
+  EXPECT_EQ(histogram.count, 2u);
+  EXPECT_EQ(histogram.sum, 3500u);
+}
+
 }  // namespace
 }  // namespace dannan::status

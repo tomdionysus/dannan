@@ -10,6 +10,7 @@
 // net::DecodeError.
 
 #include "dannan/fuzz/fuzz.h"
+#include "dannan/identity/certificate.h"
 #include "dannan/membership/identity_reset.h"
 #include "dannan/membership/node_record.h"
 #include "dannan/net/fanout.h"
@@ -81,6 +82,44 @@ const Registration identity_resets(
       reset.epoch = 2;
       reset.reason = "r";
       return std::vector<net::Bytes>{membership::encode_identity_resets({reset})};
+    });
+
+// A certificate from a peer's hello, and a revocation set from gossip.
+// Parsing throws std::runtime_error, and checks run on what parses.
+const Registration certificate(
+    "certificate",
+    [](std::span<const uint8_t> data) {
+      static const auto ca = identity::CertificateAuthority::create("fuzz", 1'800'000'000'000);
+      try {
+        const auto cert = identity::Certificate::from_der(data);
+        (void)cert.node_id();
+        (void)cert.subject();
+        (void)identity::check_node_certificate(cert, ca.certificate(), 1'800'000'000'000);
+      } catch (const std::runtime_error&) {
+      }
+    },
+    [] {
+      const auto ca = identity::CertificateAuthority::create("fuzz", 1'800'000'000'000);
+      identity::NodeId node;
+      node.bytes.fill(1);
+      return std::vector<net::Bytes>{
+          ca.certificate().der(), ca.issue(node, identity::SigningKey::generate(identity::SigningAlgorithm::es256).public_key(), 7, 1'800'000'000'000).der()};
+    });
+
+const Registration revocations(
+    "revocations",
+    [](std::span<const uint8_t> data) {
+      static const auto ca = identity::CertificateAuthority::create("fuzz", 1'800'000'000'000);
+      try {
+        for (const auto& revocation : identity::decode_revocations(data)) (void)identity::verify_revocation(revocation, ca.certificate());
+      } catch (const net::DecodeError&) {
+      }
+    },
+    [] {
+      const auto ca = identity::CertificateAuthority::create("fuzz", 1'800'000'000'000);
+      identity::NodeId node;
+      node.bytes.fill(2);
+      return std::vector<net::Bytes>{identity::encode_revocations({ca.revoke(node, 3, 1'800'000'000'000, "fuzz")})};
     });
 
 // Never throws: a malformed advert subscribes to nothing.

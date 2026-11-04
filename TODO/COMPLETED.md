@@ -25,6 +25,95 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
 
+## 2026-11-04 -- identity, slice 4: scope; step 10 done
+
+`contract/scope.h`: `Principal` (a node, or a directory principal),
+`ScopeDecision` (allowed, the generation read as evidence, why not), and
+`ScopeSource` (answered from memory, never waiting), declared here as Tom
+settled. `Identity::install_scope_source` (Lugh installs it) and
+`Identity::verify` (every hosted system checks through it; Dagda's
+write-floor replicas among them). Without a source, this node and any node
+of the cluster may write, nobody else (Dagda's default). With slices 1 to
+3, identity (step 10) is in code: certificates, wire v2 beside v1,
+revocation held, gossiped and enforced, dannan-ca, and scope. **Gate:
+`dannan_tests` 396.**
+
+## 2026-11-04 -- identity, slice 3b: dannan-ca and the operator's flow
+
+- `dannan-ca init|issue|revoke|show`: the CA's key in key custody under its
+  directory (systemd credential or passphrase), its certificate `ca.pem`;
+  init prints a new credential root to stdout only; issue prints a node
+  certificate (random 63-bit serial unless given); revoke writes a signed
+  revocation; show reads a certificate or a revocation file.
+- `KeyCustody::create_and_open`: a new credential's root kept in memory to
+  open custody at once (dannan-ca init first staged it in a file, which
+  would have put it on disk in clear; caught before commit).
+- `CertificateAuthority::create` over a given key.
+- `dannan-node --init-custody`, `--show-identity`, `--ca`, `--certificate`,
+  `--no-cluster-key`, `--revocations`, custody by passphrase variable or
+  credential.
+- `TwoProcess.AnOperatorCertifiesTwoNodesThatMeetOnCertificatesAlone`: the
+  whole flow by the binaries: CA made, two nodes certified, meeting on
+  certificates alone with echo on both lanes, a revocation written and
+  shown. **Gate: `dannan_tests` 395.**
+
+## 2026-11-04 -- identity, slice 3: the node on certificates, and revocation
+
+- `identity::RevocationStore`: the CA's revocations only, each once,
+  persisted (DNNREV01) under the state path; a file holding a forged one is
+  refused rather than half read.
+- `NodeConfig::ca_certificate`, `certificate`, `use_cluster_key`: a node
+  proves itself by certificate (version 2), by the cluster key (version 1),
+  or both while a cluster moves. At construction the certificate must name
+  this node's id, be over its custody key, be the CA's and current, and not
+  be revoked, or the node refuses to start saying which.
+- Core type 20 `revocations` (reply 109): a node holding revocations sends
+  them with every member exchange and keeps what the peer answers with, so
+  one missed is learnt within a heartbeat. A new revocation closes the
+  revoked node's sessions at once; its next handshake is refused.
+- `Identity::certificate`, `revoke` (checked against the CA, applied, passed
+  to every active peer), `revocations`; the Context's `identity()` has a
+  mutable form.
+- **Gate: `dannan_tests` 394**; the certificate node cases 10 times.
+
+## 2026-11-04 -- identity, slice 2: wire version 2
+
+`net/channel.*`: `Credentials` (a cluster key, a certificate credential, or
+both; a key converts to one) replace the transport's key; a hello carries a
+proof per version it can prove, each naming its cluster (1: the cluster
+key's HMAC; 2: the node certificate and a signature by its key), and the
+server picks the highest version both speak that the hello proves for its
+own cluster. A certificate is checked both ways inside the handshake (this
+CA, the receiver's clock, the node the hello or ack names, not revoked) and
+kept as `Established::peer_certificate`; v2 session keys are salted with the
+cluster id. The cluster id left the hello's body, so 0.2.0 nodes do not meet
+later ones (nothing is deployed). `max_wire_version` is 2. The version 2
+hello joins the fuzz targets. **Gate: `dannan_tests` 391.**
+
+## 2026-11-04 -- process facts and timed spans, for Dagda
+
+Asked by Dagda (step 1a moved Macha's sealing onto Dannan and found what it
+lacked): `status/process.*` with `resident_bytes` and
+`physical_memory_bytes` (moved out of telemetry's private code) and
+`set_thread_name` (cut to the platform's limit); supervised threads name
+themselves; `status::ObservedDuration`, a span timed into a histogram of
+microseconds on the injected clock. **Gate: `dannan_tests` 388.**
+
+## 2026-11-04 -- identity, slice 1: certificates and revocations
+
+`identity/certificate.*` (`TODO/2026-11-04-identity.md`, sections 1 and 3):
+`Certificate` (X.509 through OpenSSL: DER and PEM, the SubjectPublicKeyInfo,
+the node id from a subjectAltName URI `dannan:node:<hex>`, serial,
+validity, CA or not, subject, fingerprint); `CertificateAuthority` (create:
+EC P-256, self-signed, CA:TRUE pathlen 0, keyCertSign; load from key and
+certificate; issue a node certificate over a node's key, CA:FALSE,
+digitalSignature, two years by default; revoke); `check_node_certificate`
+(issued by this CA, within validity at the receiver's clock, a leaf, naming
+a node); `cluster_id_of` (SHA-256 of the CA's key); `Revocation` signed by
+the CA (serial zero covers every certificate of the node), its set encoded
+as DNNREV01. `algorithm_of_public_key` beside `verify`. Certificates and
+revocation sets join the fuzz targets. **Gate: `dannan_tests` 385.**
+
 ## 2026-11-04 -- ChildProcess for a command's process tests
 
 Asked by Lugh, whose process tests move into GoogleTest: `ChildOptions`

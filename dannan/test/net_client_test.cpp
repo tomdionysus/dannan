@@ -88,7 +88,7 @@ struct Node {
     const auto key = cluster_key();
     auto traffic = std::make_shared<TransportTraffic>();
     ServerOptions server_options;
-    server_options.key = key;
+    server_options.credentials = key;
     server_options.local = [this] { return self; };
     server_options.routes = table();
     server_options.traffic = traffic;
@@ -106,7 +106,7 @@ struct Node {
           if (adopt_inbound) client->admit(session);
         });
     ClientOptions options = std::move(tuning);
-    options.key = key;
+    options.credentials = key;
     options.local = [this] { return self; };
     options.routes = table();
     options.traffic = traffic;
