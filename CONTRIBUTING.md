@@ -69,7 +69,9 @@ current behaviour.
 
 ## Dependencies
 
-Boost (Asio) and OpenSSL, plus GoogleTest for the test build. Prefer writing
+Boost (Asio), OpenSSL and yaml-cpp (the settings reader, `dannan/config`;
+Tom, 2026-11-04: lifted from Lugh's, so every node binary in the stack reads
+its configuration one way), plus GoogleTest for the test build. Prefer writing
 something by hand over adding a library, and say so if a dependency really is
 the right call.
 

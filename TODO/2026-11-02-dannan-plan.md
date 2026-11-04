@@ -1,8 +1,8 @@
 # Dannan: Distributed Substrate Library Plan
 
-Rendered on 2026-11-03 from Tom's Claude Doc of 2026-11-02 (revision 16).
-The doc is the master until the split; this copy exists so a session in
-Macha's tree can read it. Edits go to the doc, then this file is re-made.
+Written on 2026-11-03 from Tom's starting document of 2026-11-02. Since
+2026-11-04 (Tom) this file is the master: the document it started from is
+not read for direction or edited, and is to be deleted.
 
 ## What Dannan is
 
@@ -230,7 +230,7 @@ Rules that every hosted system inherits, and that Dannan enforces rather than do
 
 ## Repository, build, versioning
 
-Dannan starts in-tree in Macha as a CMake target and becomes its own repository only after AthenaSIP runs on it. A boundary nobody has pulled on from two sides is a guess.
+Dannan is its own repository from the start (Tom, 2026-11-03: Dannan is a new project, not an extension of Macha), with its own wire versioned from 1. Macha and AthenaSIP are ported onto it and pin its tags. The layout below is the original sketch; the repository's is in `CONTRIBUTING.md` (Layout).
 
 ```
 dannan/                              the network layer
@@ -261,7 +261,7 @@ dannan/                              the network layer
 - Hosted-system ABI is the C++ ABI with a build-identity check, as both Macha (macha_subsystem_entry) and AthenaSIP (API_VERSION) do today. No stable C ABI is promised; a hosted system is rebuilt with Dannan.
 - Wire protocol version is one number for the whole cluster; mismatch fails the handshake. Dannan owns the number; a hosted system's own messages are versioned inside its registered types.
 - State layout is versioned and fresh-genesis: unversioned or mismatched state is refused, never adopted.
-- Macha pins a Dannan tag once the split happens; until then, one tree, one build.
+- Macha and AthenaSIP pin Dannan tags, as Dagda, Lugh and Lir do.
 
 ## Roadmap
 

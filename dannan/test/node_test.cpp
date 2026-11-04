@@ -398,6 +398,40 @@ TEST(Node, CertificatesFormAClusterAndARevocationClosesANodeOut) {
   a.stop();
 }
 
+// A peer's certificate, as it proved it, and the cluster's CA reach the
+// hosted system: what verifies a peer's signature (Dagda asked,
+// 2026-11-04). None for a node never met by certificate, or one revoked.
+TEST(Node, APeersCertificateAndTheCaAreGiven) {
+  Io io;
+  test::TempDir dir;
+  const auto ca = identity::CertificateAuthority::create(
+      "cluster", std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() - 60000);
+  Node a(io.context, certified(dir.path() / "a", ca, {}));
+  a.start();
+  Node b(io.context, certified(dir.path() / "b", ca, {{"127.0.0.1", a.port()}}));
+  b.start();
+  const auto b_id = b.context().identity().id();
+  ASSERT_TRUE(eventually([&] { return a.context().nodes().certificate(b_id).has_value(); }));
+  EXPECT_EQ(a.context().nodes().certificate(b_id)->fingerprint(), b.context().identity().certificate()->fingerprint());
+  ASSERT_TRUE(a.context().identity().ca_certificate());
+  EXPECT_EQ(a.context().identity().ca_certificate()->fingerprint(), ca.certificate().fingerprint());
+  // Its key verifies what B signed.
+  const net::Bytes message{4, 5, 6};
+  const auto key = a.context().nodes().certificate(b_id)->public_key();
+  EXPECT_TRUE(identity::verify(*identity::algorithm_of_public_key(key), key, message, b.context().identity().sign(message)));
+  EXPECT_FALSE(a.context().nodes().certificate(identity::NodeId{}));
+  a.context().identity().revoke(ca.revoke(b_id, 0, a.context().time().unix_ms(), "retired"));
+  EXPECT_FALSE(a.context().nodes().certificate(b_id));
+  b.stop();
+  a.stop();
+  // A cluster-key node holds neither.
+  Pair pair;
+  pair.b->start();
+  EXPECT_TRUE(eventually([&] { return knows(*pair.a, pair.b->context().identity().id()); }));
+  EXPECT_FALSE(pair.a->context().nodes().certificate(pair.b->context().identity().id()));
+  EXPECT_FALSE(pair.a->context().identity().ca_certificate());
+}
+
 // A node refuses to start on a certificate that is not its own: another
 // node's id, another key, or none of the CA's.
 TEST(Node, RefusesACertificateThatIsNotItsOwn) {

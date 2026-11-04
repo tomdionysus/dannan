@@ -13,11 +13,11 @@ Substrate Library Plan" (the library in full) and "Macha Core Extraction
 Plan" (the seams, now read as port steps). Both are rendered here as
 [`2026-11-02-dannan-plan.md`](2026-11-02-dannan-plan.md) and
 [`2026-11-02-macha-core-extraction-plan.md`](2026-11-02-macha-core-extraction-plan.md);
-the Claude Docs are the masters and the renderings are re-made when they
-change. Where the two differ the Dannan plan is the later and wins. One
-paragraph of the Dannan plan ("Repository, build, versioning": "Dannan
-starts in-tree in Macha") is superseded by Tom's decision above and
-waits on his edit of the doc (Waiting on Tom, 7). The port of Macha is
+these copies are the masters (Tom, 2026-11-04: the Claude Docs the
+projects started from are starters only, to be deleted, never read for
+direction or edited). Where the two differ the Dannan plan is the later
+and wins. The Dannan plan's "Repository, build, versioning" now says
+Dannan is its own repository from the start (Tom's decision above). The port of Macha is
 [`2026-11-03-macha-extraction.md`](2026-11-03-macha-extraction.md): its
 file table and each seam's "what must not change" and gate still hold,
 its direction is reversed, and a note at its head says how to read it.
@@ -161,9 +161,9 @@ first.
    the port gate; the two-process test is written here at step 2.
 6. Settled: GoogleTest 1.18.0 from MacPorts (`gtest`), the only one on
    the laptop.
-7. **The design doc's "starts in-tree" paragraph** (Repository, build,
-   versioning), which Tom's decision supersedes: his edit of the Claude
-   Doc, after which the rendering is re-made.
+7. Settled (2026-11-04): the repository copies are the masters, so the
+   design's "starts in-tree" paragraph was corrected here to Tom's
+   decision that Dannan is its own repository.
 8. Settled (Tom, 2026-11-03): core message types are Dannan's; the rest
    are user-definable and under the user's control. See Decisions.
 
@@ -566,9 +566,9 @@ changes nothing it does not have to.
 - **Every step ends with the inventory updated**: each row it covered
   gains the Dannan or Dagda case that proves it here; each row a port
   touched keeps its Macha case as the port's gate.
-- **Nothing is published.** The design docs are Tom's Claude Docs; this
-  folder holds renderings. Pushing is a separate, explicit request, and so
-  is a commit.
+- **Nothing is published.** The design is in this folder, and these
+  copies are the masters (Tom, 2026-11-04). Pushing is a separate,
+  explicit request.
 - Code lookups in Macha and AthenaSIP go through basemind when it is up
   (all three trees carry `basemind.toml`); rescan after edits.
 - The Macha session (another Claude session on this machine, "Macha
@@ -587,7 +587,7 @@ under Waiting on Tom.
 ### 0. This repository (2026-11-03)
 
 - [x] `TODO/`: the plan, the record, the port proposal, the function
-      inventory, the two design renderings.
+      inventory, the two design documents (the masters since 2026-11-04).
 - [x] The design questions put to Tom and answered (Decisions).
 - [x] `CLAUDE.md`, `CONTRIBUTING.md`, `.clang-format`, `basemind.toml`,
       `.gitignore`; a "Dannan extraction" section in Macha's

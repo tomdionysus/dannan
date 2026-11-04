@@ -95,9 +95,10 @@ struct ClientOptions {
   std::chrono::milliseconds dead_after{30000};
   // Told of each peer that answers a CONTROL ping, with its record.
   std::function<void(const membership::NodeRecord&)> alive;
-  // Told of each session this client dials, with the peer's record as its
-  // handshake carried it: a direct observation.
-  std::function<void(const membership::NodeRecord&)> established;
+  // Told of each session this client dials or adopts, as its handshake
+  // established it: the peer's record (a direct observation) and the
+  // certificate it proved, if any.
+  std::function<void(const Established&)> established;
   // Tests only: consulted before every dial; a non-empty answer is the
   // reason the dial fails, as if the network refused it.
   std::function<std::string(const Endpoint&, Lane)> dial_hook;

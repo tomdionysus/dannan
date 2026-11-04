@@ -38,11 +38,18 @@
 // CUSTODY is --custody-passphrase-env VAR or --custody-credential NAME
 // [--credentials-dir DIR]. --revocations applies a dannan-ca revocation file
 // at start and passes it on.
+//
+// Every option can also come from a YAML file (--config FILE, -c FILE, or
+// $DANNAN_NODE_CONFIG), secrets.yaml beside it, or a DANNAN_NODE_*
+// variable, the flags winning: `--port 7437` is `listen: {port: 7437}` and
+// DANNAN_NODE_LISTEN_PORT (dannan/config/config.h; reader() below lists
+// them all).
 
 #include <signal.h>
 
 #include <atomic>
 #include <boost/asio/io_context.hpp>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -56,6 +63,7 @@
 #include <thread>
 #include <vector>
 
+#include "dannan/config/config.h"
 #include "dannan/node.h"
 
 namespace {
@@ -127,85 +135,87 @@ net::Endpoint endpoint(const std::string& text) {
   return {text.substr(0, colon), static_cast<uint16_t>(std::stoi(text.substr(colon + 1)))};
 }
 
+// Every setting, its flag, and its variable (DANNAN_NODE_ and the key in
+// capitals), read through the stack's one reader: defaults, the file
+// (--config, $DANNAN_NODE_CONFIG), secrets.yaml beside it, the
+// environment, then the flags.
+config::Reader reader() {
+  using Kind = config::Setting::Kind;
+  config::Reader out;
+  const auto add = [&](std::string key, Kind kind, std::string flag, std::string what) {
+    std::string variable = "DANNAN_NODE_";
+    for (const char c : key) variable += c == '.' ? '_' : static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    out.settings.push_back({std::move(key), kind, std::move(flag), std::move(variable), std::move(what)});
+  };
+  add("cluster.key", Kind::value, "--key", "the cluster key file");
+  add("cluster.bootstrap", Kind::list, "--bootstrap", "HOST:PORT");
+  add("node.state", Kind::value, "--state", "the state directory");
+  add("node.name", Kind::value, "--name", "a name");
+  add("node.domain", Kind::value, "--domain", "a failure domain");
+  add("node.relay", Kind::toggle, "--relay", "whether it relays for others");
+  add("listen.address", Kind::value, "--listen", "an address");
+  add("listen.port", Kind::value, "--port", "a port");
+  add("listen.advertise", Kind::value, "--advertise", "the host peers dial");
+  add("listen.inbound", Kind::value, "--inbound", "yes, no or auto");
+  add("timing.heartbeat_ms", Kind::value, "--heartbeat-ms", "milliseconds");
+  add("timing.status_ms", Kind::value, "--status-ms", "milliseconds");
+  add("timing.echo_ms", Kind::value, "--echo-ms", "milliseconds");
+  add("timing.reprobe_ms", Kind::value, "--reprobe-ms", "milliseconds");
+  add("timing.punch_ms", Kind::value, "--punch-ms", "milliseconds");
+  add("timing.seconds", Kind::value, "--seconds", "seconds to run");
+  add("reach.path_class", Kind::value, "--path-class", "public, punchable or relay_only");
+  add("custody.passphrase_env", Kind::value, "--custody-passphrase-env", "a variable");
+  add("custody.credential", Kind::value, "--custody-credential", "a credential name");
+  add("custody.credentials_dir", Kind::value, "--credentials-dir", "a directory");
+  add("identity.ca", Kind::value, "--ca", "the CA certificate, PEM");
+  add("identity.certificate", Kind::value, "--certificate", "the node certificate, PEM");
+  add("identity.revocations", Kind::value, "--revocations", "a revocations file");
+  add("identity.no_cluster_key", Kind::toggle, "--no-cluster-key", "certificate alone");
+  add("command.init_custody", Kind::toggle, "--init-custody", "make the custody and exit");
+  add("command.show_identity", Kind::toggle, "--show-identity", "print the identity and exit");
+  out.config_variable = "DANNAN_NODE_CONFIG";
+  return out;
+}
+
 Options parse(int argc, char** argv) {
+  const auto settings = reader().read(std::vector<std::string>(argv + 1, argv + argc));
+  if (!settings.positional.empty()) throw std::runtime_error("unexpected argument " + settings.positional.front());
+  for (const auto& warning : settings.warnings) std::cerr << "dannan-node: " << warning << "\n";
   Options out;
-  for (int i = 1; i < argc; ++i) {
-    const std::string option = argv[i];
-    auto value = [&]() -> std::string {
-      if (++i >= argc) throw std::runtime_error(option + " needs a value");
-      return argv[i];
-    };
-    if (option == "--key")
-      out.key = value();
-    else if (option == "--state")
-      out.state = value();
-    else if (option == "--listen")
-      out.listen = value();
-    else if (option == "--advertise")
-      out.advertise = value();
-    else if (option == "--port")
-      out.port = static_cast<uint16_t>(std::stoi(value()));
-    else if (option == "--bootstrap")
-      out.bootstrap.push_back(endpoint(value()));
-    else if (option == "--inbound") {
-      const auto mode = value();
-      if (mode == "yes")
-        out.inbound = reach::Inbound::yes;
-      else if (mode == "no")
-        out.inbound = reach::Inbound::no;
-      else if (mode == "auto")
-        out.inbound = reach::Inbound::automatic;
-      else
-        throw std::runtime_error("--inbound is yes, no or auto");
-    } else if (option == "--relay")
-      out.relay = true;
-    else if (option == "--name")
-      out.name = value();
-    else if (option == "--domain")
-      out.domain = value();
-    else if (option == "--heartbeat-ms")
-      out.heartbeat = std::chrono::milliseconds(std::stoi(value()));
-    else if (option == "--status-ms")
-      out.status = std::chrono::milliseconds(std::stoi(value()));
-    else if (option == "--echo-ms")
-      out.echo = std::chrono::milliseconds(std::stoi(value()));
-    else if (option == "--reprobe-ms")
-      out.reprobe = std::chrono::milliseconds(std::stoi(value()));
-    else if (option == "--punch-ms")
-      out.punch = std::chrono::milliseconds(std::stoi(value()));
-    else if (option == "--path-class") {
-      const auto name = value();
-      if (name == "public")
-        out.path_class = membership::PathClass::public_path;
-      else if (name == "punchable")
-        out.path_class = membership::PathClass::punchable;
-      else if (name == "relay_only")
-        out.path_class = membership::PathClass::relay_only;
-      else
-        throw std::runtime_error("--path-class is public, punchable or relay_only");
-    } else if (option == "--seconds")
-      out.seconds = std::stoi(value());
-    else if (option == "--custody-passphrase-env")
-      out.custody_passphrase_env = value();
-    else if (option == "--custody-credential")
-      out.custody_credential = value();
-    else if (option == "--credentials-dir")
-      out.credentials_dir = value();
-    else if (option == "--ca")
-      out.ca = value();
-    else if (option == "--certificate")
-      out.certificate = value();
-    else if (option == "--revocations")
-      out.revocations = value();
-    else if (option == "--no-cluster-key")
-      out.no_cluster_key = true;
-    else if (option == "--init-custody")
-      out.init_custody = true;
-    else if (option == "--show-identity")
-      out.show_identity = true;
-    else
-      throw std::runtime_error("unknown option " + option);
-  }
+  const auto ms = [&](const std::string& key, std::chrono::milliseconds otherwise) {
+    const auto value = settings.number(key, 0, 86400000);
+    return value ? std::chrono::milliseconds(*value) : otherwise;
+  };
+  out.key = settings.path_of("cluster.key").value_or("");
+  for (const auto& seed : settings.list("cluster.bootstrap")) out.bootstrap.push_back(endpoint(seed));
+  out.state = settings.path_of("node.state").value_or("");
+  out.name = settings.text("node.name").value_or("");
+  out.domain = settings.text("node.domain").value_or("");
+  out.relay = settings.toggle("node.relay").value_or(false);
+  out.listen = settings.text("listen.address").value_or(out.listen);
+  out.port = static_cast<uint16_t>(settings.number("listen.port", 0, 65535).value_or(out.port));
+  out.advertise = settings.text("listen.advertise").value_or("");
+  if (const auto mode = settings.choice("listen.inbound", {"yes", "no", "auto"}))
+    out.inbound = *mode == "yes" ? reach::Inbound::yes : *mode == "no" ? reach::Inbound::no : reach::Inbound::automatic;
+  out.heartbeat = ms("timing.heartbeat_ms", out.heartbeat);
+  out.status = ms("timing.status_ms", out.status);
+  out.echo = ms("timing.echo_ms", out.echo);
+  out.reprobe = ms("timing.reprobe_ms", out.reprobe);
+  out.punch = ms("timing.punch_ms", out.punch);
+  out.seconds = static_cast<int>(settings.number("timing.seconds", 0, 31536000).value_or(0));
+  if (const auto name = settings.choice("reach.path_class", {"public", "punchable", "relay_only"}))
+    out.path_class = *name == "public"      ? membership::PathClass::public_path
+                     : *name == "punchable" ? membership::PathClass::punchable
+                                            : membership::PathClass::relay_only;
+  out.custody_passphrase_env = settings.text("custody.passphrase_env").value_or("");
+  out.custody_credential = settings.text("custody.credential").value_or("");
+  out.credentials_dir = settings.text("custody.credentials_dir").value_or("");
+  out.ca = settings.path_of("identity.ca").value_or("");
+  out.certificate = settings.path_of("identity.certificate").value_or("");
+  out.revocations = settings.path_of("identity.revocations").value_or("");
+  out.no_cluster_key = settings.toggle("identity.no_cluster_key").value_or(false);
+  out.init_custody = settings.toggle("command.init_custody").value_or(false);
+  out.show_identity = settings.toggle("command.show_identity").value_or(false);
   if (out.state.empty()) throw std::runtime_error("--state is required");
   if (out.init_custody || out.show_identity) return out;
   if (out.key.empty() && !out.no_cluster_key) throw std::runtime_error("--key is required, unless the node runs by certificate alone (--no-cluster-key)");

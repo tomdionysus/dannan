@@ -1,8 +1,8 @@
 # Macha Core Extraction Plan
 
-Rendered on 2026-11-03 from Tom's Claude Doc of 2026-11-02 (revision 9).
-The doc is the master until the split; this copy exists so a session in
-Macha's tree can read it. Edits go to the doc, then this file is re-made.
+Written on 2026-11-03 from Tom's starting document of 2026-11-02. Since
+2026-11-04 (Tom) this file is the master: the document it started from is
+not read for direction or edited, and is to be deleted.
 
 ## Purpose
 
