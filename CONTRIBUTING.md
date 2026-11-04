@@ -57,7 +57,8 @@ fuzzer under a clang that has libFuzzer, otherwise a replay driver over files
 Run the test binaries rather than `ctest`. Everything runs on a developer machine
 (MacPorts for every dependency on the laptop); there is no hosted CI.
 Sanitizers run before a release, or to hunt a bug that cannot be pinned any
-other way. The compose bed proves level 0 through real NATs: configure with
+other way. The compose bed proves level 0 through real NATs, once over a
+cluster key and once over certificates alone with a revocation: configure with
 `-DDANNAN_BUILD_COMPOSE_TESTS=ON`, then run `./build/dannan_compose_tests`
 with Docker running (`DANNAN_COMPOSE_KEEP=1` leaves the bed up,
 `DANNAN_COMPOSE_NO_BUILD=1` reuses the image). It is run by hand, never in
