@@ -69,8 +69,15 @@ the directory) and Lir (`../lir`, MQTT events) are hosted systems on it,
 each with its own session; what each owns is
 `../dagda/TODO/2026-11-03-stack.md`, and the rules for all are
 `CONTRIBUTING.md`. Lugh pins 0.3.0 (Lugh `db34a34`, 353 tests in debug,
-ASan and TSan, no change needed); Dagda and Lir move to it at their own
-pace. They send what they need from Dannan as messages;
+ASan and TSan, no change needed); Dagda pins 0.3.0 (320 tests, every
+stand-in for Dannan gone, nothing more wanted from 0.3.x for its step);
+Lir moves to it at its own pace. Tom decided (via Dagda, 2026-11-04) that
+Dagda's domain keys are wrapped to an X25519 key each node derives from
+custody (`derive_local("dagda/wrap/1")`), its public half advertised and
+signed with `Identity::sign`, not to the certificate's P-256 key: Dannan
+gives no ECDH. Dagda's step 6 may ask for a peer's certificate public key
+through the Context or its record, and an X25519 public-from-private
+helper; neither is built until it asks. They send what they need from Dannan as messages;
 nothing shared is written twice (Decisions).
 
 The compose bed (`-DDANNAN_BUILD_COMPOSE_TESTS=ON`,
