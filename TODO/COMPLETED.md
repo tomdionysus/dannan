@@ -68,7 +68,8 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `auth::percent_decode`, Lugh's `Router::percent_decode` and its coming
   encoder, and at the port Macha's five. 4 tests.
 
-Gate `dannan_tests` 422.
+Gate `dannan_tests` 422. Both compose beds pass on this tree, the image
+rebuilt with yaml-cpp (v1 562 s with the build, certificates 68 s).
 
 ## 2026-11-04 -- the compose bed over certificates alone
 
