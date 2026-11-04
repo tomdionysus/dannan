@@ -22,6 +22,7 @@
 #include "dannan/supervise/startup.h"
 #include "dannan/supervise/supervised.h"
 #include "dannan/supervise/supervisor.h"
+#include "dannan/test/fixtures/stepped_time.h"
 #include "dannan/test/fixtures/temp_dir.h"
 
 namespace dannan::supervise {
@@ -187,6 +188,26 @@ TEST(Supervisor, AMissingPluginDirectoryLoadsNone) {
   Supervisor supervisor(options("/nonexistent/plugins"));
   supervisor.start({});
   EXPECT_TRUE(supervisor.statuses().empty());
+}
+
+// How long a run was is read from the injected time: each run here "takes"
+// longer than the ceiling, so every restart waits only the initial backoff.
+// Doubling instead, twenty faults would wait for hours.
+TEST(SupervisedThreads, ALongRunInTheInjectedTimeEarnsAFreshBackoff) {
+  test::SteppedTime time;
+  SupervisedThreads threads(1ms, 1h, &contract::system_wall_clock(), &time);
+  std::atomic<int> runs{0};
+  std::stop_source stop;
+  std::thread loop([&] {
+    threads.loop("gossip", stop.get_token(), [&] {
+      time.advance(2h);
+      if (++runs < 20) throw std::runtime_error("peer vanished");
+    });
+  });
+  const bool finished = eventually([&] { return runs.load() >= 20; });
+  stop.request_stop();
+  loop.join();
+  EXPECT_TRUE(finished);
 }
 
 // A service loop reruns after a fault with backoff; a task runs once; an

@@ -294,10 +294,13 @@ class Client {
   std::vector<std::shared_ptr<Session>> control_routes_locked() const DANNAN_REQUIRES(_mutex);
   // The health loop, on its strand.
   void arm_heartbeat();
+  void await_heartbeat();
   void health_pass();
   void attempt(const std::shared_ptr<Probe>& probe);
   void answered(const std::shared_ptr<Probe>& probe, CallOutcome outcome);
   void retry(const std::shared_ptr<Probe>& probe);
+  void await_ping(const std::shared_ptr<Probe>& probe);
+  void await_retry(const std::shared_ptr<Probe>& probe, contract::TimePoint resume_at);
   // Lanes a peer asked for, and those an incapable node maintains. On the
   // health strand.
   void open_lanes();
@@ -326,6 +329,7 @@ class Client {
   const identity::NodeId _self;
   boost::asio::strand<boost::asio::io_context::executor_type> _health_strand;
   boost::asio::steady_timer _heartbeat;
+  contract::TimePoint _next_heartbeat{};  // on the health strand
 
   mutable contract::Mutex _mutex;
   std::condition_variable _idle;
