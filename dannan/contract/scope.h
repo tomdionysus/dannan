@@ -24,6 +24,7 @@ struct Principal {
   enum class Kind : uint8_t { node, directory };
   Kind kind = Kind::directory;
   std::string id;
+  bool operator==(const Principal&) const = default;
 };
 
 // The answer, with its evidence: the generation of the scope data it was
