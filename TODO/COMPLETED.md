@@ -25,6 +25,18 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
 
+## 2026-11-04 -- a node's absence, kept across a restart
+
+For Dagda (step 5, leases and takeover): `Nodes::absent_since(node)`, from
+`Membership::absent_since`: for a node not heard of within dead_after, the
+steady time it was last heard of; none for self, an active node, or one
+not known. A restart used to reload every known node as just past
+dead_after, losing how long it had been gone; it now rebuilds the steady
+time from the wall time the roster already persisted (DNNMEM01 unchanged),
+still never active until heard from again.
+`Membership.AbsenceSurvivesARestart` fails with the old reload and passes
+with the new. Gate `dannan_tests` 408.
+
 ## 2026-11-04 -- sched::DutyShare, and a membership event count
 
 For Dagda (step 3):
