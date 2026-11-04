@@ -45,6 +45,11 @@ their Dannan-only equivalents stay or move to the compose cluster
 
 ## 2. Handshake v1
 
+**Superseded 2026-11-04** by `TODO/2026-11-04-identity.md`: the cluster id
+left the hello's body for each proof, so a node proving both a cluster key
+(version 1) and a certificate (version 2) names each proof's cluster. 0.2.0
+nodes do not meet later ones (nothing is deployed).
+
 Hello (client to server), MACed with the auth key under `dannan/hello/1`:
 
 ```

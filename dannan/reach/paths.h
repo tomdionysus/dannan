@@ -122,8 +122,8 @@ membership::PathClass classify(const Observation& observation);
 // from local `port` (zero: any) to `to`, which must authenticate as
 // `expected`, and the address the ack says it came from. Throws
 // std::runtime_error.
-std::pair<uint16_t, net::Endpoint> observe_from(boost::asio::io_context& io, const identity::ClusterKey& key, const membership::NodeRecord& local,
-                                                uint16_t port, const net::Endpoint& to, const identity::NodeId& expected, std::chrono::milliseconds timeout);
+std::pair<uint16_t, net::Endpoint> observe_from(boost::asio::io_context& io, const net::Credentials& key, const membership::NodeRecord& local, uint16_t port,
+                                                const net::Endpoint& to, const identity::NodeId& expected, std::chrono::milliseconds timeout);
 
 // A TCP simultaneous open from local `port` to `to`, retried until
 // `within` has passed: `done` gets the connected descriptor and its address
@@ -132,7 +132,7 @@ void simultaneous_open(boost::asio::io_context& io, uint16_t port, const net::En
                        std::function<void(int descriptor, int family, std::string why)> done);
 
 struct PathsConfig {
-  identity::ClusterKey key;
+  net::Credentials credentials;
   // How long a probe, a broker's or relay's call, and a handshake may take.
   std::chrono::milliseconds connect_timeout{2500};
   // How long both ends keep trying a simultaneous open.

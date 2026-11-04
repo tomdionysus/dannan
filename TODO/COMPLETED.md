@@ -25,6 +25,20 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
 
+## 2026-11-04 -- identity, slice 2: wire version 2
+
+`net/channel.*`: `Credentials` (a cluster key, a certificate credential, or
+both; a key converts to one) replace the transport's key; a hello carries a
+proof per version it can prove, each naming its cluster (1: the cluster
+key's HMAC; 2: the node certificate and a signature by its key), and the
+server picks the highest version both speak that the hello proves for its
+own cluster. A certificate is checked both ways inside the handshake (this
+CA, the receiver's clock, the node the hello or ack names, not revoked) and
+kept as `Established::peer_certificate`; v2 session keys are salted with the
+cluster id. The cluster id left the hello's body, so 0.2.0 nodes do not meet
+later ones (nothing is deployed). `max_wire_version` is 2. The version 2
+hello joins the fuzz targets. **Gate: `dannan_tests` 391.**
+
 ## 2026-11-04 -- process facts and timed spans, for Dagda
 
 Asked by Dagda (step 1a moved Macha's sealing onto Dannan and found what it

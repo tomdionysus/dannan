@@ -32,7 +32,8 @@ namespace dannan::net {
 bool peer_socket_options(int fd);
 
 struct ServerOptions {
-  identity::ClusterKey key;
+  // How this node proves itself and checks its peers.
+  Credentials credentials;
   // The node's current record, read at each handshake.
   std::function<membership::NodeRecord()> local;
   size_t max_frame = 256 * 1024;

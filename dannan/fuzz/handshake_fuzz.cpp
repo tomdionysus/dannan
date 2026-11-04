@@ -39,6 +39,11 @@ membership::NodeRecord node(uint8_t n) {
 
 std::span<const uint8_t> body(const net::Bytes& blob) { return std::span(blob).subspan(4); }
 
+// A fixed clock inside the certificates' validity.
+struct test_wall final : contract::WallClock {
+  uint64_t unix_ms() const noexcept override { return 1'800'000'000'000 + 1000; }
+};
+
 const Registration hello(
     "handshake_hello",
     [](std::span<const uint8_t> data) {
@@ -49,6 +54,34 @@ const Registration hello(
     },
     [] {
       net::ClientHandshake client(key(), node(1), 65536, net::Lane::control);
+      const auto& blob = client.hello_blob();
+      return std::vector<net::Bytes>{net::Bytes(body(blob).begin(), body(blob).end())};
+    });
+
+// A version 2 hello: certificate parsing and checks, then the signature,
+// on a stranger's bytes.
+const Registration hello_v2(
+    "handshake_hello_v2",
+    [](std::span<const uint8_t> data) {
+      static const auto server = [] {
+        static const auto ca = identity::CertificateAuthority::create("fuzz", 1'800'000'000'000);
+        static test_wall wall;
+        auto key = identity::SigningKey::generate(identity::SigningAlgorithm::es256);
+        auto own = ca.issue(node(2).id, key.public_key(), 2, 1'800'000'000'000);
+        return net::Credentials(net::CertificateCredential{ca.certificate(), std::move(own), std::move(key), {}, &wall});
+      }();
+      try {
+        (void)net::server_handshake(server, node(2), 65536, data, {"192.0.2.1", 1});
+      } catch (const net::HandshakeRefused&) {
+      }
+    },
+    [] {
+      const auto ca = identity::CertificateAuthority::create("fuzz", 1'800'000'000'000);
+      static test_wall wall;
+      auto key = identity::SigningKey::generate(identity::SigningAlgorithm::es256);
+      auto own = ca.issue(node(1).id, key.public_key(), 1, 1'800'000'000'000);
+      net::ClientHandshake client(net::Credentials(net::CertificateCredential{ca.certificate(), std::move(own), std::move(key), {}, &wall}), node(1), 65536,
+                                  net::Lane::control);
       const auto& blob = client.hello_blob();
       return std::vector<net::Bytes>{net::Bytes(body(blob).begin(), body(blob).end())};
     });

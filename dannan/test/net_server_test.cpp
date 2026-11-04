@@ -65,7 +65,7 @@ std::shared_ptr<const RouteTable> routes() { return std::make_shared<const Route
 
 ServerOptions options(const identity::ClusterKey& key) {
   ServerOptions out;
-  out.key = key;
+  out.credentials = key;
   const auto self = record("127.0.0.1");
   out.local = [self] { return self; };
   out.routes = routes();

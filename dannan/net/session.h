@@ -219,11 +219,11 @@ class Session : public std::enable_shared_from_this<Session> {
 // the reason it was not; the caller bounds the wait (a timer that closes the
 // socket).
 using HandshakeDone = std::function<void(std::exception_ptr, Established)>;
-void async_dial_handshake(Session::Socket& socket, const identity::ClusterKey& key, membership::NodeRecord local, size_t max_frame, Lane lane,
+void async_dial_handshake(Session::Socket& socket, const Credentials& credentials, membership::NodeRecord local, size_t max_frame, Lane lane,
                           HandshakeDone done, Purpose purpose = Purpose::ordinary, PathToken token = {});
 // `remote` is where the connection came from; `expected`, for a punched or
 // relayed connection, what its hello must carry.
-void async_accept_handshake(Session::Socket& socket, const identity::ClusterKey& key, membership::NodeRecord local, size_t max_frame, Endpoint remote,
+void async_accept_handshake(Session::Socket& socket, const Credentials& credentials, membership::NodeRecord local, size_t max_frame, Endpoint remote,
                             HandshakeDone done, std::optional<Expected> expected = std::nullopt);
 
 }  // namespace dannan::net
