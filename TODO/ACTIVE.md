@@ -24,25 +24,12 @@ The list of everything Macha does that Dannan and Dagda must do, and that
 Macha must still do once ported, is
 [`2026-11-03-macha-function-inventory.md`](2026-11-03-macha-function-inventory.md).
 
-**The sources, as of 2026-11-03, evening.** `../macha`'s `develop` is at
-`a547ddf`: `0.91.2` (`6c7ec64`, tagged, the baseline) plus the transport
-proofs (`c71370e`), the dropped-replies fix (`d61eb02`, "0.91.3") and the
-example and documentation fix (`353e600`, "0.91.4"); neither release is
-tagged or pushed. The checkout is on `develop`, clean, `develop` and
-`main` its only branches: Tom had the Macha session clean up the
-morning's leftovers (the goldens branch, the two-process script, the
-0.91.2 worktree), so the port gate's config and Status goldens are
-written afresh at step 3; the deleted commits `2dfbb02` and `6a797af`
-stay in Macha's reflog for about ninety days should their text be
-wanted. Cluster protocol 23
-(`src/cluster/net.cpp:96` now), state layout v18. Laptop gate: 682 + 19 +
-21 on `develop`; the fi-1 counts are unrecorded. One live node (fi-1); gbni-1 is out since
-2026-10-13; Macha's own development is paused except what Tom asks for
-(today: 0.91.3, the example and the docs, by the Macha session).
-`../athenasip` is on `develop` at `8d65593`, tagged `0.12.0`, clean;
-plugin contract `API_VERSION` 24; two live nodes, neither production. The
-laptop is on MacPorts for everything (Boost 1.88 the only Boost; the
-configure line for Macha is in `COMPLETED.md`).
+**The sources, as of 2026-11-04.** `../macha` is at 0.92.2 (`5776392`),
+cluster protocol 23, state layout v18, 785 test cases (744 + 20 + 21). The
+live cluster is macnessa and inverbeg, both Pi 5 on Debian 13 with Boost
+1.83. `../athenasip` is on `develop` at `8d65593`, tagged `0.12.0`; plugin
+contract `API_VERSION` 24. The laptop is on MacPorts for everything. Macha's
+current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluation.md`.
 
 ## Resume here (2026-11-04)
 
@@ -88,8 +75,9 @@ nothing shared is written twice (Decisions).
 The compose bed (`-DDANNAN_BUILD_COMPOSE_TESTS=ON`,
 `./build/dannan_compose_tests`, Docker running) proves level 0 through real
 NATs, over cluster-key (v1) nodes and over certificates alone (v2, with a
-revocation); it is run by hand. Next: whatever the hosted systems find
-missing.
+revocation); it is run by hand. Next: the Macha port list,
+[`2026-11-04-macha-parity.md`](2026-11-04-macha-parity.md), and whatever
+the hosted systems find missing.
 Macha is not touched until Tom says (Tom, 2026-11-04).
 
 Read in this order: this file to the end of Standing rules;
@@ -146,7 +134,7 @@ first.
    tags 0.1.0, 0.2.0, 0.3.0 (0.4.0 pushed at his word too). Each later
    push still needs his ask.
 
-1. **The suite counts on fi-1** at `0.91.2`, and at each Macha release
+1. **The suite counts on the live nodes** at `0.91.2`, and at each Macha release
    the port makes, recorded in `COMPLETED.md`. A deploy-day act under
    Macha's rules.
 2. **Cloud providers and budget for the chaos cluster**, when level 0 is
@@ -201,13 +189,13 @@ the step can prove (step 2: handshake, membership, telemetry, both lanes;
 step 7: objects, commits both ways, a divergence merged).
 
 **The port gate**, before and after every port step in `../macha`, on
-the laptop and then on fi-1: the nine items of "The seam gate" in the
+the laptop and then on the live nodes: the nine items of "The seam gate" in the
 extraction document, which are: the three suites with counts equal or
 above, the config golden, the Status golden, the route list, the plugins,
 the install, wire and disk (protocol 23, layout v18, the mixed-build
 two-process test), the diff reviewed with every content change named,
 and the inventory updated. Macha's rules on the laptop hold: no verdict on
-timing under load, touched tests here, all three suites on fi-1, never
+timing under load, touched tests here, all three suites on the live nodes, never
 both nodes down at once.
 
 ```
@@ -349,7 +337,7 @@ words, so a session does not re-derive it.
   record's generic shape at protocol 25 is this surface's gossip.
 - (2026-11-03, Tom) **The laptop is MacPorts for everything.** Done.
 - (2026-11-03, Tom) **Extraction proceeds on the laptop now.** The pause
-  on Macha development does not cover it; deployment to fi-1 is the gate
+  on Macha development does not cover it; deployment to the live nodes is the gate
   it already is, taken when convenient.
 - (2026-11-03, Tom) **The store is Dagda.** Target `dagda`, directory
   `dagda/`, namespace `dagda`. The Dagda's cauldron never runs empty.
@@ -561,7 +549,7 @@ changes nothing it does not have to.
   `feature/dannan-port-<piece>` off Macha's `develop`, pins this
   repository's tag, swaps the piece, leaves the port gate green with its
   counts in `COMPLETED.md` here and in the "Dannan extraction" section of
-  `../macha/TODO/ACTIVE.md`, and deploys to fi-1 when convenient.
+  `../macha/TODO/ACTIVE.md`, and deploys to the live nodes when convenient.
 - **Report findings before fixing; prove a mechanism before editing.**
   Design questions go to Tom with a recommendation. Decisions above are
   not reopened without asking.
@@ -687,7 +675,7 @@ what the adapter needs. `CONTRIBUTING.md`'s line that Boost is not
 required there goes. Gate: the port gate whole; `test_rpc_cluster.cpp`
 every case; the two-process mixed-build test (0.91.2 or 0.91.3 binary
 against the ported binary); the Status golden (RPC and work stats are
-fields of it); a deploy to fi-1. Macha release `0.92.0`.
+fields of it); a deploy to the live nodes. A Macha release, numbered by the Macha session.
 
 ### 4. The control plane (step 4, in sessions per table)
 
@@ -736,7 +724,7 @@ resolution and the playback budgets); `subsystem/*`, `contract/work`,
 `node_events` replaced by Dannan's; `SubsystemRegistry` publishes by
 name; the FUSE and torrent plugins load through Dannan's supervisor. Gate:
 the port gate whole, the config golden and Status golden byte-identical,
-the plugin cases, fi-1. Macha release `0.93.0`.
+the plugin cases, the live nodes. A Macha release, numbered by the Macha session.
 
 ### 7. Dagda (step 7, in sessions per table)
 
@@ -775,8 +763,8 @@ Macha's facade), then the FS through the two contexts alone
 and `local_state`). Gate: the port gate with the mixed-build test
 (baseline binary against the ported one: a cluster, commits both ways, a
 divergence merged, the result identical from either side);
-`macha-metadata-dump` identical on a fixture state directory; fi-1 for
-the period the extraction plan names. Macha release `0.94.0`. After this
+`macha-metadata-dump` identical on a fixture state directory; the live nodes for
+the period the extraction plan names. A Macha release, numbered by the Macha session. After this
 the door exists, and the second hosted system comes through it and
 nothing else.
 
