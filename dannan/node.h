@@ -212,6 +212,9 @@ class Node final : public Context {
   void telemetry_loop(std::stop_token stop);
   void connectivity_loop(std::stop_token stop);
   void apply_inbound(bool capable);
+  // Keeps the certificate a peer proved, from a session as established.
+  void note_certificate(const net::Established& session);
+  std::optional<identity::Certificate> peer_certificate(const identity::NodeId& node) const;
   // Keeps the CA's revocations not yet held and closes the revoked nodes'
   // sessions; what was new.
   std::vector<identity::Revocation> apply_revocations(const std::vector<identity::Revocation>& revocations);
@@ -237,6 +240,10 @@ class Node final : public Context {
   mutable contract::Mutex _scope_mutex;
   std::shared_ptr<const contract::ScopeSource> _scope DANNAN_GUARDED_BY(_scope_mutex);
   std::optional<identity::RevocationStore> _revocations;
+  // The certificate each peer proved in its latest certificate handshake
+  // with this node, by node id.
+  mutable contract::Mutex _certificates_mutex;
+  std::map<identity::NodeId, identity::Certificate> _peer_certificates DANNAN_GUARDED_BY(_certificates_mutex);
   reach::InboundResolver _inbound;
   membership::Membership _members;
   status::TelemetryStore _telemetry;
