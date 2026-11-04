@@ -723,8 +723,11 @@ std::shared_ptr<net::CallHandle> Node::place_call(std::optional<NodeRecord> peer
   timer->async_wait([state, executor, deadline](const boost::system::error_code& error) {
     if (error) return;
     state->expired = true;
+    // The deadline is claimed before the cancel, whose own "cancelled"
+    // answer would otherwise race it to the caller.
+    const bool answered = state->finished.exchange(true);
     if (state->handle) state->handle->cancel();
-    if (state->finished.exchange(true)) return;
+    if (answered) return;
     asio::post(executor, [state, deadline] {
       state->done(net::CallOutcome{std::nullopt, "deadline of " + std::to_string(deadline.count()) + " ms passed before an answer", {}});
     });
