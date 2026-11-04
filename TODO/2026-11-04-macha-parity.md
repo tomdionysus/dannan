@@ -191,11 +191,18 @@ on macnessa or inverbeg is too.
   shared failure domains, unequal capacities and nodes without `hosts_extents`,
   with a README naming the commit and host. Dagda pins the same set. Dannan does
   not compile `placement.cpp` itself.
-- **New finding:** both trees score fallbacks in `long double`. That is 64 bits on
-  macOS arm64 and 128 on Linux arm64, so a known answer from the laptop may not
-  hold on a Pi when two scores are very close. The case also runs in the Debian image. If the laptop orders any
-  vector differently, that goes to Tom as a finding: Macha's own placement would
-  then differ between a Mac test run and a Pi.
+- **Checked, 2026-11-04:** Macha's reference set
+  (`../macha/build/macha-fixtures/placement/placement-vectors.json`, macnessa,
+  `5776392`, 113-bit mantissa) was run once against Dannan 0.4.1's `by_capacity`,
+  `rendezvous` and `logical_capacity` from a scratch program, under Macha's salts:
+  2,704 orders and 26 capacities, no differences. Still to do: pin it as a case
+  in `dannan_tests`.
+- **Long double:** both trees score fallbacks in `long double`, whose mantissa
+  differs by platform: 113 bits on Linux arm64, 64 on this laptop (x86_64), 53 on
+  Apple Silicon. Macha's laptop run matched its reference on every entry, so these
+  inputs agree, but that shows these inputs only: very close scores could still
+  order differently between platforms. The Linux file stays the reference, and
+  the case also runs in the Debian image.
 
 ## Records
 
