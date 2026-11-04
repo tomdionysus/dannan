@@ -69,9 +69,10 @@ messages; nothing shared is written twice (Decisions).
 
 The compose bed (`-DDANNAN_BUILD_COMPOSE_TESTS=ON`,
 `./build/dannan_compose_tests`, Docker running) proves level 0 through real
-NATs; it is run by hand. Next for Dannan: identity (step 10: the cluster
-CA, node certificates, CA-signed node revocation, the scope seam
-`contract::ScopeSource`), and whatever the hosted systems find missing.
+NATs; it is run by hand. Identity (step 10) is in code since 0.2.0:
+certificates as wire v2 beside v1, revocation, `dannan-ca`, and the scope
+seam (`TODO/2026-11-04-identity.md`). Next: whatever the hosted systems
+find missing.
 Macha is not touched until Tom says (Tom, 2026-11-04).
 
 Read in this order: this file to the end of Standing rules;

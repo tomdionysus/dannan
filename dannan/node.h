@@ -233,6 +233,9 @@ class Node final : public Context {
   std::optional<identity::KeyCustody> _custody;
   // What this node proves itself with, and the CA's revocations it holds.
   net::Credentials _credentials;
+  // Scope: the source the directory installs; read under the lock.
+  mutable contract::Mutex _scope_mutex;
+  std::shared_ptr<const contract::ScopeSource> _scope DANNAN_GUARDED_BY(_scope_mutex);
   std::optional<identity::RevocationStore> _revocations;
   reach::InboundResolver _inbound;
   membership::Membership _members;

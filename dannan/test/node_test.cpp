@@ -381,6 +381,36 @@ TEST(Node, RefusesACertificateThatIsNotItsOwn) {
   EXPECT_NO_THROW(Node(io.context, mine));
 }
 
+// Scope: without a source only the cluster's nodes may write; the source
+// the directory installs then answers, with its evidence.
+TEST(Node, ChecksScopeThroughTheInstalledSource) {
+  Pair pair;
+  pair.b->start();
+  const auto b = pair.b->context().identity().id();
+  ASSERT_TRUE(eventually([&] { return knows(*pair.a, b); }));
+  auto& identity = pair.a->context().identity();
+  using contract::Principal;
+  EXPECT_TRUE(identity.verify({Principal::Kind::node, identity::to_string(identity.id())}, "lugh/scope").allowed);
+  EXPECT_TRUE(identity.verify({Principal::Kind::node, identity::to_string(b)}, "lugh/scope").allowed);
+  EXPECT_FALSE(identity.verify({Principal::Kind::node, identity::to_string(identity::NodeId::random())}, "x").allowed);
+  const auto refused = identity.verify({Principal::Kind::directory, "alice"}, "lugh/scope");
+  EXPECT_FALSE(refused.allowed);
+  EXPECT_NE(refused.why.find("no scope source"), std::string::npos);
+
+  struct Directory final : contract::ScopeSource {
+    contract::ScopeDecision may_write(const contract::Principal& principal, std::string_view prefix) const override {
+      const bool allowed = principal.id == "alice" && prefix.rfind("macha/alice/", 0) == 0;
+      return {allowed, 42, allowed ? std::string() : "outside alice's scope"};
+    }
+  };
+  identity.install_scope_source(std::make_shared<Directory>());
+  const auto granted = identity.verify({Principal::Kind::directory, "alice"}, "macha/alice/photos");
+  EXPECT_TRUE(granted.allowed);
+  EXPECT_EQ(granted.generation, 42u);
+  EXPECT_FALSE(identity.verify({Principal::Kind::directory, "alice"}, "macha/bob/").allowed);
+  EXPECT_FALSE(identity.verify({Principal::Kind::directory, "mallory"}, "macha/alice/").allowed);
+}
+
 TEST(Node, ReportsItsContextVersion) {
   Pair pair;
   EXPECT_EQ(pair.a->context().version(), context_version);

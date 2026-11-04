@@ -25,6 +25,19 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
 
+## 2026-11-04 -- identity, slice 4: scope; step 10 done
+
+`contract/scope.h`: `Principal` (a node, or a directory principal),
+`ScopeDecision` (allowed, the generation read as evidence, why not), and
+`ScopeSource` (answered from memory, never waiting), declared here as Tom
+settled. `Identity::install_scope_source` (Lugh installs it) and
+`Identity::verify` (every hosted system checks through it; Dagda's
+write-floor replicas among them). Without a source, this node and any node
+of the cluster may write, nobody else (Dagda's default). With slices 1 to
+3, identity (step 10) is in code: certificates, wire v2 beside v1,
+revocation held, gossiped and enforced, dannan-ca, and scope. **Gate:
+`dannan_tests` 396.**
+
 ## 2026-11-04 -- identity, slice 3b: dannan-ca and the operator's flow
 
 - `dannan-ca init|issue|revoke|show`: the CA's key in key custody under its
