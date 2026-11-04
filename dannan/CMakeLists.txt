@@ -42,6 +42,7 @@ add_library(dannan SHARED
   reach/inbound.cpp
   reach/paths.cpp
   reach/upnp.cpp
+  sched/duty_share.cpp
   sched/memory_limit.cpp
   sched/retained_memory.cpp
   sched/work.cpp

@@ -63,7 +63,7 @@ TEST(NodeEvents, CountsPerKindAndWakesAWaiter) {
 
 TEST(NodeEvents, KindsAreBounded) {
   NodeEvents events;
-  for (size_t i = 1; i < NodeEvents::max_kinds; ++i) events.kind("kind " + std::to_string(i));
+  for (size_t i = NodeEvents::dannan_kinds; i < NodeEvents::max_kinds; ++i) events.kind("kind " + std::to_string(i));
   EXPECT_THROW(events.kind("one too many"), std::length_error);
 }
 
