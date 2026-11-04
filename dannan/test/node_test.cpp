@@ -202,6 +202,20 @@ TEST(Node, ACallFreesItsReplySlotAtItsDeadline) {
   release.set_value();
 }
 
+// The node's time source and executor reach the hosted system.
+TEST(Node, TheContextGivesTheTimeSourceAndExecutor) {
+  struct Fixed final : contract::TimeSource {
+    contract::TimePoint now() const noexcept override { return contract::TimePoint(1h); }
+  } fixed;
+  Pair pair([&](NodeConfig& c) { c.time = &fixed; });
+  auto& time = pair.b->context().time();
+  EXPECT_EQ(&time.source(), &fixed);
+  EXPECT_EQ(time.source().now(), contract::TimePoint(1h));
+  std::promise<void> ran;
+  boost::asio::post(time.executor(), [&] { ran.set_value(); });
+  EXPECT_EQ(ran.get_future().wait_for(5s), std::future_status::ready);
+}
+
 // Telemetry's phase follows readiness: recovering until every declared
 // plane is ready.
 TEST(Node, ThePhaseFollowsTheDeclaredPlanes) {

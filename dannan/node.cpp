@@ -285,6 +285,8 @@ class Node::TimeNoun final : public Time {
   explicit TimeNoun(Node& node) : _node(node) {}
   contract::TimePoint now() const override { return _node._config.time->now(); }
   uint64_t unix_ms() const override { return _node._config.wall->unix_ms(); }
+  const contract::TimeSource& source() const override { return *_node._config.time; }
+  asio::any_io_executor executor() const override { return _node._io.get_executor(); }
   void after(std::chrono::milliseconds delay, std::function<void()> fn) override {
     auto timer = std::make_shared<asio::steady_timer>(_node._io, delay);
     timer->async_wait([timer, fn = std::move(fn)](const boost::system::error_code& error) {

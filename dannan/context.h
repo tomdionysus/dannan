@@ -272,12 +272,19 @@ class Faults {
   virtual void raise(std::string reason) = 0;
 };
 
-// The node's injected clocks, and a timer.
+// The node's injected clocks, its executor, and a timer.
 class Time {
  public:
   virtual ~Time() = default;
   virtual contract::TimePoint now() const = 0;
   virtual uint64_t unix_ms() const = 0;
+  // The time source behind now(), for a component that takes one: a test's
+  // stepped source reaches the hosted system through here. Lives as long as
+  // the node.
+  virtual const contract::TimeSource& source() const = 0;
+  // The node's io context's executor, for a hosted system's timers, strands
+  // and completions. Its handlers must not block.
+  virtual boost::asio::any_io_executor executor() const = 0;
   // Posts `fn` to the node's executor after `delay`. Waits on nothing.
   virtual void after(std::chrono::milliseconds delay, std::function<void()> fn) = 0;
 };
