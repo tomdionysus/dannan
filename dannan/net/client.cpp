@@ -696,7 +696,7 @@ void Client::dialled(const std::string& key, const Target& target, Lane lane, st
     session->close("client stopped");
     why = "client stopped";
   }
-  for (auto& loser : retire) loser->retire();
+  retire_sessions(retire);
   if (session && !stopped && _options.established) _options.established(session->peer());
   for (auto& call : waiting) {
     if (route)
@@ -744,9 +744,21 @@ void Client::admit(const std::shared_ptr<Session>& session) {
       }
     }
   }
-  for (auto& loser : retire) loser->retire();
+  retire_sessions(retire);
   if (timer) asio::post(_health_strand, [timer] { timer->cancel(); });
   for (auto& call : waiting) place(route, std::move(call), Target{key.first, {peer.host, peer.port}});
+}
+
+void Client::retire_sessions(Retire& retire) {
+  if (retire.empty()) return;
+  {
+    // Remembered until they close: a retiring session may still hold calls
+    // that stop() must fail.
+    contract::Lock lock(_mutex);
+    std::erase_if(_retiring, [](const std::weak_ptr<Session>& weak) { return weak.expired(); });
+    for (const auto& session : retire) _retiring.push_back(session);
+  }
+  for (auto& loser : retire) loser->retire();
 }
 
 void Client::reconcile_locked(const RouteKey& key, Retire& retire) {
@@ -922,7 +934,7 @@ void Client::install_dialled(const std::shared_ptr<Session>& session) {
       }
     }
   }
-  for (auto& loser : retire) loser->retire();
+  retire_sessions(retire);
   if (_options.established) _options.established(peer);
   if (timer) asio::post(_health_strand, [timer] { timer->cancel(); });
   for (auto& call : waiting) place(route, std::move(call), Target{key.first, {peer.host, peer.port}});
@@ -1208,6 +1220,11 @@ void Client::stop() {
       for (auto& [_, session] : *table) routes.push_back(session);
       table->clear();
     }
+    // And the sessions retired off the route table, which may still hold
+    // calls waiting for an answer.
+    for (const auto& weak : _retiring)
+      if (auto session = weak.lock()) routes.push_back(std::move(session));
+    _retiring.clear();
     dialling.assign(_dialling.begin(), _dialling.end());
     waiting.swap(_dials);
   }
