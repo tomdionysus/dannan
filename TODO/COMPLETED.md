@@ -5,6 +5,19 @@ left green. `ACTIVE.md` is the plan and this is the record.
 
 ## Releases
 
+- **0.3.0** (2026-11-04, `main`, tag `0.3.0`, Tom: "commit, tag, merge"):
+  identity (step 10: X.509 certificates through OpenSSL as wire version 2
+  beside v1, CA-signed revocations gossiped and enforced, `dannan-ca`,
+  node identity options on `dannan-node`, the scope seam), and what the
+  hosted systems asked for: `contract::Unlocked`, a call cancelled at its
+  deadline, `Time::source()` and `Time::executor()`, `sched::DutyShare`,
+  the `membership` event count, `Nodes::absent_since`.
+  `find_package(dannan 0.3 CONFIG)`. Gate `dannan_tests` 408. The first
+  pre-release sanitizer run found a race in the deadline cancel (the
+  cancel's own "RPC cancelled" could reach the caller before the
+  deadline; `Node.ACallEndsAtItsDeadline` failed under ASan and TSan),
+  fixed in `8b65dd1`; the second run clean: ASan/UBSan and TSan, 408 each,
+  no report. Not pushed.
 - **0.2.0** (2026-11-04, `main`, tag `0.2.0`, Tom: "Tag 0.2.0 + install"):
   wire v1 (Dannan's own, from version 1), level 0 (path classes, brokered
   punches, relays, moving up a class, the relay's DATA budget, placement
