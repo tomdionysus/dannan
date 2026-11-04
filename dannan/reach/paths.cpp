@@ -345,7 +345,9 @@ std::pair<uint16_t, net::Endpoint> observe_from(asio::io_context& io, const iden
                                 });
     });
   });
-  if (future.wait_for(timeout + std::chrono::seconds(1)) != std::future_status::ready) throw std::runtime_error("observation did not finish");
+  // The state's own timer answers at `timeout`; the margin covers only its
+  // scheduling, which a loaded or instrumented process can stretch.
+  if (future.wait_for(timeout * 2 + std::chrono::seconds(1)) != std::future_status::ready) throw std::runtime_error("observation did not finish");
   const auto established = future.get();
   if (established.peer.id != expected) throw std::runtime_error("reached node " + to_string(established.peer.id) + ", not " + to_string(expected));
   return {bound, established.observed};
