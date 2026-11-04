@@ -224,7 +224,10 @@ std::vector<Revocation> decode_revocations(std::span<const uint8_t> bytes) {
 }
 
 CertificateAuthority CertificateAuthority::create(const std::string& name, uint64_t now_unix_ms, std::chrono::hours validity) {
-  auto key = SigningKey::generate(SigningAlgorithm::es256);
+  return create(name, now_unix_ms, SigningKey::generate(SigningAlgorithm::es256), validity);
+}
+
+CertificateAuthority CertificateAuthority::create(const std::string& name, uint64_t now_unix_ms, SigningKey key, std::chrono::hours validity) {
   X509Pointer x509(X509_new(), X509_free);
   if (!x509 || X509_set_version(x509.get(), 2) != 1) throw std::runtime_error("cannot make a certificate");
   set_serial(x509.get(), 1);

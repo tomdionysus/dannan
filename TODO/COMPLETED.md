@@ -25,6 +25,25 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
 
+## 2026-11-04 -- identity, slice 3b: dannan-ca and the operator's flow
+
+- `dannan-ca init|issue|revoke|show`: the CA's key in key custody under its
+  directory (systemd credential or passphrase), its certificate `ca.pem`;
+  init prints a new credential root to stdout only; issue prints a node
+  certificate (random 63-bit serial unless given); revoke writes a signed
+  revocation; show reads a certificate or a revocation file.
+- `KeyCustody::create_and_open`: a new credential's root kept in memory to
+  open custody at once (dannan-ca init first staged it in a file, which
+  would have put it on disk in clear; caught before commit).
+- `CertificateAuthority::create` over a given key.
+- `dannan-node --init-custody`, `--show-identity`, `--ca`, `--certificate`,
+  `--no-cluster-key`, `--revocations`, custody by passphrase variable or
+  credential.
+- `TwoProcess.AnOperatorCertifiesTwoNodesThatMeetOnCertificatesAlone`: the
+  whole flow by the binaries: CA made, two nodes certified, meeting on
+  certificates alone with echo on both lanes, a revocation written and
+  shown. **Gate: `dannan_tests` 395.**
+
 ## 2026-11-04 -- identity, slice 3: the node on certificates, and revocation
 
 - `identity::RevocationStore`: the CA's revocations only, each once,
