@@ -128,8 +128,9 @@ first.
 0. Tom, 2026-11-04 (after 0.3.0): the Macha port (steps 3, 6, 8) **not
    yet**; the AthenaSIP port (step 11) **not yet**, until Dagda's heads and
    leases have a tagged release. Meanwhile Dannan serves Dagda, Lugh and
-   Lir. Tom asked to push main, develop and the tags, but this repository
-   has no remote: **the remote's URL** is his to give.
+   Lir. Pushed at Tom's word the same day: `origin` is
+   `git@github.com:tomdionysus/dannan.git`, holding main, develop and the
+   tags 0.1.0, 0.2.0, 0.3.0. Each later push still needs his ask.
 
 1. **The suite counts on fi-1** at `0.91.2`, and at each Macha release
    the port makes, recorded in `COMPLETED.md`. A deploy-day act under
