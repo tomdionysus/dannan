@@ -8,7 +8,7 @@
 # dannan-version: prints the repository version, as the tag and the CMake
 # project version state it.
 add_executable(dannan-version version_main.cpp)
-target_link_libraries(dannan-version PRIVATE dannan dagda dannan_warnings)
+target_link_libraries(dannan-version PRIVATE dannan dannan_warnings)
 
 # dannan-node: a node with nothing above it but an echo, for the
 # two-process test and the compose test bed.
