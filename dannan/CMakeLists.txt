@@ -9,6 +9,8 @@
 # as "dannan/x.h"; everything else is included from the repository root as
 # "dannan/<subsystem>/x.h".
 add_library(dannan SHARED
+  config/config.cpp
+  encoding/percent.cpp
   contract/thread_safety.cpp
   identity/argon2.cpp
   identity/certificate.cpp
@@ -68,12 +70,12 @@ target_include_directories(dannan
 )
 target_link_libraries(dannan
   PUBLIC Boost::headers OpenSSL::SSL OpenSSL::Crypto Threads::Threads
-  PRIVATE dannan_warnings
+  PRIVATE dannan_warnings yaml-cpp::yaml-cpp
 )
 set_target_properties(dannan PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR} EXPORT_NAME dannan)
 add_library(dannan::dannan ALIAS dannan)
 
-# Installed for Dagda, Lugh and Lir: find_package(dannan 0.3 CONFIG), then
+# Installed for Dagda, Lugh and Lir: find_package(dannan 0.4 CONFIG), then
 # link dannan::dannan. Headers keep their tree, so "dannan/<subsystem>/x.h"
 # includes the same installed as in the tree; the test fixtures are shared
 # too, the tests and fuzz targets are not.

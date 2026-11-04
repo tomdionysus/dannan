@@ -182,5 +182,18 @@ TEST(Crypto, SealingUnderAGivenNonceMatchesTheRandomPath) {
   EXPECT_EQ(given.ciphertext, random.ciphertext);
   EXPECT_EQ(aes_gcm_open(key, given.nonce, given.tag, given.ciphertext, associated), plaintext);
 }
+// The public half of a private scalar, RFC 7748 section 6.1's vector; the
+// same as the generated pair's, and as the scalar times the base point.
+TEST(Crypto, X25519PublicFromPrivate) {
+  const auto alice_private = unhex("77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a");
+  ASSERT_TRUE(alice_private && alice_private->size() == 32);
+  const auto alice_public = x25519_public(std::span<const uint8_t, 32>(alice_private->data(), 32));
+  EXPECT_EQ(hex(alice_public), "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a");
+  const auto pair = x25519_generate();
+  EXPECT_EQ(x25519_public(pair.private_key), pair.public_key);
+  std::array<uint8_t, 32> base{9};
+  EXPECT_EQ(x25519_public(pair.private_key), x25519_shared(pair.private_key, base));
+}
+
 }  // namespace
 }  // namespace dannan::identity

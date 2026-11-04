@@ -75,6 +75,9 @@ Bytes aes_gcm_open(std::span<const uint8_t, 32> key, std::span<const uint8_t, 12
 SecureBuffer aes_gcm_open_secure(std::span<const uint8_t, 32> key, std::span<const uint8_t, 12> nonce, std::span<const uint8_t, 16> tag,
                                  std::span<const uint8_t> ciphertext, std::span<const uint8_t> associated = {});
 X25519KeyPair x25519_generate();
+// The public half of an X25519 private key (RFC 7748: the scalar times the
+// base point): for a key derived rather than generated.
+std::array<uint8_t, 32> x25519_public(std::span<const uint8_t, 32> private_key);
 std::array<uint8_t, 32> x25519_shared(std::span<const uint8_t, 32> private_key, std::span<const uint8_t, 32> peer_public_key);
 Bytes random_bytes(size_t count);
 bool constant_time_equal(std::span<const uint8_t>, std::span<const uint8_t>);

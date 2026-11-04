@@ -188,6 +188,15 @@ X25519KeyPair x25519_generate() {
   return out;
 }
 
+std::array<uint8_t, 32> x25519_public(std::span<const uint8_t, 32> private_key) {
+  Key key(EVP_PKEY_new_raw_private_key(EVP_PKEY_X25519, nullptr, private_key.data(), private_key.size()), EVP_PKEY_free);
+  if (!key) throw std::runtime_error("X25519 key import failed");
+  std::array<uint8_t, 32> out{};
+  size_t size = out.size();
+  if (EVP_PKEY_get_raw_public_key(key.get(), out.data(), &size) <= 0 || size != out.size()) throw std::runtime_error("X25519 public key export failed");
+  return out;
+}
+
 std::array<uint8_t, 32> x25519_shared(std::span<const uint8_t, 32> private_key, std::span<const uint8_t, 32> peer_public_key) {
   Key local(EVP_PKEY_new_raw_private_key(EVP_PKEY_X25519, nullptr, private_key.data(), private_key.size()), EVP_PKEY_free);
   Key peer(EVP_PKEY_new_raw_public_key(EVP_PKEY_X25519, nullptr, peer_public_key.data(), peer_public_key.size()), EVP_PKEY_free);
