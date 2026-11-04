@@ -25,6 +25,15 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
 
+## 2026-11-04 -- process facts and timed spans, for Dagda
+
+Asked by Dagda (step 1a moved Macha's sealing onto Dannan and found what it
+lacked): `status/process.*` with `resident_bytes` and
+`physical_memory_bytes` (moved out of telemetry's private code) and
+`set_thread_name` (cut to the platform's limit); supervised threads name
+themselves; `status::ObservedDuration`, a span timed into a histogram of
+microseconds on the injected clock. **Gate: `dannan_tests` 388.**
+
 ## 2026-11-04 -- identity, slice 1: certificates and revocations
 
 `identity/certificate.*` (`TODO/2026-11-04-identity.md`, sections 1 and 3):

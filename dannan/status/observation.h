@@ -119,6 +119,34 @@ class Observations {
   std::atomic<uint64_t> _events_dropped{0};
 };
 
+// Times a span into a histogram of microseconds: from construction to
+// destruction, or to stop(), on the injected clock. For a store's barrier
+// and I/O times and the like. Not thread-safe; one span, one owner.
+class ObservedDuration {
+ public:
+  ObservedDuration(Observations& observations, std::string_view series, const contract::TimeSource* time = &contract::steady_time_source())
+      : _observations(&observations), _series(series), _time(time), _started(time->now()) {}
+  ~ObservedDuration() { stop(); }
+  ObservedDuration(const ObservedDuration&) = delete;
+  ObservedDuration& operator=(const ObservedDuration&) = delete;
+
+  uint64_t elapsed_us() const { return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(_time->now() - _started).count()); }
+  // Records now, once; the destructor then records nothing.
+  void stop() {
+    if (!_observations) return;
+    _observations->record(_series, elapsed_us());
+    _observations = nullptr;
+  }
+  // Records nothing (a span abandoned).
+  void cancel() noexcept { _observations = nullptr; }
+
+ private:
+  Observations* _observations;
+  std::string _series;
+  const contract::TimeSource* _time;
+  contract::TimePoint _started;
+};
+
 // "api " + method + route: under /api/v1/ at most three segments, each kept
 // if 1-32 of [a-z_-] and ":id" otherwise; outside /api/ "web"; methods other
 // than the usual five "OTHER".
