@@ -15,8 +15,8 @@
 #   c1  behind two NATs (router-c2 inside router-c1)   relay only
 #
 # So a1 and d1 meet by a punch, every pair with b1 or c1 through a relay,
-# and everyone reaches the hubs directly. test/compose/scenario.py drives
-# it; run by hand, never in the per-commit gate.
+# and everyone reaches the hubs directly. dannan_compose_tests
+# (compose_test.cpp) drives it; run by hand, never in the per-commit gate.
 
 name: dannan-bed
 
