@@ -29,6 +29,8 @@ option(DANNAN_BUILD_FUZZING "Build each fuzz target as its own binary (libFuzzer
 find_package(Boost 1.87 CONFIG REQUIRED COMPONENTS headers)
 find_package(OpenSSL 3 REQUIRED COMPONENTS Crypto SSL)
 find_package(Threads REQUIRED)
+# The configuration file reader's YAML (dannan/config; Tom, 2026-11-04).
+find_package(yaml-cpp 0.7 CONFIG REQUIRED)
 # Where an install puts things; before any target names its install paths.
 include(GNUInstallDirs)
 

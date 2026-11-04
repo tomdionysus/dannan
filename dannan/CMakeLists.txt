@@ -9,6 +9,7 @@
 # as "dannan/x.h"; everything else is included from the repository root as
 # "dannan/<subsystem>/x.h".
 add_library(dannan SHARED
+  config/config.cpp
   contract/thread_safety.cpp
   identity/argon2.cpp
   identity/certificate.cpp
@@ -68,7 +69,7 @@ target_include_directories(dannan
 )
 target_link_libraries(dannan
   PUBLIC Boost::headers OpenSSL::SSL OpenSSL::Crypto Threads::Threads
-  PRIVATE dannan_warnings
+  PRIVATE dannan_warnings yaml-cpp::yaml-cpp
 )
 set_target_properties(dannan PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR} EXPORT_NAME dannan)
 add_library(dannan::dannan ALIAS dannan)
