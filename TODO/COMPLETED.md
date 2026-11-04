@@ -25,6 +25,22 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `dagda_tests` 1, `dannan_interop_tests` 8; ASan, UBSan and TSan clean.
   Not pushed.
 
+## 2026-11-04 -- a call's deadline cancels it; Time gives source and executor
+
+For Dagda (step 3a works round both today):
+
+- `Routes::call` whose deadline passes is now cancelled through its handle
+  (`Node::place_call`, `dannan/node.cpp`): its reply slot is freed and the
+  peer told, a later reply dropped. The deadline can pass before the client
+  hands back the handle, so the handover and the timer meet on one strand.
+  `Node.ACallFreesItsReplySlotAtItsDeadline` fails without it (the call
+  stayed pending past the deadline) and passes with it (`5f14127`).
+- `Time::source()` and `Time::executor()` on the Context: the node's
+  injected time source and its io context's executor, so a hosted system
+  takes neither beside the Context (`7c1501e`).
+
+Gate `dannan_tests` 399.
+
 ## 2026-11-04 -- contract::Unlocked, and secure memory across fork
 
 For Dagda (`LocalStore` drops its lock around device I/O, as Macha did):
