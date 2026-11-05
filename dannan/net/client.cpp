@@ -1117,10 +1117,10 @@ ClientStats Client::stats() const {
 }
 
 void Client::end_operation() {
-  {
-    contract::Lock lock(_mutex);
-    --_operations;
-  }
+  // Under the lock: stop() may return and this client go the moment the count is seen
+  // at zero, and the condition variable with it.
+  contract::Lock lock(_mutex);
+  --_operations;
   _idle.notify_all();
 }
 
