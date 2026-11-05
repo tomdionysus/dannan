@@ -14,8 +14,10 @@
 
 #include <gtest/gtest.h>
 
+#include <filesystem>
 #include <fstream>
 #include <future>
+#include <regex>
 #include <thread>
 
 #include "dannan/supervise/registry.h"
@@ -238,6 +240,53 @@ TEST(StartupWatch, AFinishedStartupEndsTheWatchWithoutAWord) {
   EXPECT_FALSE(stalled.load());
 }
 
+// A thread escaping its body ends the process: every thread in the library starts
+// under supervision, as Macha's source guard demands of its own tree.
+TEST(SupervisedThreads, EveryThreadIsStartedSupervised) {
+  const std::regex site(R"(std::jthread\(|std::thread\(|_thread\(\[|emplace_back\(\s*\[.*stop_token)");
+  std::vector<std::string> unguarded;
+  size_t sites = 0;
+  for (const auto& entry : std::filesystem::recursive_directory_iterator(DANNAN_SOURCE_DIR)) {
+    const auto path = entry.path().generic_string();
+    if (entry.path().extension() != ".cpp" || path.find("/test/") != std::string::npos || path.find("/fuzz/") != std::string::npos) continue;
+    if (entry.path().filename() == "supervised.cpp") continue;
+    std::ifstream file(entry.path());
+    std::vector<std::string> lines;
+    for (std::string line; std::getline(file, line);) lines.push_back(line);
+    for (size_t i = 0; i < lines.size(); ++i) {
+      // A formatter may break a call after its opening bracket.
+      const auto joined = lines[i] + (i + 1 < lines.size() ? lines[i + 1] : std::string());
+      if (!std::regex_search(joined, site) || std::regex_search(i > 0 ? lines[i - 1] : std::string(), std::regex(R"(emplace_back\($)"))) continue;
+      ++sites;
+      bool guarded = false;
+      for (size_t j = i; j < lines.size() && j < i + 3; ++j)
+        guarded = guarded || lines[j].find("supervised_loop") != std::string::npos || lines[j].find("_threads.") != std::string::npos;
+      if (!guarded) unguarded.push_back(path + ":" + std::to_string(i + 1));
+    }
+  }
+  EXPECT_GE(sites, 11u);
+  for (const auto& where : unguarded) ADD_FAILURE() << "a thread not started supervised: " << where;
+}
+
+// A loop waiting out its backoff stops when asked, and a throw that is no
+// std::exception is recorded too.
+TEST(SupervisedThreads, ALoopInBackoffStopsWhenAsked) {
+  SupervisedThreads threads(1h, 2h);
+  std::stop_source stop;
+  std::atomic<int> runs{0};
+  std::thread loop([&] {
+    threads.loop("gossip", stop.get_token(), [&] {
+      ++runs;
+      throw 7;
+    });
+  });
+  ASSERT_TRUE(eventually([&] { return !threads.statuses().empty() && threads.statuses().front().restarting == 1; }));
+  stop.request_stop();
+  loop.join();
+  EXPECT_EQ(runs.load(), 1);
+  EXPECT_EQ(threads.statuses().front().last_fault_code, "unknown_exception");
+}
+
 // How long a run was is read from the injected time: each run here "takes"
 // longer than the ceiling, so every restart waits only the initial backoff.
 // Doubling instead, twenty faults would wait for hours.
@@ -274,7 +323,7 @@ TEST(SupervisedThreads, RecordAndRestartAsTheirKindSays) {
   threads.once("scan", [] { throw std::runtime_error("bad file"); });
   std::string escalated;
   threads.escalating("fuse-io", [] { throw std::runtime_error("EIO"); }, [&](std::string why) { escalated = why; });
-  EXPECT_EQ(escalated, "EIO");
+  EXPECT_EQ(escalated, "thread 'fuse-io' faulted: EIO");
   std::map<std::string, SupervisedThreadStatus> by_name;
   for (const auto& status : threads.statuses()) by_name[status.name] = status;
   EXPECT_EQ(by_name.at("gossip").faults, 2u);

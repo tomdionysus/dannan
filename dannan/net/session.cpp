@@ -118,6 +118,7 @@ void Session::read_body(size_t size) {
 }
 
 void Session::deliver(Frame frame) {
+  frame.session_closed = _gone;
   if (frame.request_id == 0) {
     const auto type = frame.message.type;
     if (const auto promoted = promotion_of(type)) {
@@ -352,6 +353,7 @@ bool Session::mark_closed(const std::string& why) {
     contract::Lock lock(_mutex);
     if (_closed) return false;
     _closed = true;
+    _gone->store(true);
     pending.swap(_pending);
     // The queue is left to shut(), on the strand: the writer may be sealing
     // a fragment of it outside the lock.

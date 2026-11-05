@@ -75,13 +75,18 @@ void SupervisedThreads::loop(std::string_view name, std::stop_token stop, const 
   }
 }
 
+void supervised_loop(SupervisedThreads* threads, std::string_view name, std::stop_token stop, const std::function<void()>& body) noexcept {
+  static SupervisedThreads unrecorded;
+  (threads ? *threads : unrecorded).loop(name, stop, body);
+}
+
 void SupervisedThreads::once(std::string_view name, const std::function<void()>& body) noexcept { (void)run(name, body); }
 
 void SupervisedThreads::escalating(std::string_view name, const std::function<void()>& body, const std::function<void(std::string)>& escalate) noexcept {
   auto fault = run(name, body);
   if (fault.empty() || !escalate) return;
   try {
-    escalate(std::move(fault));
+    escalate("thread '" + std::string(name) + "' faulted: " + fault);
   } catch (...) {
   }
 }

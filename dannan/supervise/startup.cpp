@@ -13,7 +13,10 @@
 namespace dannan::supervise {
 
 StartupWatch::StartupWatch(const StartupProgress& progress, status::ScopedLogger log, Options options)
-    : _progress(progress), _log(std::move(log)), _options(std::move(options)), _thread([this](std::stop_token stop) { watch(stop); }) {}
+    : _progress(progress),
+      _log(std::move(log)),
+      _options(std::move(options)),
+      _thread([this](std::stop_token stop) { supervised_loop(_options.threads, "startup-watch", stop, [this, stop] { watch(stop); }); }) {}
 
 StartupWatch::~StartupWatch() { finish(); }
 

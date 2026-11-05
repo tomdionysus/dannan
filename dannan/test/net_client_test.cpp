@@ -85,6 +85,8 @@ struct Node {
   std::atomic<bool> ignore_dial_requests{false};
   std::atomic<bool> throw_on_news{false};
   std::atomic<bool> hold_data{false};
+  std::atomic<int> slow_started{0};
+  std::atomic<int> slow_finished{0};
   std::atomic<bool> slow_data{false};
   // Whether the sessions peers open become this client's routes too.
   std::atomic<bool> adopt_inbound{true};
@@ -108,7 +110,9 @@ struct Node {
         io.context, "127.0.0.1", 0, server_options,
         [this](const membership::NodeRecord& peer, FrameType, const Message& request) {
           if (request.type == message::dial_request) return ignore_dial_requests ? Handled::processed() : client->handle_dial_request(peer, request);
+          if (request.type == slow) ++slow_started;
           if (request.type == slow || request.type == hurried || (request.type == put_object && hold_data)) gate.enter_and_wait();
+          if (request.type == slow) ++slow_finished;
           if (request.type == put_object && slow_data) std::this_thread::sleep_for(300ms);
           if (request.type == sluggish_throw && throw_on_news) throw std::runtime_error("the handler broke");
           if (request.type == sluggish) std::this_thread::sleep_for(300ms);
@@ -600,6 +604,30 @@ TEST(Client, ACallsOwnWatchReplacesItsTypesAndItsLanes) {
   });
   EXPECT_TRUE(watched(hurried, {5s, std::nullopt}).reply);
   opener.join();
+}
+
+// Work a closed session left in the queue is not started, as its asker has gone;
+// work already running finishes, and its reply goes nowhere.
+TEST(Server, AClosedSessionsQueuedWorkIsNotStartedAndItsRunningWorkFinishes) {
+  Io io;
+  Node a(io), b(io);
+  ASSERT_TRUE(call(a, b.self).reply);
+  const auto ask = [&] { a.client->call(b.self, slow, Bytes(10, 1), FrameType::control, io.context.get_executor(), [](CallOutcome) {}); };
+  ask();
+  ask();
+  ASSERT_TRUE(b.gate.wait_for_entries(2));  // both control workers
+  ask();
+  ASSERT_TRUE(eventually([&] { return b.server->work_stats().control_pending_bytes >= 10; }));
+  a.client->stop();
+  ASSERT_TRUE(eventually([&] { return b.server->sessions() == 0; }));
+  b.gate.open();
+  ASSERT_TRUE(eventually([&] { return b.server->work_stats().control_pending_bytes == 0 && b.slow_finished == 2; }));
+  std::this_thread::sleep_for(50ms);
+  EXPECT_EQ(b.slow_started.load(), 2);
+  EXPECT_EQ(b.slow_finished.load(), 2);
+  // The server is none the worse.
+  Node c(io);
+  EXPECT_TRUE(call(c, b.self).reply);
 }
 
 // The journal: Macha's lines at Macha's levels, through the node's sink.

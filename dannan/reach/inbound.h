@@ -40,6 +40,9 @@ struct InboundState {
 struct ProbeVerdict {
   bool changed = false;
   std::chrono::milliseconds next_probe{};
+  // Why the answer could not be persisted; it still holds in memory, and a
+  // probe decides again after a restart.
+  std::string persist_error;
 };
 
 // The answer to "can peers connect to me?". A configured value is final.

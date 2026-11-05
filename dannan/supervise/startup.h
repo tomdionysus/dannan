@@ -19,6 +19,7 @@
 
 #include "dannan/contract/time_source.h"
 #include "dannan/status/log.h"
+#include "dannan/supervise/supervised.h"
 
 namespace dannan::supervise {
 
@@ -82,6 +83,8 @@ class StartupWatch {
     std::function<std::string()> describe;
     std::function<void(const std::string& diagnostic)> stalled;
     const contract::TimeSource* time = &contract::steady_time_source();
+    // Where a fault in the watch itself is recorded; none, nowhere readable.
+    SupervisedThreads* threads = nullptr;
   };
 
   StartupWatch(const StartupProgress& progress, status::ScopedLogger log, Options options);

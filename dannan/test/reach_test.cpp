@@ -39,6 +39,19 @@ identity::NodeId id(uint8_t n) {
 
 // A configured value is final; auto starts capable, or from what was
 // persisted, so a restart does not look like a join or a leave.
+// A full disk costs the record, not the answer: Macha warns and carries on.
+TEST(InboundResolution, AnAnswerThatCannotBePersistedStillHolds) {
+  test::TempDir dir;
+  test::SteppedWall wall;
+  std::ofstream(dir.path() / "connectivity") << "a file where the directory goes";
+  InboundResolver resolver(Inbound::automatic, dir.path(), &wall);
+  EXPECT_TRUE(resolver.observe_probe(id(2), false, "refused").persist_error.empty());
+  const auto verdict = resolver.observe_probe(id(2), false, "refused");
+  EXPECT_FALSE(verdict.persist_error.empty());
+  EXPECT_TRUE(verdict.changed);
+  EXPECT_FALSE(resolver.capable());
+}
+
 TEST(InboundResolution, ConfiguredIsFinalAndAutoStartsFromWhatWasPersisted) {
   test::TempDir dir;
   test::SteppedWall wall;

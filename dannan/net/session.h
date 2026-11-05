@@ -197,6 +197,7 @@ class Session : public std::enable_shared_from_this<Session> {
   const std::shared_ptr<const RouteTable> _routes;
   SessionHandlers _handlers;
   const SessionOptions _options;
+  const std::shared_ptr<std::atomic<bool>> _gone = std::make_shared<std::atomic<bool>>(false);
   // Reader state, on the strand.
   FrameOpener _opener;
   MessageAssembler _assembler;
