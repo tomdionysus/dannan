@@ -409,7 +409,10 @@ void simultaneous_open(asio::io_context& io, uint16_t port, const net::Endpoint&
         self->last_error = error == asio::error::operation_aborted ? "timed out" : error.message();
         boost::system::error_code ignored;
         self->tcp.close(ignored);
-        self->again(std::chrono::milliseconds(100));
+        // A refusal is the far end's kernel answering before its own connect has begun:
+        // on a path with nothing to drop the SYN, the two ends meet only if their
+        // attempts overlap, so try again almost at once.
+        self->again(std::chrono::milliseconds(error == asio::error::connection_refused ? 5 : 100));
       });
     }
     void again(std::chrono::milliseconds after) {
