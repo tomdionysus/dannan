@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "dannan/contract/thread_safety.h"
+#include "dannan/sched/class_waits.h"
 #include "dannan/sched/work.h"
 
 namespace dannan::sched {
@@ -147,10 +148,8 @@ class RetainedMemoryLedger {
   uint64_t _peak DANNAN_GUARDED_BY(_mutex) = 0;
   std::map<MemoryOwner, uint64_t> _owner_bytes DANNAN_GUARDED_BY(_mutex);
   std::array<uint64_t, 4> _admissions DANNAN_GUARDED_BY(_mutex){};
-  std::array<uint64_t, 4> _waits DANNAN_GUARDED_BY(_mutex){};
-  std::array<uint64_t, 4> _waiters DANNAN_GUARDED_BY(_mutex){};
+  ClassWaits _classes DANNAN_GUARDED_BY(_mutex);
   uint64_t _shed_requests DANNAN_GUARDED_BY(_mutex) = 0;
-  uint64_t _cancelled_waits DANNAN_GUARDED_BY(_mutex) = 0;
   uint64_t _restored DANNAN_GUARDED_BY(_mutex) = 0;
   bool _stopping DANNAN_GUARDED_BY(_mutex) = false;
 };
