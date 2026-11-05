@@ -508,6 +508,30 @@ TEST(Node, ACorruptPersistedFileIsSaidAndSurvived) {
   EXPECT_EQ(log->count(status::LogLevel::warn, "persisted telemetry ignored: "), 1u);
 }
 
+// Status reads Macha's names for the three loops; ruling B, 2026-11-05.
+TEST(Node, TheLoopsCarryTheirNames) {
+  Pair pair;
+  std::set<std::string> names;
+  EXPECT_TRUE(eventually([&] {
+    names.clear();
+    for (const auto& thread : pair.a->context().threads().statuses()) names.insert(thread.name);
+    return names.contains("cluster-telemetry") && names.contains("cluster-maintenance") && names.contains("cluster-connectivity");
+  }));
+  EXPECT_FALSE(names.contains("node-telemetry"));
+}
+
+// The record reports the transport's counts, not a guess from the peers it knows.
+TEST(Node, TheTelemetryRecordCarriesTheTransportsCounts) {
+  Pair pair;
+  pair.b->start();
+  const auto b = pair.b->context().identity().id();
+  EXPECT_TRUE(eventually([&] {
+    const auto local = pair.b->context().telemetry().local();
+    return local && local->u64(status::field::connections_created) >= 1 && local->u64(status::field::connections_canonical) >= 1;
+  }));
+  (void)b;
+}
+
 // A hosted system that is nothing but a counter: a user type registered
 // through the Context, called across the cluster, its count in Status.
 TEST(Node, ACounterRunsOnIt) {

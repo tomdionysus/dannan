@@ -131,6 +131,10 @@ struct ClientOptions {
 
 struct ClientStats {
   uint64_t dials = 0;
+  // Dials that became sessions, counted once the peer's identity has been checked.
+  uint64_t connections_created = 0;
+  // Routes usable now, whichever end dialled them: a lane to a peer counts once.
+  uint64_t canonical_connections = 0;
   uint64_t dial_failures = 0;
   // Health pings sent, retries included.
   uint64_t pings = 0;

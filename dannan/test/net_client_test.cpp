@@ -981,6 +981,29 @@ TEST(Client, ACallInASimultaneousConnectComesThrough) {
   }
 }
 
+// The transport's own counts, as Status reports them: a dial counts once its peer's
+// identity is checked, and a route is canonical whichever end dialled it.
+TEST(Client, CountsTheConnectionsItMakesReusesAndHolds) {
+  Io io;
+  Node a(io), b(io);
+  ASSERT_TRUE(call(a, b.self).reply);
+  ASSERT_TRUE(call(a, b.self).reply);
+  EXPECT_EQ(a.client->stats().connections_created, 1u);
+  EXPECT_GE(a.client->stats().reused, 1u);
+  EXPECT_EQ(a.client->stats().canonical_connections, 1u);
+  ASSERT_TRUE(call(a, b.self, put_object, FrameType::foreground, Bytes(10, 1)).reply);
+  EXPECT_EQ(a.client->stats().connections_created, 2u);
+  EXPECT_EQ(a.client->stats().canonical_connections, 2u);
+  EXPECT_EQ(b.client->stats().connections_created, 0u);
+  EXPECT_TRUE(eventually([&] { return b.client->stats().canonical_connections == 2; }));
+  // Another node answers where this one was meant: no connection is kept or counted.
+  Node c(io);
+  auto wrong = c.self;
+  wrong.id = identity::NodeId::random();
+  EXPECT_FALSE(call(a, wrong).reply);
+  EXPECT_EQ(a.client->stats().connections_created, 2u);
+}
+
 // The journal: Macha's lines at Macha's levels, through the node's sink.
 TEST(Journal, EachEndLogsItsConnectionAtInfo) {
   Io io;
