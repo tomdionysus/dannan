@@ -156,16 +156,20 @@ class Routes {
   // call whose deadline passes is cancelled: its reply slot is freed and the
   // peer told, and a reply that comes later is dropped. The handle controls
   // the call meanwhile. Waits on nothing.
+  // `watch` names this call's own no-progress deadline and stall notice; a call
+  // with none is unwatched unless its type or the node's settings say otherwise.
   virtual std::shared_ptr<net::CallHandle> call(const membership::NodeRecord& peer, net::MessageType type, net::Bytes payload, sched::FrameType frame,
-                                                std::chrono::milliseconds deadline, boost::asio::any_io_executor executor, Done done) = 0;
+                                                std::chrono::milliseconds deadline, boost::asio::any_io_executor executor, Done done,
+                                                net::CallWatch watch = {}) = 0;
   virtual std::shared_ptr<net::CallHandle> call(const net::Endpoint& endpoint, net::MessageType type, net::Bytes payload, sched::FrameType frame,
-                                                std::chrono::milliseconds deadline, boost::asio::any_io_executor executor, Done done) = 0;
+                                                std::chrono::milliseconds deadline, boost::asio::any_io_executor executor, Done done,
+                                                net::CallWatch watch = {}) = 0;
   // The same call, waited for: the outcome, at the latest when `deadline`
   // passes. Waits on the peer. Never from one of the io context's threads.
   virtual net::CallOutcome call_and_wait(const membership::NodeRecord& peer, net::MessageType type, net::Bytes payload, sched::FrameType frame,
-                                         std::chrono::milliseconds deadline) = 0;
+                                         std::chrono::milliseconds deadline, net::CallWatch watch = {}) = 0;
   virtual net::CallOutcome call_and_wait(const net::Endpoint& endpoint, net::MessageType type, net::Bytes payload, sched::FrameType frame,
-                                         std::chrono::milliseconds deadline) = 0;
+                                         std::chrono::milliseconds deadline, net::CallWatch watch = {}) = 0;
 };
 
 // Channels. Named channels with a delivery contract chosen when opened

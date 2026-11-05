@@ -255,17 +255,17 @@ std::chrono::milliseconds CallHandle::idle_for() const {
 }
 
 std::shared_ptr<CallHandle> Client::call(const membership::NodeRecord& peer, MessageType type, Bytes payload, sched::FrameType frame,
-                                         asio::any_io_executor executor, Done done) {
+                                         asio::any_io_executor executor, Done done, CallWatch watch) {
   note_peer(peer);
   auto handle = std::make_shared<CallHandle>();
-  call(Target{peer.id, {peer.host, peer.port}}, Call{type, std::move(payload), frame, std::move(executor), std::move(done), 0, handle});
+  call(Target{peer.id, {peer.host, peer.port}}, Call{type, std::move(payload), frame, std::move(executor), std::move(done), 0, handle, watch});
   return handle;
 }
 
 std::shared_ptr<CallHandle> Client::call(const Endpoint& endpoint, MessageType type, Bytes payload, sched::FrameType frame, asio::any_io_executor executor,
-                                         Done done) {
+                                         Done done, CallWatch watch) {
   auto handle = std::make_shared<CallHandle>();
-  call(Target{std::nullopt, endpoint}, Call{type, std::move(payload), frame, std::move(executor), std::move(done), 0, handle});
+  call(Target{std::nullopt, endpoint}, Call{type, std::move(payload), frame, std::move(executor), std::move(done), 0, handle, watch});
   return handle;
 }
 
@@ -580,8 +580,14 @@ void Client::place(const std::shared_ptr<Session>& session, Call call, const Tar
   if (call.handle && call.handle->cancelled_before_placement()) return fail(call, "RPC cancelled");
   const auto lane = session->lane();
   const auto* rules = _options.routes->find(call.type);
-  const auto deadline = rules && rules->no_progress ? *rules->no_progress : lane == Lane::data ? _options.data_no_progress : _options.control_no_progress;
-  const auto notice = rules && rules->stall_notice ? *rules->stall_notice : lane == Lane::data ? _options.data_stall_notice : _options.control_stall_notice;
+  const auto deadline = call.watch.no_progress        ? *call.watch.no_progress
+                        : rules && rules->no_progress ? *rules->no_progress
+                        : lane == Lane::data          ? _options.data_no_progress
+                                                      : _options.control_no_progress;
+  const auto notice = call.watch.stall_notice        ? *call.watch.stall_notice
+                      : rules && rules->stall_notice ? *rules->stall_notice
+                      : lane == Lane::data           ? _options.data_stall_notice
+                                                     : _options.control_stall_notice;
   const auto frame = call.frame;
   auto stall = std::make_shared<Stall>();
   auto finished = std::make_shared<std::atomic<bool>>(false);
@@ -1210,6 +1216,10 @@ void Client::attempt(const std::shared_ptr<Probe>& probe) {
   if (stopped || !session || !session->usable()) return end_operation();
   probe->stalled = false;
   probe->sent = _options.time->now();
+  {
+    contract::Lock lock(_mutex);
+    ++_stats.pings;
+  }
   const auto admitted =
       session->call(message::ping, {}, sched::FrameType::control, _health_strand, [this, probe](CallOutcome outcome) { answered(probe, std::move(outcome)); });
   if (!admitted.refused.empty()) {
