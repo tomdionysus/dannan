@@ -639,11 +639,21 @@ and retire; the 3 Macha-visible ones only stall a message type leaving Macha's o
 **The rollback** is not "nothing on disk changed": 0.92.x refuses `DNNMEM01`, so the
 runbook restores the `*.macha` files, losing only what was learned since (F6).
 
-**Needed from the Macha session, in order:** (1) confirm the test mapping; (2) cut the
-config, Status and journal goldens, since steps 5 and 6 gate on them; (3) the real state
-directory after the tree-native merge, for step 7; (4) adopt or amend the hosted-field
-table, message numbers and advert names in the spec; (5) its baselines on the Pis, when
-Tom says.
+**Agreed with the Macha session, 2026-11-05.** The test mapping is confirmed, on
+conditions: a retire takes effect only in the port commit that removes its Macha subject,
+and the mapping file goes into Macha's tree with that commit; G43, G44, G45 and G48 close
+before the port (G48 after ruling C); G41 covers both readiness differences. The hosted
+ids (1024 to 1045), message numbers (512 plus the current number, with 549, 550, 560 and
+636 unregistered), advert names and memory owners (`rpc_frame` 1, Macha's ten from 256)
+are adopted as proposed. `frame_timings` keeps Macha's `read-ahead` spelling at the
+cutover. The three metadata mutation types register `ordered`. Macha's 0.92.4, on its
+`feature/loop-2`, fixes the defects sent to it; the baseline moves when it lands, and
+Dannan then counts connections where Macha now does (`node.cpp:954` copied the old literal
+zeros).
+
+**Still needed from the Macha session, in order:** (1) the config, Status and journal
+goldens, after its loop's deploy, for steps 5 and 6; (2) the real state directory after the
+tree-native merge, for step 7; (3) its baselines on the Pis, when Tom says.
 
 ## Next
 
