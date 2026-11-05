@@ -147,6 +147,8 @@ class Routes {
   // std::logic_error after start or for a core type, std::invalid_argument
   // for a number taken or retired.
   virtual void add(net::MessageType type, net::Registration registration, net::RequestHandler handler = {}) = 0;
+  // Marks a number as no longer used; add() refuses it from then on. Before start.
+  virtual void retire(net::MessageType type) = 0;
   // Binds the handler for a registered type; replaces one bound.
   virtual void bind(net::MessageType type, net::RequestHandler handler) = 0;
   // Unbinds it. Waits for the handler's calls in flight to return.

@@ -280,22 +280,35 @@ std::vector<IdentityReset> Membership::identity_resets() const {
   return out;
 }
 
-std::vector<NodeRecord> Membership::all() const {
-  contract::Lock lock(_mutex);
+std::vector<NodeRecord> Membership::all_locked() const {
   std::vector<NodeRecord> out{_self};
   out[0].seen_unix_ms = _wall->unix_ms();
   for (const auto& [_, known] : _nodes) out.push_back(known.record);
   return out;
 }
 
-std::vector<NodeRecord> Membership::active() const {
-  contract::Lock lock(_mutex);
+std::vector<NodeRecord> Membership::active_locked() const {
   const auto now = _time->now();
   std::vector<NodeRecord> out{_self};
   out[0].seen_unix_ms = _wall->unix_ms();
   for (const auto& [_, known] : _nodes)
     if (now - known.seen <= _dead_after) out.push_back(known.record);
   return out;
+}
+
+std::vector<NodeRecord> Membership::all() const {
+  contract::Lock lock(_mutex);
+  return all_locked();
+}
+
+std::vector<NodeRecord> Membership::active() const {
+  contract::Lock lock(_mutex);
+  return active_locked();
+}
+
+std::pair<std::vector<NodeRecord>, std::vector<NodeRecord>> Membership::all_and_active() const {
+  contract::Lock lock(_mutex);
+  return {all_locked(), active_locked()};
 }
 
 std::optional<contract::TimePoint> Membership::absent_since(const identity::NodeId& id) const {

@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 
 #include "dannan/sched/work.h"
@@ -106,6 +107,9 @@ class RouteTable {
   // first_user_type or one already taken. Not thread-safe: registration
   // happens before the node starts.
   void add(MessageType type, Registration registration);
+  // A number no longer in use, so it is not reused for something else while old
+  // peers may still send it: add() then refuses it. The same limits as add().
+  void retire(MessageType type);
 
   // The registration, or null for a type nobody registered.
   const Registration* find(MessageType type) const noexcept;
@@ -127,6 +131,7 @@ class RouteTable {
   void add_core(MessageType type, Registration registration);
 
   std::map<MessageType, Registration> _types;
+  std::set<MessageType> _retired;
 };
 
 }  // namespace dannan::net

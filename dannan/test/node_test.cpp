@@ -420,6 +420,59 @@ TEST(Node, TrafficAgreesAcrossTwoNodesByClass) {
   EXPECT_EQ(pair.b->diagnostics().traffic.out_bytes[index], 10056u);
 }
 
+// A number given up is not reused, and not re-registered by mistake.
+TEST(Node, ARetiredMessageNumberIsRefused) {
+  test::TempDir dir;
+  Io io;
+  Node node(io.context, config(dir.path() / "a", cluster_key(dir.path())));
+  node.context().routes().retire(net::MessageType{549});
+  EXPECT_THROW(node.context().routes().add(net::MessageType{549}, {"taken", net::Lanes::control, net::Frames::control_only, false}), std::invalid_argument);
+  EXPECT_THROW(node.context().routes().retire(net::MessageType{1}), std::invalid_argument);
+  node.start();
+  EXPECT_THROW(node.context().routes().retire(net::MessageType{550}), std::logic_error);
+  node.stop();
+}
+
+// Over real dial-backs: a node nobody can reach goes incapable once confirmed, keeps
+// that across a restart, and comes back once its address works.
+TEST(Node, AnUnreachableAutomaticNodeGoesIncapableAndPeersStopDialling) {
+  Io io;
+  test::TempDir dir;
+  const auto key = cluster_key(dir.path());
+  auto hub_config = config(dir.path() / "hub", key);
+  hub_config.dial_back_min_interval = 10ms;
+  Node hub(io.context, hub_config);
+  hub.start();
+  const uint16_t site_port = test::free_port();
+  const auto site_settings = [&](const std::string& advertised) {
+    auto out = config(dir.path() / "site", key, {{"127.0.0.1", hub.port()}});
+    out.inbound = reach::Inbound::automatic;
+    out.port = site_port;
+    out.advertise_host = advertised;
+    out.reprobe_while_capable = 100ms;
+    out.reprobe_while_incapable = 100ms;
+    return out;
+  };
+  identity::NodeId site_id;
+  {
+    Node site(io.context, site_settings("192.0.2.1"));
+    site_id = site.context().identity().id();
+    site.start();
+    EXPECT_TRUE(eventually([&] { return !site.context().nodes().inbound_capable(site_id); }, 30s));
+    EXPECT_TRUE(eventually([&] { return !hub.context().nodes().inbound_capable(site_id); }, 30s));
+    site.stop();
+  }
+  {
+    Node site(io.context, site_settings("127.0.0.1"));
+    EXPECT_FALSE(site.context().nodes().inbound_capable(site_id));
+    site.start();
+    EXPECT_TRUE(eventually([&] { return site.context().nodes().inbound_capable(site_id); }, 30s));
+    EXPECT_TRUE(eventually([&] { return hub.context().nodes().inbound_capable(site_id); }, 30s));
+    site.stop();
+  }
+  hub.stop();
+}
+
 // A hosted system that is nothing but a counter: a user type registered
 // through the Context, called across the cluster, its count in Status.
 TEST(Node, ACounterRunsOnIt) {
