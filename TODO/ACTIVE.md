@@ -662,8 +662,8 @@ modified until they're ready."). Macha can still produce artefacts for this plan
   `dannan/test/fixtures/macha/`, with the commit and how each was made, and checks them
   against the cutover spec's 83 lines and 494 keys. A line or key the capture does not
   reach is marked unproven, not dropped.
-- **Step 7's state directory** is there too, young and small, without a tombstone or an
-  absent node. Macha writes only `MACHMEM4`; `MACHMEM1` to `3` have a reader
+- **Step 7's state directory** is there too, young and small; `membership-tombstone/`
+  adds a real identity-reset tombstone and an absent node. Macha writes only `MACHMEM4`; `MACHMEM1` to `3` have a reader
   (`membership.cpp:12-16`) and no encoder, so Dannan builds those samples by hand from the
   reader's layout. A copy from macnessa is better evidence and waits on Tom's word.
 
