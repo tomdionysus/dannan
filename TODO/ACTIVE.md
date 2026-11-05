@@ -150,6 +150,13 @@ Rulings on the first cutover, Tom, 2026-11-05, settled:
   (playback sessions, transcodes, password checks) stay Macha's, and Dannan adds no
   per-principal bound for them. Limits in the layer Dannan owns must each be expressible in
   Dannan, not necessarily in Macha's form (step 8's budget table).
+- **Disk limits are Dagda's; the generics are shared.** Tom, 2026-11-05: Dagda owns disk
+  limits but should use the same work-class generics for them: "common code goes to the
+  lowest level, Dagda depends on Dannan". Dagda already uses `WorkClass` and `WorkContext`.
+  Under discussion with the Macha session: `sched::RetainedMemoryLedger`, Dagda's
+  `DataResourceArbiter` and its `IoReserve` look like one admission mechanism written three
+  times, with different policies. That Dagda is mid-work does not hold this back; Dagda
+  takes direction from this session.
 - **Live nodes.** The Macha session's own loopback runs on macnessa were fine. The hold
   covers Dannan's work, the Pi measurements and the gateway.
 - **The macnessa copy.** Allowed, read-only, without stopping the node: the roster, inbound
