@@ -26,6 +26,7 @@
 #include "dannan/net/channel.h"
 #include "dannan/net/message.h"
 #include "dannan/net/outbound.h"
+#include "dannan/status/log.h"
 
 namespace dannan::net {
 
@@ -96,6 +97,8 @@ struct SessionOptions {
   sched::RetainedMemoryLedger* memory = nullptr;
   std::shared_ptr<TransportTraffic> traffic;
   const contract::TimeSource* time = &contract::steady_time_source();
+  // Where the session says why it failed; none, nowhere.
+  std::shared_ptr<status::LogSink> log;
   size_t max_incomplete_messages = 64;
   size_t max_incomplete_bytes = 256ull * 1024 * 1024;
   size_t max_message_bytes = 128ull * 1024 * 1024;

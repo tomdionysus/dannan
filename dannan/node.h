@@ -84,6 +84,11 @@ struct NodeConfig {
   std::chrono::milliseconds connect_timeout{2500};
   std::chrono::milliseconds control_no_progress{30000};
   std::chrono::milliseconds data_no_progress{0};
+  std::chrono::milliseconds control_stall_notice{5000};
+  std::chrono::milliseconds data_stall_notice{120000};
+  // Refuses a dial by naming why, for tests that fail links; see
+  // net::ClientOptions::dial_hook.
+  std::function<std::string(const net::Endpoint&, net::Lane)> dial_hook;
   std::chrono::milliseconds dial_back_min_interval{10000};
   std::chrono::milliseconds reprobe_while_capable = std::chrono::hours(1);
   std::chrono::milliseconds reprobe_while_incapable = std::chrono::minutes(10);

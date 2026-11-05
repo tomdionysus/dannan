@@ -400,7 +400,8 @@ void simultaneous_open(asio::io_context& io, uint16_t port, const net::Endpoint&
         self->connecting = false;
         self->timer.cancel();
         if (!error) {
-          net::peer_socket_options(self->tcp.native_handle());
+          // The warning, if any, comes from the node's first ordinary socket.
+          net::peer_socket_options(self->tcp.native_handle(), status::ScopedLogger(status::null_sink(), "net"));
           const int family = self->tcp.local_endpoint().protocol().family();
           return self->done(self->tcp.release(), family, "");
         }

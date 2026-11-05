@@ -7,8 +7,10 @@
 
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <string>
 
 #include "dannan/sched/work.h"
@@ -85,6 +87,10 @@ struct Registration {
   // Executed one job per peer at a time, in arrival order, by the server's
   // ordered pool: mutations whose order matters.
   bool ordered = false;
+  // This type's own no-progress deadline and stall notice, in place of its
+  // lane's; zero turns one off. Unset, the lane's apply.
+  std::optional<std::chrono::milliseconds> no_progress = std::nullopt;
+  std::optional<std::chrono::milliseconds> stall_notice = std::nullopt;
 };
 
 // What each type may do on the wire. Built once at start, before any

@@ -429,6 +429,7 @@ void Node::start() {
   server_options.memory = &_memory;
   server_options.traffic = _traffic;
   server_options.time = _config.time;
+  server_options.log = _config.log;
   _server = std::make_unique<net::Server>(
       _io, _config.listen_host, _config.port, server_options,
       [this](const NodeRecord& peer, sched::FrameType frame, const net::Message& request) { return handle(peer, frame, request); },
@@ -449,6 +450,10 @@ void Node::start() {
   client_options.connect_timeout = _config.connect_timeout;
   client_options.control_no_progress = _config.control_no_progress;
   client_options.data_no_progress = _config.data_no_progress;
+  client_options.control_stall_notice = _config.control_stall_notice;
+  client_options.data_stall_notice = _config.data_stall_notice;
+  client_options.log = _config.log;
+  client_options.dial_hook = _config.dial_hook;
   client_options.heartbeat = _config.heartbeat;
   client_options.dead_after = _config.dead_after;
   client_options.alive = [this](const NodeRecord& peer) { observe_direct(peer); };
@@ -996,7 +1001,10 @@ void Node::propagate_identity_reset(const membership::IdentityReset& reset, std:
   for (const auto& peer : _members.active()) {
     if (peer.id == _identity.id) continue;
     const auto outcome = call_wait(peer, {peer.host, peer.port}, net::message::identity_resets, payload, deadline);
-    if (!outcome.reply || outcome.reply->type != net::message::identity_resets_reply) continue;
+    if (!outcome.reply || outcome.reply->type != net::message::identity_resets_reply) {
+      status::ScopedLogger(_config.log, "node").debug("identity reset propagation to " + peer.host + ": " + (outcome.reply ? "refused" : outcome.failure));
+      continue;
+    }
     try {
       for (const auto& learned : membership::decode_identity_resets(outcome.reply->payload)) apply_identity_reset(learned);
     } catch (const net::DecodeError&) {

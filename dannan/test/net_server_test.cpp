@@ -253,7 +253,7 @@ TEST(PeerSocket, KeepsAliveAtSixtySecondsWithoutNagle) {
   auto accepted = acceptor.accept();
   for (auto* socket : {&dialled, &accepted}) {
     const int fd = socket->native_handle();
-    (void)peer_socket_options(fd);
+    (void)peer_socket_options(fd, status::ScopedLogger(status::null_sink(), "net"));
     int value = 0;
     socklen_t length = sizeof(value);
     ASSERT_EQ(::getsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &value, &length), 0);
