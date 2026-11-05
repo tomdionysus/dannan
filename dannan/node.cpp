@@ -592,9 +592,9 @@ void Node::start() {
   _client->start();
 
   contract::Lock loops(_loops_mutex);
-  _loops.emplace_back([this](std::stop_token stop) { _threads.loop("node-membership", stop, [this, stop] { membership_loop(stop); }); });
-  _loops.emplace_back([this](std::stop_token stop) { _threads.loop("node-telemetry", stop, [this, stop] { telemetry_loop(stop); }); });
-  _loops.emplace_back([this](std::stop_token stop) { _threads.loop("node-connectivity", stop, [this, stop] { connectivity_loop(stop); }); });
+  _loops.emplace_back([this](std::stop_token stop) { _threads.loop("cluster-maintenance", stop, [this, stop] { membership_loop(stop); }); });
+  _loops.emplace_back([this](std::stop_token stop) { _threads.loop("cluster-telemetry", stop, [this, stop] { telemetry_loop(stop); }); });
+  _loops.emplace_back([this](std::stop_token stop) { _threads.loop("cluster-connectivity", stop, [this, stop] { connectivity_loop(stop); }); });
 }
 
 void Node::cancel_outbound_calls() {
@@ -927,7 +927,7 @@ void Node::sleep_until(std::stop_token stop, contract::TimePoint due) {
 }
 
 void Node::membership_loop(std::stop_token stop) {
-  status::ThreadCpuReporter cpu("node-membership", std::chrono::seconds(5), status::ScopedLogger(_config.log, "node"));
+  status::ThreadCpuReporter cpu("cluster-maintenance", std::chrono::seconds(5), status::ScopedLogger(_config.log, "node"));
   while (!stop.stop_requested()) {
     cpu.tick();
     if (const auto forgotten = _members.forget_unseen()) {
@@ -974,7 +974,7 @@ void Node::membership_loop(std::stop_token stop) {
 }
 
 void Node::telemetry_loop(std::stop_token stop) {
-  status::ThreadCpuReporter cpu("node-telemetry", std::chrono::seconds(5), status::ScopedLogger(_config.log, "node"));
+  status::ThreadCpuReporter cpu("cluster-telemetry", std::chrono::seconds(5), status::ScopedLogger(_config.log, "node"));
   const auto interval = std::max(_config.telemetry_interval, std::chrono::milliseconds(250));
   // Sampling follows demand; gossip at most once a second.
   const auto gossip_every = std::min(interval, std::chrono::milliseconds(1000));
@@ -993,7 +993,12 @@ void Node::telemetry_loop(std::stop_token stop) {
       figures.phase = _readiness.phase();
       figures.peers_known = _peers_known;
       figures.peers_active = _peers_active;
-      figures.connections_canonical = _peers_active > 0 ? _peers_active - 1 : 0;
+      if (_client) {
+        const auto rpc = _client->stats();
+        figures.connections_created = rpc.connections_created;
+        figures.connections_reused = rpc.reused;
+        figures.connections_canonical = rpc.canonical_connections;
+      }
       figures.node_name = _config.node_name;
       figures.traffic = traffic();
       _telemetry.refresh_local(figures, _config.telemetry_fields);
@@ -1059,7 +1064,7 @@ void Node::connectivity_loop(std::stop_token stop) {
   const bool automatic = _config.inbound == reach::Inbound::automatic;
   auto next = _config.time->now();
   auto next_class = next;
-  status::ThreadCpuReporter cpu("node-connectivity", std::chrono::seconds(5), status::ScopedLogger(_config.log, "node"));
+  status::ThreadCpuReporter cpu("cluster-connectivity", std::chrono::seconds(5), status::ScopedLogger(_config.log, "node"));
   while (!stop.stop_requested()) {
     cpu.tick();
     // At least every heartbeat: the sweep runs on every tick.

@@ -769,6 +769,7 @@ void Client::dialled(const std::string& key, const Target& target, Lane lane, st
   {
     contract::Lock lock(_mutex);
     if (session && !stopped) {
+      ++_stats.connections_created;
       const RouteKey route_key{session->peer().id, lane};
       _endpoint_ids[target.endpoint] = route_key.first;
       _peer_capabilities[route_key.first] = session->peer().capabilities;
@@ -1107,7 +1108,12 @@ bool Client::has_route(const identity::NodeId& peer, Lane lane) const {
 
 ClientStats Client::stats() const {
   contract::Lock lock(_mutex);
-  return _stats;
+  auto out = _stats;
+  out.canonical_connections = 0;
+  for (const auto* routes : {&_outbound, &_inbound})
+    for (const auto& [_, session] : *routes)
+      if (session->usable()) ++out.canonical_connections;
+  return out;
 }
 
 void Client::end_operation() {

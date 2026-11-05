@@ -459,5 +459,19 @@ TEST(Scheduler, ATimingRecordsItsWaitAndHandlerTime) {
   EXPECT_EQ(timing.handler_us_max, 7000u);
 }
 
+// Macha's rule for asking again: 429, 500, 502, 503, 504, and a refusal that names
+// no status. Any other refusal stands.
+TEST(Refusal, ATextOnlyErrorReadsAtStatusZeroAndMayBeAskedAgain) {
+  Writer writer;
+  writer.string("only text");
+  const auto refusal = refusal_of({message::error, writer.take(), {}});
+  ASSERT_TRUE(refusal.has_value());
+  EXPECT_EQ(refusal->status, 0u);
+  EXPECT_EQ(refusal->message, "only text");
+  EXPECT_TRUE(try_later(*refusal));
+  for (const int status : {429, 500, 502, 503, 504}) EXPECT_TRUE(try_later(Refusal{static_cast<uint16_t>(status), {}, {}})) << status;
+  for (const int status : {400, 401, 403, 404, 409, 410, 413, 501, 507}) EXPECT_FALSE(try_later(Refusal{static_cast<uint16_t>(status), {}, {}})) << status;
+}
+
 }  // namespace
 }  // namespace dannan::net
