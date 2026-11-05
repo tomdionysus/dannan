@@ -1,5 +1,7 @@
 # Macha on dannan::Context: the audit
 
+**Baseline moved, 2026-11-05: Macha `develop` at `cac5998`, tag 0.92.4 on `70cf4a4`.** Citations below were read at `00861dd`. In the moving files only `src/cluster/cluster.cpp` (from about `:225`), `cluster.hpp` (from `:122`), `net.cpp` (one line moves at `:2304`, a net shift of one after it) and comments in `src/types.hpp` and `src/config.hpp` changed, so those line numbers are off by a few, not re-cited. Read a copy at `build/scratch/macha-cac5998`.
+
 Status: re-based 2026-11-05 on Macha at `00861dd` (0.92.3), and marked against
 `dannan/context.h` as it now stands on `feature/macha-parity`.
 

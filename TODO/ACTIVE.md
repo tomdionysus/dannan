@@ -37,9 +37,9 @@ current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluat
 Written for a session starting from nothing. **The plan is "The first cutover"
 below, and it replaces the order in "Next".** Tom, 2026-11-05, relayed by the Macha
 session and confirmed in his own words ("Do what the macha server agent says"):
-replan on Macha's code. The source of truth is Macha's `develop` at `00861dd`
-(0.92.3, on both nodes), as it is, not the 2026-11-02 design and not the older
-baselines. Where they differ, Macha's behaviour is the plan and Dannan is reshaped to
+replan on Macha's code. The source of truth is Macha's `develop` at `cac5998` (tag
+0.92.4 on `70cf4a4`; gated on macnessa, not yet deployed, both nodes still run 0.92.3),
+as it is, not the 2026-11-02 design and not the older baselines. Where they differ, Macha's behaviour is the plan and Dannan is reshaped to
 it. A Macha defect found on the way goes to the Macha session and is fixed in Macha
 first. `../macha` is read only from here.
 
@@ -47,8 +47,8 @@ Dannan **0.4.1** is the last release (`main`, tag `0.4.1`, pushed at Tom's word)
 has wire v1 and v2, level 0, channels, the roster feed, the stack's foundations,
 identity, `dannan::config`, percent-encoding and `Readiness::declare`. Work is on
 `feature/macha-parity`, off `develop`, not pushed. Gate: `dannan_tests` 472 on macOS;
-no sanitizer run since 0.4.1. A read-only copy of Macha at `00861dd` is under
-`build/scratch/macha-00861dd` (`git -C ../macha archive`, untracked; recreate it if
+no sanitizer run since 0.4.1. A read-only copy of Macha is under
+`build/scratch/macha-cac5998` (`git -C ../macha archive`, untracked; recreate it if
 gone).
 
 The four documents this plan rests on:
@@ -61,7 +61,7 @@ The four documents this plan rests on:
   the Macha session confirms it.
 - [`2026-11-03-macha-function-inventory.md`](2026-11-03-macha-function-inventory.md) and
   [`2026-11-03-macha-on-context-audit.md`](2026-11-03-macha-on-context-audit.md):
-  re-based on `00861dd`. Of 71 assessed rows, 44 proven, 23 partial, 1 none, 3 Macha's.
+  re-based on `00861dd`, with a note on what `cac5998` moved. Of 71 assessed rows, 44 proven, 23 partial, 1 none, 3 Macha's.
 - [`2026-11-04-macha-parity.md`](2026-11-04-macha-parity.md): the nine-item list, what is
   built, what was disputed.
 
@@ -620,10 +620,10 @@ Each step is a `feature/macha-parity` milestone, gate green, committed and merge
 | 3. Transport proofs | The end-to-end cases Dannan lacks, including the 32 MiB overtake, and forged handshakes. Fix what they find. G23 is known to be open: `place()` reroutes where Macha may wait for the peer. | G1-G10, G14, G15, G17, G20-G23, G25-G27 | `test_rpc_cluster`'s transport cases |
 | 4. Membership proofs | Resets, fences, forgetting, the empty-domain fallback's home. | F19, F20, G24, G28-G33 | `test_absent_nodes`, `test_rpc_cluster`'s membership cases |
 | 5. The journal | The 44 lines still missing: subsystems, connectivity, thread faults, inbound, endpoint, reset, forgot, exchange failures. The supervisor takes a sink. Ruling C. | F13, G44, G48 | the journal golden, Macha's to cut |
-| 6. Telemetry and Status | The hosted-field case and table (parity 7); `canonical_connections`; `connections_created` counted where Macha counts it; truncated records; refusal rows. Ruling B. | F14, F15, G46, G47 | the Status golden, Macha's to cut |
+| 6. Telemetry and Status | The hosted-field case and table (parity 7); real connection counts as 0.92.4 reports them: `ClientStats` gains created (counted after the identity check), Macha's reused sites and canonical (`net.cpp:2236-2439`, `:3003-3010`), and `node.cpp:969`'s peers-less-one and the zeros go; truncated records; refusal rows. Ruling B. | F14, F15, G46, G47 | the Status golden, Macha's to cut |
 | 7. The importer | `dannan-import-macha`: `MACHMEM1` to `4`, `MACHINB1`, `MACHTEL3`, both lock files, keeps `*.macha` for rollback. | F6, F17 | the real state directory, after Macha's tree-native merge |
 | 8. Foundations proofs | Quota boundary, reassembly reserve, retry backstop, durable contents, every-mask tables, `Published`, Observation rows. | G34-G40 | `test_foundations`, `test_contract`, `test_observation` |
-| 9. Measured gate | `dannan_bench`: 32 MiB on DATA, CONTROL round trips under load, MB/s, RSS, over the path ruling A leaves; compose-bed run. Recorded, never asserted. The laptop's numbers are not comparable to the Pis'. | parity 6 | Macha's baselines at 0.92.3, when Tom says |
+| 9. Measured gate | `dannan_bench`: 32 MiB on DATA, CONTROL round trips under load, MB/s, RSS, over the path ruling A leaves; compose-bed run. Recorded, never asserted. The laptop's numbers are not comparable to the Pis'. | parity 6 | Macha's baselines at whichever release is then deployed, when Tom says |
 | 10. Linux | ASan, UBSan and TSan on arm64 Debian 13 in Docker; the BBR path; whether Boost 1.83 suffices. | parity 8, G1 | the Pis' OS and architecture; no Macha case |
 | 11. Release | A tag at Tom's word, with its sanitizer runs. The port pins it. | | Macha's mapped cases green on it |
 
@@ -648,10 +648,8 @@ before the port (G48 after ruling C); G41 covers both readiness differences. The
 ids (1024 to 1045), message numbers (512 plus the current number, with 549, 550, 560 and
 636 unregistered), advert names and memory owners (`rpc_frame` 1, Macha's ten from 256)
 are adopted as proposed. `frame_timings` keeps Macha's `read-ahead` spelling at the
-cutover. The three metadata mutation types register `ordered`. Macha's 0.92.4, on its
-`feature/loop-2`, fixes the defects sent to it; the baseline moves when it lands, and
-Dannan then counts connections where Macha now does (`node.cpp:954` copied the old literal
-zeros).
+cutover. The three metadata mutation types register `ordered`. Macha's 0.92.4 fixes the defects sent to it, and is the baseline. The
+facade raises the remote metadata generation by compare-and-swap, as 0.92.4 does.
 
 **Still needed from the Macha session, in order:** (1) the config, Status and journal
 goldens, after its loop's deploy, for steps 5 and 6; (2) the real state directory after the

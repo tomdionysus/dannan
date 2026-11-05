@@ -1,5 +1,7 @@
 # What Macha does that Dannan and Dagda must do, and Macha must still do
 
+**Baseline moved, 2026-11-05: Macha `develop` at `cac5998`, tag 0.92.4 on `70cf4a4`.** Citations below were read at `00861dd`. In the moving files only `src/cluster/cluster.cpp` (from about `:225`), `cluster.hpp` (from `:122`), `net.cpp` (one line moves at `:2304`, a net shift of one after it) and comments in `src/types.hpp` and `src/config.hpp` changed, so those line numbers are off by a few, not re-cited. Read a copy at `build/scratch/macha-cac5998`.
+
 Status: inventory, re-based 2026-11-05 on a read of Macha at `00861dd`
 (0.92.3, the baseline; the first read was at `6c7ec64`, 0.91.2), against
 Dannan's tree on `feature/macha-parity`. Macha's code is the source of truth:

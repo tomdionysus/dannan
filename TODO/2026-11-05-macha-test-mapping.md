@@ -1,6 +1,10 @@
 # Macha test mapping for the first cutover
 
+**Baseline moved, 2026-11-05: Macha `develop` at `cac5998`, tag 0.92.4 on `70cf4a4`.** Citations below were read at `00861dd`. In the moving files only `src/cluster/cluster.cpp` (from about `:225`), `cluster.hpp` (from `:122`), `net.cpp` (one line moves at `:2304`, a net shift of one after it) and comments in `src/types.hpp` and `src/config.hpp` changed, so those line numbers are off by a few, not re-cited. Read a copy at `build/scratch/macha-cac5998`.
+
 Status: written 2026-11-05 for the Macha session to confirm. Nothing is ported or built. Macha at `00861dd` (the read-only copy at `build/scratch/macha-00861dd`), Dannan at `feature/macha-parity` `4742cb4`. It answers section 6 item 5 of `../macha/TODO/2026-11-04-dannan-dagda-port-evaluation.md`, under Tom's ruling: a Macha case whose subject becomes Dannan's may be retired against a named `dannan_tests` case, case by case; everything Macha-visible is rewritten over the new fixtures.
+
+**What 0.92.4 changes here:** no case moves fate. `test_rpc_call_fails_after_no_progress_deadline` changed only in where it asserts, and `test_every_subsystem_thread_is_run_supervised` only widens its pattern, as Dannan's guard already does.
 
 ## How to read it
 
