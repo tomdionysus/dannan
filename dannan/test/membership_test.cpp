@@ -20,6 +20,43 @@
 #include "dannan/test/fixtures/stepped_time.h"
 #include "dannan/test/fixtures/temp_dir.h"
 
+#if defined(__linux__)
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+#include <condition_variable>
+#include <future>
+#include <mutex>
+#include <thread>
+
+// Macha's fsync hold: this binary's fsync, which durable files call, can be held until
+// told, so a case can look at what a write in progress blocks. Linux only, as in Macha:
+// a symbol here preempts the C library's only where the dynamic linker looks here first.
+namespace {
+struct FsyncHold {
+  std::mutex mutex;
+  std::condition_variable changed;
+  bool armed = false;
+  bool holding = false;
+} fsync_hold;
+}  // namespace
+
+extern "C" int fsync(int fd) {
+  {
+    std::unique_lock lock(fsync_hold.mutex);
+    if (fsync_hold.armed) {
+      fsync_hold.holding = true;
+      fsync_hold.changed.notify_all();
+      fsync_hold.changed.wait(lock, [] { return !fsync_hold.armed; });
+      fsync_hold.holding = false;
+    }
+  }
+  return static_cast<int>(::syscall(SYS_fsync, fd));
+}
+#endif
+
 namespace dannan::membership {
 namespace {
 
@@ -553,6 +590,37 @@ TEST(SequencedFile, AnOlderWriteIsSkipped) {
   file.write(3, "newest");
   EXPECT_EQ(contents(), "newest");
 }
+
+#if defined(__linux__)
+// A roster held at its fsync holds no reader of the roster.
+TEST(Membership, ARosterWriteHoldsNoReader) {
+  test::TempDir dir;
+  auto members = Membership(node(1, "10.0.0.1"), 30s, dir.path() / "membership" / "known-nodes.bin");
+  auto peer = node(2, "10.0.0.2");
+  peer.seen_unix_ms = contract::system_wall_clock().unix_ms();
+  {
+    std::lock_guard lock(fsync_hold.mutex);
+    fsync_hold.armed = true;
+  }
+  std::thread writer([&] { members.observe(peer, true); });
+  bool held = false;
+  {
+    std::unique_lock lock(fsync_hold.mutex);
+    held = fsync_hold.changed.wait_for(lock, 10s, [] { return fsync_hold.holding; });
+  }
+  EXPECT_TRUE(held);
+  auto reader = std::async(std::launch::async, [&] { return members.all().size(); });
+  const bool answered = reader.wait_for(5s) == std::future_status::ready;
+  {
+    std::lock_guard lock(fsync_hold.mutex);
+    fsync_hold.armed = false;
+  }
+  fsync_hold.changed.notify_all();
+  writer.join();
+  EXPECT_TRUE(answered);
+  EXPECT_EQ(reader.get(), 2u);
+}
+#endif
 
 }  // namespace
 }  // namespace dannan::membership

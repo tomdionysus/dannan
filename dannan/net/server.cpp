@@ -59,9 +59,13 @@ struct Server::Handshaking {
   asio::steady_timer timer;
   Endpoint remote;
 
+  // The family is read before the descriptor is released: arguments of one call have no
+  // order, and g++ evaluates these right to left.
   Handshaking(asio::io_context& io, asio::ip::tcp::socket& tcp, Endpoint from)
+      : Handshaking(io, tcp, std::move(from), tcp.local_endpoint().protocol().family()) {}
+  Handshaking(asio::io_context& io, asio::ip::tcp::socket& tcp, Endpoint from, int family)
       : strand(asio::make_strand(io.get_executor())),
-        socket(strand, Session::Socket::protocol_type(tcp.local_endpoint().protocol().family(), SOCK_STREAM), tcp.release()),
+        socket(strand, Session::Socket::protocol_type(family, SOCK_STREAM), tcp.release()),
         timer(strand),
         remote(std::move(from)) {}
 

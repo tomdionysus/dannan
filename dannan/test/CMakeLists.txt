@@ -80,6 +80,9 @@ foreach(kind running writes_on_stop declining faulting faulting_after_start mism
 endforeach()
 target_compile_definitions(dannan_tests PRIVATE DANNAN_TEST_PLUGIN_DIR="${DANNAN_TEST_PLUGIN_DIR}" DANNAN_TEST_FIXTURES="${PROJECT_SOURCE_DIR}/dannan/test/fixtures" DANNAN_SOURCE_DIR="${PROJECT_SOURCE_DIR}/dannan")
 
+# Its fsync, on Linux, is the one the library calls (membership_test.cpp).
+set_target_properties(dannan_tests PROPERTIES ENABLE_EXPORTS ON)
+
 # The two-process test runs dannan-node as a child.
 target_compile_definitions(dannan_tests PRIVATE DANNAN_NODE_BINARY="$<TARGET_FILE:dannan-node>" DANNAN_CA_BINARY="$<TARGET_FILE:dannan-ca>")
 add_dependencies(dannan_tests dannan-node dannan-ca)
