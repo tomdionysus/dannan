@@ -22,6 +22,7 @@
 #include <thread>
 
 #include "dannan/test/fixtures/gate.h"
+#include "dannan/test/fixtures/ports.h"
 #include "dannan/test/fixtures/recording_sink.h"
 #include "dannan/test/fixtures/stepped_time.h"
 #include "dannan/test/fixtures/temp_dir.h"
@@ -363,6 +364,60 @@ TEST(Node, ThreadsAreRecordedInDiagnostics) {
     for (const auto& thread : pair.a->context().threads().statuses()) names.insert(thread.name);
     return names.contains("net-rpc-control-worker") && names.contains("net-rpc-metadata-worker") && names.contains("reach-path-worker");
   }));
+}
+
+// Each node names the other as its seed: they settle on one session a lane and stop
+// dialling.
+TEST(Node, MutualSeedsSettleOnOneSessionAndStopDialling) {
+  Io io;
+  test::TempDir dir;
+  const auto key = cluster_key(dir.path());
+  const uint16_t first_port = test::free_port();
+  const uint16_t second_port = test::free_port();
+  auto a_config = config(dir.path() / "a", key, {{"127.0.0.1", second_port}});
+  a_config.port = first_port;
+  auto b_config = config(dir.path() / "b", key, {{"127.0.0.1", first_port}});
+  b_config.port = second_port;
+  Node a(io.context, a_config), b(io.context, b_config);
+  a.start();
+  b.start();
+  const auto a_id = a.context().identity().id();
+  const auto b_id = b.context().identity().id();
+  ASSERT_TRUE(eventually([&] { return knows(a, b_id) && knows(b, a_id); }));
+  ASSERT_TRUE(eventually([&] { return a.diagnostics().work.sessions == 1 || b.diagnostics().work.sessions == 1; }));
+  // Quiet: several heartbeats pass, and neither dials again.
+  std::this_thread::sleep_for(300ms);
+  const auto a_dials = a.diagnostics().client.dials;
+  const auto b_dials = b.diagnostics().client.dials;
+  std::this_thread::sleep_for(1s);
+  EXPECT_EQ(a.diagnostics().client.dials, a_dials);
+  EXPECT_EQ(b.diagnostics().client.dials, b_dials);
+  EXPECT_LE(a.diagnostics().work.sessions + b.diagnostics().work.sessions, 2u);
+  b.stop();
+  a.stop();
+}
+
+// What one node says it sent is what the other says it received, class by class.
+TEST(Node, TrafficAgreesAcrossTwoNodesByClass) {
+  constexpr net::MessageType echo{1302};
+  Pair pair({}, [&](Node& a) {
+    a.context().routes().add(
+        echo, {"echo", net::Lanes::both, net::Frames::any, false},
+        [](const membership::NodeRecord&, sched::FrameType, const net::Message&) { return net::Handled::processed({net::message::ok, {}, {}}); });
+  });
+  pair.b->start();
+  ASSERT_TRUE(eventually([&] { return knows(*pair.b, pair.a->context().identity().id()); }));
+  const net::Endpoint at{"127.0.0.1", pair.a->port()};
+  const auto outcome = pair.b->context().routes().call_and_wait(at, echo, net::Bytes(10000, 1), sched::FrameType::foreground, 10s);
+  ASSERT_TRUE(outcome.reply) << outcome.failure;
+  const auto index = static_cast<size_t>(sched::FrameType::foreground);
+  // One request of 10,000 bytes and its overhead, and an empty reply.
+  EXPECT_TRUE(eventually([&] {
+    const auto sent = pair.b->diagnostics().traffic;
+    const auto got = pair.a->diagnostics().traffic;
+    return sent.out_bytes[index] == got.in_bytes[index] && sent.in_bytes[index] == got.out_bytes[index];
+  }));
+  EXPECT_EQ(pair.b->diagnostics().traffic.out_bytes[index], 10056u);
 }
 
 // A hosted system that is nothing but a counter: a user type registered

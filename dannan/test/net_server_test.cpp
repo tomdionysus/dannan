@@ -20,6 +20,8 @@
 #include <boost/asio/connect.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/write.hpp>
+#include <array>
 #include <fstream>
 #include <future>
 #include <thread>
@@ -267,6 +269,60 @@ TEST(PeerSocket, KeepsAliveAtSixtySecondsWithoutNagle) {
 #endif
     EXPECT_EQ(value, 60);
   }
+}
+
+// A hello whose whole range lies above ours is closed without a word: nothing tells
+// a stranger what we speak.
+TEST(Server, ClosesAHelloOfAnotherVersionUnanswered) {
+  Io io;
+  const auto key = key_from("cluster");
+  Server server(io.context, "127.0.0.1", 0, options(key), [](const membership::NodeRecord&, FrameType, const Message&) { return Handled::processed(); });
+  server.start();
+  ClientHandshake hello(key, record("127.0.0.1"), 65536, Lane::control);
+  auto blob = hello.hello_blob();
+  // The blob's length, the hello's length, then its version range.
+  blob[8] = 0;
+  blob[9] = 9;
+  blob[10] = 0;
+  blob[11] = 9;
+  asio::ip::tcp::socket tcp(io.context);
+  tcp.connect({asio::ip::address_v4::loopback(), server.bound_port()});
+  asio::write(tcp, asio::buffer(blob));
+  std::array<uint8_t, 16> answer{};
+  boost::system::error_code error;
+  const auto got = tcp.read_some(asio::buffer(answer), error);
+  EXPECT_EQ(got, 0u);
+  EXPECT_TRUE(error);
+  EXPECT_EQ(server.sessions(), 0u);
+  server.stop();
+}
+
+// Where this process may choose the congestion control, both ends carry bbr and the
+// call says so. Only Linux has the choice: elsewhere there is nothing to assert.
+TEST(PeerSocket, ChoosesBbrWhereOffered) {
+#ifdef TCP_CONGESTION
+  asio::io_context io;
+  asio::ip::tcp::acceptor acceptor(io, {asio::ip::address_v4::loopback(), 0});
+  asio::ip::tcp::socket dialled(io);
+  dialled.connect(acceptor.local_endpoint());
+  auto accepted = acceptor.accept();
+  const int plain = ::socket(AF_INET, SOCK_STREAM, 0);
+  ASSERT_GE(plain, 0);
+  static constexpr char bbr[] = "bbr";
+  const bool offered = ::setsockopt(plain, IPPROTO_TCP, TCP_CONGESTION, bbr, sizeof(bbr) - 1) == 0;
+  ::close(plain);
+  const status::ScopedLogger quiet(status::null_sink(), "net");
+  for (auto* socket : {&dialled, &accepted}) {
+    EXPECT_EQ(peer_socket_options(socket->native_handle(), quiet), offered);
+    if (!offered) continue;
+    char chosen[16] = {};
+    socklen_t length = sizeof(chosen);
+    ASSERT_EQ(::getsockopt(socket->native_handle(), IPPROTO_TCP, TCP_CONGESTION, chosen, &length), 0);
+    EXPECT_STREQ(chosen, "bbr");
+  }
+#else
+  GTEST_SKIP() << "no choice of congestion control here";
+#endif
 }
 
 }  // namespace
