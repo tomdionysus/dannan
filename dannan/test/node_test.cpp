@@ -971,8 +971,9 @@ TEST(Node, AdvertsReachPeersAndSteerPlacement) {
   ASSERT_TRUE(eventually([&] { return knows(*pair.a, b) && knows(*pair.b, a); }));
   const auto topology = pair.b->context().events().count(status::NodeEvents::topology);
   // Membership moved when A joined, and an advert does not move it.
+  // Known a moment before the event: wait for it.
+  ASSERT_TRUE(eventually([&] { return pair.b->context().events().count(status::NodeEvents::membership) > 0; }));
   const auto members = pair.b->context().events().count(status::NodeEvents::membership);
-  EXPECT_GT(members, 0u);
   pair.a->context().nodes().advertise("capacity", membership::u64_advert(4096));
   const auto advertised = [&] {
     for (const auto& node : pair.b->context().nodes().active())
