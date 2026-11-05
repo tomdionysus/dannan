@@ -631,9 +631,9 @@ Each step is a `feature/macha-parity` milestone, gate green, committed and merge
 |---|---|---|---|
 | 1. Call semantics, **done** (460) | No-progress deadline and stall notice per call, off unless asked, as Macha applies them only to synchronous `call`. `net::CallWatch` on `Routes::call` and `call_and_wait`; `NodeConfig`'s four settings now default to off, which also ends the old 30 s; the node's own exchanges get `exchange_budget`, 30 s. Ruling A keeps the required deadline, so nothing more here. | F1, F2, F16, G11-G13, G18, G19 | `test_rpc_cluster`'s no-progress and liveness cases |
 | 2. Lifecycle and readiness, **done** (472) | `Readiness::hold_until_marked` and `mark_complete`; first failure kept. A job on a closed session skips its handler. A failed inbound persist no longer restarts the loop. Escalation names the thread. Every thread supervised, with a guard test. `request_stop`; the layout check before the lock. | F5, F9, F12, G16, G41-G43, G45 | `test_every_subsystem_thread_is_run_supervised`, startup cases in `test_service_root` |
-| 3. Transport proofs, **done** (495) | The end-to-end cases Dannan lacks, including the 32 MiB overtake, and forged handshakes. They found no behaviour to change. On G23, `place()` reroutes where Macha waits; the call still comes through, repeated over ten rounds, and may dial again where Macha would not. `ChoosesBbrWhereOffered` runs only on Linux (step 10). | G1-G10, G14, G15, G17, G20-G23, G25-G27 | `test_rpc_cluster`'s transport cases |
+| 3. Transport proofs, **done but for G23** (495) | The end-to-end cases Dannan lacks, including the 32 MiB overtake, and forged handshakes. They found no behaviour to change, except G23: `place()` reroutes and may dial again where Macha waits for the peer. Tom: match Macha, so that changes next. `ChoosesBbrWhereOffered` runs only on Linux (step 10). | G1-G10, G14, G15, G17, G20-G23, G25-G27 | `test_rpc_cluster`'s transport cases |
 | 4. Membership proofs, **done but for G33** (503) | Resets, fences, forgetting, real dial-backs, retired numbers (`Routes::retire`), one-reading snapshot. No membership behaviour changed. G33 needs an fsync hold, Linux only as in Macha, so it moves to step 10. The empty-domain fallback is the facade's (F3). | F19, F20, G24, G28-G33 | `test_absent_nodes`, `test_rpc_cluster`'s membership cases |
-| 4a. The goldens, **taken** | The Macha session's config, Status, route and journal captures at `cac5998`, in `dannan/test/fixtures/macha/`. Reached: at most 381 of 494 Status keys, 31 of 83 journal lines; the rest stay unproven. | the goldens the port gates on | none; the port compares against these |
+| 4a. The goldens, **taken** | The Macha session's config, Status, route and journal captures at `cac5998`, in `build/macha-fixtures/`, local only. Reached: at most 381 of 494 Status keys, 31 of 83 journal lines; the rest stay unproven. | the goldens the port gates on | none; the port compares against these |
 | 5. The journal | The 44 lines still missing: subsystems, connectivity, thread faults, inbound, endpoint, reset, forgot, exchange failures. The supervisor takes a sink. Ruling C: a thread CPU reporter, per pool. | F13, G44, G48 | the journal golden, step 4a |
 | 6. Telemetry and Status | The hosted-field case and table (parity 7); real connection counts as 0.92.4 reports them: `ClientStats` gains created (counted after the identity check), Macha's reused sites and canonical (`net.cpp:2236-2439`, `:3003-3010`), and `node.cpp:969`'s peers-less-one and the zeros go; truncated records; refusal rows. Ruling B: rename the three loops. | F14, F15, G46, G47 | the Status golden, step 4a |
 | 7. The importer | `dannan-import-macha`: `MACHMEM1` to `4`, `MACHINB1`, `MACHTEL3`, both lock files, keeps `*.macha` for rollback. | F6, F17 | the state directory, step 4a |
@@ -672,8 +672,9 @@ modified until they're ready."). Macha can still produce artefacts for this plan
 
 - **Step 4a: the goldens are the Macha session's to cut**, under
   `../macha/build/macha-fixtures/`, because it has the working build, the two-node
-  fixture and the masking knowledge. Dannan takes them into
-  `dannan/test/fixtures/macha/`, with the commit and how each was made, and checks them
+  fixture and the masking knowledge. Dannan keeps a local copy in
+  `build/macha-fixtures/`, out of the repository at Tom's word (they hold macnessa's host
+  paths), and checks them
   against the cutover spec's 83 lines and 494 keys. A line or key the capture does not
   reach is marked unproven, not dropped.
 - **Step 7's state directory** is there too, young and small; `membership-tombstone/`
@@ -714,7 +715,7 @@ Dannan's `DutyShare`, where "paced, never stopped" lives), maintenance's byte cr
 per-walk `Budget`, `DiskServiceMonitor`. If it cannot express these, it does not ship, and
 that is reported rather than bent.
 
-**Open:** whether step 3 starts now. The real IGD run stays held.
+**Pace, Tom, 2026-11-05:** run through steps 5 to 10 without asking, stopping before step 11's release. The real IGD run happens before the cutover, at his word when these steps are done. Dagda hears about the class admission generic now and rebuilds its two once it exists at step 8.
 
 ## Next
 
