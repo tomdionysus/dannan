@@ -140,6 +140,122 @@ TEST(Node, ADialHookInTheConfigRefusesADial) {
   EXPECT_FALSE(knows(*pair.b, pair.a->context().identity().id()));
 }
 
+// The memory limit, as Macha's configuration has it: every part shrinks by the
+// same fraction, the hosted system's included, and one warning is logged.
+TEST(Node, TheMemoryLimitShrinksEveryPartAndWarnsOnce) {
+  test::TempDir dir;
+  Io io;
+  auto log = std::make_shared<test::RecordingSink>();
+  auto settings = config(dir.path() / "a", cluster_key(dir.path()));
+  settings.log = log;
+  settings.memory_limit_bytes = 400ull << 20;
+  settings.memory_bytes = 600ull << 20;
+  settings.control_reserve_bytes = 60ull << 20;
+  settings.foreground_reserve_bytes = 60ull << 20;
+  settings.loader_reserve_bytes = 60ull << 20;
+  settings.reassembly_reserve_bytes = 60ull << 20;
+  std::vector<sched::MemoryPart> hosted{{"cache", 200ull << 20}};
+  fit_memory_limit(settings, hosted);
+  EXPECT_EQ(hosted[0].bytes, 100ull << 20);
+  EXPECT_EQ(settings.memory_bytes, 300ull << 20);
+  EXPECT_EQ(settings.control_reserve_bytes, 30ull << 20);
+  Node node(io.context, settings);
+  EXPECT_EQ(log->count(status::LogLevel::warn, "MEMORY OVER LIMIT: the configured parts total 800M, over runtime.memory_bytes 400M"), 1u);
+  EXPECT_EQ(log->count(status::LogLevel::warn, "cache 200M to 100M"), 1u);
+}
+
+TEST(Node, ANodeWithNoHostedPartsFitsItselfAndUnderTheLimitNothingShrinks) {
+  test::TempDir dir;
+  Io io;
+  auto log = std::make_shared<test::RecordingSink>();
+  auto settings = config(dir.path() / "a", cluster_key(dir.path()));
+  settings.log = log;
+  settings.memory_limit_bytes = 1ull << 40;
+  {
+    Node roomy(io.context, settings);
+  }
+  EXPECT_EQ(log->count(status::LogLevel::warn, "MEMORY OVER LIMIT"), 0u);
+  settings.memory_limit_bytes = 100ull << 20;
+  settings.state_path = dir.path() / "b";
+  Node tight(io.context, settings);
+  EXPECT_EQ(log->count(status::LogLevel::warn, "MEMORY OVER LIMIT"), 1u);
+}
+
+// The node's one wait guard, reached through the Context, logs through its sink.
+TEST(Node, TheWaitGuardIsTheNodesOwn) {
+  auto log = std::make_shared<test::RecordingSink>();
+  test::TempDir dir;
+  Io io;
+  auto settings = config(dir.path() / "a", cluster_key(dir.path()));
+  settings.log = log;
+  Node node(io.context, settings);
+  const sched::WorkContext context(sched::FrameType::control, {}, nullptr, "a test", sched::Waits::none);
+  EXPECT_FALSE(node.context().wait_guard().enter(context, sched::Waits::network, "a blocking thing"));
+  EXPECT_EQ(node.context().wait_guard().violations(), 1u);
+  EXPECT_EQ(log->count(status::LogLevel::warn, "a blocking thing"), 1u);
+}
+
+TEST(Node, ObservationsAreWrittenFromTheStart) {
+  test::TempDir dir;
+  Io io;
+  auto settings = config(dir.path() / "a", cluster_key(dir.path()));
+  settings.observation_interval = 10ms;
+  settings.observation_gauges = [] { return std::map<std::string, uint64_t>{{"parked", 7}}; };
+  Node node(io.context, settings);
+  node.start();
+  const auto path = dir.path() / "a" / "observation" / "observations.jsonl";
+  const auto contents = [&] {
+    std::ifstream in(path);
+    return std::string(std::istreambuf_iterator<char>(in), {});
+  };
+  EXPECT_TRUE(eventually([&] {
+    const auto text = contents();
+    return text.find("0.1.0-test") != std::string::npos && text.find("parked") != std::string::npos;
+  })) << contents();
+  node.stop();
+}
+
+TEST(Node, ObservationsCanBeTurnedOff) {
+  test::TempDir dir;
+  Io io;
+  auto settings = config(dir.path() / "a", cluster_key(dir.path()));
+  settings.observation_interval = 0ms;
+  Node node(io.context, settings);
+  node.start();
+  node.stop();
+  EXPECT_FALSE(std::filesystem::exists(dir.path() / "a" / "observation" / "observations.jsonl"));
+}
+
+// A forced refresh runs now, on the node's loop rather than the caller's thread,
+// and answers on the caller's executor; a node not running answers empty.
+TEST(Node, APublicConnectivityRefreshRunsWhenAskedAndAnswersOnTheExecutor) {
+  test::TempDir dir;
+  Io io;
+  std::atomic<int> probes{0};
+  auto settings = config(dir.path() / "a", cluster_key(dir.path()));
+  settings.heartbeat = 1h;
+  settings.connectivity.check.enabled = false;
+  settings.self_probe = [&](const net::Endpoint&, std::chrono::milliseconds, std::string&) {
+    ++probes;
+    return true;
+  };
+  Node node(io.context, settings);
+  const auto ask = [&] {
+    std::promise<std::optional<reach::PublicConnectivityStatus>> answer;
+    auto future = answer.get_future();
+    node.context().nodes().refresh_public_connectivity(true, true, io.context.get_executor(), [&](auto status) { answer.set_value(std::move(status)); });
+    EXPECT_EQ(future.wait_for(10s), std::future_status::ready);
+    return future.get();
+  };
+  EXPECT_FALSE(ask().has_value());
+  node.start();
+  const auto asked = probes.load();
+  EXPECT_TRUE(ask().has_value());
+  EXPECT_GT(probes.load(), asked);
+  node.stop();
+  EXPECT_FALSE(ask().has_value());
+}
+
 // A hosted system that is nothing but a counter: a user type registered
 // through the Context, called across the cluster, its count in Status.
 TEST(Node, ACounterRunsOnIt) {

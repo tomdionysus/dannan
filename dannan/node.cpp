@@ -84,6 +84,10 @@ class Node::NodesNoun final : public Nodes {
   }
   std::vector<membership::IdentityReset> identity_resets() const override { return _node._members.identity_resets(); }
   bool apply_identity_reset(const membership::IdentityReset& reset) override { return _node.apply_identity_reset(reset); }
+  void refresh_public_connectivity(bool probe, bool force_probe, asio::any_io_executor executor,
+                                   std::function<void(std::optional<reach::PublicConnectivityStatus>)> done) override {
+    _node.refresh_public_connectivity(probe, force_probe, std::move(executor), std::move(done));
+  }
   void propagate_identity_reset(const membership::IdentityReset& reset, std::chrono::milliseconds deadline) override {
     _node.propagate_identity_reset(reset, deadline);
   }
@@ -342,11 +346,44 @@ Diagnostics Node::diagnostics() const {
   return out;
 }
 
+void fit_memory_limit(NodeConfig& config, std::vector<sched::MemoryPart>& hosted) {
+  config.memory_fitted = true;
+  if (!config.memory_limit_bytes) return;
+  sched::MemoryPlan plan;
+  plan.parts = hosted;
+  plan.parts.push_back({"runtime.retained_memory_bytes", config.memory_bytes});
+  plan.reserves = {{"control", config.control_reserve_bytes},
+                   {"foreground", config.foreground_reserve_bytes},
+                   {"loader", config.loader_reserve_bytes},
+                   {"reassembly", config.reassembly_reserve_bytes}};
+  config.memory_warning = sched::fit_to_limit(config.memory_limit_bytes, plan);
+  for (size_t i = 0; i < hosted.size(); ++i) hosted[i].bytes = plan.parts[i].bytes;
+  config.memory_bytes = plan.parts.back().bytes;
+  config.control_reserve_bytes = plan.reserves[0].bytes;
+  config.foreground_reserve_bytes = plan.reserves[1].bytes;
+  config.loader_reserve_bytes = plan.reserves[2].bytes;
+  config.reassembly_reserve_bytes = plan.reserves[3].bytes;
+}
+
+namespace {
+
+// Before any member is built from it.
+NodeConfig prepared(NodeConfig config) {
+  if (!config.log) config.log = std::make_shared<status::ConsoleSink>();
+  if (!config.memory_fitted) {
+    std::vector<sched::MemoryPart> none;
+    fit_memory_limit(config, none);
+  }
+  return config;
+}
+
+}  // namespace
+
 // --- The node ---------------------------------------------------------------
 
 Node::Node(asio::io_context& io, NodeConfig config)
     : _io(io),
-      _config(std::move(config)),
+      _config(prepared(std::move(config))),
       _lock(_config.state_path),
       _identity(_config.state_path, _config.key),
       _custody(_config.custody ? std::optional<identity::KeyCustody>(identity::KeyCustody::open(_config.state_path, *_config.custody)) : std::nullopt),
@@ -357,6 +394,7 @@ Node::Node(asio::io_context& io, NodeConfig config)
       _readiness(_config.planes, _config.wall),
       _activity(_config.time),
       _threads(std::chrono::seconds(1), std::chrono::seconds(60), _config.wall, _config.time),
+      _wait_guard(status::ScopedLogger(_config.log, "wait")),
       _memory(_config.memory_bytes, _config.control_reserve_bytes, _config.foreground_reserve_bytes, _config.loader_reserve_bytes,
               _config.reassembly_reserve_bytes),
       _nodes(std::make_unique<NodesNoun>(*this)),
@@ -367,7 +405,7 @@ Node::Node(asio::io_context& io, NodeConfig config)
       _faults(std::make_unique<FaultsNoun>(*this)),
       _time(std::make_unique<TimeNoun>(*this)),
       _telemetry_noun(std::make_unique<TelemetryNoun>(*this)) {
-  if (!_config.log) _config.log = std::make_shared<status::ConsoleSink>();
+  if (_config.memory_warning) status::ScopedLogger(_config.log, "node").warn(*_config.memory_warning);
   // How this node proves itself: a certificate (version 2), the cluster key
   // (version 1), or both while a cluster moves.
   if (_config.certificate) {
@@ -418,6 +456,15 @@ void Node::start() {
   // A cluster nobody could connect to is refused before anything listens.
   reach::refuse_impossible_cluster(_config.inbound, _config.bootstrap, _members.all(), _identity.id);
   if (_started.exchange(true)) return;
+  // Before everything else, so a startup that never finishes still leaves its
+  // windows behind.
+  if (_config.observation_interval.count() > 0) {
+    _observation_recorder = std::make_unique<status::ObservationRecorder>(
+        _observations, std::make_shared<status::ObservationLog>(_config.state_path / "observation" / "observations.jsonl", _config.observation_max_bytes),
+        _config.version, _config.observation_interval, _config.observation_gauges, _config.wall);
+    _observations.event({_config.wall->unix_ms(), "start", {}, {{"version", _config.version}}});
+    _observation_recorder->start();
+  }
   _frozen = std::make_shared<const net::RouteTable>(_table);
 
   net::ServerOptions server_options;
@@ -522,6 +569,10 @@ void Node::start() {
       std::make_unique<reach::PublicConnectivity>(_config.connectivity, _identity.id, net::Endpoint{_members.self().host, _bound_port}, _config.gateway,
                                                   _config.external_ip ? _config.external_ip : reach::ExternalIpLookup(reach::checkip_external_ip),
                                                   _config.self_probe ? _config.self_probe : reach::SelfProbe(reach::tcp_self_probe), _config.wall);
+  {
+    contract::Lock lock(_refresh_mutex);
+    _refreshes_open = true;
+  }
   _readiness.close_declarations();
   _readiness.control_plane(true);
   _client->start();
@@ -547,9 +598,51 @@ void Node::stop() {
   for (auto& loop : _loops)
     if (loop.joinable()) loop.join();
   _loops.clear();
+  std::deque<ConnectivityRefresh> unserved;
+  {
+    contract::Lock lock(_refresh_mutex);
+    _refreshes_open = false;
+    unserved.swap(_refreshes);
+  }
+  for (auto& refresh : unserved) asio::post(refresh.executor, [done = std::move(refresh.done)] { done(std::nullopt); });
   _readiness.control_plane(false);
   // Last: the mapping this node made.
   _connectivity.reset();
+  _observation_recorder.reset();
+}
+
+void Node::refresh_public_connectivity(bool probe, bool force_probe, asio::any_io_executor executor,
+                                       std::function<void(std::optional<reach::PublicConnectivityStatus>)> done) {
+  {
+    contract::Lock lock(_refresh_mutex);
+    if (_refreshes_open) {
+      _refreshes.push_back({probe, force_probe, std::move(executor), std::move(done)});
+      _wake.notify_all();
+      return;
+    }
+  }
+  asio::post(executor, [done = std::move(done)] { done(std::nullopt); });
+}
+
+void Node::advertise(const reach::PublicConnectivityStatus& status) {
+  const auto before = _members.self();
+  if (!status.advertised.host.empty() && status.advertised.port && (status.advertised.host != before.host || status.advertised.port != before.port))
+    _members.set_endpoint(status.advertised.host, status.advertised.port);
+}
+
+void Node::serve_refreshes() {
+  while (true) {
+    ConnectivityRefresh refresh;
+    {
+      contract::Lock lock(_refresh_mutex);
+      if (_refreshes.empty()) return;
+      refresh = std::move(_refreshes.front());
+      _refreshes.pop_front();
+    }
+    auto status = _connectivity->refresh(refresh.probe, refresh.force_probe);
+    advertise(status);
+    asio::post(refresh.executor, [done = std::move(refresh.done), status = std::move(status)] { done(status); });
+  }
 }
 
 std::optional<reach::PublicConnectivityStatus> Node::connectivity() const {
@@ -915,18 +1008,26 @@ std::chrono::milliseconds Node::classify() {
 }
 
 void Node::connectivity_loop(std::stop_token stop) {
-  const auto before = _members.self();
-  const auto status = _connectivity->refresh(_config.connectivity.check.enabled);
-  if (!status.advertised.host.empty() && status.advertised.port && (status.advertised.host != before.host || status.advertised.port != before.port))
-    _members.set_endpoint(status.advertised.host, status.advertised.port);
+  advertise(_connectivity->refresh(_config.connectivity.check.enabled));
   const bool automatic = _config.inbound == reach::Inbound::automatic;
   auto next = _config.time->now();
   auto next_class = next;
   while (!stop.stop_requested()) {
     // At least every heartbeat: the sweep runs on every tick.
     const auto tick = _config.time->now() + _config.heartbeat;
-    sleep_until(stop, std::min(automatic ? std::min(next, next_class) : next_class, tick));
+    {
+      // Unlike sleep_until, a refresh someone asked for ends this wait.
+      const auto due = std::min(automatic ? std::min(next, next_class) : next_class, tick);
+      std::unique_lock lock(_wait_mutex);
+      const auto now = _config.time->now();
+      if (due > now)
+        _wake.wait_for(lock, stop, due - now, [this] {
+          contract::Lock refreshes(_refresh_mutex);
+          return !_refreshes.empty();
+        });
+    }
     if (stop.stop_requested()) return;
+    serve_refreshes();
     // Level 0: this node's path class and candidates, and the circuits
     // through it that have lost an end.
     if (_config.time->now() >= next_class) next_class = _config.time->now() + classify();

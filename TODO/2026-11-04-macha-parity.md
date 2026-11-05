@@ -52,79 +52,67 @@ tests use bytes from Macha's own encoders (`membership.cpp:18,124`,
 
 ## 2. Journal lines
 
-**Confirmed, with a correction.** The only line in `dannan/` is `WaitGuard`'s
-(`sched/work.cpp:60`); `reach/upnp.cpp` writes none either. The BBR result is
-discarded at `net/server.cpp:35-37`.
-
-**Will do:** the node's sink goes to the client, server and session. Levels are
-Macha's, from `src/cluster/net.cpp`, and most are debug:
+**Built.** The transport writes through the node's sink. Levels and wording are
+Macha's, from `src/cluster/net.cpp`:
 
 | Line | Level | Macha |
 |---|---|---|
 | BBR unavailable, once per process | warn | `:87` |
 | Connection outbound, inbound | info | `:2368`, `:4298` |
-| Dial failure, liveness failure | debug | `:2607`, `:2900` |
-| Stall notice | debug | `:2536` |
+| Probe accepted | debug | `:4241` |
+| Dial failure, liveness failure | debug | `:2607`, `:2774`, `:2900` |
+| Dial request sent, answered | debug | `:2693`, `:2703` |
+| Stall notice, repeating each period | debug | `:2536` |
 | No-progress cancel | debug | `:2532` |
-| Session and writer errors | debug | `:1632`, `:1711`, `:4386` |
-| Session reaping and stop steps | debug | `:3173`, `:4073`-`:4156` |
+| Session, handshake and handler errors | debug | `:1711`, `:4386`, `:4433` |
+| Stop steps and session reaping | debug | `:3173`, `:4073`-`:4156` |
 | Identity-reset propagation failure | debug | `cluster.cpp:1031` |
 
-The stall notice also needs what Dannan lacks: a `stall_notice` option beside
-the no-progress deadlines, per lane and per route.
+Stall notices default to Macha's 5 s on CONTROL and 120 s on DATA in `NodeConfig`.
+Cases: `Journal.*`, `Node.TheTransportWritesThroughTheNodesSink`. The BBR warning's
+path only runs on Linux, so only its wording is tested here; the Debian run (item 8)
+exercises it.
 
-**Dispute, small:** the management identity-reset lines (`api/manage_api.cpp:676`,
-`:682`, `:917`) are Macha's API and stay in Macha. Dannan logs only what its own
-membership and propagation do.
+The management identity-reset lines (`api/manage_api.cpp:676`, `:682`, `:917`) are
+Macha's API and stay in Macha.
 
 ## 3. Components not wired in
 
-**Confirmed:** `fit_to_limit`, `WaitGuard`, `ObservationRecorder` and
-`StartupStallGate` have no caller in the node; `dial_hook` stops at
-`ClientOptions`; send and admit seams do not exist (Macha: `net.hpp:398-422`).
+**Built:**
 
-**Will do:**
-
-- `dial_hook` on `NodeConfig`. Send and admit seams only if the port's case
-  mapping finds a Macha-visible behaviour that needs them.
-- `WaitGuard` created by the node and reached through the Context.
-- `ObservationRecorder` owned by the node, started first, writing
-  `observation/observations.jsonl` (64 MiB, one minute), with hosted gauges
-  through a callback. Macha's path, size and window.
-
-**Dispute, on where two of these sit:**
-
-- **Memory limit.** Macha fits it in `config_base.cpp:26-57`, before anything is
-  built, over parts Dannan cannot see (metadata cache, ledger cache). So the Node
-  calling `fit_to_limit` alone cannot reproduce it. Instead `NodeConfig` gains
-  `memory_limit_bytes` and a function a hosted system calls before constructing
-  anything: it takes the hosted parts, shrinks them and Dannan's own, and returns
-  the sizes and the one warning. The Node logs the warning, and calls it itself
-  when a system names no parts.
-- **Startup exit.** Macha's is in `service/service.cpp:465-509`, over the hosted
-  services' own progress, not in `NodeRuntime`. Dannan will give a
-  `supervise::StartupWatch`: it polls the gate on the injected time source, logs
-  Macha's line, then calls a handler, with `std::_Exit(1)` as the default as in
-  Macha. The hosted system starts it, as Macha's service does. The Node's own
-  start feeds it progress. Nothing in the library exits unless a system asks for
-  the watch.
+- `NodeConfig::dial_hook`. Send and admit seams only if the port's case mapping
+  finds a Macha-visible behaviour that needs them (Tom's ruling).
+- `Context::wait_guard()`: the node's one guard.
+- `status::ObservationRecorder` owned by the node, started first, writing
+  `observation/observations.jsonl` (64 MiB, one minute, a `start` event), hosted
+  gauges through `NodeConfig::observation_gauges`; a zero interval turns it off.
+- `fit_memory_limit(NodeConfig&, hosted parts)`: a hosted system calls it before
+  building anything sized from its parts, as Macha's `config_base.cpp:26-57` runs
+  before anything is built. A node with no hosted parts calls it for itself. The
+  node logs the warning. The reserve is named `foreground` where Macha says
+  `viewer`.
+- `supervise::StartupWatch`: polls the gate on the injected time, logs Macha's line
+  at error, then `std::_Exit(1)` or the handler a test gives. The hosted system
+  starts it, as Macha's `service/service.cpp:465-509` does, over its own
+  `StartupProgress`; the node never starts one itself.
 
 ## 4. Context gaps
 
-**Confirmed, all three.**
+**Built:**
 
-**Will do:**
+- `Nodes::refresh_public_connectivity(probe, force_probe, executor, done)`. The
+  connectivity loop serves it, since a refresh waits on the network, and the answer
+  is posted to the caller's executor; empty when the node is not running.
+- A type's `Registration` may name its own `no_progress` and `stall_notice`,
+  defaulting to its lane's. Macha's `no_progress_deadline_for` is keyed by type but
+  has two values, so this reproduces it.
 
-- `Nodes::refresh_public_connectivity(probe, force_probe)`, asynchronous, posted
-  to the caller's executor, serialised with the node's loop.
-- Per-plane progress in `Readiness`: a counter and a detail text beside each
-  plane's boolean, kept in the snapshot.
-- A route may name its own no-progress deadline and stall notice, defaulting to
-  its lane's.
-
-**Note, not a dispute:** Macha's `no_progress_deadline_for` (`cluster.cpp`) is
-keyed by type but has two values: four object types take the DATA deadline and
-everything else the CONTROL one. So the per-route option reproduces it exactly.
+**Disputed, not built: per-plane progress.** Macha's `RecoveryProgress`
+(`src/cluster/local_state.hpp:36-90`) holds plane flags (`mark`, `has`), `complete`,
+`failed`, the first `error`, `ready_unix_ms` and `wait_complete`, and
+`cluster.cpp:314-318` reads only those flags. `status::Readiness` has all of it, by
+name. There is no per-plane progress in Macha to reproduce. The ticking counter is
+`startup_progress()`, which is Dannan's `StartupProgress`.
 
 ## 5. Injected time
 
