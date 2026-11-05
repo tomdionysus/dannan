@@ -22,6 +22,7 @@
 
 #include "dannan/net/scheduler.h"
 #include "dannan/test/fixtures/gate.h"
+#include "dannan/test/fixtures/stepped_time.h"
 
 namespace dannan::net {
 namespace {
@@ -388,6 +389,74 @@ TEST(Scheduler, AThrowIsCountedAsAFailure) {
   EXPECT_EQ(refusal_of(broken.get())->status, 500);
   for (int spin = 0; spin < 200 && scheduler.stats().message_timings.empty(); ++spin) std::this_thread::sleep_for(5ms);
   EXPECT_EQ(scheduler.stats().message_timings.at(have_object).failed, 1u);
+}
+
+// Held ordered work delays no other class.
+TEST(Scheduler, HeldOrderedWorkDelaysNoOtherClass) {
+  test::Gate gate;
+  RequestScheduler scheduler(routes(), {}, [&](const membership::NodeRecord&, FrameType, const Message& request) {
+    if (request.type == put_commit) gate.enter_and_wait();
+    return Handled::processed({message::ok, {}, {}});
+  });
+  auto held = ask(scheduler, peer(1), 1, put_commit, FrameType::control);
+  ASSERT_TRUE(gate.wait_for_entries(1));
+  auto ping = ask(scheduler, peer(1), 2, message::ping, FrameType::control);
+  auto have = ask(scheduler, peer(1), 3, have_object, FrameType::control);
+  auto get = ask(scheduler, peer(1), 4, get_object, FrameType::foreground);
+  EXPECT_TRUE(answered_within(ping, 5s));
+  EXPECT_TRUE(answered_within(have, 5s));
+  EXPECT_TRUE(answered_within(get, 5s));
+  gate.open();
+  EXPECT_TRUE(answered_within(held, 5s));
+}
+
+// One peer's control mutation is not queued behind that peer's own background
+// mutations: Macha's order, 1, 5, 2, 3, 4.
+TEST(Scheduler, AControlMutationOvertakesItsOwnPeersBackgroundWork) {
+  test::Gate gate;
+  std::mutex mutex;
+  std::vector<uint8_t> order;
+  RequestScheduler scheduler(routes(), {}, [&](const membership::NodeRecord&, FrameType, const Message& request) {
+    {
+      std::lock_guard lock(mutex);
+      order.push_back(request.payload.at(0));
+    }
+    if (request.payload.at(0) == 1) gate.enter_and_wait();
+    return Handled::processed({message::ok, {}, {}});
+  });
+  std::vector<std::future<Message>> answers;
+  answers.push_back(ask(scheduler, peer(1), 1, put_commit, FrameType::loader, {1}));
+  ASSERT_TRUE(gate.wait_for_entries(1));
+  for (uint8_t n = 2; n <= 4; ++n) answers.push_back(ask(scheduler, peer(1), n, put_commit, FrameType::loader, {n}));
+  answers.push_back(ask(scheduler, peer(1), 5, put_commit, FrameType::control, {5}));
+  gate.open();
+  for (auto& answer : answers) EXPECT_TRUE(answered_within(answer, 5s));
+  std::lock_guard lock(mutex);
+  EXPECT_EQ(order, (std::vector<uint8_t>{1, 5, 2, 3, 4}));
+}
+
+TEST(Scheduler, ATimingRecordsItsWaitAndHandlerTime) {
+  test::SteppedTime time;
+  test::Gate gate;
+  RequestScheduler scheduler(
+      routes(), {},
+      [&](const membership::NodeRecord&, FrameType, const Message&) {
+        time.advance(7ms);
+        return Handled::processed({message::ok, {}, {}});
+      },
+      nullptr, &time);
+  auto answer = ask(scheduler, peer(1), 1, have_object, FrameType::control);
+  ASSERT_TRUE(answered_within(answer, 5s));
+  ASSERT_TRUE([&] {
+    for (int i = 0; i < 1000; ++i) {
+      if (scheduler.stats().message_timings.contains(have_object)) return true;
+      std::this_thread::sleep_for(5ms);
+    }
+    return false;
+  }());
+  const auto timing = scheduler.stats().message_timings.at(have_object);
+  EXPECT_EQ(timing.handler_us_total, 7000u);
+  EXPECT_EQ(timing.handler_us_max, 7000u);
 }
 
 }  // namespace

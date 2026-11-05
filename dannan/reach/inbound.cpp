@@ -95,7 +95,11 @@ ProbeVerdict InboundResolver::observe_probe(const identity::NodeId& peer, bool r
     if (verdict.changed) _state.decided_unix_ms = _wall->unix_ms();
     after = _state;
   }
-  persist(after);
+  try {
+    persist(after);
+  } catch (const std::exception& error) {
+    verdict.persist_error = error.what();
+  }
   return verdict;
 }
 

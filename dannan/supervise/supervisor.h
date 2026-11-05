@@ -15,6 +15,7 @@
 
 #include "dannan/sched/retry.h"
 #include "dannan/supervise/subsystem.h"
+#include "dannan/supervise/supervised.h"
 
 namespace dannan::supervise {
 
@@ -28,6 +29,8 @@ struct SubsystemStatus {
 using SubsystemFactory = std::function<std::unique_ptr<Subsystem>(const SubsystemContext&)>;
 
 struct SupervisorOptions {
+  // Where the lifecycle threads' faults are recorded; none, nowhere readable.
+  SupervisedThreads* threads = nullptr;
   // Where plugins (.so, .dylib) are found; a missing directory loads none.
   std::filesystem::path plugin_dir;
   // The hosted system's names: the entry symbol its plugins export, and the

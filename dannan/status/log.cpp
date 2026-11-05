@@ -118,6 +118,16 @@ LogFormat parse_log_format(std::string_view value) {
   throw std::invalid_argument("invalid log format: " + std::string(value) + " (expected text or json)");
 }
 
+std::shared_ptr<LogSink> null_sink() {
+  class Null final : public LogSink {
+   public:
+    bool enabled(LogLevel) const noexcept override { return false; }
+    void write(LogLevel, std::string_view, std::string_view) override {}
+  };
+  static const auto sink = std::make_shared<Null>();
+  return sink;
+}
+
 std::shared_ptr<LogSink> console_sink(LogFormat format, LogLevel level) {
   if (format == LogFormat::json) return std::make_shared<JsonSink>(level);
   return std::make_shared<ConsoleSink>(level);

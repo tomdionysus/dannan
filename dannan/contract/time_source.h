@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 
@@ -26,12 +27,21 @@ class TimeSource {
 
   // Monotonic, non-decreasing; an atomic read. Waits on nothing; thread-safe.
   virtual TimePoint now() const noexcept = 0;
+
+  // How long a timer should sleep with `remaining` left in this source's time
+  // before looking again. A source that does not follow the real clock cannot
+  // say when its time will pass, so the waiter looks often; the real clock's
+  // answer is exact, so production keeps one timer per wait.
+  virtual std::chrono::milliseconds wake_within(std::chrono::milliseconds remaining) const noexcept {
+    return std::min(remaining, std::chrono::milliseconds(5));
+  }
 };
 
 // The process's steady clock. Stateless.
 class SteadyTimeSource final : public TimeSource {
  public:
   TimePoint now() const noexcept override { return Clock::now(); }
+  std::chrono::milliseconds wake_within(std::chrono::milliseconds remaining) const noexcept override { return remaining; }
 };
 
 // One stateless instance serves every component for the life of the process.

@@ -48,19 +48,35 @@ struct Watchdog : std::enable_shared_from_this<Watchdog> {
   std::shared_ptr<Stall> stall;
   std::shared_ptr<std::atomic<bool>> finished;
   std::string why;
+  std::chrono::milliseconds notice;
+  std::chrono::milliseconds next_notice;
+  status::ScopedLogger log;
+  std::string described;  // the call, as the journal names it
+  const contract::TimeSource* time;
+  contract::TimePoint placed;
 
   Watchdog(asio::io_context& io, std::weak_ptr<Session> session, uint64_t request_id, std::chrono::milliseconds deadline, std::shared_ptr<Stall> stall,
-           std::shared_ptr<std::atomic<bool>> finished, std::string why)
+           std::shared_ptr<std::atomic<bool>> finished, std::string why, std::chrono::milliseconds notice, status::ScopedLogger log, std::string described,
+           const contract::TimeSource* time)
       : timer(io),
         session(std::move(session)),
         request_id(request_id),
         deadline(deadline),
         stall(std::move(stall)),
         finished(std::move(finished)),
-        why(std::move(why)) {}
+        why(std::move(why)),
+        notice(notice),
+        next_notice(notice),
+        log(std::move(log)),
+        described(std::move(described)),
+        time(time),
+        placed(time->now()) {}
+
+  std::string age() const { return std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(time->now() - placed).count()); }
 
   void arm() {
-    timer.expires_after(std::clamp(deadline / 4, std::chrono::milliseconds(5), std::chrono::milliseconds(250)));
+    const auto shortest = deadline.count() <= 0 ? notice : notice.count() <= 0 ? deadline : std::min(deadline, notice);
+    timer.expires_after(std::clamp(shortest / 4, std::chrono::milliseconds(5), std::chrono::milliseconds(250)));
     timer.async_wait([self = shared_from_this()](const boost::system::error_code& error) {
       if (!error) self->check();
     });
@@ -72,12 +88,28 @@ struct Watchdog : std::enable_shared_from_this<Watchdog> {
     if (!live) return;
     const auto idle = live->idle_for(request_id);
     if (!idle) return;
-    if (*idle < deadline) return arm();
+    const auto quiet = std::chrono::duration_cast<std::chrono::milliseconds>(*idle);
+    if (deadline.count() <= 0 || quiet < deadline) {
+      // Progress starts the count again.
+      if (notice.count() > 0 && quiet < notice) next_notice = notice;
+      if (notice.count() > 0 && quiet >= next_notice) {
+        log.debug("RPC stalled " + described + " age_ms=" + age() + " no_progress_ms=" + std::to_string(quiet.count()) +
+                  (deadline.count() > 0 ? "; deadline_ms=" + std::to_string(deadline.count()) : "; request remains active while peer health is monitored"));
+        next_notice = quiet + notice;
+      }
+      return arm();
+    }
+    log.debug("RPC made no progress for " + std::to_string(quiet.count()) + " ms " + described + " age_ms=" + age() + "; cancelled for retry");
     stall->why = why;
     stall->stalled.store(true);
     live->cancel(request_id);
   }
 };
+
+// What a timer should sleep for to look again at `at`, in `time`'s time.
+std::chrono::milliseconds sleep_towards(const contract::TimeSource& time, contract::TimePoint at) {
+  return time.wake_within(std::max(std::chrono::ceil<std::chrono::milliseconds>(at - time.now()), std::chrono::milliseconds(0)));
+}
 
 // How good a session's path is: direct (or reverse dialled) over punched
 // over relayed.
@@ -132,7 +164,12 @@ struct Client::Dialling {
 };
 
 Client::Client(asio::io_context& io, ClientOptions options)
-    : _io(io), _options(std::move(options)), _self(_options.local().id), _health_strand(asio::make_strand(io)), _heartbeat(_health_strand) {
+    : _io(io),
+      _options(std::move(options)),
+      _log(_options.log ? _options.log : status::null_sink(), "net"),
+      _self(_options.local().id),
+      _health_strand(asio::make_strand(io)),
+      _heartbeat(_health_strand) {
   if (!_options.traffic) _options.traffic = std::make_shared<TransportTraffic>();
 }
 
@@ -218,17 +255,17 @@ std::chrono::milliseconds CallHandle::idle_for() const {
 }
 
 std::shared_ptr<CallHandle> Client::call(const membership::NodeRecord& peer, MessageType type, Bytes payload, sched::FrameType frame,
-                                         asio::any_io_executor executor, Done done) {
+                                         asio::any_io_executor executor, Done done, CallWatch watch) {
   note_peer(peer);
   auto handle = std::make_shared<CallHandle>();
-  call(Target{peer.id, {peer.host, peer.port}}, Call{type, std::move(payload), frame, std::move(executor), std::move(done), 0, handle});
+  call(Target{peer.id, {peer.host, peer.port}}, Call{type, std::move(payload), frame, std::move(executor), std::move(done), 0, handle, watch});
   return handle;
 }
 
 std::shared_ptr<CallHandle> Client::call(const Endpoint& endpoint, MessageType type, Bytes payload, sched::FrameType frame, asio::any_io_executor executor,
-                                         Done done) {
+                                         Done done, CallWatch watch) {
   auto handle = std::make_shared<CallHandle>();
-  call(Target{std::nullopt, endpoint}, Call{type, std::move(payload), frame, std::move(executor), std::move(done), 0, handle});
+  call(Target{std::nullopt, endpoint}, Call{type, std::move(payload), frame, std::move(executor), std::move(done), 0, handle, watch});
   return handle;
 }
 
@@ -324,7 +361,10 @@ void Client::ask_for_lane(const RouteKey& key, const std::shared_ptr<Session>& c
     } catch (const OutboundRefused&) {
     }
   }
-  if (sent) return;
+  if (sent) {
+    _log.debug("dial request sent peer=" + to_string(key.first).substr(0, 12) + " lane=" + lane_name(key.second));
+    return;
+  }
   std::vector<Call> calls;
   std::string backoff_key;
   {
@@ -539,7 +579,16 @@ void Client::fail(Call& call, std::string why) {
 void Client::place(const std::shared_ptr<Session>& session, Call call, const Target& target) {
   if (call.handle && call.handle->cancelled_before_placement()) return fail(call, "RPC cancelled");
   const auto lane = session->lane();
-  const auto deadline = lane == Lane::data ? _options.data_no_progress : _options.control_no_progress;
+  const auto* rules = _options.routes->find(call.type);
+  const auto deadline = call.watch.no_progress        ? *call.watch.no_progress
+                        : rules && rules->no_progress ? *rules->no_progress
+                        : lane == Lane::data          ? _options.data_no_progress
+                                                      : _options.control_no_progress;
+  const auto notice = call.watch.stall_notice        ? *call.watch.stall_notice
+                      : rules && rules->stall_notice ? *rules->stall_notice
+                      : lane == Lane::data           ? _options.data_stall_notice
+                                                     : _options.control_stall_notice;
+  const auto frame = call.frame;
   auto stall = std::make_shared<Stall>();
   auto finished = std::make_shared<std::atomic<bool>>(false);
   auto done = std::make_shared<Done>(std::move(call.done));
@@ -563,10 +612,11 @@ void Client::place(const std::shared_ptr<Session>& session, Call call, const Tar
     return;
   }
   if (handle) handle->placed(session, admitted.request_id);
-  if (deadline.count() <= 0) return;
+  if (deadline.count() <= 0 && notice.count() <= 0) return;
   auto watchdog = std::make_shared<Watchdog>(
       _io, session, admitted.request_id, deadline, stall, finished,
-      "no progress on " + name + " for " + std::to_string(deadline.count()) + " ms on the " + lane_name(lane) + " lane; cancelled for retry");
+      "no progress on " + name + " for " + std::to_string(deadline.count()) + " ms on the " + lane_name(lane) + " lane; cancelled for retry", notice, _log,
+      std::string("(") + sched::frame_type_name(frame) + ") peer=" + to_string(session->peer().id).substr(0, 12) + " message=" + name, _options.time);
   watchdog->arm();
 }
 
@@ -623,7 +673,7 @@ void Client::dial(Target target, Lane lane, std::function<void(std::shared_ptr<S
           asio::async_connect(attempt->tcp, results,
                               [this, attempt, target, lane, complete, failed](const boost::system::error_code& error, const asio::ip::tcp::endpoint& to) {
                                 if (error) return failed("", error.message());
-                                peer_socket_options(attempt->tcp.native_handle());
+                                peer_socket_options(attempt->tcp.native_handle(), _log);
                                 attempt->socket.emplace(attempt->strand, Session::Socket::protocol_type(to.protocol().family(), SOCK_STREAM),
                                                         attempt->tcp.release());
                                 async_dial_handshake(*attempt->socket, _options.credentials, _options.local(), _options.max_frame, lane,
@@ -668,6 +718,7 @@ void Client::dialled(const std::string& key, const Target& target, Lane lane, st
     if (!session) ++_stats.dial_failures;
   }
   observe_dial(address_of(target.endpoint) + "/" + lane_name(lane), session != nullptr);
+  if (!session) _log.debug("node connection failed lane=" + std::string(lane_name(lane)) + " endpoint=" + address_of(target.endpoint) + ": " + why);
   {
     contract::Lock lock(_mutex);
     if (session && !stopped) {
@@ -697,6 +748,9 @@ void Client::dialled(const std::string& key, const Target& target, Lane lane, st
     why = "client stopped";
   }
   retire_sessions(retire);
+  if (session && !stopped && route == session)
+    _log.info("node connection outbound peer=" + to_string(session->peer().id).substr(0, 12) + " lane=" + lane_name(lane) +
+              " endpoint=" + address_of(target.endpoint));
   if (session && !stopped && _options.established) _options.established(session->established());
   for (auto& call : waiting) {
     if (route)
@@ -745,7 +799,10 @@ void Client::admit(const std::shared_ptr<Session>& session) {
     }
   }
   retire_sessions(retire);
-  if (timer) asio::post(_health_strand, [timer] { timer->cancel(); });
+  if (timer) {
+    _log.debug("dial request answered peer=" + to_string(key.first).substr(0, 12) + " lane=" + lane_name(key.second));
+    asio::post(_health_strand, [timer] { timer->cancel(); });
+  }
   for (auto& call : waiting) place(route, std::move(call), Target{key.first, {peer.host, peer.port}});
 }
 
@@ -820,6 +877,7 @@ SessionOptions Client::session_options() const {
   options.memory = _options.memory;
   options.traffic = _options.traffic;
   options.time = _options.time;
+  options.log = _options.log;
   return options;
 }
 
@@ -1085,12 +1143,14 @@ std::optional<std::chrono::milliseconds> Client::peer_latency(const identity::No
 struct Client::Probe {
   std::weak_ptr<Session> session;
   Lane lane;
-  contract::Clock::time_point deadline;
+  contract::TimePoint deadline;
   asio::steady_timer timer;
-  contract::Clock::time_point sent{};
+  contract::TimePoint sent{};
+  contract::TimePoint give_up_at{};
+  uint64_t awaiting = 0;  // the ping this attempt waits on; 0 once answered
   bool stalled = false;
   std::string last_error;
-  Probe(asio::strand<asio::io_context::executor_type>& strand, std::weak_ptr<Session> session, Lane lane, contract::Clock::time_point deadline)
+  Probe(asio::strand<asio::io_context::executor_type>& strand, std::weak_ptr<Session> session, Lane lane, contract::TimePoint deadline)
       : session(std::move(session)), lane(lane), deadline(deadline), timer(strand) {}
 };
 
@@ -1105,7 +1165,12 @@ void Client::start() {
 }
 
 void Client::arm_heartbeat() {
-  _heartbeat.expires_after(_options.heartbeat);
+  _next_heartbeat = _options.time->now() + _options.heartbeat;
+  await_heartbeat();
+}
+
+void Client::await_heartbeat() {
+  _heartbeat.expires_after(sleep_towards(*_options.time, _next_heartbeat));
   _heartbeat.async_wait([this](const boost::system::error_code& error) {
     bool stopped;
     {
@@ -1113,6 +1178,7 @@ void Client::arm_heartbeat() {
       stopped = _stopped;
     }
     if (error || stopped) return end_operation();
+    if (_options.time->now() < _next_heartbeat) return await_heartbeat();
     open_lanes();
     health_pass();
     arm_heartbeat();
@@ -1121,7 +1187,7 @@ void Client::arm_heartbeat() {
 
 void Client::health_pass() {
   std::vector<std::shared_ptr<Probe>> probes;
-  const auto deadline = contract::Clock::now() + _options.dead_after;
+  const auto deadline = _options.time->now() + _options.dead_after;
   {
     contract::Lock lock(_mutex);
     std::set<RouteKey> seen;
@@ -1149,7 +1215,11 @@ void Client::attempt(const std::shared_ptr<Probe>& probe) {
   const auto session = probe->session.lock();
   if (stopped || !session || !session->usable()) return end_operation();
   probe->stalled = false;
-  probe->sent = contract::Clock::now();
+  probe->sent = _options.time->now();
+  {
+    contract::Lock lock(_mutex);
+    ++_stats.pings;
+  }
   const auto admitted =
       session->call(message::ping, {}, sched::FrameType::control, _health_strand, [this, probe](CallOutcome outcome) { answered(probe, std::move(outcome)); });
   if (!admitted.refused.empty()) {
@@ -1157,21 +1227,31 @@ void Client::attempt(const std::shared_ptr<Probe>& probe) {
     return retry(probe);
   }
   // A third of the liveness budget per attempt, leaving room to retry.
-  probe->timer.expires_after(std::max(_options.dead_after / 3, std::chrono::milliseconds(100)));
-  probe->timer.async_wait([probe, id = admitted.request_id](const boost::system::error_code& error) {
-    if (error) return;
+  probe->give_up_at = probe->sent + std::max(_options.dead_after / 3, std::chrono::milliseconds(100));
+  probe->awaiting = admitted.request_id;
+  await_ping(probe);
+}
+
+void Client::await_ping(const std::shared_ptr<Probe>& probe) {
+  probe->timer.expires_after(sleep_towards(*_options.time, probe->give_up_at));
+  // Answered, the operation may have ended and this client gone: only the
+  // probe is touched until `awaiting` says otherwise.
+  probe->timer.async_wait([this, probe, id = probe->awaiting](const boost::system::error_code& error) {
+    if (error || probe->awaiting != id) return;
+    if (_options.time->now() < probe->give_up_at) return await_ping(probe);
     probe->stalled = true;
     if (const auto live = probe->session.lock()) live->cancel(id);
   });
 }
 
 void Client::answered(const std::shared_ptr<Probe>& probe, CallOutcome outcome) {
+  probe->awaiting = 0;
   probe->timer.cancel();
   const auto session = probe->session.lock();
   // An answer is proof of life however late it comes.
   if (outcome.reply && outcome.reply->type == message::ok) {
     if (probe->lane == Lane::control && session) {
-      const auto sample = std::chrono::duration<double, std::milli>(contract::Clock::now() - probe->sent).count();
+      const auto sample = std::chrono::duration<double, std::milli>(_options.time->now() - probe->sent).count();
       {
         contract::Lock lock(_mutex);
         auto [slot, fresh] = _latency_ms.try_emplace(session->peer().id, sample);
@@ -1187,20 +1267,39 @@ void Client::answered(const std::shared_ptr<Probe>& probe, CallOutcome outcome) 
     probe->last_error = outcome.reply ? std::string("health probe rejected") : outcome.failure;
   // A DATA lane that errs is no longer usable; CONTROL decides whether the
   // peer is dead.
-  if (probe->lane == Lane::data) return end_operation();
+  if (probe->lane == Lane::data) {
+    if (session) _log.debug("peer " + session->peer().host + ":" + std::to_string(session->peer().port) + " lane=data liveness failure: " + probe->last_error);
+    return end_operation();
+  }
   retry(probe);
 }
 
 void Client::retry(const std::shared_ptr<Probe>& probe) {
   constexpr auto pause = std::chrono::milliseconds(50);
-  if (contract::Clock::now() + pause >= probe->deadline) {
+  const auto resume_at = _options.time->now() + pause;
+  if (resume_at >= probe->deadline) {
     // Close exactly the route this probe was on: a replacement the peer
     // opened meanwhile is not touched.
-    if (const auto session = probe->session.lock()) session->close("liveness failure: " + probe->last_error);
+    if (const auto session = probe->session.lock()) {
+      _log.debug("peer " + session->peer().host + ":" + std::to_string(session->peer().port) + " liveness failure: " + probe->last_error);
+      session->close("liveness failure: " + probe->last_error);
+    }
     return end_operation();
   }
-  probe->timer.expires_after(pause);
-  probe->timer.async_wait([this, probe](const boost::system::error_code&) { attempt(probe); });
+  await_retry(probe, resume_at);
+}
+
+void Client::await_retry(const std::shared_ptr<Probe>& probe, contract::TimePoint resume_at) {
+  probe->timer.expires_after(sleep_towards(*_options.time, resume_at));
+  probe->timer.async_wait([this, probe, resume_at](const boost::system::error_code& error) {
+    bool stopped;
+    {
+      contract::Lock lock(_mutex);
+      stopped = _stopped;
+    }
+    if (!error && !stopped && _options.time->now() < resume_at) return await_retry(probe, resume_at);
+    attempt(probe);
+  });
 }
 
 void Client::stop() {
@@ -1209,8 +1308,10 @@ void Client::stop() {
   std::map<std::string, std::vector<Call>> waiting;
   std::map<RouteKey, ReverseWait> reverse;
   std::vector<std::shared_ptr<asio::steady_timer>> timers;
+  bool again;
   {
     contract::Lock lock(_mutex);
+    again = _stopped;
     _stopped = true;
     reverse.swap(_reverse);
     timers.assign(_reverse_timers.begin(), _reverse_timers.end());
@@ -1233,6 +1334,8 @@ void Client::stop() {
     _heartbeat.cancel();
     end_operation();
   });
+  // Stopping twice, as a destructor after stop() does, says so once.
+  if (!again) _log.debug("shutdown: client stop begin");
   for (auto& session : routes) session->close("client stopped");
   for (auto& attempt : dialling) asio::post(attempt->strand, [attempt] { attempt->abort(); });
   for (auto& [_, calls] : waiting)
@@ -1240,8 +1343,11 @@ void Client::stop() {
   for (auto& [_, wait] : reverse)
     for (auto& call : wait.calls) fail(call, "client stopped");
   for (auto& timer : timers) asio::post(_health_strand, [timer] { timer->cancel(); });
-  contract::Lock lock(_mutex);
-  _idle.wait(lock.native(), [&]() DANNAN_REQUIRES(_mutex) { return _operations == 0; });
+  {
+    contract::Lock lock(_mutex);
+    _idle.wait(lock.native(), [&]() DANNAN_REQUIRES(_mutex) { return _operations == 0; });
+  }
+  if (!again) _log.debug("shutdown: client stop complete connections=" + std::to_string(routes.size()));
 }
 
 }  // namespace dannan::net

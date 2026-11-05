@@ -24,6 +24,21 @@ void Readiness::declare(const std::string& plane) {
   _planes.emplace(plane, false);
 }
 
+void Readiness::hold_until_marked() {
+  contract::Lock lock(_mutex);
+  if (_closed) throw std::logic_error("readiness held after the node started");
+  _held = true;
+}
+
+void Readiness::mark_complete() {
+  {
+    contract::Lock lock(_mutex);
+    _marked = true;
+    if (complete_locked() && !_ready_unix_ms) _ready_unix_ms = _wall->unix_ms();
+  }
+  _changed.notify_all();
+}
+
 void Readiness::close_declarations() {
   contract::Lock lock(_mutex);
   _closed = true;
@@ -53,8 +68,8 @@ void Readiness::ready(const std::string& plane) {
 void Readiness::fail(std::string error) {
   {
     contract::Lock lock(_mutex);
+    if (!_failed) _error = std::move(error);
     _failed = true;
-    _error = std::move(error);
   }
   _changed.notify_all();
 }
@@ -66,7 +81,7 @@ bool Readiness::has(const std::string& plane) const {
 }
 
 bool Readiness::complete_locked() const {
-  return std::all_of(_planes.begin(), _planes.end(), [](const auto& plane) { return plane.second; });
+  return (!_held || _marked) && std::all_of(_planes.begin(), _planes.end(), [](const auto& plane) { return plane.second; });
 }
 
 bool Readiness::complete() const {

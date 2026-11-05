@@ -18,9 +18,13 @@
 #include <boost/asio/strand.hpp>
 #include <fstream>
 #include <future>
+#include <set>
 #include <thread>
 
 #include "dannan/test/fixtures/gate.h"
+#include "dannan/test/fixtures/ports.h"
+#include "dannan/test/fixtures/recording_sink.h"
+#include "dannan/test/fixtures/stepped_time.h"
 #include "dannan/test/fixtures/temp_dir.h"
 
 namespace dannan {
@@ -115,6 +119,358 @@ TEST(Node, TwoNodesFormOneCluster) {
     return std::any_of(all.begin(), all.end(), [&](const status::Telemetry& t) { return t.node_id() == b && t.text(status::field::version) == "0.1.0-test"; });
   }));
   EXPECT_TRUE(eventually([&] { return pair.b->context().nodes().latency(a).has_value(); }));
+}
+
+// The transport writes through the sink the node was given, so a hosted
+// system's own sink keeps its line format.
+TEST(Node, TheTransportWritesThroughTheNodesSink) {
+  auto log = std::make_shared<test::RecordingSink>();
+  Pair pair([&](NodeConfig& b) { b.log = log; });
+  pair.b->start();
+  EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::info, "node connection outbound peer=") >= 1; }));
+}
+
+TEST(Node, ADialHookInTheConfigRefusesADial) {
+  std::atomic<int> refused{0};
+  Pair pair([&](NodeConfig& b) {
+    b.dial_hook = [&](const net::Endpoint&, net::Lane) {
+      ++refused;
+      return std::string("link is down");
+    };
+  });
+  pair.b->start();
+  EXPECT_TRUE(eventually([&] { return refused.load() >= 1; }));
+  EXPECT_FALSE(knows(*pair.b, pair.a->context().identity().id()));
+}
+
+// The memory limit, as Macha's configuration has it: every part shrinks by the
+// same fraction, the hosted system's included, and one warning is logged.
+TEST(Node, TheMemoryLimitShrinksEveryPartAndWarnsOnce) {
+  test::TempDir dir;
+  Io io;
+  auto log = std::make_shared<test::RecordingSink>();
+  auto settings = config(dir.path() / "a", cluster_key(dir.path()));
+  settings.log = log;
+  settings.memory_limit_bytes = 400ull << 20;
+  settings.memory_bytes = 600ull << 20;
+  settings.control_reserve_bytes = 60ull << 20;
+  settings.foreground_reserve_bytes = 60ull << 20;
+  settings.loader_reserve_bytes = 60ull << 20;
+  settings.reassembly_reserve_bytes = 60ull << 20;
+  std::vector<sched::MemoryPart> hosted{{"cache", 200ull << 20}};
+  fit_memory_limit(settings, hosted);
+  EXPECT_EQ(hosted[0].bytes, 100ull << 20);
+  EXPECT_EQ(settings.memory_bytes, 300ull << 20);
+  EXPECT_EQ(settings.control_reserve_bytes, 30ull << 20);
+  Node node(io.context, settings);
+  EXPECT_EQ(log->count(status::LogLevel::warn, "MEMORY OVER LIMIT: the configured parts total 800M, over runtime.memory_bytes 400M"), 1u);
+  EXPECT_EQ(log->count(status::LogLevel::warn, "cache 200M to 100M"), 1u);
+}
+
+TEST(Node, ANodeWithNoHostedPartsFitsItselfAndUnderTheLimitNothingShrinks) {
+  test::TempDir dir;
+  Io io;
+  auto log = std::make_shared<test::RecordingSink>();
+  auto settings = config(dir.path() / "a", cluster_key(dir.path()));
+  settings.log = log;
+  settings.memory_limit_bytes = 1ull << 40;
+  {
+    Node roomy(io.context, settings);
+  }
+  EXPECT_EQ(log->count(status::LogLevel::warn, "MEMORY OVER LIMIT"), 0u);
+  settings.memory_limit_bytes = 100ull << 20;
+  settings.state_path = dir.path() / "b";
+  Node tight(io.context, settings);
+  EXPECT_EQ(log->count(status::LogLevel::warn, "MEMORY OVER LIMIT"), 1u);
+}
+
+// The node's one wait guard, reached through the Context, logs through its sink.
+TEST(Node, TheWaitGuardIsTheNodesOwn) {
+  auto log = std::make_shared<test::RecordingSink>();
+  test::TempDir dir;
+  Io io;
+  auto settings = config(dir.path() / "a", cluster_key(dir.path()));
+  settings.log = log;
+  Node node(io.context, settings);
+  const sched::WorkContext context(sched::FrameType::control, {}, nullptr, "a test", sched::Waits::none);
+  EXPECT_FALSE(node.context().wait_guard().enter(context, sched::Waits::network, "a blocking thing"));
+  EXPECT_EQ(node.context().wait_guard().violations(), 1u);
+  EXPECT_EQ(log->count(status::LogLevel::warn, "a blocking thing"), 1u);
+}
+
+TEST(Node, ObservationsAreWrittenFromTheStart) {
+  test::TempDir dir;
+  Io io;
+  auto settings = config(dir.path() / "a", cluster_key(dir.path()));
+  settings.observation_interval = 10ms;
+  settings.observation_gauges = [] { return std::map<std::string, uint64_t>{{"parked", 7}}; };
+  Node node(io.context, settings);
+  node.start();
+  const auto path = dir.path() / "a" / "observation" / "observations.jsonl";
+  const auto contents = [&] {
+    std::ifstream in(path);
+    return std::string(std::istreambuf_iterator<char>(in), {});
+  };
+  EXPECT_TRUE(eventually([&] {
+    const auto text = contents();
+    return text.find("0.1.0-test") != std::string::npos && text.find("parked") != std::string::npos;
+  })) << contents();
+  node.stop();
+}
+
+TEST(Node, ObservationsCanBeTurnedOff) {
+  test::TempDir dir;
+  Io io;
+  auto settings = config(dir.path() / "a", cluster_key(dir.path()));
+  settings.observation_interval = 0ms;
+  Node node(io.context, settings);
+  node.start();
+  node.stop();
+  EXPECT_FALSE(std::filesystem::exists(dir.path() / "a" / "observation" / "observations.jsonl"));
+}
+
+// A forced refresh runs now, on the node's loop rather than the caller's thread,
+// and answers on the caller's executor; a node not running answers empty.
+TEST(Node, APublicConnectivityRefreshRunsWhenAskedAndAnswersOnTheExecutor) {
+  test::TempDir dir;
+  Io io;
+  std::atomic<int> probes{0};
+  auto settings = config(dir.path() / "a", cluster_key(dir.path()));
+  settings.heartbeat = 1h;
+  settings.connectivity.check.enabled = false;
+  settings.self_probe = [&](const net::Endpoint&, std::chrono::milliseconds, std::string&) {
+    ++probes;
+    return true;
+  };
+  Node node(io.context, settings);
+  const auto ask = [&] {
+    std::promise<std::optional<reach::PublicConnectivityStatus>> answer;
+    auto future = answer.get_future();
+    node.context().nodes().refresh_public_connectivity(true, true, io.context.get_executor(), [&](auto status) { answer.set_value(std::move(status)); });
+    EXPECT_EQ(future.wait_for(10s), std::future_status::ready);
+    return future.get();
+  };
+  EXPECT_FALSE(ask().has_value());
+  node.start();
+  const auto asked = probes.load();
+  EXPECT_TRUE(ask().has_value());
+  EXPECT_GT(probes.load(), asked);
+  node.stop();
+  EXPECT_FALSE(ask().has_value());
+}
+
+// Gossip waits out its cap however much demand there is: wakes sample the local
+// record, and only the injected second lets one out.
+TEST(Node, GossipWaitsOutItsCapHoweverMuchDemandThereIs) {
+  test::SteppedTime time;
+  Pair pair([&](NodeConfig& b) {
+    b.time = &time;
+    b.telemetry_interval = 1h;
+  });
+  pair.b->start();
+  const auto b = pair.b->context().identity().id();
+  ASSERT_TRUE(eventually([&] { return pair.b->context().nodes().directly_reachable(pair.a->context().identity().id()); }));
+  const auto seen_at_a = [&]() -> uint64_t {
+    for (const auto& record : pair.a->context().telemetry().all())
+      if (record.node_id() == b) return record.sequence();
+    return 0;
+  };
+  const auto local = [&] { return pair.b->context().telemetry().local()->sequence(); };
+  ASSERT_TRUE(eventually([&] {
+    time.advance(1s);
+    pair.b->context().telemetry().refresh();
+    return seen_at_a() > 0;
+  }));
+  // Time stands still from here. A tick or two lets out what the last step
+  // allowed; after that the record moves on and the gossip does not.
+  const auto settling = local();
+  ASSERT_TRUE(eventually([&] {
+    pair.b->context().telemetry().refresh();
+    return local() > settling + 2;
+  }));
+  std::this_thread::sleep_for(50ms);
+  const auto before = local();
+  ASSERT_TRUE(eventually([&] {
+    pair.b->context().telemetry().refresh();
+    return local() > before + 5;
+  }));
+  std::this_thread::sleep_for(50ms);
+  EXPECT_LE(seen_at_a(), before);
+  time.advance(1s);
+  const auto after = local();
+  EXPECT_TRUE(eventually([&] {
+    pair.b->context().telemetry().refresh();
+    return seen_at_a() >= after;
+  }));
+}
+
+// A peer is told of this node on observing it, not at the next interval.
+TEST(Node, APeerObservationGossipsSoonerThanTheInterval) {
+  Pair pair([](NodeConfig& b) { b.telemetry_interval = 1h; });
+  pair.b->start();
+  const auto b = pair.b->context().identity().id();
+  EXPECT_TRUE(eventually([&] {
+    const auto all = pair.a->context().telemetry().all();
+    return std::any_of(all.begin(), all.end(), [&](const status::Telemetry& record) { return record.node_id() == b; });
+  }));
+}
+
+// A node watches no call unless asked; a call asks for itself.
+TEST(Node, ACallIsWatchedOnlyIfItAsks) {
+  EXPECT_EQ(NodeConfig{}.control_no_progress, 0ms);
+  EXPECT_EQ(NodeConfig{}.data_no_progress, 0ms);
+  EXPECT_EQ(NodeConfig{}.control_stall_notice, 0ms);
+  EXPECT_EQ(NodeConfig{}.data_stall_notice, 0ms);
+  constexpr net::MessageType held{1301};
+  test::Gate gate;
+  Pair pair({}, [&](Node& a) {
+    a.context().routes().add(held, {"held", net::Lanes::control, net::Frames::control_only, false},
+                             [&](const membership::NodeRecord&, sched::FrameType, const net::Message& request) {
+                               gate.enter_and_wait();
+                               return net::Handled::processed({net::message::ok, request.payload, {}});
+                             });
+  });
+  pair.b->start();
+  const auto a = pair.a->context().identity().id();
+  ASSERT_TRUE(eventually([&] { return knows(*pair.b, a); }));
+  const net::Endpoint at{"127.0.0.1", pair.a->port()};
+  const auto watched = pair.b->context().routes().call_and_wait(at, held, {}, sched::FrameType::control, 10s, net::CallWatch{100ms, std::nullopt});
+  EXPECT_FALSE(watched.reply);
+  EXPECT_NE(watched.failure.find("cancelled for retry"), std::string::npos) << watched.failure;
+  std::thread opener([&] {
+    std::this_thread::sleep_for(300ms);
+    gate.open();
+  });
+  const auto unwatched = pair.b->context().routes().call_and_wait(at, held, {}, sched::FrameType::control, 10s);
+  opener.join();
+  EXPECT_TRUE(unwatched.reply) << unwatched.failure;
+}
+
+// Asking the loops to stop returns at once; stop() afterwards still finishes it.
+TEST(Node, RequestStopAsksAndStopFinishes) {
+  Pair pair;
+  pair.b->start();
+  pair.b->request_stop();
+  pair.b->request_stop();
+  pair.b->stop();
+  EXPECT_TRUE(pair.b->context().readiness().control_plane_online() == false);
+}
+
+TEST(Node, ThreadsAreRecordedInDiagnostics) {
+  Pair pair;
+  std::set<std::string> names;
+  EXPECT_TRUE(eventually([&] {
+    names.clear();
+    for (const auto& thread : pair.a->context().threads().statuses()) names.insert(thread.name);
+    return names.contains("net-rpc-control-worker") && names.contains("net-rpc-metadata-worker") && names.contains("reach-path-worker");
+  }));
+}
+
+// Each node names the other as its seed: they settle on one session a lane and stop
+// dialling.
+TEST(Node, MutualSeedsSettleOnOneSessionAndStopDialling) {
+  Io io;
+  test::TempDir dir;
+  const auto key = cluster_key(dir.path());
+  const uint16_t first_port = test::free_port();
+  const uint16_t second_port = test::free_port();
+  auto a_config = config(dir.path() / "a", key, {{"127.0.0.1", second_port}});
+  a_config.port = first_port;
+  auto b_config = config(dir.path() / "b", key, {{"127.0.0.1", first_port}});
+  b_config.port = second_port;
+  Node a(io.context, a_config), b(io.context, b_config);
+  a.start();
+  b.start();
+  const auto a_id = a.context().identity().id();
+  const auto b_id = b.context().identity().id();
+  ASSERT_TRUE(eventually([&] { return knows(a, b_id) && knows(b, a_id); }));
+  ASSERT_TRUE(eventually([&] { return a.diagnostics().work.sessions == 1 || b.diagnostics().work.sessions == 1; }));
+  // Quiet: several heartbeats pass, and neither dials again.
+  std::this_thread::sleep_for(300ms);
+  const auto a_dials = a.diagnostics().client.dials;
+  const auto b_dials = b.diagnostics().client.dials;
+  std::this_thread::sleep_for(1s);
+  EXPECT_EQ(a.diagnostics().client.dials, a_dials);
+  EXPECT_EQ(b.diagnostics().client.dials, b_dials);
+  EXPECT_LE(a.diagnostics().work.sessions + b.diagnostics().work.sessions, 2u);
+  b.stop();
+  a.stop();
+}
+
+// What one node says it sent is what the other says it received, class by class.
+TEST(Node, TrafficAgreesAcrossTwoNodesByClass) {
+  constexpr net::MessageType echo{1302};
+  Pair pair({}, [&](Node& a) {
+    a.context().routes().add(
+        echo, {"echo", net::Lanes::both, net::Frames::any, false},
+        [](const membership::NodeRecord&, sched::FrameType, const net::Message&) { return net::Handled::processed({net::message::ok, {}, {}}); });
+  });
+  pair.b->start();
+  ASSERT_TRUE(eventually([&] { return knows(*pair.b, pair.a->context().identity().id()); }));
+  const net::Endpoint at{"127.0.0.1", pair.a->port()};
+  const auto outcome = pair.b->context().routes().call_and_wait(at, echo, net::Bytes(10000, 1), sched::FrameType::foreground, 10s);
+  ASSERT_TRUE(outcome.reply) << outcome.failure;
+  const auto index = static_cast<size_t>(sched::FrameType::foreground);
+  // One request of 10,000 bytes and its overhead, and an empty reply.
+  EXPECT_TRUE(eventually([&] {
+    const auto sent = pair.b->diagnostics().traffic;
+    const auto got = pair.a->diagnostics().traffic;
+    return sent.out_bytes[index] == got.in_bytes[index] && sent.in_bytes[index] == got.out_bytes[index];
+  }));
+  EXPECT_EQ(pair.b->diagnostics().traffic.out_bytes[index], 10056u);
+}
+
+// A number given up is not reused, and not re-registered by mistake.
+TEST(Node, ARetiredMessageNumberIsRefused) {
+  test::TempDir dir;
+  Io io;
+  Node node(io.context, config(dir.path() / "a", cluster_key(dir.path())));
+  node.context().routes().retire(net::MessageType{549});
+  EXPECT_THROW(node.context().routes().add(net::MessageType{549}, {"taken", net::Lanes::control, net::Frames::control_only, false}), std::invalid_argument);
+  EXPECT_THROW(node.context().routes().retire(net::MessageType{1}), std::invalid_argument);
+  node.start();
+  EXPECT_THROW(node.context().routes().retire(net::MessageType{550}), std::logic_error);
+  node.stop();
+}
+
+// Over real dial-backs: a node nobody can reach goes incapable once confirmed, keeps
+// that across a restart, and comes back once its address works.
+TEST(Node, AnUnreachableAutomaticNodeGoesIncapableAndPeersStopDialling) {
+  Io io;
+  test::TempDir dir;
+  const auto key = cluster_key(dir.path());
+  auto hub_config = config(dir.path() / "hub", key);
+  hub_config.dial_back_min_interval = 10ms;
+  Node hub(io.context, hub_config);
+  hub.start();
+  const uint16_t site_port = test::free_port();
+  const auto site_settings = [&](const std::string& advertised) {
+    auto out = config(dir.path() / "site", key, {{"127.0.0.1", hub.port()}});
+    out.inbound = reach::Inbound::automatic;
+    out.port = site_port;
+    out.advertise_host = advertised;
+    out.reprobe_while_capable = 100ms;
+    out.reprobe_while_incapable = 100ms;
+    return out;
+  };
+  identity::NodeId site_id;
+  {
+    Node site(io.context, site_settings("192.0.2.1"));
+    site_id = site.context().identity().id();
+    site.start();
+    EXPECT_TRUE(eventually([&] { return !site.context().nodes().inbound_capable(site_id); }, 30s));
+    EXPECT_TRUE(eventually([&] { return !hub.context().nodes().inbound_capable(site_id); }, 30s));
+    site.stop();
+  }
+  {
+    Node site(io.context, site_settings("127.0.0.1"));
+    EXPECT_FALSE(site.context().nodes().inbound_capable(site_id));
+    site.start();
+    EXPECT_TRUE(eventually([&] { return site.context().nodes().inbound_capable(site_id); }, 30s));
+    EXPECT_TRUE(eventually([&] { return hub.context().nodes().inbound_capable(site_id); }, 30s));
+    site.stop();
+  }
+  hub.stop();
 }
 
 // A hosted system that is nothing but a counter: a user type registered

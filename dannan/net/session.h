@@ -26,6 +26,7 @@
 #include "dannan/net/channel.h"
 #include "dannan/net/message.h"
 #include "dannan/net/outbound.h"
+#include "dannan/status/log.h"
 
 namespace dannan::net {
 
@@ -96,6 +97,8 @@ struct SessionOptions {
   sched::RetainedMemoryLedger* memory = nullptr;
   std::shared_ptr<TransportTraffic> traffic;
   const contract::TimeSource* time = &contract::steady_time_source();
+  // Where the session says why it failed; none, nowhere.
+  std::shared_ptr<status::LogSink> log;
   size_t max_incomplete_messages = 64;
   size_t max_incomplete_bytes = 256ull * 1024 * 1024;
   size_t max_message_bytes = 128ull * 1024 * 1024;
@@ -194,6 +197,7 @@ class Session : public std::enable_shared_from_this<Session> {
   const std::shared_ptr<const RouteTable> _routes;
   SessionHandlers _handlers;
   const SessionOptions _options;
+  const std::shared_ptr<std::atomic<bool>> _gone = std::make_shared<std::atomic<bool>>(false);
   // Reader state, on the strand.
   FrameOpener _opener;
   MessageAssembler _assembler;

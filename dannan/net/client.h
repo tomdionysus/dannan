@@ -28,6 +28,7 @@
 #include "dannan/membership/identity_reset.h"
 #include "dannan/net/scheduler.h"
 #include "dannan/net/session.h"
+#include "dannan/status/log.h"
 
 namespace dannan::net {
 
@@ -69,6 +70,14 @@ class CallHandle {
   std::optional<sched::FrameType> _promoted DANNAN_GUARDED_BY(_mutex);
 };
 
+// How one call is watched for progress, in place of its type's and its lane's
+// settings: a deadline cancels it, a notice only logs. Macha watches a synchronous
+// call and leaves an asynchronous one to its caller, so a call says which it is.
+struct CallWatch {
+  std::optional<std::chrono::milliseconds> no_progress = std::nullopt;
+  std::optional<std::chrono::milliseconds> stall_notice = std::nullopt;
+};
+
 struct ClientOptions {
   // How this node proves itself and checks its peers.
   Credentials credentials;
@@ -88,6 +97,12 @@ struct ClientOptions {
   // ever. Per lane, since a DATA reply may legitimately take long to start.
   std::chrono::milliseconds control_no_progress{0};
   std::chrono::milliseconds data_no_progress{0};
+  // Logged at debug, again each period, while a call makes no progress; zero
+  // for none. A type's registration may name its own, as for the deadlines.
+  std::chrono::milliseconds control_stall_notice{0};
+  std::chrono::milliseconds data_stall_notice{0};
+  // Where the client writes its journal lines; none, nowhere.
+  std::shared_ptr<status::LogSink> log;
   // Health: every heartbeat each peer with a route is pinged on each lane
   // it has; a ping that hangs is abandoned after a third of dead_after and
   // retried, and a CONTROL route with no answer for dead_after is closed.
@@ -114,6 +129,8 @@ struct ClientOptions {
 struct ClientStats {
   uint64_t dials = 0;
   uint64_t dial_failures = 0;
+  // Health pings sent, retries included.
+  uint64_t pings = 0;
   // Calls placed on a route that already existed.
   uint64_t reused = 0;
   // Sessions retired by reconciliation: a simultaneous dial's loser, or a
@@ -157,10 +174,10 @@ class Client {
   // fails. `done` is posted to `executor` exactly once. The handle controls
   // the call while it is pending. Waits on nothing.
   std::shared_ptr<CallHandle> call(const membership::NodeRecord& peer, MessageType type, Bytes payload, sched::FrameType frame,
-                                   boost::asio::any_io_executor executor, Done done);
+                                   boost::asio::any_io_executor executor, Done done, CallWatch watch = {});
   // As above, to an address whose node is not known yet (a bootstrap).
   std::shared_ptr<CallHandle> call(const Endpoint& endpoint, MessageType type, Bytes payload, sched::FrameType frame, boost::asio::any_io_executor executor,
-                                   Done done);
+                                   Done done, CallWatch watch = {});
 
   // A session a peer opened to this node, from the server: a route back.
   void admit(const std::shared_ptr<Session>& session);
@@ -251,6 +268,7 @@ class Client {
     // closed under it.
     int reroutes = 0;
     std::shared_ptr<CallHandle> handle;
+    CallWatch watch{};
   };
   struct Target {
     std::optional<identity::NodeId> id;
@@ -294,10 +312,13 @@ class Client {
   std::vector<std::shared_ptr<Session>> control_routes_locked() const DANNAN_REQUIRES(_mutex);
   // The health loop, on its strand.
   void arm_heartbeat();
+  void await_heartbeat();
   void health_pass();
   void attempt(const std::shared_ptr<Probe>& probe);
   void answered(const std::shared_ptr<Probe>& probe, CallOutcome outcome);
   void retry(const std::shared_ptr<Probe>& probe);
+  void await_ping(const std::shared_ptr<Probe>& probe);
+  void await_retry(const std::shared_ptr<Probe>& probe, contract::TimePoint resume_at);
   // Lanes a peer asked for, and those an incapable node maintains. On the
   // health strand.
   void open_lanes();
@@ -323,9 +344,11 @@ class Client {
 
   boost::asio::io_context& _io;
   ClientOptions _options;
+  const status::ScopedLogger _log;
   const identity::NodeId _self;
   boost::asio::strand<boost::asio::io_context::executor_type> _health_strand;
   boost::asio::steady_timer _heartbeat;
+  contract::TimePoint _next_heartbeat{};  // on the health strand
 
   mutable contract::Mutex _mutex;
   std::condition_variable _idle;

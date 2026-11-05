@@ -69,6 +69,9 @@ class JsonSink final : public LogSink {
   contract::IoMutex _mutex;
 };
 
+// A sink that takes nothing, for a component given none.
+std::shared_ptr<LogSink> null_sink();
+
 // How a node writes its log: "text" (ConsoleSink) or "json" (JsonSink), in
 // any case. Throws std::invalid_argument naming the accepted spellings.
 enum class LogFormat : unsigned char { text, json };
