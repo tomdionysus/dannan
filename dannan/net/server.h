@@ -21,6 +21,7 @@
 #include "dannan/identity/cluster_key.h"
 #include "dannan/net/scheduler.h"
 #include "dannan/net/session.h"
+#include "dannan/status/log.h"
 
 namespace dannan::net {
 
@@ -29,7 +30,10 @@ namespace dannan::net {
 // it, so a bulk transfer keeps no standing queue for control frames to wait
 // behind. Returns whether the socket got BBR. Every peer socket, dialled or
 // accepted, gets these.
-bool peer_socket_options(int fd);
+// BBR's absence is warned of once per process, through `log`, naming the
+// reason. Where the platform has no choice of congestion control, nothing is.
+bool peer_socket_options(int fd, const status::ScopedLogger& log);
+std::string congestion_control_unavailable(int error);
 
 struct ServerOptions {
   // How this node proves itself and checks its peers.
@@ -42,6 +46,8 @@ struct ServerOptions {
   sched::RetainedMemoryLedger* memory = nullptr;
   std::shared_ptr<TransportTraffic> traffic;
   const contract::TimeSource* time = &contract::steady_time_source();
+  // Where the server writes its journal lines; none, nowhere.
+  std::shared_ptr<status::LogSink> log;
   // Connections accepted and not yet authenticated; past it a new one is
   // closed at once, so unauthenticated sockets cost bounded resources.
   size_t max_pre_auth = 8;
@@ -92,6 +98,7 @@ class Server {
   const std::string _host;
   const uint16_t _port;
   ServerOptions _options;
+  const status::ScopedLogger _log;
   RequestScheduler _scheduler;
   Admitted _admitted;
   boost::asio::ip::tcp::acceptor _acceptor;

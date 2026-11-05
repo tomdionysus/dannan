@@ -21,6 +21,7 @@
 #include <thread>
 
 #include "dannan/test/fixtures/gate.h"
+#include "dannan/test/fixtures/recording_sink.h"
 #include "dannan/test/fixtures/temp_dir.h"
 
 namespace dannan {
@@ -115,6 +116,28 @@ TEST(Node, TwoNodesFormOneCluster) {
     return std::any_of(all.begin(), all.end(), [&](const status::Telemetry& t) { return t.node_id() == b && t.text(status::field::version) == "0.1.0-test"; });
   }));
   EXPECT_TRUE(eventually([&] { return pair.b->context().nodes().latency(a).has_value(); }));
+}
+
+// The transport writes through the sink the node was given, so a hosted
+// system's own sink keeps its line format.
+TEST(Node, TheTransportWritesThroughTheNodesSink) {
+  auto log = std::make_shared<test::RecordingSink>();
+  Pair pair([&](NodeConfig& b) { b.log = log; });
+  pair.b->start();
+  EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::info, "node connection outbound peer=") >= 1; }));
+}
+
+TEST(Node, ADialHookInTheConfigRefusesADial) {
+  std::atomic<int> refused{0};
+  Pair pair([&](NodeConfig& b) {
+    b.dial_hook = [&](const net::Endpoint&, net::Lane) {
+      ++refused;
+      return std::string("link is down");
+    };
+  });
+  pair.b->start();
+  EXPECT_TRUE(eventually([&] { return refused.load() >= 1; }));
+  EXPECT_FALSE(knows(*pair.b, pair.a->context().identity().id()));
 }
 
 // A hosted system that is nothing but a counter: a user type registered

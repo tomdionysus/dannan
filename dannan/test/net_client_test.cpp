@@ -23,6 +23,7 @@
 #include "dannan/net/client.h"
 #include "dannan/net/server.h"
 #include "dannan/test/fixtures/gate.h"
+#include "dannan/test/fixtures/recording_sink.h"
 #include "dannan/test/fixtures/stepped_time.h"
 #include "dannan/test/fixtures/temp_dir.h"
 
@@ -37,6 +38,8 @@ constexpr MessageType put_object{2005};
 constexpr MessageType slow{1200};
 constexpr MessageType sluggish{1201};
 constexpr MessageType news{1202};
+constexpr MessageType sluggish_throw{1203};
+constexpr MessageType hurried{1204};
 
 struct Io {
   asio::io_context context;
@@ -64,6 +67,10 @@ std::shared_ptr<const RouteTable> table() {
   routes.add(slow, {"slow", Lanes::control, Frames::control_only, false});
   routes.add(sluggish, {"sluggish", Lanes::control, Frames::control_only, false});
   routes.add(news, {"news", Lanes::control, Frames::any, true});
+  routes.add(sluggish_throw, {"sluggish_throw", Lanes::control, Frames::control_only, false});
+  Registration quick{"hurried", Lanes::control, Frames::control_only, false};
+  quick.no_progress = 100ms;
+  routes.add(hurried, quick);
   return std::make_shared<const RouteTable>(std::move(routes));
 }
 
@@ -76,6 +83,7 @@ struct Node {
   std::atomic<int> hang_pings{0};
   std::atomic<int> heard{0};
   std::atomic<bool> ignore_dial_requests{false};
+  std::atomic<bool> throw_on_news{false};
   // Whether the sessions peers open become this client's routes too.
   std::atomic<bool> adopt_inbound{true};
   membership::NodeRecord self;
@@ -93,11 +101,13 @@ struct Node {
     server_options.local = [this] { return self; };
     server_options.routes = table();
     server_options.traffic = traffic;
+    server_options.log = tuning.log;
     server = std::make_unique<Server>(
         io.context, "127.0.0.1", 0, server_options,
         [this](const membership::NodeRecord& peer, FrameType, const Message& request) {
           if (request.type == message::dial_request) return ignore_dial_requests ? Handled::processed() : client->handle_dial_request(peer, request);
-          if (request.type == slow) gate.enter_and_wait();
+          if (request.type == slow || request.type == hurried) gate.enter_and_wait();
+          if (request.type == sluggish_throw && throw_on_news) throw std::runtime_error("the handler broke");
           if (request.type == sluggish) std::this_thread::sleep_for(300ms);
           if (request.type == news) ++heard;
           if (request.type == message::ping && hang_pings.fetch_sub(1) > 0) gate.enter_and_wait();
@@ -470,6 +480,145 @@ TEST(Client, TheNoProgressDeadlineFollowsTheInjectedTime) {
   const auto stalled = call(a, b.self, slow);
   stepper.join();
   EXPECT_FALSE(stalled.reply);
+  EXPECT_NE(stalled.failure.find("cancelled for retry"), std::string::npos) << stalled.failure;
+}
+
+// The journal: Macha's lines at Macha's levels, through the node's sink.
+TEST(Journal, EachEndLogsItsConnectionAtInfo) {
+  Io io;
+  auto log = std::make_shared<test::RecordingSink>();
+  ClientOptions tuning;
+  tuning.log = log;
+  Node a(io, tuning), b(io, tuning);
+  ASSERT_TRUE(call(a, b.self).reply);
+  EXPECT_EQ(log->count(status::LogLevel::info, "node connection outbound peer=" + to_string(b.self.id).substr(0, 12) + " lane=control endpoint=127.0.0.1:"),
+            1u);
+  EXPECT_TRUE(eventually([&] {
+    return log->count(status::LogLevel::info,
+                      "node connection inbound peer=" + to_string(a.self.id).substr(0, 12) + " lane=control remote=127.0.0.1 advertised=127.0.0.1:") == 1;
+  }));
+}
+
+TEST(Journal, ADialFailureIsADebugLine) {
+  Io io;
+  auto log = std::make_shared<test::RecordingSink>();
+  ClientOptions tuning;
+  tuning.log = log;
+  tuning.dial_hook = [](const Endpoint&, Lane) { return std::string("link is down"); };
+  Node a(io, tuning), b(io);
+  EXPECT_FALSE(call(a, b.self).reply);
+  EXPECT_EQ(log->count(status::LogLevel::debug, "node connection failed lane=control"), 1u);
+  EXPECT_EQ(log->count(status::LogLevel::debug, "link is down"), 1u);
+}
+
+TEST(Journal, ALivenessFailureIsADebugLine) {
+  Io io;
+  auto log = std::make_shared<test::RecordingSink>();
+  ClientOptions tuning;
+  tuning.log = log;
+  tuning.heartbeat = 100ms;
+  tuning.dead_after = 600ms;
+  Node a(io, tuning), b(io);
+  ASSERT_TRUE(call(a, b.self).reply);
+  b.hang_pings = 1000;
+  EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::debug, " liveness failure: ") >= 1; }));
+}
+
+TEST(Journal, AStallIsNoticedAgainEachPeriodAndACancelSaysSo) {
+  Io io;
+  test::SteppedTime time;
+  auto log = std::make_shared<test::RecordingSink>();
+  ClientOptions tuning;
+  tuning.log = log;
+  tuning.time = &time;
+  tuning.heartbeat = 24h;
+  tuning.dead_after = 72h;
+  tuning.control_stall_notice = 1h;
+  tuning.control_no_progress = 3h;
+  Node a(io, tuning), b(io);
+  ASSERT_TRUE(call(a, b.self).reply);
+  std::thread stepper([&] {
+    b.gate.wait_for_entries(1);
+    EXPECT_EQ(log->count(status::LogLevel::debug, "RPC stalled"), 0u);
+    time.advance(1h);
+    EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::debug, "RPC stalled") == 1; }));
+    time.advance(1h);
+    EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::debug, "RPC stalled") == 2; }));
+    time.advance(1h);
+  });
+  const auto stalled = call(a, b.self, slow);
+  stepper.join();
+  EXPECT_FALSE(stalled.reply);
+  EXPECT_EQ(log->count(status::LogLevel::debug, "(control) peer=" + to_string(b.self.id).substr(0, 12) + " message=slow age_ms="), 3u);
+  EXPECT_EQ(log->count(status::LogLevel::debug, "RPC made no progress for 10800000 ms"), 1u);
+  EXPECT_EQ(log->count(status::LogLevel::debug, "cancelled for retry"), 1u);
+}
+
+// With no deadline a stall is only noticed: the call stays and may finish.
+TEST(Journal, AStallWithNoDeadlineLeavesTheCallToFinish) {
+  Io io;
+  test::SteppedTime time;
+  auto log = std::make_shared<test::RecordingSink>();
+  ClientOptions tuning;
+  tuning.log = log;
+  tuning.time = &time;
+  tuning.heartbeat = 24h;
+  tuning.dead_after = 72h;
+  tuning.control_stall_notice = 1h;
+  Node a(io, tuning), b(io);
+  ASSERT_TRUE(call(a, b.self).reply);
+  std::thread stepper([&] {
+    b.gate.wait_for_entries(1);
+    time.advance(1h);
+    EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::debug, "request remains active while peer health is monitored") == 1; }));
+    b.gate.open();
+  });
+  const auto outcome = call(a, b.self, slow);
+  stepper.join();
+  EXPECT_TRUE(outcome.reply) << outcome.failure;
+}
+
+TEST(Journal, StoppingSaysSoAtDebug) {
+  Io io;
+  auto log = std::make_shared<test::RecordingSink>();
+  ClientOptions tuning;
+  tuning.log = log;
+  {
+    Node a(io, tuning), b(io);
+    ASSERT_TRUE(call(a, b.self).reply);
+  }
+  for (const auto* line : {"shutdown: client stop begin", "shutdown: client stop complete connections=1", "shutdown: server stop begin",
+                           "shutdown: sessions reaping count=", "shutdown: sessions reaped", "shutdown: server stop complete"})
+    EXPECT_EQ(log->count(status::LogLevel::debug, line), 1u) << line;
+}
+
+TEST(Journal, AFaultingHandlerIsADebugLine) {
+  Io io;
+  auto log = std::make_shared<test::RecordingSink>();
+  ClientOptions tuning;
+  tuning.log = log;
+  Node a(io), b(io, tuning);
+  b.throw_on_news = true;
+  (void)call(a, b.self, sluggish_throw);
+  EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::debug, "RPC handler: the handler broke") == 1; }));
+}
+
+// Macha's wording; the once-a-process rule cannot run here, since only Linux
+// has a congestion control to choose (and the Debian run exercises the path).
+TEST(Journal, TheCongestionControlWarningNamesTheReason) {
+  EXPECT_EQ(congestion_control_unavailable(ENOENT), "peer sockets keep the system congestion control: bbr unavailable (No such file or directory)");
+}
+
+// A type may have its own no-progress deadline and stall notice.
+TEST(Client, ATypesOwnDeadlineReplacesItsLanes) {
+  Io io;
+  ClientOptions tuning;
+  tuning.control_no_progress = 0ms;
+  Node a(io, tuning), b(io);
+  ASSERT_TRUE(call(a, b.self).reply);
+  const auto stalled = call(a, b.self, hurried);
+  EXPECT_FALSE(stalled.reply);
+  EXPECT_NE(stalled.failure.find("hurried"), std::string::npos) << stalled.failure;
   EXPECT_NE(stalled.failure.find("cancelled for retry"), std::string::npos) << stalled.failure;
 }
 

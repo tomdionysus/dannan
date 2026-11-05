@@ -28,6 +28,7 @@
 #include "dannan/membership/identity_reset.h"
 #include "dannan/net/scheduler.h"
 #include "dannan/net/session.h"
+#include "dannan/status/log.h"
 
 namespace dannan::net {
 
@@ -88,6 +89,12 @@ struct ClientOptions {
   // ever. Per lane, since a DATA reply may legitimately take long to start.
   std::chrono::milliseconds control_no_progress{0};
   std::chrono::milliseconds data_no_progress{0};
+  // Logged at debug, again each period, while a call makes no progress; zero
+  // for none. A type's registration may name its own, as for the deadlines.
+  std::chrono::milliseconds control_stall_notice{0};
+  std::chrono::milliseconds data_stall_notice{0};
+  // Where the client writes its journal lines; none, nowhere.
+  std::shared_ptr<status::LogSink> log;
   // Health: every heartbeat each peer with a route is pinged on each lane
   // it has; a ping that hangs is abandoned after a third of dead_after and
   // retried, and a CONTROL route with no answer for dead_after is closed.
@@ -326,6 +333,7 @@ class Client {
 
   boost::asio::io_context& _io;
   ClientOptions _options;
+  const status::ScopedLogger _log;
   const identity::NodeId _self;
   boost::asio::strand<boost::asio::io_context::executor_type> _health_strand;
   boost::asio::steady_timer _heartbeat;

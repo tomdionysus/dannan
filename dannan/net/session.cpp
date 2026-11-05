@@ -341,7 +341,9 @@ void Session::close(const std::string& why) {
 }
 
 void Session::fail(const std::string& why) {
-  if (mark_closed(why)) shut(why);
+  if (!mark_closed(why)) return;
+  if (_options.log) status::ScopedLogger(_options.log, "net").debug("peer channel: " + why);
+  shut(why);
 }
 
 bool Session::mark_closed(const std::string& why) {
