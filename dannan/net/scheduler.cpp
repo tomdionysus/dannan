@@ -10,6 +10,7 @@
 #include <algorithm>
 
 #include "dannan/net/assembler.h"
+#include "dannan/status/thread_cpu.h"
 
 namespace dannan::net {
 namespace {
@@ -31,8 +32,13 @@ uint64_t micros(contract::Clock::duration duration) {
 }  // namespace
 
 RequestScheduler::RequestScheduler(std::shared_ptr<const RouteTable> routes, ServerLimits limits, RequestHandler handler, sched::RetainedMemoryLedger* memory,
-                                   const contract::TimeSource* time, supervise::SupervisedThreads* threads)
-    : _routes(std::move(routes)), _limits(limits), _handler(std::move(handler)), _memory(memory), _time(time) {
+                                   const contract::TimeSource* time, supervise::SupervisedThreads* threads, std::shared_ptr<status::LogSink> log)
+    : _routes(std::move(routes)),
+      _limits(limits),
+      _handler(std::move(handler)),
+      _memory(memory),
+      _time(time),
+      _log(log ? std::move(log) : status::null_sink(), "net") {
   if (_limits.foreground_data_reserve >= _limits.data_workers) throw std::invalid_argument("the foreground reserve must leave DATA workers for other work");
   for (size_t i = 0; i < _limits.fast_control_workers; ++i)
     _workers.emplace_back(
@@ -206,6 +212,7 @@ void RequestScheduler::run(Job job) {
 }
 
 void RequestScheduler::fast_loop(std::stop_token) {
+  status::ThreadCpuReporter cpu("net-rpc-fast-control-worker", std::chrono::seconds(5), _log);
   for (;;) {
     Job job;
     {
@@ -217,10 +224,12 @@ void RequestScheduler::fast_loop(std::stop_token) {
       _fast_bytes -= job.frame.message.payload.size();
     }
     run(std::move(job));
+    cpu.tick();
   }
 }
 
 void RequestScheduler::control_loop(std::stop_token) {
+  status::ThreadCpuReporter cpu("net-rpc-control-worker", std::chrono::seconds(5), _log);
   for (;;) {
     Job job;
     {
@@ -232,10 +241,12 @@ void RequestScheduler::control_loop(std::stop_token) {
       _control_bytes -= job.frame.message.payload.size();
     }
     run(std::move(job));
+    cpu.tick();
   }
 }
 
 void RequestScheduler::ordered_loop(std::stop_token) {
+  status::ThreadCpuReporter cpu("net-rpc-metadata-worker", std::chrono::seconds(5), _log);
   for (;;) {
     Job job;
     {
@@ -257,6 +268,7 @@ void RequestScheduler::ordered_loop(std::stop_token) {
     }
     const auto peer = job.peer.id;
     run(std::move(job));
+    cpu.tick();
     {
       contract::Lock lock(_mutex);
       _ordered_active.erase(peer);
@@ -268,6 +280,7 @@ void RequestScheduler::ordered_loop(std::stop_token) {
 bool RequestScheduler::data_ready_locked() const { return !_foreground.empty() || !_read_ahead.empty() || !_loader.empty() || !_speculative.empty(); }
 
 void RequestScheduler::data_loop(std::stop_token) {
+  status::ThreadCpuReporter cpu("net-rpc-data-worker", std::chrono::seconds(5), _log);
   const auto lower_limit = _limits.data_workers - _limits.foreground_data_reserve;
   for (;;) {
     Job job;
@@ -293,6 +306,7 @@ void RequestScheduler::data_loop(std::stop_token) {
       _data_bytes -= job.frame.message.payload.size();
     }
     run(std::move(job));
+    cpu.tick();
     if (nonforeground) {
       {
         contract::Lock lock(_mutex);
@@ -304,17 +318,23 @@ void RequestScheduler::data_loop(std::stop_token) {
 }
 
 void RequestScheduler::stop() {
+  size_t dropped = 0;
   {
     contract::Lock lock(_mutex);
     if (_stopping) return;
     _stopping = true;
     // Queued work is dropped unanswered: its sessions are closing.
-    for (const auto which : {Queue::fast, Queue::control, Queue::ordered, Queue::foreground, Queue::read_ahead, Queue::loader, Queue::speculative})
+    for (const auto which : {Queue::fast, Queue::control, Queue::ordered, Queue::foreground, Queue::read_ahead, Queue::loader, Queue::speculative}) {
+      dropped += queue(which).size();
       queue(which).clear();
+    }
     _fast_bytes = _control_bytes = _ordered_bytes = _data_bytes = 0;
   }
   _changed.notify_all();
+  _log.debug("shutdown: RPC queued requests dropped count=" + std::to_string(dropped));
+  _log.debug("shutdown: RPC workers joining");
   for (auto& worker : _workers) worker.join();
+  _log.debug("shutdown: RPC workers joined");
 }
 
 bool RequestScheduler::stopping() const {

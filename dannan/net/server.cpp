@@ -90,7 +90,7 @@ Server::Server(asio::io_context& io, std::string listen_host, uint16_t port, Ser
               throw;
             }
           },
-          _options.memory, _options.time, _options.threads),
+          _options.memory, _options.time, _options.threads, _options.log),
       _admitted(std::move(admitted)),
       // On a strand: its accept handler and stop()'s close never run at once.
       _acceptor(asio::make_strand(io)) {

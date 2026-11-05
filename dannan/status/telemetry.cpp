@@ -319,8 +319,9 @@ TelemetryStore::TelemetryStore(identity::NodeId self, std::filesystem::path pers
       const auto held = _persisted.find(node);
       if (held == _persisted.end() || held->second.observed_unix_ms() < record.observed_unix_ms()) _persisted[node] = std::move(record);
     }
-  } catch (const std::exception&) {
+  } catch (const std::exception& error) {
     // Observational state only: a corrupt file never blocks a start.
+    _load_error = error.what();
     _persisted.clear();
   }
 }

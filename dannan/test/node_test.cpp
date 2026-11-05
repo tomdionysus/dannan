@@ -473,6 +473,41 @@ TEST(Node, AnUnreachableAutomaticNodeGoesIncapableAndPeersStopDialling) {
   hub.stop();
 }
 
+TEST(Node, WhatTheNodeDoesIsJournalled) {
+  auto log = std::make_shared<test::RecordingSink>();
+  Pair pair([&](NodeConfig& b) {
+    b.log = log;
+    b.bootstrap.push_back({"127.0.0.1", test::free_port()});
+  });
+  pair.b->start();
+  EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::debug, "bootstrap: ") >= 1; }));
+  membership::IdentityReset reset;
+  reset.host = "192.0.2.9";
+  reset.port = 7;
+  reset.epoch = 3;
+  reset.reset_by = pair.b->context().identity().id();
+  reset.reason = "testing";
+  EXPECT_TRUE(pair.b->context().nodes().apply_identity_reset(reset));
+  EXPECT_EQ(log->count(status::LogLevel::info, "node identity association reset scope=[192.0.2.9]:7 stale_node_id=<any> epoch=3"), 1u);
+  EXPECT_EQ(log->count(status::LogLevel::info, "reason=testing"), 1u);
+}
+
+TEST(Node, ACorruptPersistedFileIsSaidAndSurvived) {
+  test::TempDir dir;
+  Io io;
+  auto log = std::make_shared<test::RecordingSink>();
+  std::filesystem::create_directories(dir.path() / "a" / "connectivity");
+  std::filesystem::create_directories(dir.path() / "a" / "telemetry");
+  std::ofstream(dir.path() / "a" / "connectivity" / "inbound.bin") << "not this";
+  std::ofstream(dir.path() / "a" / "telemetry" / "last-known.bin") << "not this";
+  auto settings = config(dir.path() / "a", cluster_key(dir.path()));
+  settings.log = log;
+  settings.inbound = reach::Inbound::automatic;
+  Node node(io.context, settings);
+  EXPECT_EQ(log->count(status::LogLevel::warn, "inbound resolution ignored: "), 1u);
+  EXPECT_EQ(log->count(status::LogLevel::warn, "persisted telemetry ignored: "), 1u);
+}
+
 // A hosted system that is nothing but a counter: a user type registered
 // through the Context, called across the cluster, its count in Status.
 TEST(Node, ACounterRunsOnIt) {

@@ -31,6 +31,8 @@ using SubsystemFactory = std::function<std::unique_ptr<Subsystem>(const Subsyste
 struct SupervisorOptions {
   // Where the lifecycle threads' faults are recorded; none, nowhere readable.
   SupervisedThreads* threads = nullptr;
+  // Where the plugins and their faults are journalled; none, nowhere.
+  std::shared_ptr<status::LogSink> log;
   // Where plugins (.so, .dylib) are found; a missing directory loads none.
   std::filesystem::path plugin_dir;
   // The hosted system's names: the entry symbol its plugins export, and the
@@ -69,6 +71,7 @@ class Supervisor {
   void run(Entry& entry, std::stop_token stop);
 
   const SupervisorOptions _options;
+  const status::ScopedLogger _log;
   SubsystemContext _context;
   std::vector<std::unique_ptr<Entry>> _entries;
 };

@@ -91,14 +91,15 @@ bool tcp_self_probe(const net::Endpoint& endpoint, std::chrono::milliseconds tim
 }
 
 PublicConnectivity::PublicConnectivity(ConnectivityConfig config, identity::NodeId node, net::Endpoint configured, std::shared_ptr<Gateway> gateway,
-                                       ExternalIpLookup lookup, SelfProbe probe, const contract::WallClock* wall)
+                                       ExternalIpLookup lookup, SelfProbe probe, const contract::WallClock* wall, std::shared_ptr<status::LogSink> log)
     : _config(config),
       _node(node),
       _configured(std::move(configured)),
       _gateway(std::move(gateway)),
       _lookup(std::move(lookup)),
       _probe(std::move(probe)),
-      _wall(wall) {
+      _wall(wall),
+      _log(log ? std::move(log) : status::null_sink(), "connectivity") {
   contract::Lock lock(_mutex);
   _status.configured = _configured;
   _status.advertised = _configured;
@@ -226,6 +227,21 @@ void PublicConnectivity::refresh_locked(PublicConnectivityStatus& status) {
     }
   }
   status.checked_unix_ms = _wall->unix_ms();
+  if (_config.upnp.enabled) {
+    if (upnp.mapping_active) {
+      _log.info("UPnP port mapping active gateway_external=" + upnp.external_address + ":" + std::to_string(external_port) + " internal=" + upnp.lan_address +
+                ":" + std::to_string(_configured.port) + " lease_s=" + std::to_string(_config.upnp.lease_seconds));
+      if (upnp.private_wan) _log.warn("UPnP gateway WAN address is private address=" + upnp.external_address + " probable_cgnat=true");
+    } else if (!upnp.error.empty()) {
+      _log.warn(upnp.error);
+    }
+  }
+  if (status.external_ip.attempted) {
+    if (!status.external_ip.address.empty())
+      _log.info("external IP discovered source=aws address=" + status.external_ip.address);
+    else if (!status.external_ip.error.empty())
+      _log.warn(status.external_ip.error);
+  }
 }
 
 void PublicConnectivity::probe_locked(PublicConnectivityStatus& status, bool force) {
@@ -239,9 +255,13 @@ void PublicConnectivity::probe_locked(PublicConnectivityStatus& status, bool for
     std::string error;
     if (_probe(status.advertised, _config.check.timeout, error)) {
       status.self_probe = "reachable";
+      _log.info("connectivity self probe reachable endpoint=" + status.advertised.host + ":" + std::to_string(status.advertised.port) +
+                " external_verification=unknown");
     } else {
       status.self_probe = "unreachable";
       status.self_probe_error = error;
+      _log.warn("connectivity self probe failed endpoint=" + status.advertised.host + ":" + std::to_string(status.advertised.port) +
+                " external_reachability=unknown reason=\"" + error + "\" (NAT loopback may be unavailable)");
     }
   }
   status.checked_unix_ms = _wall->unix_ms();
@@ -254,8 +274,15 @@ void PublicConnectivity::remove_owned_locked() noexcept {
     if (const auto session = _gateway->discover(_config.upnp.discovery_timeout, error)) {
       const auto existing = _gateway->mapping(_owned_port);
       // Only the mapping this node made: one changed since is not ours.
-      if (existing && existing->internal_port == _configured.port && existing->internal_client == session->lan_address) _gateway->remove(_owned_port);
+      if (existing && existing->internal_port == _configured.port && existing->internal_client == session->lan_address) {
+        _gateway->remove(_owned_port);
+        _log.debug("UPnP port mapping removed external_port=" + std::to_string(_owned_port));
+      } else {
+        _log.debug("UPnP owned mapping no longer matches; leaving external_port=" + std::to_string(_owned_port));
+      }
     }
+  } catch (const std::exception& error) {
+    _log.debug(std::string("UPnP port mapping removal failed: ") + error.what());
   } catch (...) {
   }
   _owned = false;

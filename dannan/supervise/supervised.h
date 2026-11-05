@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -18,6 +19,7 @@
 
 #include "dannan/contract/thread_safety.h"
 #include "dannan/contract/time_source.h"
+#include "dannan/status/log.h"
 
 namespace dannan::supervise {
 
@@ -41,8 +43,8 @@ class SupervisedThreads {
  public:
   explicit SupervisedThreads(std::chrono::milliseconds initial = std::chrono::seconds(1), std::chrono::milliseconds ceiling = std::chrono::seconds(60),
                              const contract::WallClock* wall = &contract::system_wall_clock(),
-                             const contract::TimeSource* time = &contract::steady_time_source())
-      : _initial(initial), _ceiling(ceiling), _wall(wall), _time(time) {}
+                             const contract::TimeSource* time = &contract::steady_time_source(), std::shared_ptr<status::LogSink> log = nullptr)
+      : _initial(initial), _ceiling(ceiling), _wall(wall), _time(time), _log(log ? std::move(log) : status::null_sink(), "supervise") {}
 
   // A service loop: `body` runs until `stop`; if it throws it runs again
   // after a backoff (doubling from initial to the ceiling, back to initial
@@ -64,11 +66,13 @@ class SupervisedThreads {
   // Runs body; the fault's description, empty if it returned.
   std::string run(std::string_view name, const std::function<void()>& body) noexcept;
   void adjust(std::string_view name, int running, int restarting);
+  void say(std::string_view name, std::string_view outcome) noexcept;
 
   const std::chrono::milliseconds _initial;
   const std::chrono::milliseconds _ceiling;
   const contract::WallClock* const _wall;
   const contract::TimeSource* const _time;
+  const status::ScopedLogger _log;
   mutable contract::Mutex _mutex;
   std::map<std::string, SupervisedThreadStatus, std::less<>> _statuses DANNAN_GUARDED_BY(_mutex);
 };

@@ -49,8 +49,9 @@ InboundResolver::InboundResolver(Inbound mode, std::filesystem::path state, cons
     _state.capable = capable;
     _state.decided_unix_ms = decided;
     _state.source = "persisted";
-  } catch (const std::exception&) {
+  } catch (const std::exception& error) {
     // Persisted evidence is a convenience; the next probe decides again.
+    _load_error = error.what();
     _state.capable = true;
     _state.source = "default";
   }
