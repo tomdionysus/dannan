@@ -215,6 +215,33 @@ on macnessa or inverbeg is too.
   order differently between platforms. The Linux file stays the reference, and
   the case also runs in the Debian image.
 
+## The budget table (ruling D)
+
+Every Macha budget and limit in Dannan's layer, and what expresses it. Read from Macha at
+`cac5998` and Dannan's headers. Disk limits are Dagda's and limits above the layer (playback,
+password checks, HTTP) are Macha's, so neither is here.
+
+| Macha | Value | Dannan | Same |
+|---|---|---|---|
+| `runtime.memory_bytes` | 0 | `NodeConfig::memory_limit_bytes` | yes |
+| `runtime.retained_memory_bytes` | 768 MiB | `memory_bytes` | yes |
+| `control_memory_reserve_bytes` | 64 MiB | `control_reserve_bytes` | yes |
+| `viewer_memory_reserve_bytes` | 192 MiB | `foreground_reserve_bytes` | yes, renamed |
+| `loader_memory_reserve_bytes` | 64 MiB | `loader_reserve_bytes` | yes |
+| `reassembly_memory_reserve_bytes` | 32 MiB | `reassembly_reserve_bytes` | yes |
+| `max_pending_rpc_requests` | 512 | `net::max_pending_replies` | yes |
+| `max_peer_outbound_messages`, `_bytes` | 256, 128 MiB | `net::max_outbound_messages`, `_bytes` | yes |
+| `small_outbound_*` | 64 KiB, 32, 8 MiB | `net::small_message`, `small_reserve_*` | yes |
+| `max_notify_payload_bytes`, `_backlog_bytes` | 64 KiB, 1 MiB | `net::max_try_notify_payload`, `_backlog` | yes |
+| `MessageAssembler` | 64, 256 MiB, 128 MiB | `SessionOptions::max_incomplete_*`, `max_message_bytes` | yes |
+| frame size | 4 KiB to 4 MiB, default 256 KiB | `net::min_frame_size`, `max_frame_size`, `NodeConfig::max_frame` | yes |
+| `max_pre_auth_sessions`, handshake timeout | 8, 5 s | `ServerOptions::max_pre_auth`, `handshake_timeout` | see below |
+| `RpcServerExecutionLimits` | 1, 64, 256 MiB; 1, 16, 64 MiB | `net::ServerLimits`, `NodeConfig::limits` | yes |
+| worker counts | 2, 2, 8, foreground reserve 2 | `net::ServerLimits` | yes |
+
+Every one is expressible and the values read equal. These compare headers by eye; only the
+ones with a case are pinned. The handshake timeout's default was not compared here.
+
 ## Records
 
 Done with this respec: the inventory rows citing the deleted `Interop.*` and
