@@ -637,7 +637,7 @@ Each step is a `feature/macha-parity` milestone, gate green, committed and merge
 | 5. The journal | The 44 lines still missing: subsystems, connectivity, thread faults, inbound, endpoint, reset, forgot, exchange failures. The supervisor takes a sink. Ruling C: a thread CPU reporter, per pool. | F13, G44, G48 | the journal golden, step 4a |
 | 6. Telemetry and Status | The hosted-field case and table (parity 7); real connection counts as 0.92.4 reports them: `ClientStats` gains created (counted after the identity check), Macha's reused sites and canonical (`net.cpp:2236-2439`, `:3003-3010`), and `node.cpp:969`'s peers-less-one and the zeros go; truncated records; refusal rows. Ruling B: rename the three loops. | F14, F15, G46, G47 | the Status golden, step 4a |
 | 7. The importer | `dannan-import-macha`: `MACHMEM1` to `4`, `MACHINB1`, `MACHTEL3`, both lock files, keeps `*.macha` for rollback. | F6, F17 | the state directory, step 4a |
-| 8. Foundations proofs and the budget table | Ruling D: every Macha budget and limit in Dannan's layer (transfer, network, memory reserves, queues, reassembly), each with the Dannan setting that expresses it or a gap closed. Quota boundary, reassembly reserve, retry backstop, durable contents, every-mask tables, `Published`, Observation rows. | G34-G40 | `test_foundations`, `test_contract`, `test_observation` |
+| 8. Foundations proofs and the budget table | Ruling D: every Macha budget and limit in Dannan's layer (transfer, network, memory reserves, queues, reassembly), each with the Dannan setting that expresses it or a gap closed. The class admission generic, ledger first. Quota boundary, reassembly reserve, retry backstop, durable contents, every-mask tables, `Published`, Observation rows. | G34-G40 | `test_foundations`, `test_contract`, `test_observation` |
 | 9. Measured gate | `dannan_bench`: 32 MiB on DATA, CONTROL round trips under load, MB/s, RSS, over the per-call strand and timer the required deadline costs; compose-bed run. Recorded, never asserted. The laptop's numbers are not comparable to the Pis'. | parity 6 | Macha's baselines at whichever release is then deployed, when Tom says |
 | 10. Linux | ASan, UBSan and TSan on arm64 Debian 13 in Docker; the BBR path; whether Boost 1.83 suffices. | parity 8, G1 | the Pis' OS and architecture; no Macha case |
 | 11. Release | A tag at Tom's word, with its sanitizer runs. The port pins it. | | Macha's mapped cases green on it |
@@ -689,6 +689,30 @@ is what Tom means by the merge being done. The branch `feature/tree-native-names
 The macnessa copy is at `../macha/build/macha-fixtures/state-macnessa/`, three files, with
 md5s, mtimes and the release in its README. It stays there, out of this repository, since it
 names real hosts.
+
+**The class admission generic** (`dannan::sched`, then Dagda's `DataResourceArbiter` and
+`IoReserve` on it; agreed with the Macha session, not prototyped). It fits only if it can
+express, from `cluster/data_work.hpp`:
+
+- Three levels, asymmetric: foreground may use the whole capacity and is never refused for
+  pressure; a waiting foreground closes both lower classes, a waiting loader closes only
+  speculative; lower classes are bounded by the whole capacity and by capacity less reserve.
+- An outside predicate for pressure: a loader is refused only when a foreground user is
+  present (waiting, holding bytes or recently active), speculative by pressure alone, neither
+  below `min_background` active lower leases. With no device, exactly the ungated admission.
+- A count ceiling beside the byte budget.
+- Waits: too large for its class fails at once; a context deadline wins; otherwise no-progress
+  windows that any release re-arms, with the one `DATA credit wait abandoned` warning;
+  refusals and waits counted once per waiter; cancel, expiry and stop count as cancelled.
+- Control cannot enter the arbiter: it throws. A per-request `charge()` applies first.
+
+The gate is Macha's `test_io_pressure.cpp` as moved to Dagda, with the cases the Macha session
+named (`foundations`, `rpc_cluster`, `root_parts`, `torrent_disk_io`, `filesystem_fuse`).
+`DataResourceStats`' fields keep their meanings: `/status/diagnostics` `data_resources` reads
+them by name (`status_api.cpp:1010-1037`). Not folded in: pacing (`WeightedLoaderService`,
+Dannan's `DutyShare`, where "paced, never stopped" lives), maintenance's byte credits, the
+per-walk `Budget`, `DiskServiceMonitor`. If it cannot express these, it does not ship, and
+that is reported rather than bent.
 
 **Open:** whether step 3 starts now. The real IGD run stays held.
 
