@@ -1,7 +1,8 @@
 # Dannan - Active Work
 
-Last updated: 2026-11-04. Dannan is written in this repository, from the
-design, as its own library, and Macha is ported onto it piece by piece.
+Last updated: 2026-11-05. Dannan is written in this repository as its own
+library, Macha's code at `00861dd` being the source of truth, and Macha is ported
+onto it.
 That reverses the morning's "in-tree first" (Tom, 2026-11-03: "I
 misplanned. It should be here first."). "Resume here" below says what is
 built. `COMPLETED.md` is the record; move items across as they land, with what
@@ -623,7 +624,7 @@ Each step is a `feature/macha-parity` milestone, gate green, committed and merge
 | 7. The importer | `dannan-import-macha`: `MACHMEM1` to `4`, `MACHINB1`, `MACHTEL3`, both lock files, keeps `*.macha` for rollback. | F6, F17 | the real state directory, after Macha's tree-native merge |
 | 8. Foundations proofs | Quota boundary, reassembly reserve, retry backstop, durable contents, every-mask tables, `Published`, Observation rows. | G34-G40 | `test_foundations`, `test_contract`, `test_observation` |
 | 9. Measured gate | `dannan_bench`: 32 MiB on DATA, CONTROL round trips under load, MB/s, RSS, over the path ruling A leaves; compose-bed run. Recorded, never asserted. The laptop's numbers are not comparable to the Pis'. | parity 6 | Macha's baselines at 0.92.3, when Tom says |
-| 10. Linux | ASan, UBSan and TSan on arm64 Debian 13 in Docker; the BBR path; whether Boost 1.83 suffices. | parity 8, G1 | `syncfs`-free, this is the transport only |
+| 10. Linux | ASan, UBSan and TSan on arm64 Debian 13 in Docker; the BBR path; whether Boost 1.83 suffices. | parity 8, G1 | the Pis' OS and architecture; no Macha case |
 | 11. Release | A tag at Tom's word, with its sanitizer runs. The port pins it. | | Macha's mapped cases green on it |
 
 **The facade, not Dannan's, per the cutover spec:** the advertise-host and failure-domain
