@@ -51,6 +51,8 @@ add_executable(dannan_tests
   status_process_test.cpp
   status_surface_test.cpp
   status_telemetry_test.cpp
+  macha_import_test.cpp
+  ${PROJECT_SOURCE_DIR}/tools/macha_import.cpp
   status_readiness_test.cpp
   status_thread_cpu_test.cpp
   supervise_test.cpp
