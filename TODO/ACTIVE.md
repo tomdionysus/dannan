@@ -143,8 +143,13 @@ Rulings on the first cutover, Tom, 2026-11-05, settled:
   `cluster-maintenance` and `cluster-connectivity` (step 6).
 - **C. DIAG lines (G48).** Dannan adds a thread CPU reporter, per pool on the worker and io
   threads, not per connection (step 5).
-- **D. The per-account bound (law 2, second clause).** Added to Dannan, as a generic bound
-  per principal in `Budget` (step 8), against the recommendation that it stay Macha's.
+- **D. Bounds (replaces the first answer).** "the bounds exist to enforce fair usage and
+  prevent problems. For Dannan, the concept is more useful than strict fidelity with Macha -
+  BUT, the existing macha budgets and limits MUST be representable in Dannan IF Dannan is
+  responsible for that layer or how that layer is implemented." So limits above the layer
+  (playback sessions, transcodes, password checks) stay Macha's, and Dannan adds no
+  per-principal bound for them. Limits in the layer Dannan owns must each be expressible in
+  Dannan, not necessarily in Macha's form (step 8's budget table).
 - **Live nodes.** The Macha session's own loopback runs on macnessa were fine. The hold
   covers Dannan's work, the Pi measurements and the gateway.
 - **The macnessa copy.** Allowed, read-only, without stopping the node: the roster, inbound
@@ -625,7 +630,7 @@ Each step is a `feature/macha-parity` milestone, gate green, committed and merge
 | 5. The journal | The 44 lines still missing: subsystems, connectivity, thread faults, inbound, endpoint, reset, forgot, exchange failures. The supervisor takes a sink. Ruling C: a thread CPU reporter, per pool. | F13, G44, G48 | the journal golden, step 4a |
 | 6. Telemetry and Status | The hosted-field case and table (parity 7); real connection counts as 0.92.4 reports them: `ClientStats` gains created (counted after the identity check), Macha's reused sites and canonical (`net.cpp:2236-2439`, `:3003-3010`), and `node.cpp:969`'s peers-less-one and the zeros go; truncated records; refusal rows. Ruling B: rename the three loops. | F14, F15, G46, G47 | the Status golden, step 4a |
 | 7. The importer | `dannan-import-macha`: `MACHMEM1` to `4`, `MACHINB1`, `MACHTEL3`, both lock files, keeps `*.macha` for rollback. | F6, F17 | the state directory, step 4a |
-| 8. Foundations proofs and the account bound | Ruling D's per-principal bound in `Budget`. Quota boundary, reassembly reserve, retry backstop, durable contents, every-mask tables, `Published`, Observation rows. | G34-G40 | `test_foundations`, `test_contract`, `test_observation` |
+| 8. Foundations proofs and the budget table | Ruling D: every Macha budget and limit in Dannan's layer (transfer, network, memory reserves, queues, reassembly), each with the Dannan setting that expresses it or a gap closed. Quota boundary, reassembly reserve, retry backstop, durable contents, every-mask tables, `Published`, Observation rows. | G34-G40 | `test_foundations`, `test_contract`, `test_observation` |
 | 9. Measured gate | `dannan_bench`: 32 MiB on DATA, CONTROL round trips under load, MB/s, RSS, over the per-call strand and timer the required deadline costs; compose-bed run. Recorded, never asserted. The laptop's numbers are not comparable to the Pis'. | parity 6 | Macha's baselines at whichever release is then deployed, when Tom says |
 | 10. Linux | ASan, UBSan and TSan on arm64 Debian 13 in Docker; the BBR path; whether Boost 1.83 suffices. | parity 8, G1 | the Pis' OS and architecture; no Macha case |
 | 11. Release | A tag at Tom's word, with its sanitizer runs. The port pins it. | | Macha's mapped cases green on it |
@@ -677,13 +682,6 @@ is what Tom means by the merge being done. The branch `feature/tree-native-names
 The macnessa copy is at `../macha/build/macha-fixtures/state-macnessa/`, three files, with
 md5s, mtimes and the release in its README. It stays there, out of this repository, since it
 names real hosts.
-
-**What ruling D's bound must do**, from `playback.cpp:1766` and `config.hpp:441`: bound held
-entitlements per principal, not a rate. Macha has two (sessions per account, 32; transcode
-entitlements per account, 2), checked after a node-wide cap (64 sessions), each a distinct
-refusal reporting held and limit. An anonymous caller is bounded as itself, not pooled.
-Reservations count while a session starts. Release is the caller's, on idle timeout as well
-as on close.
 
 **Open:** whether step 3 starts now. The real IGD run stays held.
 
