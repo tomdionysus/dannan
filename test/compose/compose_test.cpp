@@ -434,7 +434,7 @@ TEST(ComposeBed, MeasuresThroughNatsAndARelay) {
     const auto [status, lines] = bed.compose(
         {"exec", "-T", "-w", "/tmp", "a1", "sh", "-c",
          std::string("/build/dannan-bench --megabytes 32 --rounds 1 --bootstrap 10.10.0.10:7437 --advertise $ADVERTISE --key /tmp/cluster.key --peer-name ") +
-             peer},
+             peer + " 2>&1"},
         600s);
     EXPECT_EQ(status, 0) << peer;
     for (const auto& line : lines) std::cout << peer << ": " << line << std::endl;
