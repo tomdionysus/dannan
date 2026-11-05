@@ -669,10 +669,23 @@ modified until they're ready."). Macha can still produce artefacts for this plan
   (`membership.cpp:12-16`) and no encoder, so Dannan builds those samples by hand from the
   reader's layout. A copy from macnessa is better evidence and waits on Tom's word.
 
-**Open:** whether step 3 starts now, and where Macha's tree-native merge stands against
-`cac5998` (Tom says it is already done on Macha; being asked of the Macha session). The real
-IGD run stays held. The macnessa copy stays under `build/`, out of the repository, since it
+**Settled with the Macha session, 2026-11-05.** The baseline at `cac5998` stands: the Merkle
+namespace is in it and on both nodes (tree-backed heads, SM19, re-rooted 2026-11-03), which
+is what Tom means by the merge being done. The branch `feature/tree-native-namespace`
+(`b080c38`) is a clean-up, unmerged, held by the freeze, and touches nothing moving here.
+
+The macnessa copy is at `../macha/build/macha-fixtures/state-macnessa/`, three files, with
+md5s, mtimes and the release in its README. It stays there, out of this repository, since it
 names real hosts.
+
+**What ruling D's bound must do**, from `playback.cpp:1766` and `config.hpp:441`: bound held
+entitlements per principal, not a rate. Macha has two (sessions per account, 32; transcode
+entitlements per account, 2), checked after a node-wide cap (64 sessions), each a distinct
+refusal reporting held and limit. An anonymous caller is bounded as itself, not pooled.
+Reservations count while a session starts. Release is the caller's, on idle timeout as well
+as on close.
+
+**Open:** whether step 3 starts now. The real IGD run stays held.
 
 ## Next
 
