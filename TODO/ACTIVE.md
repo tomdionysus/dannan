@@ -34,6 +34,8 @@ current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluat
 
 ## Resume here (2026-11-05)
 
+**Last gate before the pause:** at this commit's code, Debian 13 plain, ASan with UBSan, and TSan, 562 each; macOS ASan with UBSan and TSan, 560 each with the BBR case skipped; no sanitizer reports. Compose bed: the two original cases pass; the relay measurement does not.
+
 **PAUSED, Tom, relayed by the Macha session, 2026-11-05: "Pause until it lands."** Nothing on
 the port, the class admission generic included, until Macha's old-code removal lands. The Macha
 session says when, with the commit and whether anything in Dannan's layer moved, and re-cuts the
@@ -661,7 +663,7 @@ plugins rebuilt (F22), and the call filter that replaces send and admit seams.
 and retire; the 3 Macha-visible ones only stall a message type leaving Macha's own node.
 
 **Known defect, off this path: relayed DATA has no flow control.** `ComposeBed.MeasuresThroughNatsAndARelay`
-fails most runs through the relay ("peer channel closed: peer closed"), passing about 1 in 3. From
+fails most runs through the relay ("peer channel closed: peer closed"), passing 2 of 8. From
 reading `reach/paths.cpp:485-486` and `:901-906`: a pump pushes `relay_data` as fast as it reads, and
 a full queue closes the circuit instead of waiting. Which end closes in a given run is not pinned
 down. The case is left failing, as the record of it. Macha's nodes dial each other and do not relay.
