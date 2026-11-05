@@ -13,11 +13,15 @@
 // `test_rpc_cluster.cpp` cases as the model.
 
 #include <gtest/gtest.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <sys/socket.h>
 
 #include <boost/asio/io_context.hpp>
 #include <cstdio>
 #include <fstream>
 #include <future>
+#include <mutex>
 #include <thread>
 
 #include "dannan/net/client.h"
@@ -85,6 +89,20 @@ struct Node {
   std::atomic<bool> ignore_dial_requests{false};
   std::atomic<bool> throw_on_news{false};
   std::atomic<bool> hold_data{false};
+  std::function<void(size_t)> on_put;
+  std::mutex held_mutex;
+  std::vector<std::shared_ptr<Session>> held_inbound;
+  // Sessions that arrived while adopt_inbound was off become routes now, as they
+  // would have a moment later.
+  void release_inbound() {
+    adopt_inbound = true;
+    std::vector<std::shared_ptr<Session>> held;
+    {
+      std::lock_guard lock(held_mutex);
+      held.swap(held_inbound);
+    }
+    for (const auto& session : held) client->admit(session);
+  }
   std::atomic<int> slow_started{0};
   std::atomic<int> slow_finished{0};
   std::atomic<bool> slow_data{false};
@@ -114,6 +132,7 @@ struct Node {
           if (request.type == slow || request.type == hurried || (request.type == put_object && hold_data)) gate.enter_and_wait();
           if (request.type == slow) ++slow_finished;
           if (request.type == put_object && slow_data) std::this_thread::sleep_for(300ms);
+          if (request.type == put_object && on_put) on_put(request.payload.size());
           if (request.type == sluggish_throw && throw_on_news) throw std::runtime_error("the handler broke");
           if (request.type == sluggish) std::this_thread::sleep_for(300ms);
           if (request.type == news) ++heard;
@@ -121,7 +140,12 @@ struct Node {
           return Handled::processed({message::ok, request.payload, {}});
         },
         [this](const std::shared_ptr<Session>& session) {
-          if (adopt_inbound) client->admit(session);
+          if (adopt_inbound) {
+            client->admit(session);
+          } else {
+            std::lock_guard lock(held_mutex);
+            held_inbound.push_back(session);
+          }
         });
     ClientOptions options = std::move(tuning);
     options.credentials = key;
@@ -628,6 +652,288 @@ TEST(Server, AClosedSessionsQueuedWorkIsNotStartedAndItsRunningWorkFinishes) {
   // The server is none the worse.
   Node c(io);
   EXPECT_TRUE(call(c, b.self).reply);
+}
+
+// The transport under Macha's load: 32 MiB in 4 KiB frames, nothing else waiting
+// for it. A later foreground call reaches the handler first, a promoted small call
+// overtakes on both sides, and a cancel leaves the session up with no new dial.
+TEST(Client, ALargeTransferIsOvertakenCancelledAndPromotedEndToEnd) {
+  constexpr size_t big = 32 * 1024 * 1024;
+  Io io;
+  ClientOptions tuning;
+  tuning.max_frame = 4096;
+  Node a(io, tuning), b(io);
+  std::mutex mutex;
+  std::vector<size_t> arrivals;
+  b.on_put = [&](size_t bytes) {
+    std::lock_guard lock(mutex);
+    arrivals.push_back(bytes);
+  };
+  const auto put = [&](size_t bytes, FrameType frame, std::promise<CallOutcome>& done) {
+    return a.client->call(b.self, put_object, Bytes(bytes, 7), frame, io.context.get_executor(),
+                          [&done](CallOutcome outcome) { done.set_value(std::move(outcome)); });
+  };
+  ASSERT_TRUE(call(a, b.self, put_object, FrameType::foreground, Bytes(10, 1)).reply);
+  arrivals.clear();
+  const auto dials = a.client->stats().dials;
+  {
+    std::promise<CallOutcome> large, small;
+    (void)put(big, FrameType::speculative, large);
+    (void)put(100, FrameType::foreground, small);
+    auto small_done = small.get_future();
+    auto large_done = large.get_future();
+    ASSERT_EQ(small_done.wait_for(60s), std::future_status::ready);
+    EXPECT_TRUE(small_done.get().reply);
+    ASSERT_EQ(large_done.wait_for(120s), std::future_status::ready);
+    const auto outcome = large_done.get();
+    ASSERT_TRUE(outcome.reply) << outcome.failure;
+    EXPECT_EQ(outcome.reply->payload.size(), big);
+    std::lock_guard lock(mutex);
+    ASSERT_EQ(arrivals.size(), 2u);
+    EXPECT_EQ(arrivals[0], 100u);
+    EXPECT_EQ(arrivals[1], big);
+    arrivals.clear();
+  }
+  {
+    std::promise<CallOutcome> large, small;
+    (void)put(big, FrameType::speculative, large);
+    auto promoted = put(100, FrameType::speculative, small);
+    promoted->promote(FrameType::foreground);
+    auto small_done = small.get_future();
+    auto large_done = large.get_future();
+    ASSERT_EQ(small_done.wait_for(60s), std::future_status::ready);
+    EXPECT_TRUE(small_done.get().reply);
+    ASSERT_EQ(large_done.wait_for(120s), std::future_status::ready);
+    EXPECT_TRUE(large_done.get().reply);
+    std::lock_guard lock(mutex);
+    ASSERT_EQ(arrivals.size(), 2u);
+    EXPECT_EQ(arrivals[0], 100u);
+  }
+  {
+    std::promise<CallOutcome> large;
+    auto handle = put(big, FrameType::speculative, large);
+    handle->cancel();
+    auto large_done = large.get_future();
+    ASSERT_EQ(large_done.wait_for(60s), std::future_status::ready);
+    EXPECT_FALSE(large_done.get().reply);
+  }
+  EXPECT_TRUE(call(a, b.self, put_object, FrameType::foreground, Bytes(10, 1)).reply);
+  EXPECT_EQ(a.client->stats().dials, dials);
+  EXPECT_TRUE(a.client->has_route(b.self.id, Lane::data));
+}
+
+TEST(Client, AFastCallPassesAHeldOneOnASession) {
+  Io io;
+  Node a(io), b(io);
+  ASSERT_TRUE(call(a, b.self).reply);
+  auto held = std::async(std::launch::async, [&] { return call(a, b.self, slow); });
+  ASSERT_TRUE(b.gate.wait_for_entries(1));
+  EXPECT_TRUE(call(a, b.self).reply);
+  EXPECT_TRUE(call(a, b.self, message::ping).reply);
+  b.gate.open();
+  EXPECT_TRUE(held.get().reply);
+}
+
+TEST(Client, ALargeReplyLeavesTheSessionReusable) {
+  constexpr size_t large = 4 * 1024 * 1024 + 36;
+  Io io;
+  Node a(io), b(io);
+  for (int i = 0; i < 2; ++i) {
+    const auto outcome = call(a, b.self, put_object, FrameType::foreground, Bytes(large, static_cast<uint8_t>(i + 1)));
+    ASSERT_TRUE(outcome.reply) << outcome.failure;
+    EXPECT_EQ(outcome.reply->payload, Bytes(large, static_cast<uint8_t>(i + 1)));
+  }
+  EXPECT_EQ(a.client->stats().dials, 1u);
+}
+
+TEST(Client, TheDialledNodeReusesTheDataLane) {
+  Io io;
+  Node a(io), b(io);
+  ASSERT_TRUE(call(a, b.self, put_object, FrameType::foreground, Bytes(10, 1)).reply);
+  ASSERT_TRUE(eventually([&] { return b.client->has_route(a.self.id, Lane::data); }));
+  const auto outcome = call(b, a.self, put_object, FrameType::foreground, Bytes(10, 2));
+  ASSERT_TRUE(outcome.reply) << outcome.failure;
+  EXPECT_EQ(b.client->stats().dials, 0u);
+}
+
+TEST(Client, ASecondNameForOnePeerEndsInOneRoute) {
+  Io io;
+  Node a(io), b(io);
+  const auto by = [&](const std::string& host) {
+    std::promise<CallOutcome> done;
+    auto future = done.get_future();
+    (void)a.client->call(Endpoint{host, b.self.port}, message::members, {}, FrameType::control, io.context.get_executor(),
+                         [&](CallOutcome outcome) { done.set_value(std::move(outcome)); });
+    return future.get();
+  };
+  const auto numeric = by("127.0.0.1");
+  ASSERT_TRUE(numeric.reply) << numeric.failure;
+  const auto alias = by("localhost");
+  ASSERT_TRUE(alias.reply) << alias.failure;
+  EXPECT_TRUE(eventually([&] { return b.server->sessions() == 1; }));
+  EXPECT_TRUE(a.client->has_route(b.self.id, Lane::control));
+}
+
+// Accepted, then silence: a shared dial ends at the connect timeout, for every
+// caller sharing it.
+TEST(Client, ASharedDialToASilentListenerEndsWithinTheConnectTimeout) {
+  Io io;
+  ClientOptions tuning;
+  tuning.connect_timeout = 200ms;
+  Node a(io, tuning);
+  asio::ip::tcp::acceptor silent(io.context, {asio::ip::address_v4::loopback(), 0});
+  asio::ip::tcp::socket held(io.context);
+  silent.async_accept(held, [](const boost::system::error_code&) {});
+  membership::NodeRecord quiet;
+  quiet.id = identity::NodeId::random();
+  quiet.host = "127.0.0.1";
+  quiet.port = silent.local_endpoint().port();
+  const auto started = std::chrono::steady_clock::now();
+  auto first = std::async(std::launch::async, [&] { return call(a, quiet); });
+  auto second = std::async(std::launch::async, [&] { return call(a, quiet); });
+  EXPECT_FALSE(first.get().reply);
+  EXPECT_FALSE(second.get().reply);
+  EXPECT_LT(std::chrono::steady_clock::now() - started, 8s);
+  EXPECT_EQ(a.client->stats().dials, 1u);
+}
+
+TEST(Broadcast, BestEffortAndNotifyTakeBothRouteDirections) {
+  Io io;
+  Node a(io), b(io), c(io);
+  ASSERT_TRUE(call(b, a.self).reply);
+  ASSERT_TRUE(call(a, c.self).reply);
+  ASSERT_TRUE(eventually([&] { return a.client->has_route(b.self.id, Lane::control); }));
+  for (const auto frame : {FrameType::speculative, FrameType::control}) {
+    b.heard = 0;
+    c.heard = 0;
+    EXPECT_EQ(a.client->broadcast_best_effort({news, {}, {}}, frame), 2u);
+    EXPECT_TRUE(eventually([&] { return b.heard == 1 && c.heard == 1; }));
+    EXPECT_EQ(a.client->broadcast_notify({news, {}, {}}, frame), 2u);
+    EXPECT_TRUE(eventually([&] { return b.heard == 2 && c.heard == 2; }));
+  }
+}
+
+TEST(Broadcast, AKnownPeerWithNoRouteIsNotDialled) {
+  Io io;
+  Node a(io), b(io), c(io);
+  ASSERT_TRUE(call(a, b.self).reply);
+  a.client->note_peer(c.self);
+  const auto dials = a.client->stats().dials;
+  EXPECT_EQ(a.client->broadcast_best_effort({news, {}, {}}, FrameType::speculative), 1u);
+  EXPECT_EQ(a.client->stats().dials, dials);
+  EXPECT_FALSE(a.client->has_route(c.self.id, Lane::control));
+}
+
+TEST(ReverseDial, TheHubUsesARedialledLaneWithoutAsking) {
+  Io io;
+  ClientOptions tuning;
+  tuning.heartbeat = 50ms;
+  Node site(io, tuning, 0), hub(io);
+  site.client->set_maintained_peers([&] { return std::vector<membership::NodeRecord>{hub.self}; });
+  ASSERT_TRUE(eventually([&] { return hub.client->has_route(site.self.id, Lane::data); }));
+  const auto outcome = call(hub, site.self, put_object, FrameType::foreground, Bytes(10, 3));
+  ASSERT_TRUE(outcome.reply) << outcome.failure;
+  EXPECT_EQ(hub.client->stats().dial_requests_sent, 0u);
+}
+
+// Finds this process's sockets connected to `port`, without a hook into the session.
+std::vector<int> sockets_connected_to(uint16_t port) {
+  std::vector<int> out;
+  for (int fd = 3; fd < 4096; ++fd) {
+    sockaddr_in peer{};
+    socklen_t length = sizeof(peer);
+    int type = 0;
+    socklen_t type_length = sizeof(type);
+    if (::getsockopt(fd, SOL_SOCKET, SO_TYPE, &type, &type_length) != 0 || type != SOCK_STREAM) continue;
+    if (::getpeername(fd, reinterpret_cast<sockaddr*>(&peer), &length) == 0 && peer.sin_family == AF_INET && ntohs(peer.sin_port) == port) out.push_back(fd);
+  }
+  return out;
+}
+
+TEST(Client, ItsOwnSocketsKeepAliveWithoutNagle) {
+  Io io;
+  Node a(io), b(io);
+  ASSERT_TRUE(call(a, b.self).reply);
+  ASSERT_TRUE(call(a, b.self, put_object, FrameType::foreground, Bytes(10, 1)).reply);
+  const auto sockets = sockets_connected_to(b.self.port);
+  // Both lanes: a dial's own ends are the only sockets whose peer is that port.
+  ASSERT_GE(sockets.size(), 2u);
+  for (const int fd : sockets) {
+    int value = 0;
+    socklen_t length = sizeof(value);
+    ASSERT_EQ(::getsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &value, &length), 0);
+    EXPECT_NE(value, 0);
+    ASSERT_EQ(::getsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &value, &length), 0);
+    EXPECT_NE(value, 0);
+  }
+}
+
+// A refusal is an answer: the session it came on carries on.
+TEST(Server, ASessionOutlivesARefusal) {
+  Io io;
+  Node a(io), b(io);
+  ASSERT_TRUE(call(a, b.self).reply);
+  const auto dials = a.client->stats().dials;
+  b.throw_on_news = true;
+  const auto refused = call(a, b.self, sluggish_throw);
+  ASSERT_TRUE(refused.reply);
+  EXPECT_EQ(refused.reply->type, message::error);
+  EXPECT_TRUE(call(a, b.self).reply);
+  EXPECT_EQ(a.client->stats().dials, dials);
+  EXPECT_EQ(b.server->sessions(), 1u);
+}
+
+// A peer that authenticated and stopped reading backs up: broadcasts skip it and
+// reach the others, without waiting.
+TEST(Broadcast, ABackedUpPeerIsSkippedWithoutWaiting) {
+  Io io;
+  Node a(io), b(io);
+  ASSERT_TRUE(call(a, b.self).reply);
+  asio::ip::tcp::acceptor listener(io.context, {asio::ip::address_v4::loopback(), 0});
+  membership::NodeRecord silent;
+  silent.id = identity::NodeId::random();
+  silent.host = "127.0.0.1";
+  silent.port = listener.local_endpoint().port();
+  auto held = std::make_shared<Session::Socket>(io.context);
+  std::promise<void> shaken;
+  listener.async_accept([&, held](const boost::system::error_code&, asio::ip::tcp::socket tcp) {
+    *held = Session::Socket(io.context, Session::Socket::protocol_type(AF_INET, SOCK_STREAM), tcp.release());
+    async_accept_handshake(*held, cluster_key(), silent, 256 * 1024, {"127.0.0.1", 1}, [&](std::exception_ptr, Established) { shaken.set_value(); });
+  });
+  // 32 MiB to a peer that reads nothing: more than the socket's buffers hold.
+  (void)a.client->call(silent, slow, Bytes(32 * 1024 * 1024, 1), FrameType::control, io.context.get_executor(), [](CallOutcome) {});
+  ASSERT_EQ(shaken.get_future().wait_for(10s), std::future_status::ready);
+  ASSERT_TRUE(eventually([&] { return a.client->has_route(silent.id, Lane::control); }));
+  const auto started = std::chrono::steady_clock::now();
+  EXPECT_EQ(a.client->broadcast_best_effort({news, {}, {}}, FrameType::speculative), 1u);
+  EXPECT_EQ(a.client->broadcast_notify({news, {}, {}}, FrameType::speculative), 1u);
+  EXPECT_LT(std::chrono::steady_clock::now() - started, 2s);
+  EXPECT_TRUE(eventually([&] { return b.heard == 2; }));
+}
+
+// A simultaneous connect: the lower id keeps its own dial and retires the other, so
+// the higher id's call can find its dial retired before the peer's session is its
+// route. The call must come through all the same.
+TEST(Client, ACallOnADialRetiredBeforeThePeersSessionRegistersComesThrough) {
+  for (int round = 0; round < 10; ++round) {
+    Io io;
+    auto first = std::make_unique<Node>(io);
+    auto second = std::make_unique<Node>(io);
+    auto& low = first->self.id < second->self.id ? *first : *second;
+    auto& high = first->self.id < second->self.id ? *second : *first;
+    // The low node's session reaches the high node but is not yet its route.
+    high.adopt_inbound = false;
+    ASSERT_TRUE(call(low, high.self).reply);
+    ASSERT_FALSE(high.client->has_route(low.self.id, Lane::control));
+    auto outcome = std::async(std::launch::async, [&] { return call(high, low.self); });
+    high.release_inbound();
+    const auto answered = outcome.get();
+    EXPECT_TRUE(answered.reply) << answered.failure;
+    // And the pair keeps working once it has settled.
+    EXPECT_TRUE(eventually([&] { return high.client->has_route(low.self.id, Lane::control); }));
+    EXPECT_TRUE(call(high, low.self).reply);
+    EXPECT_TRUE(call(low, high.self).reply);
+  }
 }
 
 // The journal: Macha's lines at Macha's levels, through the node's sink.
