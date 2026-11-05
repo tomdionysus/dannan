@@ -39,6 +39,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iostream>
 #include <iterator>
 #include <map>
 #include <optional>
@@ -420,6 +421,24 @@ TEST(ComposeBed, LevelZeroThroughRealNats) {
   ASSERT_EQ(bed.compose({"start", "hub1"}, 120s).first, 0);
   wrong = settle([&] { return problems(bed.snapshot(nodes), nodes, true); }, 180s);
   ASSERT_TRUE(wrong.empty()) << "all six as at the start:\n" << joined(wrong);
+}
+
+// The same figures dannan-bench gives on loopback, through what the bed makes real: a
+// direct dial to a hub, a punch through two NATs, a relay. Recorded, not asserted; a
+// failed transfer is the only failure. Each runs from behind a1's router.
+TEST(ComposeBed, MeasuresThroughNatsAndARelay) {
+  Bed bed;
+  up_and_settled(bed);
+  if (HasFatalFailure()) return;
+  for (const auto* peer : {"hub1", "d1", "b1"}) {
+    const auto [status, lines] = bed.compose(
+        {"exec", "-T", "-w", "/tmp", "a1", "sh", "-c",
+         std::string("/build/dannan-bench --megabytes 32 --rounds 1 --bootstrap 10.10.0.10:7437 --advertise $ADVERTISE --key /tmp/cluster.key --peer-name ") +
+             peer},
+        600s);
+    EXPECT_EQ(status, 0) << peer;
+    for (const auto& line : lines) std::cout << peer << ": " << line << std::endl;
+  }
 }
 
 TEST(ComposeBed, CertificatesAloneThroughRealNats) {
