@@ -619,7 +619,7 @@ Each step is a `feature/macha-parity` milestone, gate green, committed and merge
 | 2. Lifecycle and readiness, **done** (472) | `Readiness::hold_until_marked` and `mark_complete`; first failure kept. A job on a closed session skips its handler. A failed inbound persist no longer restarts the loop. Escalation names the thread. Every thread supervised, with a guard test. `request_stop`; the layout check before the lock. | F5, F9, F12, G16, G41-G43, G45 | `test_every_subsystem_thread_is_run_supervised`, startup cases in `test_service_root` |
 | 3. Transport proofs | The end-to-end cases Dannan lacks, including the 32 MiB overtake, and forged handshakes. Fix what they find. G23 is known to be open: `place()` reroutes where Macha may wait for the peer. | G1-G10, G14, G15, G17, G20-G23, G25-G27 | `test_rpc_cluster`'s transport cases |
 | 4. Membership proofs | Resets, fences, forgetting, the empty-domain fallback's home. | F19, F20, G24, G28-G33 | `test_absent_nodes`, `test_rpc_cluster`'s membership cases |
-| 4a. The goldens | Take the Macha session's config, Status, route and journal captures at `cac5998`; check them against the spec. | the goldens the port gates on | none; the port compares against these |
+| 4a. The goldens, **taken** | The Macha session's config, Status, route and journal captures at `cac5998`, in `dannan/test/fixtures/macha/`. Reached: at most 381 of 494 Status keys, 31 of 83 journal lines; the rest stay unproven. | the goldens the port gates on | none; the port compares against these |
 | 5. The journal | The 44 lines still missing: subsystems, connectivity, thread faults, inbound, endpoint, reset, forgot, exchange failures. The supervisor takes a sink. Ruling C. | F13, G44, G48 | the journal golden, step 4a |
 | 6. Telemetry and Status | The hosted-field case and table (parity 7); real connection counts as 0.92.4 reports them: `ClientStats` gains created (counted after the identity check), Macha's reused sites and canonical (`net.cpp:2236-2439`, `:3003-3010`), and `node.cpp:969`'s peers-less-one and the zeros go; truncated records; refusal rows. Ruling B. | F14, F15, G46, G47 | the Status golden, step 4a |
 | 7. The importer | `dannan-import-macha`: `MACHMEM1` to `4`, `MACHINB1`, `MACHTEL3`, both lock files, keeps `*.macha` for rollback. | F6, F17 | the state directory, step 4a |
@@ -662,9 +662,10 @@ modified until they're ready."). Macha can still produce artefacts for this plan
   `dannan/test/fixtures/macha/`, with the commit and how each was made, and checks them
   against the cutover spec's 83 lines and 494 keys. A line or key the capture does not
   reach is marked unproven, not dropped.
-- **Step 7's state directory** comes from the same place, from a run of that build, with
-  `MACHMEM1` to `3` from Macha's encoders. A copy from macnessa is better evidence and
-  waits on Tom's word.
+- **Step 7's state directory** is there too, young and small, without a tombstone or an
+  absent node. Macha writes only `MACHMEM4`; `MACHMEM1` to `3` have a reader
+  (`membership.cpp:12-16`) and no encoder, so Dannan builds those samples by hand from the
+  reader's layout. A copy from macnessa is better evidence and waits on Tom's word.
 
 **Open with Tom:** who takes the Pi baselines, ruling C, and the rulings above.
 
