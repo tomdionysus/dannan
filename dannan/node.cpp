@@ -461,7 +461,7 @@ void Node::start() {
   if (_config.observation_interval.count() > 0) {
     _observation_recorder = std::make_unique<status::ObservationRecorder>(
         _observations, std::make_shared<status::ObservationLog>(_config.state_path / "observation" / "observations.jsonl", _config.observation_max_bytes),
-        _config.version, _config.observation_interval, _config.observation_gauges, _config.wall);
+        _config.version, _config.observation_interval, _config.observation_gauges, _config.wall, &_threads);
     _observations.event({_config.wall->unix_ms(), "start", {}, {{"version", _config.version}}});
     _observation_recorder->start();
   }
@@ -477,6 +477,7 @@ void Node::start() {
   server_options.traffic = _traffic;
   server_options.time = _config.time;
   server_options.log = _config.log;
+  server_options.threads = &_threads;
   _server = std::make_unique<net::Server>(
       _io, _config.listen_host, _config.port, server_options,
       [this](const NodeRecord& peer, sched::FrameType frame, const net::Message& request) { return handle(peer, frame, request); },
@@ -524,6 +525,7 @@ void Node::start() {
   _client = std::make_unique<net::Client>(_io, client_options);
   reach::PathsConfig paths;
   paths.credentials = _credentials;
+  paths.threads = &_threads;
   paths.connect_timeout = _config.connect_timeout;
   paths.punch_window = _config.punch_window;
   paths.relay = _config.relay;
@@ -577,6 +579,7 @@ void Node::start() {
   _readiness.control_plane(true);
   _client->start();
 
+  contract::Lock loops(_loops_mutex);
   _loops.emplace_back([this](std::stop_token stop) { _threads.loop("node-membership", stop, [this, stop] { membership_loop(stop); }); });
   _loops.emplace_back([this](std::stop_token stop) { _threads.loop("node-telemetry", stop, [this, stop] { telemetry_loop(stop); }); });
   _loops.emplace_back([this](std::stop_token stop) { _threads.loop("node-connectivity", stop, [this, stop] { connectivity_loop(stop); }); });
@@ -587,17 +590,28 @@ void Node::cancel_outbound_calls() {
   if (_client) _client->stop();
 }
 
+void Node::request_stop() {
+  {
+    contract::Lock lock(_loops_mutex);
+    for (auto& loop : _loops) loop.request_stop();
+  }
+  _wake.notify_all();
+}
+
 void Node::stop() {
   if (!_started || _stopping.exchange(true)) return;
-  for (auto& loop : _loops) loop.request_stop();
-  _wake.notify_all();
+  request_stop();
   // The transport goes first: a loop waiting on a call is released by it.
   if (_server) _server->stop();
   cancel_outbound_calls();
   if (_paths) _paths->stop();
-  for (auto& loop : _loops)
+  std::vector<std::jthread> loops;
+  {
+    contract::Lock lock(_loops_mutex);
+    loops.swap(_loops);
+  }
+  for (auto& loop : loops)
     if (loop.joinable()) loop.join();
-  _loops.clear();
   std::deque<ConnectivityRefresh> unserved;
   {
     contract::Lock lock(_refresh_mutex);
@@ -1053,6 +1067,7 @@ void Node::connectivity_loop(std::stop_token stop) {
     try {
       const auto [reachable, error] = reach::decode_dial_back_reply(outcome.reply->payload);
       const auto verdict = _inbound.observe_probe(peer->id, reachable, error);
+      if (!verdict.persist_error.empty()) status::ScopedLogger(_config.log, "node").warn("inbound resolution not persisted: " + verdict.persist_error);
       if (verdict.changed) apply_inbound(_inbound.capable());
       next = _config.time->now() + verdict.next_probe;
     } catch (const net::DecodeError&) {

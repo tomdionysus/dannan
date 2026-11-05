@@ -46,7 +46,7 @@ first. `../macha` is read only from here.
 Dannan **0.4.1** is the last release (`main`, tag `0.4.1`, pushed at Tom's word). It
 has wire v1 and v2, level 0, channels, the roster feed, the stack's foundations,
 identity, `dannan::config`, percent-encoding and `Readiness::declare`. Work is on
-`feature/macha-parity`, off `develop`, not pushed. Gate: `dannan_tests` 460 on macOS;
+`feature/macha-parity`, off `develop`, not pushed. Gate: `dannan_tests` 472 on macOS;
 no sanitizer run since 0.4.1. A read-only copy of Macha at `00861dd` is under
 `build/scratch/macha-00861dd` (`git -C ../macha archive`, untracked; recreate it if
 gone).
@@ -616,7 +616,7 @@ Each step is a `feature/macha-parity` milestone, gate green, committed and merge
 | Step | What | Closes | Macha gates, for example |
 |---|---|---|---|
 | 1. Call semantics, **done** (460) | No-progress deadline and stall notice per call, off unless asked, as Macha applies them only to synchronous `call`. `net::CallWatch` on `Routes::call` and `call_and_wait`; `NodeConfig`'s four settings now default to off, which also ends the old 30 s; the node's own exchanges get `exchange_budget`, 30 s. Ruling A needs no code in Dannan if the constant stands. | F1, F2, F16, G11-G13, G18, G19 | `test_rpc_cluster`'s no-progress and liveness cases |
-| 2. Lifecycle and readiness | Explicit mark-complete and first failure kept. A job on a closed session skips its handler. A failed inbound persist no longer restarts the loop. Escalation names the thread. Every thread supervised, with a guard test. `request_stop`; the layout check before the lock. | F5, F9, F12, G16, G41-G43, G45 | `test_every_subsystem_thread_is_run_supervised`, startup cases in `test_service_root` |
+| 2. Lifecycle and readiness, **done** (472) | `Readiness::hold_until_marked` and `mark_complete`; first failure kept. A job on a closed session skips its handler. A failed inbound persist no longer restarts the loop. Escalation names the thread. Every thread supervised, with a guard test. `request_stop`; the layout check before the lock. | F5, F9, F12, G16, G41-G43, G45 | `test_every_subsystem_thread_is_run_supervised`, startup cases in `test_service_root` |
 | 3. Transport proofs | The end-to-end cases Dannan lacks, including the 32 MiB overtake, and forged handshakes. Fix what they find. G23 is known to be open: `place()` reroutes where Macha may wait for the peer. | G1-G10, G14, G15, G17, G20-G23, G25-G27 | `test_rpc_cluster`'s transport cases |
 | 4. Membership proofs | Resets, fences, forgetting, the empty-domain fallback's home. | F19, F20, G24, G28-G33 | `test_absent_nodes`, `test_rpc_cluster`'s membership cases |
 | 5. The journal | The 44 lines still missing: subsystems, connectivity, thread faults, inbound, endpoint, reset, forgot, exchange failures. The supervisor takes a sink. Ruling C. | F13, G44, G48 | the journal golden, Macha's to cut |
@@ -626,6 +626,8 @@ Each step is a `feature/macha-parity` milestone, gate green, committed and merge
 | 9. Measured gate | `dannan_bench`: 32 MiB on DATA, CONTROL round trips under load, MB/s, RSS, over the path ruling A leaves; compose-bed run. Recorded, never asserted. The laptop's numbers are not comparable to the Pis'. | parity 6 | Macha's baselines at 0.92.3, when Tom says |
 | 10. Linux | ASan, UBSan and TSan on arm64 Debian 13 in Docker; the BBR path; whether Boost 1.83 suffices. | parity 8, G1 | the Pis' OS and architecture; no Macha case |
 | 11. Release | A tag at Tom's word, with its sanitizer runs. The port pins it. | | Macha's mapped cases green on it |
+
+**For the hosted systems at the next tag:** `NodeConfig`'s `control_no_progress` no longer defaults to 30 s, so a call is watched only if it asks (`net::CallWatch`); `Routes::call` and `call_and_wait` gain that argument; the Context gains `wait_guard` and `refresh_public_connectivity`; `Readiness::fail` keeps the first failure; an escalated fault's text names the thread.
 
 **The facade, not Dannan's, per the cutover spec:** the advertise-host and failure-domain
 fallback (F3), building the gateway (F4), deriving Macha's events from `Nodes::watch` (F7),

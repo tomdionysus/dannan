@@ -73,4 +73,8 @@ class SupervisedThreads {
   std::map<std::string, SupervisedThreadStatus, std::less<>> _statuses DANNAN_GUARDED_BY(_mutex);
 };
 
+// A service loop under `threads`, or, for a component given none (a test's,
+// usually), under a record nobody reads: either way nothing escapes the thread.
+void supervised_loop(SupervisedThreads* threads, std::string_view name, std::stop_token stop, const std::function<void()>& body) noexcept;
+
 }  // namespace dannan::supervise

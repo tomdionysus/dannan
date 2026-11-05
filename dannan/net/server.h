@@ -48,6 +48,8 @@ struct ServerOptions {
   const contract::TimeSource* time = &contract::steady_time_source();
   // Where the server writes its journal lines; none, nowhere.
   std::shared_ptr<status::LogSink> log;
+  // Where the workers' faults are recorded; none, nowhere readable.
+  supervise::SupervisedThreads* threads = nullptr;
   // Connections accepted and not yet authenticated; past it a new one is
   // closed at once, so unauthenticated sockets cost bounded resources.
   size_t max_pre_auth = 8;

@@ -31,13 +31,21 @@ uint64_t micros(contract::Clock::duration duration) {
 }  // namespace
 
 RequestScheduler::RequestScheduler(std::shared_ptr<const RouteTable> routes, ServerLimits limits, RequestHandler handler, sched::RetainedMemoryLedger* memory,
-                                   const contract::TimeSource* time)
+                                   const contract::TimeSource* time, supervise::SupervisedThreads* threads)
     : _routes(std::move(routes)), _limits(limits), _handler(std::move(handler)), _memory(memory), _time(time) {
   if (_limits.foreground_data_reserve >= _limits.data_workers) throw std::invalid_argument("the foreground reserve must leave DATA workers for other work");
-  for (size_t i = 0; i < _limits.fast_control_workers; ++i) _workers.emplace_back([this](std::stop_token stop) { fast_loop(stop); });
-  for (size_t i = 0; i < _limits.control_workers; ++i) _workers.emplace_back([this](std::stop_token stop) { control_loop(stop); });
-  for (size_t i = 0; i < _limits.ordered_workers; ++i) _workers.emplace_back([this](std::stop_token stop) { ordered_loop(stop); });
-  for (size_t i = 0; i < _limits.data_workers; ++i) _workers.emplace_back([this](std::stop_token stop) { data_loop(stop); });
+  for (size_t i = 0; i < _limits.fast_control_workers; ++i)
+    _workers.emplace_back(
+        [this, threads](std::stop_token stop) { supervise::supervised_loop(threads, "net-rpc-fast-control-worker", stop, [this, stop] { fast_loop(stop); }); });
+  for (size_t i = 0; i < _limits.control_workers; ++i)
+    _workers.emplace_back(
+        [this, threads](std::stop_token stop) { supervise::supervised_loop(threads, "net-rpc-control-worker", stop, [this, stop] { control_loop(stop); }); });
+  for (size_t i = 0; i < _limits.ordered_workers; ++i)
+    _workers.emplace_back(
+        [this, threads](std::stop_token stop) { supervise::supervised_loop(threads, "net-rpc-metadata-worker", stop, [this, stop] { ordered_loop(stop); }); });
+  for (size_t i = 0; i < _limits.data_workers; ++i)
+    _workers.emplace_back(
+        [this, threads](std::stop_token stop) { supervise::supervised_loop(threads, "net-rpc-data-worker", stop, [this, stop] { data_loop(stop); }); });
 }
 
 RequestScheduler::~RequestScheduler() { stop(); }
@@ -170,6 +178,7 @@ void RequestScheduler::cancel(const identity::NodeId& peer, uint64_t request_id)
 }
 
 void RequestScheduler::run(Job job) {
+  if (job.frame.session_closed && job.frame.session_closed->load()) return;
   const auto started = _time->now();
   auto handled = Handled::failed(500, "internal_error", "request handler failed");
   try {

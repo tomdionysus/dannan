@@ -171,6 +171,9 @@ class Node final : public Context {
   // Refuses a cluster nobody could reach, then listens and starts the
   // loops. Hosted routes are frozen from here.
   void start();
+  // Asks the node's loops to stop and returns: what a signal handler or a stopping
+  // system calls before the work it depends on goes. stop() still joins them.
+  void request_stop();
   // Stops the loops, the server and the client; pending calls fail at once.
   void stop();
 
@@ -346,7 +349,8 @@ class Node final : public Context {
   std::mutex _wait_mutex;
   std::condition_variable_any _wake;
   std::atomic<uint64_t> _telemetry_demand{0};
-  std::vector<std::jthread> _loops;
+  contract::Mutex _loops_mutex;
+  std::vector<std::jthread> _loops DANNAN_GUARDED_BY(_loops_mutex);
 
   std::unique_ptr<NodesNoun> _nodes;
   std::unique_ptr<RoutesNoun> _routes_noun;

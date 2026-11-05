@@ -26,6 +26,7 @@
 #include "dannan/identity/cluster_key.h"
 #include "dannan/membership/node_record.h"
 #include "dannan/net/client.h"
+#include "dannan/supervise/supervised.h"
 
 // Level 0 (wire v1, sections 5 and 6): how two nodes meet when neither can
 // dial the other. A node learns its own reachability (its path class and
@@ -132,6 +133,8 @@ void simultaneous_open(boost::asio::io_context& io, uint16_t port, const net::En
                        std::function<void(int descriptor, int family, std::string why)> done);
 
 struct PathsConfig {
+  // Where the workers' faults are recorded; none, nowhere readable.
+  supervise::SupervisedThreads* threads = nullptr;
   net::Credentials credentials;
   // How long a probe, a broker's or relay's call, and a handshake may take.
   std::chrono::milliseconds connect_timeout{2500};

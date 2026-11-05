@@ -18,6 +18,7 @@
 #include <boost/asio/strand.hpp>
 #include <fstream>
 #include <future>
+#include <set>
 #include <thread>
 
 #include "dannan/test/fixtures/gate.h"
@@ -342,6 +343,26 @@ TEST(Node, ACallIsWatchedOnlyIfItAsks) {
   const auto unwatched = pair.b->context().routes().call_and_wait(at, held, {}, sched::FrameType::control, 10s);
   opener.join();
   EXPECT_TRUE(unwatched.reply) << unwatched.failure;
+}
+
+// Asking the loops to stop returns at once; stop() afterwards still finishes it.
+TEST(Node, RequestStopAsksAndStopFinishes) {
+  Pair pair;
+  pair.b->start();
+  pair.b->request_stop();
+  pair.b->request_stop();
+  pair.b->stop();
+  EXPECT_TRUE(pair.b->context().readiness().control_plane_online() == false);
+}
+
+TEST(Node, ThreadsAreRecordedInDiagnostics) {
+  Pair pair;
+  std::set<std::string> names;
+  EXPECT_TRUE(eventually([&] {
+    names.clear();
+    for (const auto& thread : pair.a->context().threads().statuses()) names.insert(thread.name);
+    return names.contains("net-rpc-control-worker") && names.contains("net-rpc-metadata-worker") && names.contains("reach-path-worker");
+  }));
 }
 
 // A hosted system that is nothing but a counter: a user type registered
