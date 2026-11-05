@@ -20,7 +20,7 @@ COPY cmake cmake
 COPY dannan dannan
 COPY tools tools
 RUN cmake -S . -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=clang++ -DDANNAN_WARNINGS_AS_ERRORS=ON \
- && cmake --build /build --target dannan-node
+ && cmake --build /build --target dannan-node dannan-bench
 
 COPY test/compose/node.sh test/compose/router.sh /bed/
 RUN chmod +x /bed/node.sh /bed/router.sh

@@ -25,3 +25,8 @@ target_link_libraries(dannan-ca PRIVATE dannan dannan_warnings)
 add_executable(dannan-import-macha dannan_import_macha.cpp macha_import.cpp)
 target_link_libraries(dannan-import-macha PRIVATE dannan dannan_warnings)
 target_include_directories(dannan-import-macha PRIVATE "${PROJECT_SOURCE_DIR}")
+
+# dannan-bench: figures to compare, recorded and never asserted. Not in the gate.
+add_executable(dannan-bench dannan_bench.cpp)
+target_link_libraries(dannan-bench PRIVATE dannan dannan_warnings)
+target_include_directories(dannan-bench PRIVATE "${PROJECT_SOURCE_DIR}")
