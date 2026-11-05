@@ -107,12 +107,19 @@ Macha's API and stay in Macha.
   defaulting to its lane's. Macha's `no_progress_deadline_for` is keyed by type but
   has two values, so this reproduces it.
 
-**Disputed, not built: per-plane progress.** Macha's `RecoveryProgress`
-(`src/cluster/local_state.hpp:36-90`) holds plane flags (`mark`, `has`), `complete`,
-`failed`, the first `error`, `ready_unix_ms` and `wait_complete`, and
-`cluster.cpp:314-318` reads only those flags. `status::Readiness` has all of it, by
-name. There is no per-plane progress in Macha to reproduce. The ticking counter is
-`startup_progress()`, which is Dannan's `StartupProgress`.
+**Per-plane progress: not built, because Macha has none.** Macha's
+`RecoveryProgress` (`src/cluster/local_state.hpp:36-90`) holds plane flags, not
+progress; the ticking counter is `startup_progress()`, Dannan's `StartupProgress`.
+
+**Correction, 2026-11-05: `status::Readiness` is not at parity with it,** though this
+file and the message to the Macha session first said so. Two differences remain to
+close:
+
+- Macha's `complete` is an explicit `mark_complete`, set after recovery returns
+  (`service/service.cpp:522`). Dannan's is "every declared plane ready", so a node
+  reads as ready earlier than Macha's would.
+- Macha's `fail` keeps the first failure (`local_state.hpp:49-57`). Dannan's keeps the
+  last (`status/readiness.cpp`).
 
 ## 5. Injected time
 
