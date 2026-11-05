@@ -46,7 +46,7 @@ first. `../macha` is read only from here.
 Dannan **0.4.1** is the last release (`main`, tag `0.4.1`, pushed at Tom's word). It
 has wire v1 and v2, level 0, channels, the roster feed, the stack's foundations,
 identity, `dannan::config`, percent-encoding and `Readiness::declare`. Work is on
-`feature/macha-parity`, off `develop`, not pushed. Gate: `dannan_tests` 452 on macOS;
+`feature/macha-parity`, off `develop`, not pushed. Gate: `dannan_tests` 460 on macOS;
 no sanitizer run since 0.4.1. A read-only copy of Macha at `00861dd` is under
 `build/scratch/macha-00861dd` (`git -C ../macha archive`, untracked; recreate it if
 gone).
@@ -615,7 +615,7 @@ Each step is a `feature/macha-parity` milestone, gate green, committed and merge
 
 | Step | What | Closes | Macha gates, for example |
 |---|---|---|---|
-| 1. Call semantics | No-progress deadline and stall notice per call, off unless asked, as Macha applies them only to synchronous `call`. Revert the 5 s and 120 s `NodeConfig` defaults this branch added. A form for ruling A. | F1, F2, F16, G11-G13, G18, G19 | `test_rpc_cluster`'s no-progress and liveness cases |
+| 1. Call semantics, **done** (460) | No-progress deadline and stall notice per call, off unless asked, as Macha applies them only to synchronous `call`. `net::CallWatch` on `Routes::call` and `call_and_wait`; `NodeConfig`'s four settings now default to off, which also ends the old 30 s; the node's own exchanges get `exchange_budget`, 30 s. Ruling A needs no code in Dannan if the constant stands. | F1, F2, F16, G11-G13, G18, G19 | `test_rpc_cluster`'s no-progress and liveness cases |
 | 2. Lifecycle and readiness | Explicit mark-complete and first failure kept. A job on a closed session skips its handler. A failed inbound persist no longer restarts the loop. Escalation names the thread. Every thread supervised, with a guard test. `request_stop`; the layout check before the lock. | F5, F9, F12, G16, G41-G43, G45 | `test_every_subsystem_thread_is_run_supervised`, startup cases in `test_service_root` |
 | 3. Transport proofs | The end-to-end cases Dannan lacks, including the 32 MiB overtake, and forged handshakes. Fix what they find. G23 is known to be open: `place()` reroutes where Macha may wait for the peer. | G1-G10, G14, G15, G17, G20-G23, G25-G27 | `test_rpc_cluster`'s transport cases |
 | 4. Membership proofs | Resets, fences, forgetting, the empty-domain fallback's home. | F19, F20, G24, G28-G33 | `test_absent_nodes`, `test_rpc_cluster`'s membership cases |

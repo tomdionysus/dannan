@@ -136,20 +136,20 @@ class Node::RoutesNoun final : public Routes {
     _node._handlers.erase(type);
   }
   std::shared_ptr<net::CallHandle> call(const NodeRecord& peer, net::MessageType type, net::Bytes payload, sched::FrameType frame,
-                                        std::chrono::milliseconds deadline, asio::any_io_executor executor, Done done) override {
-    return _node.place_call(peer, {peer.host, peer.port}, type, std::move(payload), frame, deadline, std::move(executor), std::move(done));
+                                        std::chrono::milliseconds deadline, asio::any_io_executor executor, Done done, net::CallWatch watch) override {
+    return _node.place_call(peer, {peer.host, peer.port}, type, std::move(payload), frame, deadline, std::move(executor), std::move(done), watch);
   }
   std::shared_ptr<net::CallHandle> call(const net::Endpoint& endpoint, net::MessageType type, net::Bytes payload, sched::FrameType frame,
-                                        std::chrono::milliseconds deadline, asio::any_io_executor executor, Done done) override {
-    return _node.place_call(std::nullopt, endpoint, type, std::move(payload), frame, deadline, std::move(executor), std::move(done));
+                                        std::chrono::milliseconds deadline, asio::any_io_executor executor, Done done, net::CallWatch watch) override {
+    return _node.place_call(std::nullopt, endpoint, type, std::move(payload), frame, deadline, std::move(executor), std::move(done), watch);
   }
-  net::CallOutcome call_and_wait(const NodeRecord& peer, net::MessageType type, net::Bytes payload, sched::FrameType frame,
-                                 std::chrono::milliseconds deadline) override {
-    return _node.call_wait(peer, {peer.host, peer.port}, type, std::move(payload), deadline, frame);
+  net::CallOutcome call_and_wait(const NodeRecord& peer, net::MessageType type, net::Bytes payload, sched::FrameType frame, std::chrono::milliseconds deadline,
+                                 net::CallWatch watch) override {
+    return _node.call_wait(peer, {peer.host, peer.port}, type, std::move(payload), deadline, frame, watch);
   }
   net::CallOutcome call_and_wait(const net::Endpoint& endpoint, net::MessageType type, net::Bytes payload, sched::FrameType frame,
-                                 std::chrono::milliseconds deadline) override {
-    return _node.call_wait(std::nullopt, endpoint, type, std::move(payload), deadline, frame);
+                                 std::chrono::milliseconds deadline, net::CallWatch watch) override {
+    return _node.call_wait(std::nullopt, endpoint, type, std::move(payload), deadline, frame, watch);
   }
 
  private:
@@ -820,7 +820,7 @@ void Node::merge(std::span<const uint8_t> payload) {
 
 std::shared_ptr<net::CallHandle> Node::place_call(std::optional<NodeRecord> peer, const net::Endpoint& endpoint, net::MessageType type, net::Bytes payload,
                                                   sched::FrameType frame, std::chrono::milliseconds deadline, asio::any_io_executor executor,
-                                                  net::Client::Done done) {
+                                                  net::Client::Done done, net::CallWatch watch) {
   if (!_started || _stopping || _calls_cancelled || !_client) {
     asio::post(executor, [done = std::move(done), why = std::string(_started ? "node is stopping; outbound calls are cancelled" : "node is not started")] {
       done(net::CallOutcome{std::nullopt, why, {}});
@@ -859,8 +859,8 @@ std::shared_ptr<net::CallHandle> Node::place_call(std::optional<NodeRecord> peer
     if (state->finished.exchange(true)) return;
     state->done(std::move(outcome));
   };
-  auto handle = peer ? _client->call(*peer, type, std::move(payload), frame, executor, std::move(finish))
-                     : _client->call(endpoint, type, std::move(payload), frame, executor, std::move(finish));
+  auto handle = peer ? _client->call(*peer, type, std::move(payload), frame, executor, std::move(finish), watch)
+                     : _client->call(endpoint, type, std::move(payload), frame, executor, std::move(finish), watch);
   asio::post(strand, [state, handle] {
     state->handle = handle;
     if (state->expired) handle->cancel();
@@ -869,18 +869,19 @@ std::shared_ptr<net::CallHandle> Node::place_call(std::optional<NodeRecord> peer
 }
 
 net::CallOutcome Node::call_wait(std::optional<NodeRecord> peer, const net::Endpoint& endpoint, net::MessageType type, net::Bytes payload,
-                                 std::chrono::milliseconds deadline, sched::FrameType frame) {
+                                 std::chrono::milliseconds deadline, sched::FrameType frame, net::CallWatch watch) {
   auto done = std::make_shared<std::promise<net::CallOutcome>>();
   auto future = done->get_future();
-  place_call(std::move(peer), endpoint, type, std::move(payload), frame, deadline, _io.get_executor(),
-             [done](net::CallOutcome outcome) { done->set_value(std::move(outcome)); });
+  place_call(
+      std::move(peer), endpoint, type, std::move(payload), frame, deadline, _io.get_executor(),
+      [done](net::CallOutcome outcome) { done->set_value(std::move(outcome)); }, watch);
   // The deadline answers first; the margin only covers the executor.
   if (future.wait_for(deadline + std::chrono::seconds(5)) != std::future_status::ready) return {std::nullopt, "no answer", {}};
   return future.get();
 }
 
 void Node::exchange(std::optional<NodeRecord> peer, const net::Endpoint& endpoint) {
-  const auto outcome = call_wait(peer, endpoint, net::message::members, {}, _config.connect_timeout * 2);
+  const auto outcome = call_wait(peer, endpoint, net::message::members, {}, _config.exchange_budget);
   if (!outcome.reply) throw std::runtime_error(outcome.failure);
   if (outcome.reply->type != net::message::members_reply) throw std::runtime_error("membership refused");
   merge(outcome.reply->payload);
@@ -1046,8 +1047,8 @@ void Node::connectivity_loop(std::stop_token stop) {
     }
     if (!peer) continue;
     const auto self = _members.self();
-    const auto outcome = call_wait(peer, {peer->host, peer->port}, net::message::dial_back, reach::encode_dial_back_request({self.host, self.port}),
-                                   _config.connect_timeout * 3);
+    const auto outcome =
+        call_wait(peer, {peer->host, peer->port}, net::message::dial_back, reach::encode_dial_back_request({self.host, self.port}), _config.exchange_budget);
     if (!outcome.reply || outcome.reply->type != net::message::dial_back_reply) continue;
     try {
       const auto [reachable, error] = reach::decode_dial_back_reply(outcome.reply->payload);

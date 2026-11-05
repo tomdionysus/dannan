@@ -70,6 +70,14 @@ class CallHandle {
   std::optional<sched::FrameType> _promoted DANNAN_GUARDED_BY(_mutex);
 };
 
+// How one call is watched for progress, in place of its type's and its lane's
+// settings: a deadline cancels it, a notice only logs. Macha watches a synchronous
+// call and leaves an asynchronous one to its caller, so a call says which it is.
+struct CallWatch {
+  std::optional<std::chrono::milliseconds> no_progress = std::nullopt;
+  std::optional<std::chrono::milliseconds> stall_notice = std::nullopt;
+};
+
 struct ClientOptions {
   // How this node proves itself and checks its peers.
   Credentials credentials;
@@ -121,6 +129,8 @@ struct ClientOptions {
 struct ClientStats {
   uint64_t dials = 0;
   uint64_t dial_failures = 0;
+  // Health pings sent, retries included.
+  uint64_t pings = 0;
   // Calls placed on a route that already existed.
   uint64_t reused = 0;
   // Sessions retired by reconciliation: a simultaneous dial's loser, or a
@@ -164,10 +174,10 @@ class Client {
   // fails. `done` is posted to `executor` exactly once. The handle controls
   // the call while it is pending. Waits on nothing.
   std::shared_ptr<CallHandle> call(const membership::NodeRecord& peer, MessageType type, Bytes payload, sched::FrameType frame,
-                                   boost::asio::any_io_executor executor, Done done);
+                                   boost::asio::any_io_executor executor, Done done, CallWatch watch = {});
   // As above, to an address whose node is not known yet (a bootstrap).
   std::shared_ptr<CallHandle> call(const Endpoint& endpoint, MessageType type, Bytes payload, sched::FrameType frame, boost::asio::any_io_executor executor,
-                                   Done done);
+                                   Done done, CallWatch watch = {});
 
   // A session a peer opened to this node, from the server: a route back.
   void admit(const std::shared_ptr<Session>& session);
@@ -258,6 +268,7 @@ class Client {
     // closed under it.
     int reroutes = 0;
     std::shared_ptr<CallHandle> handle;
+    CallWatch watch{};
   };
   struct Target {
     std::optional<identity::NodeId> id;

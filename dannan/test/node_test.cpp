@@ -313,6 +313,37 @@ TEST(Node, APeerObservationGossipsSoonerThanTheInterval) {
   }));
 }
 
+// A node watches no call unless asked; a call asks for itself.
+TEST(Node, ACallIsWatchedOnlyIfItAsks) {
+  EXPECT_EQ(NodeConfig{}.control_no_progress, 0ms);
+  EXPECT_EQ(NodeConfig{}.data_no_progress, 0ms);
+  EXPECT_EQ(NodeConfig{}.control_stall_notice, 0ms);
+  EXPECT_EQ(NodeConfig{}.data_stall_notice, 0ms);
+  constexpr net::MessageType held{1301};
+  test::Gate gate;
+  Pair pair({}, [&](Node& a) {
+    a.context().routes().add(held, {"held", net::Lanes::control, net::Frames::control_only, false},
+                             [&](const membership::NodeRecord&, sched::FrameType, const net::Message& request) {
+                               gate.enter_and_wait();
+                               return net::Handled::processed({net::message::ok, request.payload, {}});
+                             });
+  });
+  pair.b->start();
+  const auto a = pair.a->context().identity().id();
+  ASSERT_TRUE(eventually([&] { return knows(*pair.b, a); }));
+  const net::Endpoint at{"127.0.0.1", pair.a->port()};
+  const auto watched = pair.b->context().routes().call_and_wait(at, held, {}, sched::FrameType::control, 10s, net::CallWatch{100ms, std::nullopt});
+  EXPECT_FALSE(watched.reply);
+  EXPECT_NE(watched.failure.find("cancelled for retry"), std::string::npos) << watched.failure;
+  std::thread opener([&] {
+    std::this_thread::sleep_for(300ms);
+    gate.open();
+  });
+  const auto unwatched = pair.b->context().routes().call_and_wait(at, held, {}, sched::FrameType::control, 10s);
+  opener.join();
+  EXPECT_TRUE(unwatched.reply) << unwatched.failure;
+}
+
 // A hosted system that is nothing but a counter: a user type registered
 // through the Context, called across the cluster, its count in Status.
 TEST(Node, ACounterRunsOnIt) {

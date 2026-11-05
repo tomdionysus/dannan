@@ -86,10 +86,16 @@ struct NodeConfig {
   std::chrono::milliseconds forget_after = std::chrono::hours(24 * 30);
   std::chrono::milliseconds telemetry_interval{10000};
   std::chrono::milliseconds connect_timeout{2500};
-  std::chrono::milliseconds control_no_progress{30000};
+  // A node watches no call unless asked: a hosted system names these per call
+  // (net::CallWatch) or per type (net::Registration), since a long call is often
+  // meant to be long. These are for one that wants every call on a lane watched.
+  std::chrono::milliseconds control_no_progress{0};
   std::chrono::milliseconds data_no_progress{0};
-  std::chrono::milliseconds control_stall_notice{5000};
-  std::chrono::milliseconds data_stall_notice{120000};
+  std::chrono::milliseconds control_stall_notice{0};
+  std::chrono::milliseconds data_stall_notice{0};
+  // The node's own exchanges with a peer (membership, dial-back): a loaded peer
+  // is given this long before it counts as not having answered.
+  std::chrono::milliseconds exchange_budget{30000};
   // Refuses a dial by naming why, for tests that fail links; see
   // net::ClientOptions::dial_hook.
   std::function<std::string(const net::Endpoint&, net::Lane)> dial_hook;
@@ -232,10 +238,10 @@ class Node final : public Context {
   void merge(std::span<const uint8_t> payload);
   std::shared_ptr<net::CallHandle> place_call(std::optional<membership::NodeRecord> peer, const net::Endpoint& endpoint, net::MessageType type,
                                               net::Bytes payload, sched::FrameType frame, std::chrono::milliseconds deadline,
-                                              boost::asio::any_io_executor executor, net::Client::Done done);
+                                              boost::asio::any_io_executor executor, net::Client::Done done, net::CallWatch watch = {});
   // A call from a loop thread, waited on within the deadline.
   net::CallOutcome call_wait(std::optional<membership::NodeRecord> peer, const net::Endpoint& endpoint, net::MessageType type, net::Bytes payload,
-                             std::chrono::milliseconds deadline, sched::FrameType frame = sched::FrameType::control);
+                             std::chrono::milliseconds deadline, sched::FrameType frame = sched::FrameType::control, net::CallWatch watch = {});
   void exchange(std::optional<membership::NodeRecord> peer, const net::Endpoint& endpoint);
   void membership_loop(std::stop_token stop);
   void telemetry_loop(std::stop_token stop);

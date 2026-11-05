@@ -49,6 +49,7 @@ Macha's `FaultyLinks` (`tests/test_rpc_cluster.cpp:5217`) implements `RpcLinks` 
 | `test_a_peer_that_stalls_on_a_commit_is_not_waited_for_again` | send: stall `accept_metadata_commit` | yes | call filter below |
 | `test_a_hung_health_probe_is_retried_inside_the_liveness_budget` | send: stall `ping` | no, Dannan's ping | G12, by holding the peer's ping handler |
 | `test_a_ping_answered_while_the_health_pass_ran_late_keeps_its_route` | send: a slow sender | no; cannot occur in Dannan | G13 |
+| | Closed by `Health.ALateAnswerKeepsTheRoute`, which holds a ping past its give-up and shows the route stays and the peer is measured. It does not force an answer to land between the give-up time and the timer firing; that branch is read, not exercised. | |
 | `test_a_call_whose_dial_is_retired_by_a_simultaneous_connect_waits_for_the_peer` | admit: hold; send: retire first | no | G23, the Dannan fixture's `adopt_inbound` and a `Client` test hook, not a `NodeConfig` seam |
 | `test_inbound_incapable_node_is_reached_only_over_its_own_sessions` | connect: sever, count; admit: count | no | `close_route`, `stats().dials`, `has_route` (G22) |
 | `test_peer_sockets_disable_nagle_and_keep_alive` | connect: socket copies | no | G25 |
@@ -157,7 +158,8 @@ What Dannan should add. The Macha cases each gap serves are in the rows. Names a
 | G10 | Channel.ANegotiatedFrameAboveTheLimitIsRefused (forged, correctly signed) | Yes, channel.cpp:201 |
 | G11 | Health.ASlowCallOutlivesTheLivenessBudgetWhilePingsAnswer: both lanes, stepped or short budget, no route lost | Yes |
 | G12 | Health.EveryHungPingIsRetriedAtAThirdOfTheBudget: three attempts inside the budget. fast_control_workers is 2, so count arrivals rather than held handlers | Yes, client.cpp:1220 |
-| G13 | Health.ALateAnswerKeepsTheRoute: an answer read after the give-up time is proof of life. Macha's form (a blocked sender) cannot occur, since Session::call never blocks | Yes, client.cpp:1241 |
+| G13 |
+| | Closed by `Health.ALateAnswerKeepsTheRoute`, which holds a ping past its give-up and shows the route stays and the peer is measured. It does not force an answer to land between the give-up time and the timer firing; that branch is read, not exercised. | | Health.ALateAnswerKeepsTheRoute: an answer read after the give-up time is proof of life. Macha's form (a blocked sender) cannot occur, since Session::call never blocks | Yes, client.cpp:1241 |
 | G14 | Scheduler.HeldOrderedWorkDelaysNoOtherClass (add an ordered row); Scheduler.ATimingRecordsItsWaitAndHandlerTime; Server.ASessionOutlivesARefusal | Yes |
 | G15 | Scheduler.AControlMutationOvertakesItsOwnPeersBackgroundWork: Macha's order 1, 5, 2, 3, 4 from one peer | Yes, scheduler.cpp:240 |
 | G16 | Server.ALostSessionLeavesARunningJobToFinish: its reply dropped, nothing crashes | Believed yes; Session.ClosingFailsEveryPendingCallAndTellsBothSides covers only the late reply |
