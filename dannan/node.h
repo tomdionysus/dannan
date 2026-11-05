@@ -11,6 +11,7 @@
 #include <boost/asio/io_context.hpp>
 #include <chrono>
 #include <condition_variable>
+#include <deque>
 #include <filesystem>
 #include <functional>
 #include <map>
@@ -29,6 +30,9 @@
 #include "dannan/reach/dial_back.h"
 #include "dannan/reach/inbound.h"
 #include "dannan/reach/paths.h"
+#include "dannan/sched/memory_limit.h"
+#include "dannan/sched/work.h"
+#include "dannan/status/observation.h"
 #include "dannan/status/readiness.h"
 #include "dannan/status/telemetry.h"
 #include "dannan/supervise/supervised.h"
@@ -101,6 +105,18 @@ struct NodeConfig {
   uint64_t foreground_reserve_bytes = 192ull << 20;
   uint64_t loader_reserve_bytes = 64ull << 20;
   uint64_t reassembly_reserve_bytes = 32ull << 20;
+  // A ceiling on all of the node's memory, hosted parts included; zero for none.
+  // Over it every part shrinks by the same fraction and the node starts, warning
+  // once. See fit_memory_limit.
+  uint64_t memory_limit_bytes = 0;
+  // Set by fit_memory_limit: what the node logs when it is built.
+  std::optional<std::string> memory_warning;
+  bool memory_fitted = false;
+  // Windows of the observations, written to observation/observations.jsonl
+  // under the state path, from before anything else starts; zero for none.
+  std::chrono::milliseconds observation_interval{60000};
+  uint64_t observation_max_bytes = 64ull << 20;
+  std::function<std::map<std::string, uint64_t>()> observation_gauges;
   // The hosted system's own telemetry fields, added to each local record.
   std::function<void(status::Telemetry&)> telemetry_fields;
   std::vector<uint16_t> telemetry_layout;
@@ -127,6 +143,13 @@ struct NodeConfig {
 // the inbound answer by dial-back). The node is reachable before it is
 // ready. It is the hosted system's Context.
 //
+// Fits a node's memory under config.memory_limit_bytes: Dannan's retained total
+// and reserves, and `hosted`, the parts only the hosted system knows of (its
+// caches), which shrink with them. A hosted system with such parts calls this
+// first, before building anything sized from them; without any, the node calls
+// it for itself. The node logs the warning.
+void fit_memory_limit(NodeConfig& config, std::vector<sched::MemoryPart>& hosted);
+
 // The io context is the caller's, run on its threads; the loops have their
 // own. Thread-safe. Lock order: the client's route table before the
 // roster's (the client calls `local` with its table held).
@@ -189,6 +212,7 @@ class Node final : public Context {
   status::Readiness& readiness() override { return _readiness; }
   status::ActivityClocks& activity() override { return _activity; }
   status::Observations& observations() override { return _observations; }
+  sched::WaitGuard& wait_guard() override { return _wait_guard; }
   supervise::SupervisedThreads& threads() override { return _threads; }
   Diagnostics diagnostics() const override;
 
@@ -216,6 +240,10 @@ class Node final : public Context {
   void membership_loop(std::stop_token stop);
   void telemetry_loop(std::stop_token stop);
   void connectivity_loop(std::stop_token stop);
+  void serve_refreshes();
+  void advertise(const reach::PublicConnectivityStatus& status);
+  void refresh_public_connectivity(bool probe, bool force_probe, boost::asio::any_io_executor executor,
+                                   std::function<void(std::optional<reach::PublicConnectivityStatus>)> done);
   void apply_inbound(bool capable);
   // Keeps the certificate a peer proved, from a session as established.
   void note_certificate(const net::Established& session);
@@ -258,6 +286,7 @@ class Node final : public Context {
   status::ActivityClocks _activity;
   status::Observations _observations;
   supervise::SupervisedThreads _threads;
+  sched::WaitGuard _wait_guard;
   sched::RetainedMemoryLedger _memory;
   const std::shared_ptr<net::TransportTraffic> _traffic = std::make_shared<net::TransportTraffic>();
 
@@ -293,6 +322,18 @@ class Node final : public Context {
   std::map<identity::NodeId, membership::NodeRecord> _told DANNAN_GUARDED_BY(_watch_mutex);
   uint64_t _next_watcher DANNAN_GUARDED_BY(_watch_mutex) = 1;
   std::unique_ptr<reach::PublicConnectivity> _connectivity;
+  // Refreshes the hosted system asked for, served by the connectivity loop,
+  // since a refresh waits on the network. Closed once nothing will serve them.
+  struct ConnectivityRefresh {
+    bool probe = false;
+    bool force_probe = false;
+    boost::asio::any_io_executor executor;
+    std::function<void(std::optional<reach::PublicConnectivityStatus>)> done;
+  };
+  contract::Mutex _refresh_mutex;
+  std::deque<ConnectivityRefresh> _refreshes DANNAN_GUARDED_BY(_refresh_mutex);
+  bool _refreshes_open DANNAN_GUARDED_BY(_refresh_mutex) = false;
+  std::unique_ptr<status::ObservationRecorder> _observation_recorder;
   std::unique_ptr<reach::DialBackResponder> _dial_back;
 
   // Guards nothing: the loops' wait.

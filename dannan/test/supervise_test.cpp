@@ -22,6 +22,7 @@
 #include "dannan/supervise/startup.h"
 #include "dannan/supervise/supervised.h"
 #include "dannan/supervise/supervisor.h"
+#include "dannan/test/fixtures/recording_sink.h"
 #include "dannan/test/fixtures/stepped_time.h"
 #include "dannan/test/fixtures/temp_dir.h"
 
@@ -188,6 +189,53 @@ TEST(Supervisor, AMissingPluginDirectoryLoadsNone) {
   Supervisor supervisor(options("/nonexistent/plugins"));
   supervisor.start({});
   EXPECT_TRUE(supervisor.statuses().empty());
+}
+
+// A startup that stops progressing is ended, with Macha's line; one that keeps
+// ticking is left alone however long it takes.
+TEST(StartupWatch, AStalledStartupSaysSoAndIsEnded) {
+  test::SteppedTime time;
+  auto log = std::make_shared<test::RecordingSink>();
+  StartupProgress progress;
+  std::promise<std::string> stalled;
+  StartupWatch::Options watch;
+  watch.no_progress = 4ms;
+  watch.describe = [] { return std::string("waiting for metadata"); };
+  watch.stalled = [&](const std::string& diagnostic) { stalled.set_value(diagnostic); };
+  watch.time = &time;
+  StartupWatch watcher(progress, status::ScopedLogger(log, "startup"), watch);
+  auto future = stalled.get_future();
+  // Ticks, however late, are progress.
+  for (int i = 0; i < 20; ++i) {
+    progress.note();
+    time.advance(3ms);
+    std::this_thread::sleep_for(2ms);
+  }
+  EXPECT_NE(future.wait_for(0ms), std::future_status::ready);
+  EXPECT_TRUE(eventually([&] {
+    time.advance(1h);
+    return future.wait_for(0ms) == std::future_status::ready;
+  }));
+  EXPECT_EQ(future.get(), "waiting for metadata");
+  EXPECT_EQ(log->count(status::LogLevel::error, "service startup stalled: no recovery progress for "), 1u);
+  EXPECT_EQ(log->count(status::LogLevel::error, "waiting for metadata; terminating for restart"), 1u);
+}
+
+TEST(StartupWatch, AFinishedStartupEndsTheWatchWithoutAWord) {
+  test::SteppedTime time;
+  auto log = std::make_shared<test::RecordingSink>();
+  StartupProgress progress;
+  std::atomic<bool> stalled{false};
+  StartupWatch::Options watch;
+  watch.no_progress = 1h;
+  watch.stalled = [&](const std::string&) { stalled = true; };
+  watch.time = &time;
+  {
+    StartupWatch watcher(progress, status::ScopedLogger(log, "startup"), watch);
+    watcher.finish();
+    time.advance(2h);
+  }
+  EXPECT_FALSE(stalled.load());
 }
 
 // How long a run was is read from the injected time: each run here "takes"

@@ -32,6 +32,7 @@
 #include "dannan/reach/inbound.h"
 #include "dannan/reach/paths.h"
 #include "dannan/sched/retained_memory.h"
+#include "dannan/sched/work.h"
 #include "dannan/status/activity.h"
 #include "dannan/status/events.h"
 #include "dannan/status/log.h"
@@ -75,6 +76,12 @@ const char* roster_change_name(RosterChange::Kind) noexcept;
 class Nodes {
  public:
   virtual ~Nodes() = default;
+  // Runs a UPnP refresh, and a self-probe if `probe`, now rather than at the
+  // next turn of the node's loop, and answers with the status on `executor`:
+  // empty when the node is not running. Waits on nothing itself; the work is
+  // the node's, bounded by the connectivity timeouts. Thread-safe.
+  virtual void refresh_public_connectivity(bool probe, bool force_probe, boost::asio::any_io_executor executor,
+                                           std::function<void(std::optional<reach::PublicConnectivityStatus>)> done) = 0;
   // The roster's changes, as they happen, posted to `executor` in order
   // when it is a strand: first a `joined` for every node active now, then
   // each change. An id for unwatch. Waits on nothing.
@@ -329,6 +336,9 @@ class Context {
   virtual status::ActivityClocks& activity() = 0;
   // Measurement probes, written to the node's observation log.
   virtual status::Observations& observations() = 0;
+  // Checks a work context against the waits an operation declares: the node's
+  // one guard, so its violations are counted together.
+  virtual sched::WaitGuard& wait_guard() = 0;
   // The node's thread bodies, and the hosted system's, under one record.
   virtual supervise::SupervisedThreads& threads() = 0;
   virtual Diagnostics diagnostics() const = 0;
