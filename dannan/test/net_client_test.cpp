@@ -913,15 +913,61 @@ TEST(Broadcast, ABackedUpPeerIsSkippedWithoutWaiting) {
 
 // A simultaneous connect: the lower id keeps its own dial and retires the other, so
 // the higher id's call can find its dial retired before the peer's session is its
-// route. The call must come through all the same.
-TEST(Client, ACallOnADialRetiredBeforeThePeersSessionRegistersComesThrough) {
+// route. Forced here, as Macha's case forces it: the call waits for that session,
+// and does not dial again.
+TEST(Client, ACallOnADialRetiredBeforePlacementWaitsForThePeer) {
+  Io io;
+  std::atomic<bool> retire{false};
+  ClientOptions tuning;
+  tuning.place_hook = [&](Session& session) {
+    if (retire.exchange(false)) session.retire();
+  };
+  // Decide which of two is the higher id before tuning goes to it.
+  Node a(io, tuning), b(io, tuning);
+  auto& low = a.self.id < b.self.id ? a : b;
+  auto& high = a.self.id < b.self.id ? b : a;
+  high.adopt_inbound = false;
+  ASSERT_TRUE(call(low, high.self).reply);
+  ASSERT_FALSE(high.client->has_route(low.self.id, Lane::control));
+  retire = true;
+  auto outcome = std::async(std::launch::async, [&] { return call(high, low.self); });
+  ASSERT_TRUE(eventually([&] { return !retire.load(); }));
+  // It waits: nothing answers while the peer's session is held.
+  EXPECT_EQ(outcome.wait_for(200ms), std::future_status::timeout);
+  EXPECT_EQ(high.client->stats().dials, 1u);
+  high.release_inbound();
+  const auto answered = outcome.get();
+  EXPECT_TRUE(answered.reply) << answered.failure;
+  EXPECT_EQ(high.client->stats().dials, 1u);
+}
+
+// With no session ever coming, the wait ends at the connect timeout and says why.
+TEST(Client, AWaitForThePeersSessionIsBounded) {
+  Io io;
+  std::atomic<bool> retire{false};
+  ClientOptions tuning;
+  tuning.connect_timeout = 200ms;
+  tuning.place_hook = [&](Session& session) {
+    if (retire.exchange(false)) session.retire();
+  };
+  Node a(io, tuning), b(io);
+  a.adopt_inbound = false;
+  b.adopt_inbound = false;
+  retire = true;
+  const auto outcome = call(a, b.self);
+  EXPECT_FALSE(outcome.reply);
+  EXPECT_NE(outcome.failure.find("did not arrive"), std::string::npos) << outcome.failure;
+  EXPECT_EQ(a.client->stats().dials, 1u);
+}
+
+// In the ordinary race, not forced: the call still comes through, and the pair settles.
+TEST(Client, ACallInASimultaneousConnectComesThrough) {
   for (int round = 0; round < 10; ++round) {
     Io io;
     auto first = std::make_unique<Node>(io);
     auto second = std::make_unique<Node>(io);
     auto& low = first->self.id < second->self.id ? *first : *second;
     auto& high = first->self.id < second->self.id ? *second : *first;
-    // The low node's session reaches the high node but is not yet its route.
     high.adopt_inbound = false;
     ASSERT_TRUE(call(low, high.self).reply);
     ASSERT_FALSE(high.client->has_route(low.self.id, Lane::control));
@@ -929,11 +975,33 @@ TEST(Client, ACallOnADialRetiredBeforeThePeersSessionRegistersComesThrough) {
     high.release_inbound();
     const auto answered = outcome.get();
     EXPECT_TRUE(answered.reply) << answered.failure;
-    // And the pair keeps working once it has settled.
     EXPECT_TRUE(eventually([&] { return high.client->has_route(low.self.id, Lane::control); }));
     EXPECT_TRUE(call(high, low.self).reply);
     EXPECT_TRUE(call(low, high.self).reply);
   }
+}
+
+// The transport's own counts, as Status reports them: a dial counts once its peer's
+// identity is checked, and a route is canonical whichever end dialled it.
+TEST(Client, CountsTheConnectionsItMakesReusesAndHolds) {
+  Io io;
+  Node a(io), b(io);
+  ASSERT_TRUE(call(a, b.self).reply);
+  ASSERT_TRUE(call(a, b.self).reply);
+  EXPECT_EQ(a.client->stats().connections_created, 1u);
+  EXPECT_GE(a.client->stats().reused, 1u);
+  EXPECT_EQ(a.client->stats().canonical_connections, 1u);
+  ASSERT_TRUE(call(a, b.self, put_object, FrameType::foreground, Bytes(10, 1)).reply);
+  EXPECT_EQ(a.client->stats().connections_created, 2u);
+  EXPECT_EQ(a.client->stats().canonical_connections, 2u);
+  EXPECT_EQ(b.client->stats().connections_created, 0u);
+  EXPECT_TRUE(eventually([&] { return b.client->stats().canonical_connections == 2; }));
+  // Another node answers where this one was meant: no connection is kept or counted.
+  Node c(io);
+  auto wrong = c.self;
+  wrong.id = identity::NodeId::random();
+  EXPECT_FALSE(call(a, wrong).reply);
+  EXPECT_EQ(a.client->stats().connections_created, 2u);
 }
 
 // The journal: Macha's lines at Macha's levels, through the node's sink.

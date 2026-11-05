@@ -336,6 +336,40 @@ void Client::call(Target target, Call call) {
          [this, key, target, lane](std::shared_ptr<Session> session, std::string why) { dialled(key, target, lane, std::move(session), std::move(why)); });
 }
 
+void Client::await_peers_session(Target target, Lane lane, Call call) {
+  const RouteKey wanted{*target.id, lane};
+  std::shared_ptr<Session> route;
+  std::shared_ptr<asio::steady_timer> timer;
+  {
+    contract::Lock lock(_mutex);
+    if (_stopped) return fail(call, "client stopped");
+    route = route_locked(*target.id, lane);
+    if (!route) {
+      auto [wait, fresh] = _reverse.try_emplace(wanted);
+      wait->second.calls.push_back(std::move(call));
+      if (fresh) {
+        timer = std::make_shared<asio::steady_timer>(_health_strand);
+        wait->second.timer = timer;
+        wait->second.peers_session = true;
+        ++_operations;
+      }
+    }
+  }
+  if (route) return place(route, std::move(call), target);
+  if (!timer) return;
+  asio::post(_health_strand, [this, wanted, timer] {
+    bool stopped;
+    {
+      contract::Lock lock(_mutex);
+      stopped = _stopped;
+      if (!stopped) _reverse_timers.insert(timer);
+    }
+    if (stopped) return end_operation();
+    timer->expires_after(_options.connect_timeout);
+    timer->async_wait([this, wanted, timer](const boost::system::error_code&) { reverse_expired(wanted, timer); });
+  });
+}
+
 void Client::ask_for_lane(const RouteKey& key, const std::shared_ptr<Session>& control, const std::shared_ptr<asio::steady_timer>& timer) {
   // Armed before the request goes, so the route arriving can always cancel
   // it: the strand runs the two in order.
@@ -385,6 +419,7 @@ void Client::reverse_expired(const RouteKey& key, const std::shared_ptr<asio::st
   std::vector<Call> calls;
   std::string backoff_key;
   bool path = false;
+  bool peers_session = false;
   {
     contract::Lock lock(_mutex);
     _reverse_timers.erase(timer);
@@ -392,10 +427,15 @@ void Client::reverse_expired(const RouteKey& key, const std::shared_ptr<asio::st
       calls = std::move(found->second.calls);
       backoff_key = found->second.backoff_key;
       path = found->second.path;
+      peers_session = found->second.peers_session;
       _reverse.erase(found);
     }
   }
-  if (!calls.empty()) {
+  if (!calls.empty() && peers_session) {
+    for (auto& call : calls)
+      fail(call, "no route to peer " + to_string(key.first) + " on the " + lane_name(key.second) + " lane: its session did not arrive within " +
+                     std::to_string(_options.connect_timeout.count()) + " ms of this end's being retired");
+  } else if (!calls.empty()) {
     observe_dial(backoff_key, false);
     for (auto& call : calls)
       fail(call, path ? "no path to peer " + to_string(key.first) + " for the " + lane_name(key.second) + " lane within " +
@@ -480,6 +520,7 @@ Handled Client::handle_dial_request(const membership::NodeRecord& peer, const Me
     const auto lane = static_cast<Lane>(reader.u8());
     reader.finish();
     if (lane != Lane::control && lane != Lane::data) return Handled::failed(400, "invalid_request", "invalid transport lane");
+    _log.debug("dial request received peer=" + to_string(peer.id).substr(0, 12) + " lane=" + lane_name(lane));
     request_lane(peer, lane);
     return Handled::processed();
   } catch (const DecodeError& error) {
@@ -596,6 +637,7 @@ void Client::place(const std::shared_ptr<Session>& session, Call call, const Tar
   auto handle = call.handle;
   // Moved from only once admitted: a refusal by a retiring session leaves it
   // to be routed again.
+  if (_options.place_hook) _options.place_hook(*session);
   const auto admitted = session->call(call.type, std::move(call.payload), call.frame, call.executor, [stall, finished, done](CallOutcome outcome) {
     finished->store(true);
     if (!outcome.reply && stall->stalled.load()) outcome.failure = stall->why;
@@ -606,7 +648,11 @@ void Client::place(const std::shared_ptr<Session>& session, Call call, const Tar
     if (gone && call.reroutes < 3) {
       call.done = std::move(*done);
       ++call.reroutes;
-      return this->call(target, std::move(call));
+      // Simultaneous dials keep one session a lane, so this end's can go before the
+      // peer's registers here: wait for that one rather than dial again.
+      auto known = target;
+      known.id = session->peer().id;
+      return await_peers_session(std::move(known), lane, std::move(call));
     }
     asio::post(call.executor, [done, why = admitted.refused] { (*done)(CallOutcome{std::nullopt, why, {}}); });
     return;
@@ -707,6 +753,7 @@ void Client::dialled(const std::string& key, const Target& target, Lane lane, st
   std::vector<Call> waiting;
   Retire retire;
   std::shared_ptr<Session> route;
+  std::shared_ptr<asio::steady_timer> settled_wait;
   bool stopped = false;
   {
     contract::Lock lock(_mutex);
@@ -722,6 +769,7 @@ void Client::dialled(const std::string& key, const Target& target, Lane lane, st
   {
     contract::Lock lock(_mutex);
     if (session && !stopped) {
+      ++_stats.connections_created;
       const RouteKey route_key{session->peer().id, lane};
       _endpoint_ids[target.endpoint] = route_key.first;
       _peer_capabilities[route_key.first] = session->peer().capabilities;
@@ -741,8 +789,15 @@ void Client::dialled(const std::string& key, const Target& target, Lane lane, st
       }
       reconcile_locked(route_key, retire);
       route = route_locked(route_key.first, lane);
+      // Calls waiting for a route to this peer have one now.
+      if (const auto found = _reverse.find(route_key); route && found != _reverse.end() && found->second.peers_session) {
+        for (auto& call : found->second.calls) waiting.push_back(std::move(call));
+        settled_wait = found->second.timer;
+        _reverse.erase(found);
+      }
     }
   }
+  if (settled_wait) asio::post(_health_strand, [settled_wait] { settled_wait->cancel(); });
   if (session && stopped) {
     session->close("client stopped");
     why = "client stopped";
@@ -1053,14 +1108,19 @@ bool Client::has_route(const identity::NodeId& peer, Lane lane) const {
 
 ClientStats Client::stats() const {
   contract::Lock lock(_mutex);
-  return _stats;
+  auto out = _stats;
+  out.canonical_connections = 0;
+  for (const auto* routes : {&_outbound, &_inbound})
+    for (const auto& [_, session] : *routes)
+      if (session->usable()) ++out.canonical_connections;
+  return out;
 }
 
 void Client::end_operation() {
-  {
-    contract::Lock lock(_mutex);
-    --_operations;
-  }
+  // Under the lock: stop() may return and this client go the moment the count is seen
+  // at zero, and the condition variable with it.
+  contract::Lock lock(_mutex);
+  --_operations;
   _idle.notify_all();
 }
 

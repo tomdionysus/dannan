@@ -18,6 +18,7 @@
 #include "dannan/contract/time_source.h"
 #include "dannan/identity/node_id.h"
 #include "dannan/net/client.h"
+#include "dannan/status/log.h"
 
 namespace dannan::reach {
 
@@ -128,7 +129,7 @@ struct PublicConnectivityStatus {
 class PublicConnectivity {
  public:
   PublicConnectivity(ConnectivityConfig config, identity::NodeId node, net::Endpoint configured, std::shared_ptr<Gateway> gateway, ExternalIpLookup lookup,
-                     SelfProbe probe, const contract::WallClock* wall = &contract::system_wall_clock());
+                     SelfProbe probe, const contract::WallClock* wall = &contract::system_wall_clock(), std::shared_ptr<status::LogSink> log = nullptr);
   ~PublicConnectivity();
   PublicConnectivity(const PublicConnectivity&) = delete;
   PublicConnectivity& operator=(const PublicConnectivity&) = delete;
@@ -149,6 +150,7 @@ class PublicConnectivity {
   const ExternalIpLookup _lookup;
   const SelfProbe _probe;
   const contract::WallClock* const _wall;
+  const status::ScopedLogger _log;
   mutable contract::IoMutex _work_mutex;
   mutable contract::Mutex _mutex;
   PublicConnectivityStatus _status DANNAN_GUARDED_BY(_mutex);

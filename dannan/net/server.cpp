@@ -59,9 +59,13 @@ struct Server::Handshaking {
   asio::steady_timer timer;
   Endpoint remote;
 
+  // The family is read before the descriptor is released: arguments of one call have no
+  // order, and g++ evaluates these right to left.
   Handshaking(asio::io_context& io, asio::ip::tcp::socket& tcp, Endpoint from)
+      : Handshaking(io, tcp, std::move(from), tcp.local_endpoint().protocol().family()) {}
+  Handshaking(asio::io_context& io, asio::ip::tcp::socket& tcp, Endpoint from, int family)
       : strand(asio::make_strand(io.get_executor())),
-        socket(strand, Session::Socket::protocol_type(tcp.local_endpoint().protocol().family(), SOCK_STREAM), tcp.release()),
+        socket(strand, Session::Socket::protocol_type(family, SOCK_STREAM), tcp.release()),
         timer(strand),
         remote(std::move(from)) {}
 
@@ -90,7 +94,7 @@ Server::Server(asio::io_context& io, std::string listen_host, uint16_t port, Ser
               throw;
             }
           },
-          _options.memory, _options.time, _options.threads),
+          _options.memory, _options.time, _options.threads, _options.log),
       _admitted(std::move(admitted)),
       // On a strand: its accept handler and stop()'s close never run at once.
       _acceptor(asio::make_strand(io)) {
@@ -115,10 +119,10 @@ void Server::begin_operation() {
 }
 
 void Server::end_operation() {
-  {
-    contract::Lock lock(_mutex);
-    --_operations;
-  }
+  // Under the lock: stop() may return and this server go the moment the count is seen
+  // at zero, and the condition variable with it.
+  contract::Lock lock(_mutex);
+  --_operations;
   _idle.notify_all();
 }
 

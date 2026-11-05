@@ -300,6 +300,7 @@ void ObservationLog::append(const std::string& line) {
   std::ofstream out(_path, std::ios::app | std::ios::binary);
   out << line << '\n';
   out.flush();
+  if (!out && !_failing) _journal.debug("observation: cannot write " + _path.string());
   _failing = !out;
 }
 
@@ -349,8 +350,9 @@ void ObservationRecorder::tick(uint64_t now_unix_ms) {
   if (_gauges) {
     try {
       gauges = _gauges();
-    } catch (const std::exception&) {
+    } catch (const std::exception& error) {
       // A failed sample loses the gauges, not the window.
+      _log->journal().debug(std::string("observation: gauge sampling failed: ") + error.what());
     }
   }
   for (const auto& event : _registry.drain_events()) _log->append(render_event(event));

@@ -17,6 +17,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <fstream>
 #include <limits>
 #include <map>
@@ -264,6 +265,38 @@ TEST(Placement, MatchesMachasReferenceEverywhere) {
   }
   EXPECT_EQ(orders, 2704u);
   EXPECT_EQ(capacities, 26u);
+}
+
+// Macha's exact boundary: the 8 GiB node owns 3,354,133 of 2^32 shards, the tail of
+// the shard space, with these ids.
+TEST(Placement, TheQuotaBoundaryIsExact) {
+  constexpr uint64_t GiB = 1024ull * 1024 * 1024;
+  constexpr uint64_t TiB = 1024 * GiB;
+  const auto at = [](uint8_t tag, uint64_t capacity) {
+    NodeRecord record;
+    record.id.bytes.back() = tag;
+    record.adverts["capacity"] = membership::u64_advert(capacity);
+    return record;
+  };
+  const std::vector<NodeRecord> nodes{at(1, 10 * TiB), at(2, 10 * TiB), at(3, 8 * GiB)};
+  EXPECT_EQ(logical_capacity(nodes, 2, "capacity"), 10 * TiB + 4 * GiB);
+  EXPECT_EQ(logical_capacity({nodes[0], nodes[2]}, 2, "capacity"), 8 * GiB);
+  const Scheme machas{"macha/data-fallback/v7", "macha/data-extra-domain/v7", "capacity"};
+  const auto shard = [](uint32_t value) {
+    std::array<uint8_t, 32> key{};
+    for (int i = 0; i < 4; ++i) key[static_cast<size_t>(i)] = static_cast<uint8_t>(value >> (24 - 8 * i));
+    return key;
+  };
+  const auto small_owns = [&](uint32_t value) {
+    const auto placed = by_capacity(shard(value), nodes, 2, machas);
+    EXPECT_EQ(placed.size(), 3u);
+    EXPECT_NE(placed[0].id, placed[1].id);
+    return placed[0].id == nodes[2].id || placed[1].id == nodes[2].id;
+  };
+  const auto first_small = static_cast<uint32_t>(shard_count - 3'354'133);
+  EXPECT_FALSE(small_owns(first_small - 1));
+  EXPECT_TRUE(small_owns(first_small));
+  EXPECT_TRUE(small_owns(std::numeric_limits<uint32_t>::max()));
 }
 
 }  // namespace

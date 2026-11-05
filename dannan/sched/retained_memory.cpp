@@ -69,13 +69,13 @@ bool RetainedMemoryLedger::available_locked(WorkClass work, MemoryOwner owner, u
   const auto non_control = _capacity - _control_reserve;
   if (bytes > non_control || _used > non_control - bytes) return false;
   if (work == WorkClass::foreground) return true;
-  if (_waiters[index(WorkClass::control)] || _waiters[index(WorkClass::foreground)]) return false;
+  if (_classes.waiting(WorkClass::control) || _classes.waiting(WorkClass::foreground)) return false;
   if (owner == MemoryOwner::rpc_frame) {
     const auto found = _owner_bytes.find(MemoryOwner::rpc_frame);
     const uint64_t held = found == _owner_bytes.end() ? 0 : found->second;
     if (held + bytes <= _reassembly_reserve) return true;
   }
-  if (work == WorkClass::speculative && _waiters[index(WorkClass::loader)]) return false;
+  if (work == WorkClass::speculative && _classes.waiting(WorkClass::loader)) return false;
   if (reclaimable) return true;
   // Reassembly's exemption from the durable-lower budget is bounded by the
   // transport's own reassembly limits; the class reserves above still apply.
@@ -122,41 +122,29 @@ std::optional<RetainedMemoryLedger::Lease> RetainedMemoryLedger::acquire(WorkCla
   const auto ceiling = work == WorkClass::control ? _capacity : _capacity - _control_reserve;
   if (bytes > ceiling) return std::nullopt;
   contract::Lock lock(_mutex);
-  bool counted = false;
-  for (;;) {
-    if (_stopping || (cancelled && cancelled->load(std::memory_order_relaxed)) || (deadline != TimePoint{} && Clock::now() >= deadline)) {
-      if (counted) --_waiters[index(work)];
-      ++_cancelled_waits;
-      _changed.notify_all();
-      return std::nullopt;
-    }
-    if (available_locked(work, owner, bytes, reclaimable)) break;
-    if (!counted) {
-      counted = true;
-      ++_waiters[index(work)];
-      ++_waits[index(work)];
-    }
-    auto callbacks = request_shedding_locked(work);
-    if (!callbacks.empty()) {
-      // Shedding runs a holder's code: never under the ledger's lock.
-      lock.unlock();
-      for (auto& callback : callbacks) {
-        try {
-          callback();
-        } catch (...) {
-          // Best effort: the still-live lease stays charged and the waiter
-          // stays bounded by its deadline.
+  ClassWaits::Bounds bounds;
+  bounds.deadline = deadline;
+  bounds.cancelled = cancelled;
+  const auto outcome = _classes.wait(
+      lock, _changed, work, bounds, [&]() DANNAN_NO_THREAD_SAFETY_ANALYSIS { return _stopping; },
+      [&]() DANNAN_NO_THREAD_SAFETY_ANALYSIS { return available_locked(work, owner, bytes, reclaimable); }, [] {},
+      [&](contract::Lock& held) DANNAN_NO_THREAD_SAFETY_ANALYSIS {
+        auto callbacks = request_shedding_locked(work);
+        if (callbacks.empty()) return false;
+        // Shedding runs a holder's code: never under the ledger's lock.
+        held.unlock();
+        for (auto& callback : callbacks) {
+          try {
+            callback();
+          } catch (...) {
+            // Best effort: the still-live lease stays charged and the waiter
+            // stays bounded by its deadline.
+          }
         }
-      }
-      lock.lock();
-      continue;
-    }
-    if (deadline == TimePoint{})
-      _changed.wait(lock.native());
-    else
-      _changed.wait_until(lock.native(), deadline);
-  }
-  if (counted) --_waiters[index(work)];
+        held.lock();
+        return true;
+      });
+  if (outcome != ClassWaits::Outcome::admitted) return std::nullopt;
   return admit_locked(work, owner, bytes, reclaimable, std::move(shed));
 }
 
@@ -192,6 +180,7 @@ void RetainedMemoryLedger::release(uint64_t id) {
     _lower_durable -= allocation.bytes;
     if (allocation.work == WorkClass::speculative) _speculative_durable -= allocation.bytes;
   }
+  _classes.released();
   _changed.notify_all();
 }
 
@@ -219,9 +208,9 @@ RetainedMemoryStats RetainedMemoryLedger::stats() const {
   out.reclaimable_bytes = _reclaimable;
   out.owner_bytes = _owner_bytes;
   out.admissions = _admissions;
-  out.waits = _waits;
+  out.waits = _classes.all_waits();
   out.shed_requests = _shed_requests;
-  out.cancelled_waits = _cancelled_waits;
+  out.cancelled_waits = _classes.gave_up();
   out.restored_bytes = _restored;
   return out;
 }
