@@ -32,6 +32,7 @@
 #include "dannan/reach/inbound.h"
 #include "dannan/reach/paths.h"
 #include "dannan/sched/retained_memory.h"
+#include "dannan/sched/work.h"
 #include "dannan/status/activity.h"
 #include "dannan/status/events.h"
 #include "dannan/status/log.h"
@@ -75,6 +76,12 @@ const char* roster_change_name(RosterChange::Kind) noexcept;
 class Nodes {
  public:
   virtual ~Nodes() = default;
+  // Runs a UPnP refresh, and a self-probe if `probe`, now rather than at the
+  // next turn of the node's loop, and answers with the status on `executor`:
+  // empty when the node is not running. Waits on nothing itself; the work is
+  // the node's, bounded by the connectivity timeouts. Thread-safe.
+  virtual void refresh_public_connectivity(bool probe, bool force_probe, boost::asio::any_io_executor executor,
+                                           std::function<void(std::optional<reach::PublicConnectivityStatus>)> done) = 0;
   // The roster's changes, as they happen, posted to `executor` in order
   // when it is a strand: first a `joined` for every node active now, then
   // each change. An id for unwatch. Waits on nothing.
@@ -140,6 +147,8 @@ class Routes {
   // std::logic_error after start or for a core type, std::invalid_argument
   // for a number taken or retired.
   virtual void add(net::MessageType type, net::Registration registration, net::RequestHandler handler = {}) = 0;
+  // Marks a number as no longer used; add() refuses it from then on. Before start.
+  virtual void retire(net::MessageType type) = 0;
   // Binds the handler for a registered type; replaces one bound.
   virtual void bind(net::MessageType type, net::RequestHandler handler) = 0;
   // Unbinds it. Waits for the handler's calls in flight to return.
@@ -149,16 +158,20 @@ class Routes {
   // call whose deadline passes is cancelled: its reply slot is freed and the
   // peer told, and a reply that comes later is dropped. The handle controls
   // the call meanwhile. Waits on nothing.
+  // `watch` names this call's own no-progress deadline and stall notice; a call
+  // with none is unwatched unless its type or the node's settings say otherwise.
   virtual std::shared_ptr<net::CallHandle> call(const membership::NodeRecord& peer, net::MessageType type, net::Bytes payload, sched::FrameType frame,
-                                                std::chrono::milliseconds deadline, boost::asio::any_io_executor executor, Done done) = 0;
+                                                std::chrono::milliseconds deadline, boost::asio::any_io_executor executor, Done done,
+                                                net::CallWatch watch = {}) = 0;
   virtual std::shared_ptr<net::CallHandle> call(const net::Endpoint& endpoint, net::MessageType type, net::Bytes payload, sched::FrameType frame,
-                                                std::chrono::milliseconds deadline, boost::asio::any_io_executor executor, Done done) = 0;
+                                                std::chrono::milliseconds deadline, boost::asio::any_io_executor executor, Done done,
+                                                net::CallWatch watch = {}) = 0;
   // The same call, waited for: the outcome, at the latest when `deadline`
   // passes. Waits on the peer. Never from one of the io context's threads.
   virtual net::CallOutcome call_and_wait(const membership::NodeRecord& peer, net::MessageType type, net::Bytes payload, sched::FrameType frame,
-                                         std::chrono::milliseconds deadline) = 0;
+                                         std::chrono::milliseconds deadline, net::CallWatch watch = {}) = 0;
   virtual net::CallOutcome call_and_wait(const net::Endpoint& endpoint, net::MessageType type, net::Bytes payload, sched::FrameType frame,
-                                         std::chrono::milliseconds deadline) = 0;
+                                         std::chrono::milliseconds deadline, net::CallWatch watch = {}) = 0;
 };
 
 // Channels. Named channels with a delivery contract chosen when opened
@@ -329,6 +342,9 @@ class Context {
   virtual status::ActivityClocks& activity() = 0;
   // Measurement probes, written to the node's observation log.
   virtual status::Observations& observations() = 0;
+  // Checks a work context against the waits an operation declares: the node's
+  // one guard, so its violations are counted together.
+  virtual sched::WaitGuard& wait_guard() = 0;
   // The node's thread bodies, and the hosted system's, under one record.
   virtual supervise::SupervisedThreads& threads() = 0;
   virtual Diagnostics diagnostics() const = 0;

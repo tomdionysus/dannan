@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -38,6 +39,9 @@ struct Frame {
   uint64_t request_id = 0;
   sched::FrameType frame = sched::FrameType::control;
   Message message;
+  // Inbound: set once the session it came on has closed. Work still queued then
+  // is not started: its asker has gone and no reply can reach it.
+  std::shared_ptr<const std::atomic<bool>> session_closed = nullptr;
 };
 
 // Why a peer would not answer, as the hosted systems' HTTP APIs say it: a

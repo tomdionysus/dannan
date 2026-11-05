@@ -67,10 +67,8 @@ class Node::NodesNoun final : public Nodes {
   bool directly_reachable(const identity::NodeId& node) const override { return _node._members.directly_reachable(node); }
   bool inbound_capable(const identity::NodeId& node) const override { return _node._members.inbound_capable(node); }
   RosterSnapshot snapshot() const override {
-    RosterSnapshot out;
-    out.all = _node._members.all();
-    out.active = _node._members.active();
-    return out;
+    auto [all, active] = _node._members.all_and_active();
+    return {std::move(all), std::move(active)};
   }
   bool all_known_reachable() const override { return _node._members.all_known_reachable(); }
   std::optional<net::Purpose> path(const identity::NodeId& node, net::Lane lane) const override {
@@ -84,6 +82,10 @@ class Node::NodesNoun final : public Nodes {
   }
   std::vector<membership::IdentityReset> identity_resets() const override { return _node._members.identity_resets(); }
   bool apply_identity_reset(const membership::IdentityReset& reset) override { return _node.apply_identity_reset(reset); }
+  void refresh_public_connectivity(bool probe, bool force_probe, asio::any_io_executor executor,
+                                   std::function<void(std::optional<reach::PublicConnectivityStatus>)> done) override {
+    _node.refresh_public_connectivity(probe, force_probe, std::move(executor), std::move(done));
+  }
   void propagate_identity_reset(const membership::IdentityReset& reset, std::chrono::milliseconds deadline) override {
     _node.propagate_identity_reset(reset, deadline);
   }
@@ -122,6 +124,10 @@ class Node::RoutesNoun final : public Routes {
     _node._table.add(type, std::move(registration));
     if (handler) bind(type, std::move(handler));
   }
+  void retire(net::MessageType type) override {
+    if (_node._started) throw std::logic_error("message types are retired before the node starts");
+    _node._table.retire(type);
+  }
   void bind(net::MessageType type, net::RequestHandler handler) override {
     if (_node._table.is_core(type)) throw std::logic_error("message type " + std::to_string(static_cast<uint16_t>(type)) + " is one of Dannan's");
     contract::WriteLock lock(_node._handlers_mutex);
@@ -132,20 +138,20 @@ class Node::RoutesNoun final : public Routes {
     _node._handlers.erase(type);
   }
   std::shared_ptr<net::CallHandle> call(const NodeRecord& peer, net::MessageType type, net::Bytes payload, sched::FrameType frame,
-                                        std::chrono::milliseconds deadline, asio::any_io_executor executor, Done done) override {
-    return _node.place_call(peer, {peer.host, peer.port}, type, std::move(payload), frame, deadline, std::move(executor), std::move(done));
+                                        std::chrono::milliseconds deadline, asio::any_io_executor executor, Done done, net::CallWatch watch) override {
+    return _node.place_call(peer, {peer.host, peer.port}, type, std::move(payload), frame, deadline, std::move(executor), std::move(done), watch);
   }
   std::shared_ptr<net::CallHandle> call(const net::Endpoint& endpoint, net::MessageType type, net::Bytes payload, sched::FrameType frame,
-                                        std::chrono::milliseconds deadline, asio::any_io_executor executor, Done done) override {
-    return _node.place_call(std::nullopt, endpoint, type, std::move(payload), frame, deadline, std::move(executor), std::move(done));
+                                        std::chrono::milliseconds deadline, asio::any_io_executor executor, Done done, net::CallWatch watch) override {
+    return _node.place_call(std::nullopt, endpoint, type, std::move(payload), frame, deadline, std::move(executor), std::move(done), watch);
   }
-  net::CallOutcome call_and_wait(const NodeRecord& peer, net::MessageType type, net::Bytes payload, sched::FrameType frame,
-                                 std::chrono::milliseconds deadline) override {
-    return _node.call_wait(peer, {peer.host, peer.port}, type, std::move(payload), deadline, frame);
+  net::CallOutcome call_and_wait(const NodeRecord& peer, net::MessageType type, net::Bytes payload, sched::FrameType frame, std::chrono::milliseconds deadline,
+                                 net::CallWatch watch) override {
+    return _node.call_wait(peer, {peer.host, peer.port}, type, std::move(payload), deadline, frame, watch);
   }
   net::CallOutcome call_and_wait(const net::Endpoint& endpoint, net::MessageType type, net::Bytes payload, sched::FrameType frame,
-                                 std::chrono::milliseconds deadline) override {
-    return _node.call_wait(std::nullopt, endpoint, type, std::move(payload), deadline, frame);
+                                 std::chrono::milliseconds deadline, net::CallWatch watch) override {
+    return _node.call_wait(std::nullopt, endpoint, type, std::move(payload), deadline, frame, watch);
   }
 
  private:
@@ -342,11 +348,44 @@ Diagnostics Node::diagnostics() const {
   return out;
 }
 
+void fit_memory_limit(NodeConfig& config, std::vector<sched::MemoryPart>& hosted) {
+  config.memory_fitted = true;
+  if (!config.memory_limit_bytes) return;
+  sched::MemoryPlan plan;
+  plan.parts = hosted;
+  plan.parts.push_back({"runtime.retained_memory_bytes", config.memory_bytes});
+  plan.reserves = {{"control", config.control_reserve_bytes},
+                   {"foreground", config.foreground_reserve_bytes},
+                   {"loader", config.loader_reserve_bytes},
+                   {"reassembly", config.reassembly_reserve_bytes}};
+  config.memory_warning = sched::fit_to_limit(config.memory_limit_bytes, plan);
+  for (size_t i = 0; i < hosted.size(); ++i) hosted[i].bytes = plan.parts[i].bytes;
+  config.memory_bytes = plan.parts.back().bytes;
+  config.control_reserve_bytes = plan.reserves[0].bytes;
+  config.foreground_reserve_bytes = plan.reserves[1].bytes;
+  config.loader_reserve_bytes = plan.reserves[2].bytes;
+  config.reassembly_reserve_bytes = plan.reserves[3].bytes;
+}
+
+namespace {
+
+// Before any member is built from it.
+NodeConfig prepared(NodeConfig config) {
+  if (!config.log) config.log = std::make_shared<status::ConsoleSink>();
+  if (!config.memory_fitted) {
+    std::vector<sched::MemoryPart> none;
+    fit_memory_limit(config, none);
+  }
+  return config;
+}
+
+}  // namespace
+
 // --- The node ---------------------------------------------------------------
 
 Node::Node(asio::io_context& io, NodeConfig config)
     : _io(io),
-      _config(std::move(config)),
+      _config(prepared(std::move(config))),
       _lock(_config.state_path),
       _identity(_config.state_path, _config.key),
       _custody(_config.custody ? std::optional<identity::KeyCustody>(identity::KeyCustody::open(_config.state_path, *_config.custody)) : std::nullopt),
@@ -356,6 +395,8 @@ Node::Node(asio::io_context& io, NodeConfig config)
       _telemetry(_identity.id, _config.state_path / "telemetry" / "last-known.bin", _config.time, _config.wall, _config.telemetry_layout),
       _readiness(_config.planes, _config.wall),
       _activity(_config.time),
+      _threads(std::chrono::seconds(1), std::chrono::seconds(60), _config.wall, _config.time),
+      _wait_guard(status::ScopedLogger(_config.log, "wait")),
       _memory(_config.memory_bytes, _config.control_reserve_bytes, _config.foreground_reserve_bytes, _config.loader_reserve_bytes,
               _config.reassembly_reserve_bytes),
       _nodes(std::make_unique<NodesNoun>(*this)),
@@ -366,7 +407,7 @@ Node::Node(asio::io_context& io, NodeConfig config)
       _faults(std::make_unique<FaultsNoun>(*this)),
       _time(std::make_unique<TimeNoun>(*this)),
       _telemetry_noun(std::make_unique<TelemetryNoun>(*this)) {
-  if (!_config.log) _config.log = std::make_shared<status::ConsoleSink>();
+  if (_config.memory_warning) status::ScopedLogger(_config.log, "node").warn(*_config.memory_warning);
   // How this node proves itself: a certificate (version 2), the cluster key
   // (version 1), or both while a cluster moves.
   if (_config.certificate) {
@@ -417,6 +458,15 @@ void Node::start() {
   // A cluster nobody could connect to is refused before anything listens.
   reach::refuse_impossible_cluster(_config.inbound, _config.bootstrap, _members.all(), _identity.id);
   if (_started.exchange(true)) return;
+  // Before everything else, so a startup that never finishes still leaves its
+  // windows behind.
+  if (_config.observation_interval.count() > 0) {
+    _observation_recorder = std::make_unique<status::ObservationRecorder>(
+        _observations, std::make_shared<status::ObservationLog>(_config.state_path / "observation" / "observations.jsonl", _config.observation_max_bytes),
+        _config.version, _config.observation_interval, _config.observation_gauges, _config.wall, &_threads);
+    _observations.event({_config.wall->unix_ms(), "start", {}, {{"version", _config.version}}});
+    _observation_recorder->start();
+  }
   _frozen = std::make_shared<const net::RouteTable>(_table);
 
   net::ServerOptions server_options;
@@ -428,6 +478,8 @@ void Node::start() {
   server_options.memory = &_memory;
   server_options.traffic = _traffic;
   server_options.time = _config.time;
+  server_options.log = _config.log;
+  server_options.threads = &_threads;
   _server = std::make_unique<net::Server>(
       _io, _config.listen_host, _config.port, server_options,
       [this](const NodeRecord& peer, sched::FrameType frame, const net::Message& request) { return handle(peer, frame, request); },
@@ -448,6 +500,10 @@ void Node::start() {
   client_options.connect_timeout = _config.connect_timeout;
   client_options.control_no_progress = _config.control_no_progress;
   client_options.data_no_progress = _config.data_no_progress;
+  client_options.control_stall_notice = _config.control_stall_notice;
+  client_options.data_stall_notice = _config.data_stall_notice;
+  client_options.log = _config.log;
+  client_options.dial_hook = _config.dial_hook;
   client_options.heartbeat = _config.heartbeat;
   client_options.dead_after = _config.dead_after;
   client_options.alive = [this](const NodeRecord& peer) { observe_direct(peer); };
@@ -471,6 +527,7 @@ void Node::start() {
   _client = std::make_unique<net::Client>(_io, client_options);
   reach::PathsConfig paths;
   paths.credentials = _credentials;
+  paths.threads = &_threads;
   paths.connect_timeout = _config.connect_timeout;
   paths.punch_window = _config.punch_window;
   paths.relay = _config.relay;
@@ -516,10 +573,15 @@ void Node::start() {
       std::make_unique<reach::PublicConnectivity>(_config.connectivity, _identity.id, net::Endpoint{_members.self().host, _bound_port}, _config.gateway,
                                                   _config.external_ip ? _config.external_ip : reach::ExternalIpLookup(reach::checkip_external_ip),
                                                   _config.self_probe ? _config.self_probe : reach::SelfProbe(reach::tcp_self_probe), _config.wall);
+  {
+    contract::Lock lock(_refresh_mutex);
+    _refreshes_open = true;
+  }
   _readiness.close_declarations();
   _readiness.control_plane(true);
   _client->start();
 
+  contract::Lock loops(_loops_mutex);
   _loops.emplace_back([this](std::stop_token stop) { _threads.loop("node-membership", stop, [this, stop] { membership_loop(stop); }); });
   _loops.emplace_back([this](std::stop_token stop) { _threads.loop("node-telemetry", stop, [this, stop] { telemetry_loop(stop); }); });
   _loops.emplace_back([this](std::stop_token stop) { _threads.loop("node-connectivity", stop, [this, stop] { connectivity_loop(stop); }); });
@@ -530,20 +592,73 @@ void Node::cancel_outbound_calls() {
   if (_client) _client->stop();
 }
 
+void Node::request_stop() {
+  {
+    contract::Lock lock(_loops_mutex);
+    for (auto& loop : _loops) loop.request_stop();
+  }
+  _wake.notify_all();
+}
+
 void Node::stop() {
   if (!_started || _stopping.exchange(true)) return;
-  for (auto& loop : _loops) loop.request_stop();
-  _wake.notify_all();
+  request_stop();
   // The transport goes first: a loop waiting on a call is released by it.
   if (_server) _server->stop();
   cancel_outbound_calls();
   if (_paths) _paths->stop();
-  for (auto& loop : _loops)
+  std::vector<std::jthread> loops;
+  {
+    contract::Lock lock(_loops_mutex);
+    loops.swap(_loops);
+  }
+  for (auto& loop : loops)
     if (loop.joinable()) loop.join();
-  _loops.clear();
+  std::deque<ConnectivityRefresh> unserved;
+  {
+    contract::Lock lock(_refresh_mutex);
+    _refreshes_open = false;
+    unserved.swap(_refreshes);
+  }
+  for (auto& refresh : unserved) asio::post(refresh.executor, [done = std::move(refresh.done)] { done(std::nullopt); });
   _readiness.control_plane(false);
   // Last: the mapping this node made.
   _connectivity.reset();
+  _observation_recorder.reset();
+}
+
+void Node::refresh_public_connectivity(bool probe, bool force_probe, asio::any_io_executor executor,
+                                       std::function<void(std::optional<reach::PublicConnectivityStatus>)> done) {
+  {
+    contract::Lock lock(_refresh_mutex);
+    if (_refreshes_open) {
+      _refreshes.push_back({probe, force_probe, std::move(executor), std::move(done)});
+      _wake.notify_all();
+      return;
+    }
+  }
+  asio::post(executor, [done = std::move(done)] { done(std::nullopt); });
+}
+
+void Node::advertise(const reach::PublicConnectivityStatus& status) {
+  const auto before = _members.self();
+  if (!status.advertised.host.empty() && status.advertised.port && (status.advertised.host != before.host || status.advertised.port != before.port))
+    _members.set_endpoint(status.advertised.host, status.advertised.port);
+}
+
+void Node::serve_refreshes() {
+  while (true) {
+    ConnectivityRefresh refresh;
+    {
+      contract::Lock lock(_refresh_mutex);
+      if (_refreshes.empty()) return;
+      refresh = std::move(_refreshes.front());
+      _refreshes.pop_front();
+    }
+    auto status = _connectivity->refresh(refresh.probe, refresh.force_probe);
+    advertise(status);
+    asio::post(refresh.executor, [done = std::move(refresh.done), status = std::move(status)] { done(status); });
+  }
 }
 
 std::optional<reach::PublicConnectivityStatus> Node::connectivity() const {
@@ -721,7 +836,7 @@ void Node::merge(std::span<const uint8_t> payload) {
 
 std::shared_ptr<net::CallHandle> Node::place_call(std::optional<NodeRecord> peer, const net::Endpoint& endpoint, net::MessageType type, net::Bytes payload,
                                                   sched::FrameType frame, std::chrono::milliseconds deadline, asio::any_io_executor executor,
-                                                  net::Client::Done done) {
+                                                  net::Client::Done done, net::CallWatch watch) {
   if (!_started || _stopping || _calls_cancelled || !_client) {
     asio::post(executor, [done = std::move(done), why = std::string(_started ? "node is stopping; outbound calls are cancelled" : "node is not started")] {
       done(net::CallOutcome{std::nullopt, why, {}});
@@ -760,8 +875,8 @@ std::shared_ptr<net::CallHandle> Node::place_call(std::optional<NodeRecord> peer
     if (state->finished.exchange(true)) return;
     state->done(std::move(outcome));
   };
-  auto handle = peer ? _client->call(*peer, type, std::move(payload), frame, executor, std::move(finish))
-                     : _client->call(endpoint, type, std::move(payload), frame, executor, std::move(finish));
+  auto handle = peer ? _client->call(*peer, type, std::move(payload), frame, executor, std::move(finish), watch)
+                     : _client->call(endpoint, type, std::move(payload), frame, executor, std::move(finish), watch);
   asio::post(strand, [state, handle] {
     state->handle = handle;
     if (state->expired) handle->cancel();
@@ -770,18 +885,19 @@ std::shared_ptr<net::CallHandle> Node::place_call(std::optional<NodeRecord> peer
 }
 
 net::CallOutcome Node::call_wait(std::optional<NodeRecord> peer, const net::Endpoint& endpoint, net::MessageType type, net::Bytes payload,
-                                 std::chrono::milliseconds deadline, sched::FrameType frame) {
+                                 std::chrono::milliseconds deadline, sched::FrameType frame, net::CallWatch watch) {
   auto done = std::make_shared<std::promise<net::CallOutcome>>();
   auto future = done->get_future();
-  place_call(std::move(peer), endpoint, type, std::move(payload), frame, deadline, _io.get_executor(),
-             [done](net::CallOutcome outcome) { done->set_value(std::move(outcome)); });
+  place_call(
+      std::move(peer), endpoint, type, std::move(payload), frame, deadline, _io.get_executor(),
+      [done](net::CallOutcome outcome) { done->set_value(std::move(outcome)); }, watch);
   // The deadline answers first; the margin only covers the executor.
   if (future.wait_for(deadline + std::chrono::seconds(5)) != std::future_status::ready) return {std::nullopt, "no answer", {}};
   return future.get();
 }
 
 void Node::exchange(std::optional<NodeRecord> peer, const net::Endpoint& endpoint) {
-  const auto outcome = call_wait(peer, endpoint, net::message::members, {}, _config.connect_timeout * 2);
+  const auto outcome = call_wait(peer, endpoint, net::message::members, {}, _config.exchange_budget);
   if (!outcome.reply) throw std::runtime_error(outcome.failure);
   if (outcome.reply->type != net::message::members_reply) throw std::runtime_error("membership refused");
   merge(outcome.reply->payload);
@@ -909,18 +1025,26 @@ std::chrono::milliseconds Node::classify() {
 }
 
 void Node::connectivity_loop(std::stop_token stop) {
-  const auto before = _members.self();
-  const auto status = _connectivity->refresh(_config.connectivity.check.enabled);
-  if (!status.advertised.host.empty() && status.advertised.port && (status.advertised.host != before.host || status.advertised.port != before.port))
-    _members.set_endpoint(status.advertised.host, status.advertised.port);
+  advertise(_connectivity->refresh(_config.connectivity.check.enabled));
   const bool automatic = _config.inbound == reach::Inbound::automatic;
   auto next = _config.time->now();
   auto next_class = next;
   while (!stop.stop_requested()) {
     // At least every heartbeat: the sweep runs on every tick.
     const auto tick = _config.time->now() + _config.heartbeat;
-    sleep_until(stop, std::min(automatic ? std::min(next, next_class) : next_class, tick));
+    {
+      // Unlike sleep_until, a refresh someone asked for ends this wait.
+      const auto due = std::min(automatic ? std::min(next, next_class) : next_class, tick);
+      std::unique_lock lock(_wait_mutex);
+      const auto now = _config.time->now();
+      if (due > now)
+        _wake.wait_for(lock, stop, due - now, [this] {
+          contract::Lock refreshes(_refresh_mutex);
+          return !_refreshes.empty();
+        });
+    }
     if (stop.stop_requested()) return;
+    serve_refreshes();
     // Level 0: this node's path class and candidates, and the circuits
     // through it that have lost an end.
     if (_config.time->now() >= next_class) next_class = _config.time->now() + classify();
@@ -939,12 +1063,13 @@ void Node::connectivity_loop(std::stop_token stop) {
     }
     if (!peer) continue;
     const auto self = _members.self();
-    const auto outcome = call_wait(peer, {peer->host, peer->port}, net::message::dial_back, reach::encode_dial_back_request({self.host, self.port}),
-                                   _config.connect_timeout * 3);
+    const auto outcome =
+        call_wait(peer, {peer->host, peer->port}, net::message::dial_back, reach::encode_dial_back_request({self.host, self.port}), _config.exchange_budget);
     if (!outcome.reply || outcome.reply->type != net::message::dial_back_reply) continue;
     try {
       const auto [reachable, error] = reach::decode_dial_back_reply(outcome.reply->payload);
       const auto verdict = _inbound.observe_probe(peer->id, reachable, error);
+      if (!verdict.persist_error.empty()) status::ScopedLogger(_config.log, "node").warn("inbound resolution not persisted: " + verdict.persist_error);
       if (verdict.changed) apply_inbound(_inbound.capable());
       next = _config.time->now() + verdict.next_probe;
     } catch (const net::DecodeError&) {
@@ -995,7 +1120,10 @@ void Node::propagate_identity_reset(const membership::IdentityReset& reset, std:
   for (const auto& peer : _members.active()) {
     if (peer.id == _identity.id) continue;
     const auto outcome = call_wait(peer, {peer.host, peer.port}, net::message::identity_resets, payload, deadline);
-    if (!outcome.reply || outcome.reply->type != net::message::identity_resets_reply) continue;
+    if (!outcome.reply || outcome.reply->type != net::message::identity_resets_reply) {
+      status::ScopedLogger(_config.log, "node").debug("identity reset propagation to " + peer.host + ": " + (outcome.reply ? "refused" : outcome.failure));
+      continue;
+    }
     try {
       for (const auto& learned : membership::decode_identity_resets(outcome.reply->payload)) apply_identity_reset(learned);
     } catch (const net::DecodeError&) {

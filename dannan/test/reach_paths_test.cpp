@@ -318,7 +318,8 @@ TEST(LevelZero, ARelayedPairMovesUpToAPunch) {
            cluster.b->context().nodes().path(a, net::Lane::control) == net::Purpose::punched;
   }));
   const auto lower = a < b ? cluster.a.get() : cluster.b.get();
-  EXPECT_GE(lower->diagnostics().paths.upgrades_made, 1u);
+  // Counted once the upgrade's call returns, which may be after the path shows.
+  EXPECT_TRUE(eventually([&] { return lower->diagnostics().paths.upgrades_made >= 1u; }));
   const auto outcome = cluster.echo(*cluster.a, *cluster.b, false);
   ASSERT_TRUE(outcome.reply) << outcome.failure;
   // The relay's circuit goes with the relayed session.

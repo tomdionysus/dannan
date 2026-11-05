@@ -16,10 +16,13 @@
 
 #include <boost/asio/ip/tcp.hpp>
 #include <fstream>
+#include <future>
+#include <thread>
 
 #include "dannan/reach/connectivity.h"
 #include "dannan/reach/dial_back.h"
 #include "dannan/reach/inbound.h"
+#include "dannan/test/fixtures/gate.h"
 #include "dannan/test/fixtures/stepped_time.h"
 #include "dannan/test/fixtures/temp_dir.h"
 
@@ -36,6 +39,19 @@ identity::NodeId id(uint8_t n) {
 
 // A configured value is final; auto starts capable, or from what was
 // persisted, so a restart does not look like a join or a leave.
+// A full disk costs the record, not the answer: Macha warns and carries on.
+TEST(InboundResolution, AnAnswerThatCannotBePersistedStillHolds) {
+  test::TempDir dir;
+  test::SteppedWall wall;
+  std::ofstream(dir.path() / "connectivity") << "a file where the directory goes";
+  InboundResolver resolver(Inbound::automatic, dir.path(), &wall);
+  EXPECT_TRUE(resolver.observe_probe(id(2), false, "refused").persist_error.empty());
+  const auto verdict = resolver.observe_probe(id(2), false, "refused");
+  EXPECT_FALSE(verdict.persist_error.empty());
+  EXPECT_TRUE(verdict.changed);
+  EXPECT_FALSE(resolver.capable());
+}
+
 TEST(InboundResolution, ConfiguredIsFinalAndAutoStartsFromWhatWasPersisted) {
   test::TempDir dir;
   test::SteppedWall wall;
@@ -170,6 +186,23 @@ ConnectivityConfig upnp_on() {
   ConnectivityConfig config;
   config.upnp.enabled = true;
   return config;
+}
+
+// Status reads what is known: a probe in progress, however slow, delays no one.
+TEST(PublicConnectivity, StatusNeverWaitsOnAProbe) {
+  test::Gate gate;
+  ConnectivityConfig config;
+  config.check.enabled = true;
+  PublicConnectivity connectivity(config, id(1), {"10.0.0.1", 7437}, nullptr, nullptr, [&](const net::Endpoint&, std::chrono::milliseconds, std::string&) {
+    gate.enter_and_wait();
+    return true;
+  });
+  std::thread prober([&] { (void)connectivity.refresh(true, true); });
+  ASSERT_TRUE(gate.wait_for_entries(1));
+  auto read = std::async(std::launch::async, [&] { return connectivity.status(); });
+  EXPECT_EQ(read.wait_for(std::chrono::seconds(10)), std::future_status::ready);
+  gate.open();
+  prober.join();
 }
 
 // A mapping made, verified and owned: the gateway's address is advertised;

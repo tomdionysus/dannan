@@ -23,6 +23,7 @@
 #include "dannan/membership/node_record.h"
 #include "dannan/net/message.h"
 #include "dannan/net/session.h"
+#include "dannan/supervise/supervised.h"
 
 namespace dannan::net {
 
@@ -106,7 +107,7 @@ using RequestHandler = std::function<Handled(const membership::NodeRecord& peer,
 class RequestScheduler {
  public:
   RequestScheduler(std::shared_ptr<const RouteTable> routes, ServerLimits limits, RequestHandler handler, sched::RetainedMemoryLedger* memory = nullptr,
-                   const contract::TimeSource* time = &contract::steady_time_source());
+                   const contract::TimeSource* time = &contract::steady_time_source(), supervise::SupervisedThreads* threads = nullptr);
   ~RequestScheduler();
   RequestScheduler(const RequestScheduler&) = delete;
   RequestScheduler& operator=(const RequestScheduler&) = delete;

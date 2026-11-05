@@ -60,10 +60,10 @@ void SupervisedThreads::loop(std::string_view name, std::stop_token stop, const 
   status::set_thread_name(name);
   size_t consecutive = 0;
   while (!stop.stop_requested()) {
-    const auto started = contract::Clock::now();
+    const auto started = _time->now();
     if (run(name, body).empty()) return;
     // A long healthy run earns a fresh backoff.
-    consecutive = contract::Clock::now() - started > _ceiling ? 1 : consecutive + 1;
+    consecutive = _time->now() - started > _ceiling ? 1 : consecutive + 1;
     adjust(name, 0, 1);
     {
       std::mutex mutex;
@@ -75,13 +75,18 @@ void SupervisedThreads::loop(std::string_view name, std::stop_token stop, const 
   }
 }
 
+void supervised_loop(SupervisedThreads* threads, std::string_view name, std::stop_token stop, const std::function<void()>& body) noexcept {
+  static SupervisedThreads unrecorded;
+  (threads ? *threads : unrecorded).loop(name, stop, body);
+}
+
 void SupervisedThreads::once(std::string_view name, const std::function<void()>& body) noexcept { (void)run(name, body); }
 
 void SupervisedThreads::escalating(std::string_view name, const std::function<void()>& body, const std::function<void(std::string)>& escalate) noexcept {
   auto fault = run(name, body);
   if (fault.empty() || !escalate) return;
   try {
-    escalate(std::move(fault));
+    escalate("thread '" + std::string(name) + "' faulted: " + fault);
   } catch (...) {
   }
 }

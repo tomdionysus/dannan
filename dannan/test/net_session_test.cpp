@@ -80,7 +80,7 @@ struct Pair {
   std::shared_ptr<TransportTraffic> traffic = std::make_shared<TransportTraffic>();
 
   Pair(Io& io, SessionHandlers dialler_handlers, SessionHandlers acceptor_handlers, Lane lane = Lane::control, size_t max_frame = 65536,
-       sched::RetainedMemoryLedger* memory = nullptr)
+       sched::RetainedMemoryLedger* memory = nullptr, std::shared_ptr<const RouteTable> dialler_routes = nullptr)
       : io(io) {
     asio::local::stream_protocol::socket a(io.context), b(io.context);
     asio::local::connect_pair(a, b);
@@ -113,7 +113,7 @@ struct Pair {
     SessionOptions options;
     options.memory = memory;
     options.traffic = traffic;
-    dialler = Session::create(std::move(sa), std::move(d), Role::dialler, table(), std::move(dialler_handlers), options);
+    dialler = Session::create(std::move(sa), std::move(d), Role::dialler, dialler_routes ? dialler_routes : table(), std::move(dialler_handlers), options);
     acceptor = Session::create(std::move(sb), std::move(c), Role::acceptor, table(), std::move(acceptor_handlers), options);
     dialler->start();
     acceptor->start();
@@ -494,6 +494,26 @@ TEST(Session, AReplyNamesThePeer) {
   ASSERT_TRUE(outcome.reply);
   EXPECT_EQ(outcome.peer.id, pair.dialler->peer().id);
   EXPECT_EQ(outcome.peer.host, "10.0.0.2");
+}
+
+// A peer whose table differs sends a frame off its lane: the session ends, and the
+// handler never sees it.
+TEST(Session, AFrameOffItsLaneEndsTheSessionUndispatched) {
+  Io io;
+  auto permissive = RouteTable::with_dannan_types();
+  permissive.add(MessageType{1029}, {"put_object", Lanes::both, Frames::any, false});
+  std::atomic<int> dispatched{0};
+  SessionHandlers acceptor;
+  acceptor.request = [&](Frame, Reply) { ++dispatched; };
+  Pair pair(io, {}, std::move(acceptor), Lane::control, 65536, nullptr, std::make_shared<const RouteTable>(std::move(permissive)));
+  std::promise<CallOutcome> done;
+  (void)pair.dialler->call(MessageType{1029}, Bytes(10, 1), FrameType::foreground, io.context.get_executor(),
+                           [&](CallOutcome outcome) { done.set_value(std::move(outcome)); });
+  auto future = done.get_future();
+  ASSERT_EQ(future.wait_for(10s), std::future_status::ready);
+  EXPECT_FALSE(future.get().reply);
+  ASSERT_EQ(pair.acceptor_closed.wait_for(10s), std::future_status::ready);
+  EXPECT_EQ(dispatched.load(), 0);
 }
 
 }  // namespace

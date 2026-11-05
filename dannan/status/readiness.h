@@ -33,6 +33,11 @@ class Readiness {
   // Declaring one already declared does nothing. Throws
   // std::invalid_argument for an empty name, std::logic_error once closed.
   void declare(const std::string& plane);
+  // For a system with work after its planes: complete() then also waits for
+  // mark_complete(), so the node does not read as ready, and peers do not trust
+  // its figures, while recovery still runs. Callable until the node starts.
+  void hold_until_marked();
+  void mark_complete();
   // The node starting: the planes are fixed from here.
   void close_declarations();
 
@@ -40,6 +45,7 @@ class Readiness {
   bool control_plane_online() const;
   // Throws std::invalid_argument for a plane not declared.
   void ready(const std::string& plane);
+  // Keeps the first failure: later ones are usually its consequences.
   void fail(std::string error);
   bool has(const std::string& plane) const;
   // Every declared plane ready.
@@ -65,6 +71,8 @@ class Readiness {
   bool _online DANNAN_GUARDED_BY(_mutex) = false;
   bool _closed DANNAN_GUARDED_BY(_mutex) = false;
   bool _failed DANNAN_GUARDED_BY(_mutex) = false;
+  bool _held DANNAN_GUARDED_BY(_mutex) = false;
+  bool _marked DANNAN_GUARDED_BY(_mutex) = false;
   std::string _error DANNAN_GUARDED_BY(_mutex);
   uint64_t _ready_unix_ms DANNAN_GUARDED_BY(_mutex) = 0;
 };

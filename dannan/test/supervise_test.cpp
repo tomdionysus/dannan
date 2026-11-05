@@ -14,14 +14,18 @@
 
 #include <gtest/gtest.h>
 
+#include <filesystem>
 #include <fstream>
 #include <future>
+#include <regex>
 #include <thread>
 
 #include "dannan/supervise/registry.h"
 #include "dannan/supervise/startup.h"
 #include "dannan/supervise/supervised.h"
 #include "dannan/supervise/supervisor.h"
+#include "dannan/test/fixtures/recording_sink.h"
+#include "dannan/test/fixtures/stepped_time.h"
 #include "dannan/test/fixtures/temp_dir.h"
 
 namespace dannan::supervise {
@@ -189,6 +193,120 @@ TEST(Supervisor, AMissingPluginDirectoryLoadsNone) {
   EXPECT_TRUE(supervisor.statuses().empty());
 }
 
+// A startup that stops progressing is ended, with Macha's line; one that keeps
+// ticking is left alone however long it takes.
+TEST(StartupWatch, AStalledStartupSaysSoAndIsEnded) {
+  test::SteppedTime time;
+  auto log = std::make_shared<test::RecordingSink>();
+  StartupProgress progress;
+  std::promise<std::string> stalled;
+  StartupWatch::Options watch;
+  watch.no_progress = 4ms;
+  watch.describe = [] { return std::string("waiting for metadata"); };
+  watch.stalled = [&](const std::string& diagnostic) { stalled.set_value(diagnostic); };
+  watch.time = &time;
+  StartupWatch watcher(progress, status::ScopedLogger(log, "startup"), watch);
+  auto future = stalled.get_future();
+  // Ticks, however late, are progress.
+  for (int i = 0; i < 20; ++i) {
+    progress.note();
+    time.advance(3ms);
+    std::this_thread::sleep_for(2ms);
+  }
+  EXPECT_NE(future.wait_for(0ms), std::future_status::ready);
+  EXPECT_TRUE(eventually([&] {
+    time.advance(1h);
+    return future.wait_for(0ms) == std::future_status::ready;
+  }));
+  EXPECT_EQ(future.get(), "waiting for metadata");
+  EXPECT_EQ(log->count(status::LogLevel::error, "service startup stalled: no recovery progress for "), 1u);
+  EXPECT_EQ(log->count(status::LogLevel::error, "waiting for metadata; terminating for restart"), 1u);
+}
+
+TEST(StartupWatch, AFinishedStartupEndsTheWatchWithoutAWord) {
+  test::SteppedTime time;
+  auto log = std::make_shared<test::RecordingSink>();
+  StartupProgress progress;
+  std::atomic<bool> stalled{false};
+  StartupWatch::Options watch;
+  watch.no_progress = 1h;
+  watch.stalled = [&](const std::string&) { stalled = true; };
+  watch.time = &time;
+  {
+    StartupWatch watcher(progress, status::ScopedLogger(log, "startup"), watch);
+    watcher.finish();
+    time.advance(2h);
+  }
+  EXPECT_FALSE(stalled.load());
+}
+
+// A thread escaping its body ends the process: every thread in the library starts
+// under supervision, as Macha's source guard demands of its own tree.
+TEST(SupervisedThreads, EveryThreadIsStartedSupervised) {
+  const std::regex site(R"(std::jthread\(|std::thread\(|_thread\(\[|emplace_back\(\s*\[.*stop_token)");
+  std::vector<std::string> unguarded;
+  size_t sites = 0;
+  for (const auto& entry : std::filesystem::recursive_directory_iterator(DANNAN_SOURCE_DIR)) {
+    const auto path = entry.path().generic_string();
+    if (entry.path().extension() != ".cpp" || path.find("/test/") != std::string::npos || path.find("/fuzz/") != std::string::npos) continue;
+    if (entry.path().filename() == "supervised.cpp") continue;
+    std::ifstream file(entry.path());
+    std::vector<std::string> lines;
+    for (std::string line; std::getline(file, line);) lines.push_back(line);
+    for (size_t i = 0; i < lines.size(); ++i) {
+      // A formatter may break a call after its opening bracket.
+      const auto joined = lines[i] + (i + 1 < lines.size() ? lines[i + 1] : std::string());
+      if (!std::regex_search(joined, site) || std::regex_search(i > 0 ? lines[i - 1] : std::string(), std::regex(R"(emplace_back\($)"))) continue;
+      ++sites;
+      bool guarded = false;
+      for (size_t j = i; j < lines.size() && j < i + 3; ++j)
+        guarded = guarded || lines[j].find("supervised_loop") != std::string::npos || lines[j].find("_threads.") != std::string::npos;
+      if (!guarded) unguarded.push_back(path + ":" + std::to_string(i + 1));
+    }
+  }
+  EXPECT_GE(sites, 11u);
+  for (const auto& where : unguarded) ADD_FAILURE() << "a thread not started supervised: " << where;
+}
+
+// A loop waiting out its backoff stops when asked, and a throw that is no
+// std::exception is recorded too.
+TEST(SupervisedThreads, ALoopInBackoffStopsWhenAsked) {
+  SupervisedThreads threads(1h, 2h);
+  std::stop_source stop;
+  std::atomic<int> runs{0};
+  std::thread loop([&] {
+    threads.loop("gossip", stop.get_token(), [&] {
+      ++runs;
+      throw 7;
+    });
+  });
+  ASSERT_TRUE(eventually([&] { return !threads.statuses().empty() && threads.statuses().front().restarting == 1; }));
+  stop.request_stop();
+  loop.join();
+  EXPECT_EQ(runs.load(), 1);
+  EXPECT_EQ(threads.statuses().front().last_fault_code, "unknown_exception");
+}
+
+// How long a run was is read from the injected time: each run here "takes"
+// longer than the ceiling, so every restart waits only the initial backoff.
+// Doubling instead, twenty faults would wait for hours.
+TEST(SupervisedThreads, ALongRunInTheInjectedTimeEarnsAFreshBackoff) {
+  test::SteppedTime time;
+  SupervisedThreads threads(1ms, 1h, &contract::system_wall_clock(), &time);
+  std::atomic<int> runs{0};
+  std::stop_source stop;
+  std::thread loop([&] {
+    threads.loop("gossip", stop.get_token(), [&] {
+      time.advance(2h);
+      if (++runs < 20) throw std::runtime_error("peer vanished");
+    });
+  });
+  const bool finished = eventually([&] { return runs.load() >= 20; });
+  stop.request_stop();
+  loop.join();
+  EXPECT_TRUE(finished);
+}
+
 // A service loop reruns after a fault with backoff; a task runs once; an
 // escalating thread hands its fault up. Every fault is recorded by name.
 TEST(SupervisedThreads, RecordAndRestartAsTheirKindSays) {
@@ -205,7 +323,7 @@ TEST(SupervisedThreads, RecordAndRestartAsTheirKindSays) {
   threads.once("scan", [] { throw std::runtime_error("bad file"); });
   std::string escalated;
   threads.escalating("fuse-io", [] { throw std::runtime_error("EIO"); }, [&](std::string why) { escalated = why; });
-  EXPECT_EQ(escalated, "EIO");
+  EXPECT_EQ(escalated, "thread 'fuse-io' faulted: EIO");
   std::map<std::string, SupervisedThreadStatus> by_name;
   for (const auto& status : threads.statuses()) by_name[status.name] = status;
   EXPECT_EQ(by_name.at("gossip").faults, 2u);

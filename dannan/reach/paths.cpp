@@ -26,6 +26,7 @@
 
 #include "dannan/identity/crypto.h"
 #include "dannan/net/server.h"
+#include "dannan/supervise/supervised.h"
 
 namespace dannan::reach {
 
@@ -400,7 +401,8 @@ void simultaneous_open(asio::io_context& io, uint16_t port, const net::Endpoint&
         self->connecting = false;
         self->timer.cancel();
         if (!error) {
-          net::peer_socket_options(self->tcp.native_handle());
+          // The warning, if any, comes from the node's first ordinary socket.
+          net::peer_socket_options(self->tcp.native_handle(), status::ScopedLogger(status::null_sink(), "net"));
           const int family = self->tcp.local_endpoint().protocol().family();
           return self->done(self->tcp.release(), family, "");
         }
@@ -521,7 +523,9 @@ Paths::Paths(asio::io_context& io, PathsConfig config, net::Client& client, std:
       _roster(std::move(roster)),
       _caller(std::move(caller)) {
   _owner->paths = this;
-  for (int i = 0; i < 2; ++i) _workers.emplace_back([this](std::stop_token stop) { work(stop); });
+  for (int i = 0; i < 2; ++i)
+    _workers.emplace_back(
+        [this](std::stop_token stop) { supervise::supervised_loop(_config.threads, "reach-path-worker", stop, [this, stop] { work(stop); }); });
 }
 
 Paths::~Paths() { stop(); }

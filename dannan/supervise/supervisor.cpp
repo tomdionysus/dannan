@@ -74,7 +74,8 @@ void Supervisor::start(SubsystemContext context) {
       if (entry->state == SubsystemState::disabled) continue;  // refused at load
     }
     auto* raw = entry.get();
-    raw->lifecycle = std::jthread([this, raw](std::stop_token stop) { run(*raw, stop); });
+    raw->lifecycle = std::jthread(
+        [this, raw](std::stop_token stop) { supervised_loop(_options.threads, "subsystem-lifecycle", stop, [this, raw, stop] { run(*raw, stop); }); });
   }
 }
 

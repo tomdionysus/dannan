@@ -120,14 +120,16 @@ Membership::Encoded Membership::encode_locked() {
   return {++_sequence, std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size())};
 }
 
-void Membership::write(const Encoded& roster) {
+void SequencedFile::write(uint64_t sequence, const std::string& bytes) {
   if (_path.empty()) return;
-  contract::Lock lock(_persist_mutex);
+  contract::Lock lock(_mutex);
   // Encoded later, written already: this one is older.
-  if (roster.sequence <= _written) return;
-  identity::durable_replace_file(_path, roster.bytes);
-  _written = roster.sequence;
+  if (sequence <= _written) return;
+  identity::durable_replace_file(_path, bytes);
+  _written = sequence;
 }
+
+void Membership::write(const Encoded& roster) { _file.write(roster.sequence, roster.bytes); }
 
 NodeRecord Membership::self() const {
   contract::Lock lock(_mutex);
@@ -278,22 +280,35 @@ std::vector<IdentityReset> Membership::identity_resets() const {
   return out;
 }
 
-std::vector<NodeRecord> Membership::all() const {
-  contract::Lock lock(_mutex);
+std::vector<NodeRecord> Membership::all_locked() const {
   std::vector<NodeRecord> out{_self};
   out[0].seen_unix_ms = _wall->unix_ms();
   for (const auto& [_, known] : _nodes) out.push_back(known.record);
   return out;
 }
 
-std::vector<NodeRecord> Membership::active() const {
-  contract::Lock lock(_mutex);
+std::vector<NodeRecord> Membership::active_locked() const {
   const auto now = _time->now();
   std::vector<NodeRecord> out{_self};
   out[0].seen_unix_ms = _wall->unix_ms();
   for (const auto& [_, known] : _nodes)
     if (now - known.seen <= _dead_after) out.push_back(known.record);
   return out;
+}
+
+std::vector<NodeRecord> Membership::all() const {
+  contract::Lock lock(_mutex);
+  return all_locked();
+}
+
+std::vector<NodeRecord> Membership::active() const {
+  contract::Lock lock(_mutex);
+  return active_locked();
+}
+
+std::pair<std::vector<NodeRecord>, std::vector<NodeRecord>> Membership::all_and_active() const {
+  contract::Lock lock(_mutex);
+  return {all_locked(), active_locked()};
 }
 
 std::optional<contract::TimePoint> Membership::absent_since(const identity::NodeId& id) const {
