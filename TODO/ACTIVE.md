@@ -613,7 +613,7 @@ changes nothing it does not have to.
 
 ## The first cutover
 
-One flag day: Macha on Dannan's transport and node with Macha's own store, then a soak.
+One flag day: Macha on Dannan's transport and node with Macha's own store; it moves on when its tests pass.
 The Dagda disk migration is a second cutover, later. Macha's message numbers
 re-register from 512 with their payloads unchanged. The port's release is whatever
 Macha's `develop` is at then.
@@ -714,6 +714,16 @@ them by name (`status_api.cpp:1010-1037`). Not folded in: pacing (`WeightedLoade
 Dannan's `DutyShare`, where "paced, never stopped" lives), maintenance's byte credits, the
 per-walk `Budget`, `DiskServiceMonitor`. If it cannot express these, it does not ship, and
 that is reported rather than bent.
+
+**From Tom, relayed by the Macha session, 2026-11-05.** The gate for the port is an independent
+review by fresh agents, from the code and the nodes only, concluding no loss of function,
+performance, reliability or data. Macha's order: old-code removal, then 0.92.6, then the Pi
+baselines on that, then Dannan finishes on that baseline; Macha's freeze has those exceptions,
+it says at each commit whether anything in Dannan's layer moves, and the goldens are re-cut
+once at the end. The class admission generic is required before stage one, ledger first,
+then Dagda, gated by every existing case on both sides. No soak between cutovers: a stage
+moves on when its tests pass, inverbeg first. Inverbeg is inbound capable, dialled at
+inverbeg.macha.network:7437.
 
 **Pace, Tom, 2026-11-05:** run through steps 5 to 10 without asking, stopping before step 11's release. The real IGD run happens before the cutover, at his word when these steps are done. Dagda hears about the class admission generic now and rebuilds its two once it exists at step 8.
 
