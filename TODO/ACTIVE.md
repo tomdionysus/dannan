@@ -619,9 +619,10 @@ Each step is a `feature/macha-parity` milestone, gate green, committed and merge
 | 2. Lifecycle and readiness, **done** (472) | `Readiness::hold_until_marked` and `mark_complete`; first failure kept. A job on a closed session skips its handler. A failed inbound persist no longer restarts the loop. Escalation names the thread. Every thread supervised, with a guard test. `request_stop`; the layout check before the lock. | F5, F9, F12, G16, G41-G43, G45 | `test_every_subsystem_thread_is_run_supervised`, startup cases in `test_service_root` |
 | 3. Transport proofs | The end-to-end cases Dannan lacks, including the 32 MiB overtake, and forged handshakes. Fix what they find. G23 is known to be open: `place()` reroutes where Macha may wait for the peer. | G1-G10, G14, G15, G17, G20-G23, G25-G27 | `test_rpc_cluster`'s transport cases |
 | 4. Membership proofs | Resets, fences, forgetting, the empty-domain fallback's home. | F19, F20, G24, G28-G33 | `test_absent_nodes`, `test_rpc_cluster`'s membership cases |
-| 5. The journal | The 44 lines still missing: subsystems, connectivity, thread faults, inbound, endpoint, reset, forgot, exchange failures. The supervisor takes a sink. Ruling C. | F13, G44, G48 | the journal golden, Macha's to cut |
-| 6. Telemetry and Status | The hosted-field case and table (parity 7); real connection counts as 0.92.4 reports them: `ClientStats` gains created (counted after the identity check), Macha's reused sites and canonical (`net.cpp:2236-2439`, `:3003-3010`), and `node.cpp:969`'s peers-less-one and the zeros go; truncated records; refusal rows. Ruling B. | F14, F15, G46, G47 | the Status golden, Macha's to cut |
-| 7. The importer | `dannan-import-macha`: `MACHMEM1` to `4`, `MACHINB1`, `MACHTEL3`, both lock files, keeps `*.macha` for rollback. | F6, F17 | the real state directory, after Macha's tree-native merge |
+| 4a. The goldens | Build Macha at `cac5998` in scratch; capture config, Status, routes and journal; see below. | the goldens the port gates on | none; the port compares against these |
+| 5. The journal | The 44 lines still missing: subsystems, connectivity, thread faults, inbound, endpoint, reset, forgot, exchange failures. The supervisor takes a sink. Ruling C. | F13, G44, G48 | the journal golden, step 4a |
+| 6. Telemetry and Status | The hosted-field case and table (parity 7); real connection counts as 0.92.4 reports them: `ClientStats` gains created (counted after the identity check), Macha's reused sites and canonical (`net.cpp:2236-2439`, `:3003-3010`), and `node.cpp:969`'s peers-less-one and the zeros go; truncated records; refusal rows. Ruling B. | F14, F15, G46, G47 | the Status golden, step 4a |
+| 7. The importer | `dannan-import-macha`: `MACHMEM1` to `4`, `MACHINB1`, `MACHTEL3`, both lock files, keeps `*.macha` for rollback. | F6, F17 | a state directory from the scratch build, step 4a |
 | 8. Foundations proofs | Quota boundary, reassembly reserve, retry backstop, durable contents, every-mask tables, `Published`, Observation rows. | G34-G40 | `test_foundations`, `test_contract`, `test_observation` |
 | 9. Measured gate | `dannan_bench`: 32 MiB on DATA, CONTROL round trips under load, MB/s, RSS, over the path ruling A leaves; compose-bed run. Recorded, never asserted. The laptop's numbers are not comparable to the Pis'. | parity 6 | Macha's baselines at whichever release is then deployed, when Tom says |
 | 10. Linux | ASan, UBSan and TSan on arm64 Debian 13 in Docker; the BBR path; whether Boost 1.83 suffices. | parity 8, G1 | the Pis' OS and architecture; no Macha case |
@@ -651,9 +652,23 @@ are adopted as proposed. `frame_timings` keeps Macha's `read-ahead` spelling at 
 cutover. The three metadata mutation types register `ordered`. Macha's 0.92.4 fixes the defects sent to it, and is the baseline. The
 facade raises the remote metadata generation by compare-and-swap, as 0.92.4 does.
 
-**Still needed from the Macha session, in order:** (1) the config, Status and journal
-goldens, after its loop's deploy, for steps 5 and 6; (2) the real state directory after the
-tree-native merge, for step 7; (3) its baselines on the Pis, when Tom says.
+**The libraries do the port's prep, not Macha (Tom, relayed by the Macha session,
+2026-11-05: "Macha shouldn't prep. Just the libs.").** Macha still answers questions.
+Dannan makes what steps 5, 6 and 7 gate on, from a scratch copy of Macha at `cac5998`
+built under `build/`, with nothing changed in `../macha` and nothing run on the Pis:
+
+- **Step 4a, new: the goldens.** Build that copy and capture, under
+  `dannan/test/fixtures/macha/`, with the commit and how each was made: the config dump;
+  the Status surface from a two-node cluster on this machine with volatile fields masked;
+  the route list; the journal lines it writes, beside the static table in the cutover
+  spec. Limit: a laptop run reaches only what that scenario does, so the spec's 83 lines
+  and 494 keys stay the full list, and a line or key the run does not reach is marked
+  unproven rather than dropped.
+- **Step 7's state directory** comes from running that build, plus Macha's own encoders
+  for `MACHMEM1` to `3`. Limit: it is young and small. A copy from macnessa would be
+  better evidence, but anything on the Pis waits on Tom's word.
+
+**Open with Tom:** who takes the Pi baselines, ruling C, and the rulings above.
 
 ## Next
 
