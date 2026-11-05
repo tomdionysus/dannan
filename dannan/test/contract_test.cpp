@@ -11,10 +11,14 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <chrono>
+#include <functional>
 #include <memory>
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "dannan/contract/published.h"
 #include "dannan/contract/scope.h"
@@ -109,6 +113,74 @@ TEST(Principal, ComparesByKindAndId) {
   EXPECT_EQ(node, (Principal{Principal::Kind::node, "0123"}));
   EXPECT_NE(node, (Principal{Principal::Kind::directory, "0123"}));
   EXPECT_NE(node, (Principal{Principal::Kind::node, "4567"}));
+}
+
+TEST(Published, RefusesNullAtConstructionAndWhenEmpty) {
+  Published<int> published;
+  EXPECT_THROW(published.publish(Published<int>::Handle{}), std::invalid_argument);
+  EXPECT_EQ(published.handle(), nullptr);
+  published.publish(1);
+  EXPECT_THROW(published.publish(Published<int>::Handle{}), std::invalid_argument);
+  EXPECT_EQ(*published.handle(), 1);
+  EXPECT_THROW(Published<int>{nullptr}, std::invalid_argument);
+}
+
+// A reader gets a snapshot while the one it replaced is being destroyed.
+TEST(Published, DestroysThePreviousOutsideItsLock) {
+  struct Probe {
+    std::function<void()> on_destroy;
+    explicit Probe(std::function<void()> f) : on_destroy(std::move(f)) {}
+    Probe(const Probe&) = delete;
+    Probe& operator=(const Probe&) = delete;
+    ~Probe() {
+      if (on_destroy) on_destroy();
+    }
+  };
+  Published<Probe> published;
+  std::thread reader;
+  std::atomic<bool> read{false};
+  bool read_during_destruction = false;
+  published.publish(std::make_shared<const Probe>([&] {
+    reader = std::thread([&] {
+      (void)published.handle();
+      read = true;
+    });
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!read && std::chrono::steady_clock::now() < until) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    read_during_destruction = read;
+  }));
+  published.publish(std::make_shared<const Probe>(nullptr));
+  reader.join();
+  EXPECT_TRUE(read_during_destruction);
+}
+
+TEST(Published, ReadersSeeWholeSnapshotsInOrder) {
+  struct Pair {
+    uint64_t a;
+    uint64_t b;
+  };
+  constexpr uint64_t publishes = 20000;
+  Published<Pair> published(std::make_shared<const Pair>(Pair{0, 0}));
+  std::atomic<bool> done{false};
+  std::atomic<int> torn{0};
+  std::atomic<int> backwards{0};
+  std::vector<std::thread> readers;
+  for (int r = 0; r < 4; ++r)
+    readers.emplace_back([&] {
+      uint64_t last = 0;
+      while (!done) {
+        const auto snapshot = published.handle();
+        if (snapshot->a != snapshot->b) ++torn;
+        if (snapshot->a < last) ++backwards;
+        last = snapshot->a;
+      }
+    });
+  for (uint64_t i = 1; i <= publishes; ++i) published.publish(Pair{i, i});
+  done = true;
+  for (auto& reader : readers) reader.join();
+  EXPECT_EQ(torn.load(), 0);
+  EXPECT_EQ(backwards.load(), 0);
+  EXPECT_EQ(published.handle()->a, publishes);
 }
 
 }  // namespace

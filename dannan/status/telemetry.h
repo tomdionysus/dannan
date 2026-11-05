@@ -167,6 +167,8 @@ class TelemetryStore {
   TelemetryStore(identity::NodeId self, std::filesystem::path persisted_path = {}, const contract::TimeSource* time = &contract::steady_time_source(),
                  const contract::WallClock* wall = &contract::system_wall_clock(), std::vector<uint16_t> layout = {});
   TelemetryStore(const TelemetryStore&) = delete;
+  // Why the persisted records could not be read; empty if they could.
+  const std::string& load_error() const noexcept { return _load_error; }
   TelemetryStore& operator=(const TelemetryStore&) = delete;
 
   // Builds this node's next record: the core fields from `figures` and the
@@ -206,6 +208,7 @@ class TelemetryStore {
   const std::vector<uint16_t> _layout;
   const contract::TimePoint _started;
 
+  std::string _load_error;
   mutable contract::Mutex _mutex;
   uint64_t _sequence DANNAN_GUARDED_BY(_mutex) = 0;
   std::unordered_map<identity::NodeId, Received, identity::NodeIdHash> _records DANNAN_GUARDED_BY(_mutex);

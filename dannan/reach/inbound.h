@@ -66,6 +66,8 @@ class InboundResolver {
   // A peer's answer to this node's dial-back request. Nothing changes for a
   // configured mode.
   ProbeVerdict observe_probe(const identity::NodeId& peer, bool reachable, const std::string& error);
+  // Why what was persisted could not be read; empty if it could, or was not there.
+  const std::string& load_error() const noexcept { return _load_error; }
 
  private:
   void persist(const InboundState& state);
@@ -75,6 +77,7 @@ class InboundResolver {
   const std::chrono::milliseconds _reprobe_capable;
   const std::chrono::milliseconds _reprobe_incapable;
   const std::chrono::milliseconds _confirm;
+  std::string _load_error;
   mutable contract::Mutex _mutex;
   InboundState _state DANNAN_GUARDED_BY(_mutex);
   // Orders writes of the file; guards nothing else.

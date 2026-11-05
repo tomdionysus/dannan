@@ -23,6 +23,7 @@
 
 #include "dannan/contract/thread_safety.h"
 #include "dannan/contract/time_source.h"
+#include "dannan/status/log.h"
 #include "dannan/supervise/supervised.h"
 
 // Measurement probes, written only to a local file (one JSON line per
@@ -165,13 +166,16 @@ std::string render_event(const ObservationEvent& event);
 // waits on the file.
 class ObservationLog {
  public:
-  ObservationLog(std::filesystem::path path, uint64_t max_bytes) : _path(std::move(path)), _max_bytes(max_bytes) {}
+  ObservationLog(std::filesystem::path path, uint64_t max_bytes, std::shared_ptr<LogSink> journal = nullptr)
+      : _path(std::move(path)), _max_bytes(max_bytes), _journal(journal ? std::move(journal) : null_sink(), "observation") {}
   const std::filesystem::path& path() const noexcept { return _path; }
+  const ScopedLogger& journal() const noexcept { return _journal; }
   void append(const std::string& line);
 
  private:
   const std::filesystem::path _path;
   const uint64_t _max_bytes;
+  const ScopedLogger _journal;
   // Held across the append and the rotation.
   contract::IoMutex _mutex;
   bool _failing DANNAN_GUARDED_BY(_mutex) = false;

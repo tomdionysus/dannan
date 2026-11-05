@@ -12,12 +12,16 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <memory>
+#include <optional>
 
 #include "dannan/sched/retry.h"
 #include "dannan/sched/walk.h"
 
 namespace dannan::sched {
 namespace {
+
+using namespace std::chrono_literals;
 
 using std::chrono::milliseconds;
 using std::chrono::seconds;
@@ -150,6 +154,88 @@ TEST(Retry, ResetForgetsEverything) {
   EXPECT_EQ(state.total_failures(), 0u);
   EXPECT_EQ(state.failures_in_window(), 0u);
   EXPECT_TRUE(state.failed(policy, t0 + seconds(5)).has_value());
+}
+
+// Macha's arithmetic: once backoff caps, a window holds at most window / ceiling
+// attempts, so the density rule alone never parks and the backstop must.
+TEST(Retry, ABackstopMeasuresOnlyTheCurrentRun) {
+  const auto start = contract::Clock::now();
+  RetryPolicy shipped;
+  shipped.max_failures_in_window = 100;
+  shipped.failure_window = 30min;
+  shipped.initial_backoff = 250ms;
+  shipped.max_backoff = 30s;
+  shipped.max_failing_duration = {};
+  RetryState never;
+  bool parked = false;
+  for (int i = 1; i <= 400 && !parked; ++i) parked = !never.failed(shipped, start + i * 30s).has_value();
+  EXPECT_FALSE(parked);
+  EXPECT_LE(never.failures_in_window(), 61u);
+  EXPECT_EQ(never.consecutive_failures(), 400u);
+  auto fixed = shipped;
+  fixed.max_failing_duration = 1h;
+  RetryState bounded;
+  int parked_at = 0;
+  for (int i = 1; i <= 400 && !parked_at; ++i)
+    if (!bounded.failed(fixed, start + i * 30s)) parked_at = i;
+  EXPECT_EQ(parked_at, 122);
+  // Keeps recovering: never parks on age alone.
+  RetryState flapping;
+  for (int i = 1; i <= 400; ++i) {
+    ASSERT_TRUE(flapping.failed(fixed, start + i * 30s).has_value());
+    flapping.succeeded();
+  }
+  EXPECT_EQ(flapping.consecutive_failures(), 0u);
+  // Flapping hard still parks on density.
+  RetryPolicy dense;
+  dense.max_failures_in_window = 5;
+  dense.failure_window = 10min;
+  dense.initial_backoff = 1ms;
+  dense.max_backoff = 10ms;
+  dense.max_failing_duration = 1h;
+  RetryState hard;
+  int dense_at = 0;
+  for (int i = 1; i <= 20 && !dense_at; ++i) {
+    if (!hard.failed(dense, start + i * 1s))
+      dense_at = i;
+    else
+      hard.succeeded();
+  }
+  EXPECT_EQ(dense_at, 6);
+}
+
+struct FixedYield final : YieldSource {
+  bool answer = false;
+  bool should_yield() const override { return answer; }
+};
+
+// Every combination: a cancel wins, then either deadline, then the yield source.
+TEST(Budget, StopPrecedenceOverEveryCombination) {
+  const auto now = contract::Clock::now();
+  for (unsigned bits = 0; bits < 16; ++bits) {
+    std::atomic_bool cancelled{(bits & 1U) != 0};
+    const WorkContext context(FrameType::speculative, (bits & 4U) ? now - 1ms : now + 1h, &cancelled);
+    FixedYield yield;
+    yield.answer = (bits & 8U) != 0;
+    Budget budget(context);
+    budget.deadline((bits & 2U) ? now - 1ms : now + 1h).yield_to(&yield);
+    std::optional<Stop> expected;
+    if (bits & 1U)
+      expected = Stop::cancelled;
+    else if (bits & 6U)
+      expected = Stop::deadline;
+    else if (bits & 8U)
+      expected = Stop::yield;
+    EXPECT_EQ(budget.must_stop(now), expected) << bits;
+    EXPECT_EQ(budget.context().frame_type(), FrameType::speculative);
+  }
+}
+
+TEST(YieldSource, IsDestroyedThroughItsInterface) {
+  std::unique_ptr<YieldSource> source = std::make_unique<FixedYield>();
+  EXPECT_FALSE(source->should_yield());
+  source.reset();
+  EXPECT_EQ(source, nullptr);
 }
 
 }  // namespace

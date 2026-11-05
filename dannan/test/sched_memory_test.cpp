@@ -23,6 +23,8 @@
 namespace dannan::sched {
 namespace {
 
+using namespace std::chrono_literals;
+
 constexpr auto hosted = static_cast<MemoryOwner>(256);
 
 // 1000 bytes: control reserve 100, foreground 200, loader 100, reassembly 50.
@@ -248,6 +250,41 @@ TEST(MemoryLimit, NoPartShrinksBelowOneMebibyte) {
   MemoryPlan plan{{{"a", 2ull << 20}, {"b", 2000ull << 20}}, {}};
   ASSERT_TRUE(fit_to_limit(10ull << 20, plan).has_value());
   EXPECT_EQ(plan.parts[0].bytes, 1ull << 20);
+}
+
+// Macha's rule for the reassembly reserve: a queued lower waiter does not shut
+// reassembly out of it, a queued foreground does, and it is bounded, not absolute.
+TEST(RetainedMemory, ReassemblyUsesItsReserveBesideALowerWaiter) {
+  constexpr auto other_owner = static_cast<MemoryOwner>(static_cast<uint16_t>(MemoryOwner::hosted_first) + 1);
+  RetainedMemoryLedger ledger(100, 10, 30, 10, 5);
+  auto publication = ledger.try_acquire(WorkClass::loader, other_owner, 60);
+  ASSERT_TRUE(publication.has_value());
+  std::atomic_bool cancel_lower{false};
+  std::thread lower([&] { (void)ledger.acquire(WorkClass::loader, other_owner, 40, {}, &cancel_lower); });
+  for (int i = 0; i < 2000 && ledger.stats().waits[2] == 0; ++i) std::this_thread::sleep_for(1ms);
+  ASSERT_GT(ledger.stats().waits[2], 0u);
+  std::atomic_bool cancel_viewer{false};
+  std::thread viewer([&] { (void)ledger.acquire(WorkClass::foreground, other_owner, 40, {}, &cancel_viewer); });
+  for (int i = 0; i < 2000 && ledger.stats().waits[1] == 0; ++i) std::this_thread::sleep_for(1ms);
+  ASSERT_GT(ledger.stats().waits[1], 0u);
+  // A queued foreground always outranks reassembly.
+  EXPECT_FALSE(ledger.try_acquire(WorkClass::speculative, MemoryOwner::rpc_frame, 1).has_value());
+  cancel_viewer = true;
+  ledger.wake();
+  viewer.join();
+  {
+    auto inside = ledger.try_acquire(WorkClass::speculative, MemoryOwner::rpc_frame, 4);
+    ASSERT_TRUE(inside.has_value());
+    // Beyond the reserve it defers.
+    EXPECT_FALSE(ledger.try_acquire(WorkClass::speculative, MemoryOwner::rpc_frame, 4).has_value());
+    // The reserve is for reassembly only.
+    EXPECT_FALSE(ledger.try_acquire(WorkClass::speculative, other_owner, 1).has_value());
+  }
+  cancel_lower = true;
+  ledger.wake();
+  lower.join();
+  publication.reset();
+  EXPECT_EQ(ledger.stats().used_bytes, 0u);
 }
 
 }  // namespace

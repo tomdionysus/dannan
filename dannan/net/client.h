@@ -117,6 +117,9 @@ struct ClientOptions {
   // Tests only: consulted before every dial; a non-empty answer is the
   // reason the dial fails, as if the network refused it.
   std::function<std::string(const Endpoint&, Lane)> dial_hook;
+  // Called with the session just before a call is placed on it, for a test that
+  // retires it there.
+  std::function<void(Session&)> place_hook;
   // Level 0: asked for a path to a peer that can be neither dialled nor
   // asked to dial back (it takes no inbound connection, and neither does
   // this node, or it has no session here to ask over). The maker hands the
@@ -128,6 +131,10 @@ struct ClientOptions {
 
 struct ClientStats {
   uint64_t dials = 0;
+  // Dials that became sessions, counted once the peer's identity has been checked.
+  uint64_t connections_created = 0;
+  // Routes usable now, whichever end dialled them: a lane to a peer counts once.
+  uint64_t canonical_connections = 0;
   uint64_t dial_failures = 0;
   // Health pings sent, retries included.
   uint64_t pings = 0;
@@ -283,6 +290,8 @@ class Client {
     std::shared_ptr<boost::asio::steady_timer> timer;
     std::string backoff_key;
     bool path = false;
+    // Waiting for the peer's own session, after a dial of this end's was retired.
+    bool peers_session = false;
   };
   struct Backoff {
     unsigned failures = 0;
@@ -329,6 +338,7 @@ class Client {
   bool local_capable() const;
   // Asks an incapable peer for `key`'s lane over `control`, and arms the
   // wait for its reverse dial.
+  void await_peers_session(Target target, Lane lane, Call call);
   void ask_for_lane(const RouteKey& key, const std::shared_ptr<Session>& control, const std::shared_ptr<boost::asio::steady_timer>& timer);
   void reverse_expired(const RouteKey& key, const std::shared_ptr<boost::asio::steady_timer>& timer);
   // Asks the path maker for `key`, the wait already armed.
