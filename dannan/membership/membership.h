@@ -94,6 +94,8 @@ class Membership {
   std::vector<NodeRecord> all() const;
   // Self first, then every node heard of within dead_after.
   std::vector<NodeRecord> active() const;
+  // all() and active() from one reading, so a node cannot be active and not known.
+  std::pair<std::vector<NodeRecord>, std::vector<NodeRecord>> all_and_active() const;
   // When a node not heard of within dead_after was last heard of, on the
   // steady clock; none for self, an active node, or one not known. Across a
   // restart it is rebuilt from the wall time persisted with the roster.
@@ -121,6 +123,8 @@ class Membership {
   };
 
   void load() DANNAN_REQUIRES(_mutex);
+  std::vector<NodeRecord> all_locked() const DANNAN_REQUIRES(_mutex);
+  std::vector<NodeRecord> active_locked() const DANNAN_REQUIRES(_mutex);
   Encoded encode_locked() DANNAN_REQUIRES(_mutex);
   void write(const Encoded& roster) DANNAN_EXCLUDES(_mutex);
 

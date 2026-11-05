@@ -15,6 +15,7 @@
 #include <gtest/gtest.h>
 
 #include <fstream>
+#include <tuple>
 
 #include "dannan/test/fixtures/stepped_time.h"
 #include "dannan/test/fixtures/temp_dir.h"
@@ -359,6 +360,181 @@ TEST(Membership, AllKnownReachableExcludesPairsThatCannotMeet) {
   EXPECT_FALSE(members.all_known_reachable());
   members.set_inbound_capable(false);
   EXPECT_TRUE(members.all_known_reachable());
+}
+
+// A tombstone is a freshness boundary, not a ban: gossip about the old association
+// cannot bring it back, the node itself can, and a newer reset clears it again.
+TEST(Membership, ANewerResetClearsAFreshAssociation) {
+  Clocks clocks;
+  auto members = make(clocks);
+  auto stale = node(2, "10.44.1.50");
+  stale.seen_unix_ms = clocks.wall.unix_ms();
+  members.observe(stale, true);
+  ASSERT_EQ(members.all().size(), 2u);
+  IdentityReset reset;
+  reset.host = stale.host;
+  reset.port = stale.port;
+  reset.stale_node_id = stale.id;
+  reset.epoch = 1;
+  reset.reset_unix_ms = clocks.wall.unix_ms();
+  reset.reset_by = node(1).id;
+  ASSERT_TRUE(members.apply_identity_reset(reset));
+  EXPECT_EQ(members.all().size(), 1u);
+  members.observe(stale, false);
+  EXPECT_EQ(members.all().size(), 1u);
+  stale.seen_unix_ms = reset.reset_unix_ms + 1;
+  members.observe(stale, true);
+  ASSERT_EQ(members.all().size(), 2u);
+  auto newer = reset;
+  newer.epoch = 2;
+  newer.reset_unix_ms += 2;
+  ASSERT_TRUE(members.apply_identity_reset(newer));
+  EXPECT_EQ(members.all().size(), 1u);
+  // The endpoint is not banned: a freshly authenticated id there is good.
+  auto replacement = stale;
+  replacement.id = node(3).id;
+  replacement.seen_unix_ms = newer.reset_unix_ms + 1;
+  members.observe(replacement, true);
+  ASSERT_EQ(members.all().size(), 2u);
+  EXPECT_EQ(members.all().back().id, replacement.id);
+  // Older or equal epochs cannot roll the tombstone back.
+  EXPECT_FALSE(members.apply_identity_reset(reset));
+  EXPECT_FALSE(members.apply_identity_reset(newer));
+}
+
+TEST(Membership, AnAddressWideResetDropsEveryNodeThereAndOnlyThem) {
+  Clocks clocks;
+  auto members = make(clocks);
+  const auto before = clocks.wall.unix_ms();
+  auto first = node(2, "10.44.1.50", 57401);
+  first.seen_unix_ms = before;
+  auto second = node(3, "10.44.1.50", 57402);
+  second.seen_unix_ms = before;
+  auto other = node(4, "10.44.1.51", 57401);
+  other.seen_unix_ms = before;
+  members.observe(first, true);
+  members.observe(second, true);
+  members.observe(other, true);
+  ASSERT_EQ(members.all().size(), 4u);
+  IdentityReset reset;
+  reset.host = "10.44.1.50";
+  reset.epoch = 1;
+  reset.reset_unix_ms = before + 1;
+  reset.reset_by = node(1).id;
+  ASSERT_TRUE(members.apply_identity_reset(reset));
+  ASSERT_EQ(members.all().size(), 2u);
+  EXPECT_TRUE(listed(members.all(), other.id));
+  // Earlier gossip cannot bring either back, though the reset named no node.
+  members.observe(first, false);
+  members.observe(second, false);
+  EXPECT_EQ(members.all().size(), 2u);
+  auto replacement = first;
+  replacement.id = node(5).id;
+  replacement.seen_unix_ms = reset.reset_unix_ms + 1;
+  members.observe(replacement, true);
+  ASSERT_EQ(members.all().size(), 3u);
+  members.observe(replacement, false);
+  EXPECT_EQ(members.all().size(), 3u);
+}
+
+// A reloaded node fences what it remembers until each is heard directly, so an
+// isolated node does not forget peers it has not rediscovered.
+TEST(Membership, AReloadedNodeFencesUntilHeardDirectly) {
+  test::TempDir dir;
+  Clocks clocks;
+  const auto path = dir.path() / "membership" / "known-nodes.bin";
+  auto peer = node(2, "10.0.0.2");
+  peer.seen_unix_ms = clocks.wall.unix_ms();
+  {
+    auto members = make(clocks, path);
+    EXPECT_TRUE(members.all_known_reachable());
+    members.observe(peer, false);
+    EXPECT_FALSE(members.all_known_reachable());
+    members.observe(peer, true);
+    EXPECT_TRUE(members.all_known_reachable());
+  }
+  auto recovered = make(clocks, path);
+  ASSERT_EQ(recovered.all().size(), 2u);
+  EXPECT_FALSE(recovered.all_known_reachable());
+  clocks.wall.advance(1ms);
+  peer.seen_unix_ms = clocks.wall.unix_ms();
+  recovered.observe(peer, true);
+  EXPECT_TRUE(recovered.all_known_reachable());
+  clocks.steady.advance(31s);
+  EXPECT_FALSE(recovered.all_known_reachable());
+}
+
+TEST(Membership, AGossipedCapabilityChangeIsPersisted) {
+  test::TempDir dir;
+  Clocks clocks;
+  const auto path = dir.path() / "known-nodes.bin";
+  auto peer = node(2, "10.0.0.2");
+  peer.capabilities = capability_inbound;
+  peer.seen_unix_ms = clocks.wall.unix_ms();
+  {
+    auto members = make(clocks, path);
+    members.observe(peer, true);
+    clocks.wall.advance(1ms);
+    peer.capabilities = 0;
+    peer.seen_unix_ms = clocks.wall.unix_ms();
+    members.observe(peer, false);
+    EXPECT_FALSE(members.inbound_capable(peer.id));
+  }
+  auto recovered = make(clocks, path);
+  EXPECT_FALSE(recovered.inbound_capable(peer.id));
+}
+
+// Forgetting counts from when a node was last heard of, by anyone: gossip holds it,
+// a restart keeps the wait, and with no horizon nobody is forgotten.
+TEST(Membership, ForgettingCountsFromLastHeard) {
+  test::TempDir dir;
+  Clocks clocks;
+  const auto path = dir.path() / "known-nodes.bin";
+  auto peer = node(2, "10.0.0.2");
+  peer.seen_unix_ms = clocks.wall.unix_ms();
+  {
+    auto members = make(clocks, path, 60s);
+    members.observe(peer, true);
+    for (int i = 0; i < 4; ++i) {
+      clocks.steady.advance(40s);
+      clocks.wall.advance(40s);
+      peer.seen_unix_ms = clocks.wall.unix_ms();
+      members.observe(peer, false);
+      EXPECT_EQ(members.forget_unseen(), 0u);
+    }
+    EXPECT_FALSE(members.directly_reachable(peer.id));
+  }
+  {
+    auto recovered = make(clocks, path, 60s);
+    ASSERT_EQ(recovered.all().size(), 2u);
+    clocks.steady.advance(100s);
+    clocks.wall.advance(100s);
+    EXPECT_EQ(recovered.forget_unseen(), 1u);
+    // And the file forgets it too.
+    EXPECT_EQ(make(clocks, path, 60s).all().size(), 1u);
+  }
+  auto keeps = make(clocks);
+  peer.seen_unix_ms = clocks.wall.unix_ms();
+  keeps.observe(peer, true);
+  clocks.steady.advance(1000h);
+  clocks.wall.advance(1000h);
+  EXPECT_EQ(keeps.forget_unseen(), 0u);
+  EXPECT_EQ(keeps.all().size(), 2u);
+}
+
+TEST(Membership, AllAndActiveAreOneReading) {
+  Clocks clocks;
+  auto members = make(clocks);
+  auto peer = node(2, "10.0.0.2");
+  peer.seen_unix_ms = clocks.wall.unix_ms();
+  members.observe(peer, true);
+  auto [all, active] = members.all_and_active();
+  EXPECT_EQ(all.size(), 2u);
+  EXPECT_EQ(active.size(), 2u);
+  clocks.steady.advance(31s);
+  std::tie(all, active) = members.all_and_active();
+  EXPECT_EQ(all.size(), 2u);
+  EXPECT_EQ(active.size(), 1u);
 }
 
 // Encoded in one order, reaching the file in another: the older is skipped.

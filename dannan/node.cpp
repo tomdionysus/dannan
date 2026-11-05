@@ -67,10 +67,8 @@ class Node::NodesNoun final : public Nodes {
   bool directly_reachable(const identity::NodeId& node) const override { return _node._members.directly_reachable(node); }
   bool inbound_capable(const identity::NodeId& node) const override { return _node._members.inbound_capable(node); }
   RosterSnapshot snapshot() const override {
-    RosterSnapshot out;
-    out.all = _node._members.all();
-    out.active = _node._members.active();
-    return out;
+    auto [all, active] = _node._members.all_and_active();
+    return {std::move(all), std::move(active)};
   }
   bool all_known_reachable() const override { return _node._members.all_known_reachable(); }
   std::optional<net::Purpose> path(const identity::NodeId& node, net::Lane lane) const override {
@@ -125,6 +123,10 @@ class Node::RoutesNoun final : public Routes {
     if (_node._table.is_core(type)) throw std::logic_error("message type " + std::to_string(static_cast<uint16_t>(type)) + " is one of Dannan's");
     _node._table.add(type, std::move(registration));
     if (handler) bind(type, std::move(handler));
+  }
+  void retire(net::MessageType type) override {
+    if (_node._started) throw std::logic_error("message types are retired before the node starts");
+    _node._table.retire(type);
   }
   void bind(net::MessageType type, net::RequestHandler handler) override {
     if (_node._table.is_core(type)) throw std::logic_error("message type " + std::to_string(static_cast<uint16_t>(type)) + " is one of Dannan's");

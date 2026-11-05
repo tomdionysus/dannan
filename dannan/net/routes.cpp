@@ -73,9 +73,17 @@ RouteTable RouteTable::with_dannan_types() {
 
 void RouteTable::add_core(MessageType type, Registration registration) { _types.emplace(type, std::move(registration)); }
 
+void RouteTable::retire(MessageType type) {
+  const auto number = static_cast<uint16_t>(type);
+  if (number < first_user_type) throw std::invalid_argument("message type " + std::to_string(number) + " is Dannan's; user types start at 512");
+  if (_types.contains(type)) throw std::invalid_argument("message type " + std::to_string(number) + " is in use");
+  _retired.insert(type);
+}
+
 void RouteTable::add(MessageType type, Registration registration) {
   const auto number = static_cast<uint16_t>(type);
   if (number < first_user_type) throw std::invalid_argument("message type " + std::to_string(number) + " is Dannan's; user types start at 512");
+  if (_retired.contains(type)) throw std::invalid_argument("message type " + std::to_string(number) + " is retired");
   if (_types.contains(type)) throw std::invalid_argument("message type " + std::to_string(number) + " is already registered as " + _types.at(type).name);
   _types.emplace(type, std::move(registration));
 }
