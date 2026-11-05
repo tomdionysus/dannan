@@ -23,6 +23,7 @@
 #include "dannan/reach/dial_back.h"
 #include "dannan/reach/inbound.h"
 #include "dannan/test/fixtures/gate.h"
+#include "dannan/test/fixtures/recording_sink.h"
 #include "dannan/test/fixtures/stepped_time.h"
 #include "dannan/test/fixtures/temp_dir.h"
 
@@ -203,6 +204,46 @@ TEST(PublicConnectivity, StatusNeverWaitsOnAProbe) {
   EXPECT_EQ(read.wait_for(std::chrono::seconds(10)), std::future_status::ready);
   gate.open();
   prober.join();
+}
+
+TEST(PublicConnectivity, WhatItFindsIsJournalled) {
+  auto log = std::make_shared<test::RecordingSink>();
+  auto gateway = std::make_shared<FakeGateway>();
+  {
+    auto config = upnp_on();
+    config.check.enabled = true;
+    PublicConnectivity connectivity(
+        config, id(1), {"10.0.0.1", 7437}, gateway, nullptr,
+        [](const net::Endpoint&, std::chrono::milliseconds, std::string& error) {
+          error = "refused";
+          return false;
+        },
+        &contract::system_wall_clock(), log);
+    (void)connectivity.refresh(true);
+    EXPECT_EQ(log->count(status::LogLevel::info, "UPnP port mapping active gateway_external=203.0.113.5:7437 internal="), 1u);
+    EXPECT_EQ(
+        log->count(
+            status::LogLevel::warn,
+            "connectivity self probe failed endpoint=203.0.113.5:7437 external_reachability=unknown reason=\"refused\" (NAT loopback may be unavailable)"),
+        1u);
+  }
+  EXPECT_EQ(log->count(status::LogLevel::debug, "UPnP port mapping removed external_port=7437"), 1u);
+}
+
+TEST(PublicConnectivity, AnExternalIpIsJournalled) {
+  auto log = std::make_shared<test::RecordingSink>();
+  ConnectivityConfig config;
+  config.external_ip.enabled = true;
+  PublicConnectivity found(
+      config, id(1), {"10.0.0.1", 7437}, nullptr, [](std::chrono::milliseconds) { return std::string("198.51.100.1"); }, nullptr,
+      &contract::system_wall_clock(), log);
+  (void)found.refresh(false);
+  EXPECT_EQ(log->count(status::LogLevel::info, "external IP discovered source=aws address=198.51.100.1"), 1u);
+  PublicConnectivity failing(
+      config, id(1), {"10.0.0.1", 7437}, nullptr, [](std::chrono::milliseconds) -> std::string { throw std::runtime_error("no answer"); }, nullptr,
+      &contract::system_wall_clock(), log);
+  (void)failing.refresh(false);
+  EXPECT_EQ(log->count(status::LogLevel::warn, "no answer"), 1u);
 }
 
 // A mapping made, verified and owned: the gateway's address is advertised;

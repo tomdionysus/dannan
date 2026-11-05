@@ -240,6 +240,68 @@ TEST(StartupWatch, AFinishedStartupEndsTheWatchWithoutAWord) {
   EXPECT_FALSE(stalled.load());
 }
 
+// The journal, in Macha's words at Macha's levels.
+TEST(SupervisedThreads, AFaultIsJournalledWithWhatHappensNext) {
+  auto log = std::make_shared<test::RecordingSink>();
+  SupervisedThreads threads(5ms, 20ms, &contract::system_wall_clock(), &contract::steady_time_source(), log);
+  threads.once("scan", [] { throw std::runtime_error("bad file"); });
+  EXPECT_EQ(log->count(status::LogLevel::error, "thread 'scan' faulted (exception): bad file; thread ended"), 1u);
+  threads.escalating("fuse-io", [] { throw 7; }, nullptr);
+  EXPECT_EQ(log->count(status::LogLevel::error, "thread 'fuse-io' faulted (unknown_exception): unknown exception; escalated to its subsystem's supervisor"),
+            1u);
+  std::stop_source stop;
+  std::atomic<int> runs{0};
+  threads.loop("gossip", stop.get_token(), [&] {
+    if (++runs < 2) throw std::runtime_error("peer vanished");
+  });
+  EXPECT_EQ(log->count(status::LogLevel::error, "thread 'gossip' faulted (exception): peer vanished; restarting in 5 ms"), 1u);
+  std::stop_source stopped;
+  threads.loop("leaving", stopped.get_token(), [&] {
+    stopped.request_stop();
+    throw std::runtime_error("on the way out");
+  });
+  EXPECT_EQ(log->count(status::LogLevel::error, "thread 'leaving' faulted (exception): on the way out; stopping, not restarted"), 1u);
+}
+
+TEST(Supervisor, TheSubsystemsAreJournalled) {
+  auto log = std::make_shared<test::RecordingSink>();
+  std::atomic<int> stops{0};
+  auto settings = options();
+  settings.log = log;
+  {
+    Supervisor supervisor(settings);
+    supervisor.add_builtin("fuse", [&](const SubsystemContext&) { return std::make_unique<Builtin>("fuse", &stops, nullptr); });
+    supervisor.add_builtin("torrent", [&](const SubsystemContext&) -> std::unique_ptr<Subsystem> { return nullptr; });
+    supervisor.add_builtin("scanner", [&](const SubsystemContext&) -> std::unique_ptr<Subsystem> { throw std::runtime_error("no catalogue"); });
+    supervisor.start({});
+    EXPECT_TRUE(eventually([&] { return status_of(supervisor, "scanner")->state == SubsystemState::disabled; }));
+    EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::info, "subsystem plugin 'fuse' loaded and running path=built in") == 1; }));
+    EXPECT_TRUE(eventually(
+        [&] { return log->count(status::LogLevel::info, "subsystem plugin 'torrent' loaded but its capability is not enabled on this node") == 1; }));
+    EXPECT_EQ(log->count(status::LogLevel::error, "subsystem 'scanner' failed to start: no catalogue"), 4u);
+    EXPECT_EQ(log->count(status::LogLevel::error, "subsystem 'scanner' disabled after 4 failed attempts; needs an operator"), 1u);
+    supervisor.stop();
+  }
+}
+
+TEST(Supervisor, AStopThatThrowsIsJournalled) {
+  struct Throwing final : Subsystem {
+    std::string_view name() const noexcept override { return "bad"; }
+    void attach_fault_sink(FaultSink) override {}
+    void start() override {}
+    void stop() override { throw std::runtime_error("stuck"); }
+  };
+  auto log = std::make_shared<test::RecordingSink>();
+  auto settings = options();
+  settings.log = log;
+  Supervisor supervisor(settings);
+  supervisor.add_builtin("bad", [](const SubsystemContext&) { return std::make_unique<Throwing>(); });
+  supervisor.start({});
+  EXPECT_TRUE(eventually([&] { return status_of(supervisor, "bad")->state == SubsystemState::running; }));
+  supervisor.stop();
+  EXPECT_EQ(log->count(status::LogLevel::warn, "subsystem 'bad' stop() threw: stuck"), 1u);
+}
+
 // A thread escaping its body ends the process: every thread in the library starts
 // under supervision, as Macha's source guard demands of its own tree.
 TEST(SupervisedThreads, EveryThreadIsStartedSupervised) {

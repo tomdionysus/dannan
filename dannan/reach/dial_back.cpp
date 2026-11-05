@@ -56,6 +56,8 @@ net::Handled DialBackResponder::answer(const identity::NodeId& asker, std::span<
     _last[asker] = now;
   }
   const auto error = _prober(target, asker);
+  _log.debug("dial-back probe for peer=" + to_string(asker).substr(0, 12) + " endpoint=" + target.host + ":" + std::to_string(target.port) +
+             " reachable=" + (error.empty() ? "true" : "false") + (error.empty() ? "" : " error=" + error));
   return net::Handled::processed({net::message::dial_back_reply, encode_dial_back_reply(error.empty(), error), {}});
 }
 

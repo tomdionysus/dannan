@@ -381,6 +381,13 @@ NodeConfig prepared(NodeConfig config) {
 
 }  // namespace
 
+void Node::IoCpu::tick() {
+  std::lock_guard lock(mutex);
+  auto [found, fresh] = reporters.try_emplace(std::this_thread::get_id(), "net-io", std::chrono::seconds(5), status::ScopedLogger(log, "net"));
+  (void)fresh;
+  found->second.tick();
+}
+
 // --- The node ---------------------------------------------------------------
 
 Node::Node(asio::io_context& io, NodeConfig config)
@@ -395,7 +402,7 @@ Node::Node(asio::io_context& io, NodeConfig config)
       _telemetry(_identity.id, _config.state_path / "telemetry" / "last-known.bin", _config.time, _config.wall, _config.telemetry_layout),
       _readiness(_config.planes, _config.wall),
       _activity(_config.time),
-      _threads(std::chrono::seconds(1), std::chrono::seconds(60), _config.wall, _config.time),
+      _threads(std::chrono::seconds(1), std::chrono::seconds(60), _config.wall, _config.time, _config.log),
       _wait_guard(status::ScopedLogger(_config.log, "wait")),
       _memory(_config.memory_bytes, _config.control_reserve_bytes, _config.foreground_reserve_bytes, _config.loader_reserve_bytes,
               _config.reassembly_reserve_bytes),
@@ -408,6 +415,8 @@ Node::Node(asio::io_context& io, NodeConfig config)
       _time(std::make_unique<TimeNoun>(*this)),
       _telemetry_noun(std::make_unique<TelemetryNoun>(*this)) {
   if (_config.memory_warning) status::ScopedLogger(_config.log, "node").warn(*_config.memory_warning);
+  if (!_inbound.load_error().empty()) status::ScopedLogger(_config.log, "node").warn("inbound resolution ignored: " + _inbound.load_error());
+  if (!_telemetry.load_error().empty()) status::ScopedLogger(_config.log, "node").warn("persisted telemetry ignored: " + _telemetry.load_error());
   // How this node proves itself: a certificate (version 2), the cluster key
   // (version 1), or both while a cluster moves.
   if (_config.certificate) {
@@ -462,7 +471,8 @@ void Node::start() {
   // windows behind.
   if (_config.observation_interval.count() > 0) {
     _observation_recorder = std::make_unique<status::ObservationRecorder>(
-        _observations, std::make_shared<status::ObservationLog>(_config.state_path / "observation" / "observations.jsonl", _config.observation_max_bytes),
+        _observations,
+        std::make_shared<status::ObservationLog>(_config.state_path / "observation" / "observations.jsonl", _config.observation_max_bytes, _config.log),
         _config.version, _config.observation_interval, _config.observation_gauges, _config.wall, &_threads);
     _observations.event({_config.wall->unix_ms(), "start", {}, {{"version", _config.version}}});
     _observation_recorder->start();
@@ -563,7 +573,7 @@ void Node::start() {
         if (future.wait_for(_config.connect_timeout * 2) != std::future_status::ready) return std::string("dial-back probe timed out");
         return future.get();
       },
-      _config.time);
+      _config.time, _config.log);
 
   _server->start();
   _bound_port = _server->bound_port();
@@ -572,7 +582,7 @@ void Node::start() {
   _connectivity =
       std::make_unique<reach::PublicConnectivity>(_config.connectivity, _identity.id, net::Endpoint{_members.self().host, _bound_port}, _config.gateway,
                                                   _config.external_ip ? _config.external_ip : reach::ExternalIpLookup(reach::checkip_external_ip),
-                                                  _config.self_probe ? _config.self_probe : reach::SelfProbe(reach::tcp_self_probe), _config.wall);
+                                                  _config.self_probe ? _config.self_probe : reach::SelfProbe(reach::tcp_self_probe), _config.wall, _config.log);
   {
     contract::Lock lock(_refresh_mutex);
     _refreshes_open = true;
@@ -642,8 +652,12 @@ void Node::refresh_public_connectivity(bool probe, bool force_probe, asio::any_i
 
 void Node::advertise(const reach::PublicConnectivityStatus& status) {
   const auto before = _members.self();
-  if (!status.advertised.host.empty() && status.advertised.port && (status.advertised.host != before.host || status.advertised.port != before.port))
+  if (!status.advertised.host.empty() && status.advertised.port && (status.advertised.host != before.host || status.advertised.port != before.port)) {
     _members.set_endpoint(status.advertised.host, status.advertised.port);
+    status::ScopedLogger(_config.log, "node")
+        .info("node advertised endpoint changed from=" + before.host + ":" + std::to_string(before.port) + " to=" + status.advertised.host + ":" +
+              std::to_string(status.advertised.port) + " source=" + status.advertised_source);
+  }
 }
 
 void Node::serve_refreshes() {
@@ -913,11 +927,15 @@ void Node::sleep_until(std::stop_token stop, contract::TimePoint due) {
 }
 
 void Node::membership_loop(std::stop_token stop) {
+  status::ThreadCpuReporter cpu("node-membership", std::chrono::seconds(5), status::ScopedLogger(_config.log, "node"));
   while (!stop.stop_requested()) {
-    if (_members.forget_unseen())
+    cpu.tick();
+    if (const auto forgotten = _members.forget_unseen()) {
+      status::ScopedLogger(_config.log, "node").info("membership: forgot " + std::to_string(forgotten) + " node(s) not heard of for the absence horizon");
       topology_changed();
-    else
+    } else {
       topology_changed(true);
+    }
     const auto known = _members.all();
     _peers_known = static_cast<uint32_t>(known.size());
     uint32_t active = 1;
@@ -935,8 +953,9 @@ void Node::membership_loop(std::stop_token stop) {
         if (found != known.end() && unreachable(*found)) continue;
         exchange(found != known.end() ? std::optional(*found) : std::nullopt, endpoint);
         ++active;
-      } catch (const std::exception&) {
+      } catch (const std::exception& error) {
         // A seed down is ordinary; the next heartbeat tries again.
+        status::ScopedLogger(_config.log, "node").debug(std::string("bootstrap: ") + error.what());
       }
     }
     for (const auto& node : known) {
@@ -945,7 +964,8 @@ void Node::membership_loop(std::stop_token stop) {
       try {
         exchange(node, {node.host, node.port});
         ++active;
-      } catch (const std::exception&) {
+      } catch (const std::exception& error) {
+        status::ScopedLogger(_config.log, "node").debug("peer " + node.host + ": " + error.what());
       }
     }
     _peers_active = active;
@@ -954,6 +974,7 @@ void Node::membership_loop(std::stop_token stop) {
 }
 
 void Node::telemetry_loop(std::stop_token stop) {
+  status::ThreadCpuReporter cpu("node-telemetry", std::chrono::seconds(5), status::ScopedLogger(_config.log, "node"));
   const auto interval = std::max(_config.telemetry_interval, std::chrono::milliseconds(250));
   // Sampling follows demand; gossip at most once a second.
   const auto gossip_every = std::min(interval, std::chrono::milliseconds(1000));
@@ -961,6 +982,10 @@ void Node::telemetry_loop(std::stop_token stop) {
   contract::TimePoint last_gossip{};
   while (!stop.stop_requested()) {
     const auto demand = _telemetry_demand.load(std::memory_order_acquire);
+    cpu.tick();
+    // A reading on whichever io thread takes this: the busier the pool, the more
+    // of them get a turn. Macha's per-connection threads have no equivalent here.
+    asio::post(_io, [readings = _io_cpu] { readings->tick(); });
     try {
       status::LocalFigures figures;
       figures.self = _members.self();
@@ -979,8 +1004,9 @@ void Node::telemetry_loop(std::stop_token stop) {
         if (!records.empty())
           (void)_client->broadcast_best_effort({net::message::telemetry, status::encode_telemetry_set(records), {}}, sched::FrameType::speculative);
       }
-    } catch (const std::exception&) {
+    } catch (const std::exception& error) {
       // The next tick samples again.
+      status::ScopedLogger(_config.log, "node").debug(std::string("telemetry refresh skipped: ") + error.what());
     }
     std::unique_lock lock(_wait_mutex);
     _wake.wait_for(lock, stop, interval, [&] { return _telemetry_demand.load(std::memory_order_acquire) != demand; });
@@ -988,7 +1014,11 @@ void Node::telemetry_loop(std::stop_token stop) {
 }
 
 void Node::apply_inbound(bool capable) {
+  const bool before = _members.self().inbound_capable();
   if (_members.set_inbound_capable(capable)) {
+    status::ScopedLogger(_config.log, "node")
+        .info(std::string("node inbound resolution changed inbound_capable=") + (capable ? "true" : "false") +
+              " previous_inbound_capable=" + (before ? "true" : "false") + " source=" + _inbound.state().source);
     topology_changed();
     signal_telemetry();
   }
@@ -1029,7 +1059,9 @@ void Node::connectivity_loop(std::stop_token stop) {
   const bool automatic = _config.inbound == reach::Inbound::automatic;
   auto next = _config.time->now();
   auto next_class = next;
+  status::ThreadCpuReporter cpu("node-connectivity", std::chrono::seconds(5), status::ScopedLogger(_config.log, "node"));
   while (!stop.stop_requested()) {
+    cpu.tick();
     // At least every heartbeat: the sweep runs on every tick.
     const auto tick = _config.time->now() + _config.heartbeat;
     {
@@ -1065,10 +1097,19 @@ void Node::connectivity_loop(std::stop_token stop) {
     const auto self = _members.self();
     const auto outcome =
         call_wait(peer, {peer->host, peer->port}, net::message::dial_back, reach::encode_dial_back_request({self.host, self.port}), _config.exchange_budget);
-    if (!outcome.reply || outcome.reply->type != net::message::dial_back_reply) continue;
+    if (!outcome.reply || outcome.reply->type != net::message::dial_back_reply) {
+      status::ScopedLogger(_config.log, "node")
+          .debug("dial-back probe not answered peer=" + identity::to_string(peer->id).substr(0, 12) +
+                 " error=" + (outcome.reply ? std::string("refused") : outcome.failure));
+      continue;
+    }
     try {
       const auto [reachable, error] = reach::decode_dial_back_reply(outcome.reply->payload);
       const auto verdict = _inbound.observe_probe(peer->id, reachable, error);
+      status::ScopedLogger(_config.log, "node")
+          .debug("dial-back probe peer=" + identity::to_string(peer->id).substr(0, 12) + " endpoint=" + self.host + ":" + std::to_string(self.port) +
+                 " reachable=" + (reachable ? "true" : "false") + (error.empty() ? "" : " error=" + error) +
+                 " consecutive_failures=" + std::to_string(_inbound.state().consecutive_failures));
       if (!verdict.persist_error.empty()) status::ScopedLogger(_config.log, "node").warn("inbound resolution not persisted: " + verdict.persist_error);
       if (verdict.changed) apply_inbound(_inbound.capable());
       next = _config.time->now() + verdict.next_probe;
@@ -1082,7 +1123,14 @@ bool Node::apply_identity_reset(const membership::IdentityReset& reset) {
   // Idempotent: align every consumer even if one learned it first.
   _telemetry.apply_identity_reset(reset);
   if (_client) _client->invalidate_identity_association(reset);
-  if (changed) topology_changed();
+  if (changed) {
+    status::ScopedLogger(_config.log, "node")
+        .info("node identity association reset scope=" + reset.key() +
+              " stale_node_id=" + (reset.stale_node_id == identity::NodeId{} ? std::string("<any>") : identity::to_string(reset.stale_node_id)) +
+              " epoch=" + std::to_string(reset.epoch) + " reset_by=" + identity::to_string(reset.reset_by) +
+              (reset.reason.empty() ? std::string{} : " reason=" + reset.reason));
+    topology_changed();
+  }
   return changed;
 }
 

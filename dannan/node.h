@@ -16,6 +16,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
@@ -35,6 +36,7 @@
 #include "dannan/status/observation.h"
 #include "dannan/status/readiness.h"
 #include "dannan/status/telemetry.h"
+#include "dannan/status/thread_cpu.h"
 #include "dannan/supervise/supervised.h"
 
 namespace dannan {
@@ -343,6 +345,16 @@ class Node final : public Context {
   std::deque<ConnectivityRefresh> _refreshes DANNAN_GUARDED_BY(_refresh_mutex);
   bool _refreshes_open DANNAN_GUARDED_BY(_refresh_mutex) = false;
   std::unique_ptr<status::ObservationRecorder> _observation_recorder;
+  // A reporter for each io thread that takes a reading, under the pool's name.
+  // Shared with posted work, which may outlive this node.
+  struct IoCpu {
+    explicit IoCpu(std::shared_ptr<status::LogSink> sink) : log(std::move(sink)) {}
+    void tick();
+    std::shared_ptr<status::LogSink> log;
+    std::mutex mutex;
+    std::map<std::thread::id, status::ThreadCpuReporter> reporters;
+  };
+  const std::shared_ptr<IoCpu> _io_cpu = std::make_shared<IoCpu>(_config.log);
   std::unique_ptr<reach::DialBackResponder> _dial_back;
 
   // Guards nothing: the loops' wait.
