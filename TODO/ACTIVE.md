@@ -133,21 +133,23 @@ Two consequences that shape every step:
 Each stops something; a session that has lost its context sees them
 first.
 
-Rulings the first cutover needs, each with a recommendation:
+Rulings on the first cutover, Tom, 2026-11-05, settled:
 
-- **A. A call with no deadline (F2).** `Routes::call` requires one and the rule says
-  no call waits without one; Macha's async calls and DATA have none. Recommend: keep
-  the rule, and the facade passes a named 24 h constant, with the per-call strand and
-  timer measured by `dannan_bench` first.
-- **B. Thread names in Status (F14).** `threads[]` names change, and ten `net-*` rows
-  have no counterpart in Dannan's model. Recommend: the facade maps the names it can
-  and the rows without a thread are dropped, since Dannan's strands have none to
-  report; it changes bytes of `/status/diagnostics`, so it needs his word.
-- **C. Hot-thread DIAG lines (G48).** Macha's `ThreadCpuReporter` lines have no Dannan
-  equivalent, for the same reason. Recommend: the same per-pool, on the scheduler's
-  workers and the io threads, not per connection.
-- **D. The per-account bound (law 2, second clause).** Dannan's `Budget` bounds by class
-  only. Recommend: Macha's own, stays in Macha, since accounts are Macha's.
+- **A. Deadlines (F2).** "Every call must specify, there is no default. Macha will have to
+  adapt to that in the refactor." `Routes::call` keeps its required deadline, there is no
+  blanket constant in the facade, and each of Macha's call sites chooses one in the port.
+- **B. Thread rows (F14).** Accepted: `/status/diagnostics` changes bytes, rows with no
+  thread go, and the three loop threads are renamed `cluster-telemetry`,
+  `cluster-maintenance` and `cluster-connectivity` (step 6).
+- **C. DIAG lines (G48).** Dannan adds a thread CPU reporter, per pool on the worker and io
+  threads, not per connection (step 5).
+- **D. The per-account bound (law 2, second clause).** Added to Dannan, as a generic bound
+  per principal in `Budget` (step 8), against the recommendation that it stay Macha's.
+- **Live nodes.** The Macha session's own loopback runs on macnessa were fine. The hold
+  covers Dannan's work, the Pi measurements and the gateway.
+- **The macnessa copy.** Allowed, read-only, without stopping the node: the roster, inbound
+  and telemetry files only (step 7).
+- **The Pi baselines.** The Macha session's, later, at his word, with the deployed version.
 
 Held until he says: the Pi baselines and measurements, the real IGD run, anything on
 macnessa or inverbeg. Each push and release is his word too.
@@ -615,16 +617,16 @@ Each step is a `feature/macha-parity` milestone, gate green, committed and merge
 
 | Step | What | Closes | Macha gates, for example |
 |---|---|---|---|
-| 1. Call semantics, **done** (460) | No-progress deadline and stall notice per call, off unless asked, as Macha applies them only to synchronous `call`. `net::CallWatch` on `Routes::call` and `call_and_wait`; `NodeConfig`'s four settings now default to off, which also ends the old 30 s; the node's own exchanges get `exchange_budget`, 30 s. Ruling A needs no code in Dannan if the constant stands. | F1, F2, F16, G11-G13, G18, G19 | `test_rpc_cluster`'s no-progress and liveness cases |
+| 1. Call semantics, **done** (460) | No-progress deadline and stall notice per call, off unless asked, as Macha applies them only to synchronous `call`. `net::CallWatch` on `Routes::call` and `call_and_wait`; `NodeConfig`'s four settings now default to off, which also ends the old 30 s; the node's own exchanges get `exchange_budget`, 30 s. Ruling A keeps the required deadline, so nothing more here. | F1, F2, F16, G11-G13, G18, G19 | `test_rpc_cluster`'s no-progress and liveness cases |
 | 2. Lifecycle and readiness, **done** (472) | `Readiness::hold_until_marked` and `mark_complete`; first failure kept. A job on a closed session skips its handler. A failed inbound persist no longer restarts the loop. Escalation names the thread. Every thread supervised, with a guard test. `request_stop`; the layout check before the lock. | F5, F9, F12, G16, G41-G43, G45 | `test_every_subsystem_thread_is_run_supervised`, startup cases in `test_service_root` |
 | 3. Transport proofs | The end-to-end cases Dannan lacks, including the 32 MiB overtake, and forged handshakes. Fix what they find. G23 is known to be open: `place()` reroutes where Macha may wait for the peer. | G1-G10, G14, G15, G17, G20-G23, G25-G27 | `test_rpc_cluster`'s transport cases |
 | 4. Membership proofs | Resets, fences, forgetting, the empty-domain fallback's home. | F19, F20, G24, G28-G33 | `test_absent_nodes`, `test_rpc_cluster`'s membership cases |
 | 4a. The goldens, **taken** | The Macha session's config, Status, route and journal captures at `cac5998`, in `dannan/test/fixtures/macha/`. Reached: at most 381 of 494 Status keys, 31 of 83 journal lines; the rest stay unproven. | the goldens the port gates on | none; the port compares against these |
-| 5. The journal | The 44 lines still missing: subsystems, connectivity, thread faults, inbound, endpoint, reset, forgot, exchange failures. The supervisor takes a sink. Ruling C. | F13, G44, G48 | the journal golden, step 4a |
-| 6. Telemetry and Status | The hosted-field case and table (parity 7); real connection counts as 0.92.4 reports them: `ClientStats` gains created (counted after the identity check), Macha's reused sites and canonical (`net.cpp:2236-2439`, `:3003-3010`), and `node.cpp:969`'s peers-less-one and the zeros go; truncated records; refusal rows. Ruling B. | F14, F15, G46, G47 | the Status golden, step 4a |
+| 5. The journal | The 44 lines still missing: subsystems, connectivity, thread faults, inbound, endpoint, reset, forgot, exchange failures. The supervisor takes a sink. Ruling C: a thread CPU reporter, per pool. | F13, G44, G48 | the journal golden, step 4a |
+| 6. Telemetry and Status | The hosted-field case and table (parity 7); real connection counts as 0.92.4 reports them: `ClientStats` gains created (counted after the identity check), Macha's reused sites and canonical (`net.cpp:2236-2439`, `:3003-3010`), and `node.cpp:969`'s peers-less-one and the zeros go; truncated records; refusal rows. Ruling B: rename the three loops. | F14, F15, G46, G47 | the Status golden, step 4a |
 | 7. The importer | `dannan-import-macha`: `MACHMEM1` to `4`, `MACHINB1`, `MACHTEL3`, both lock files, keeps `*.macha` for rollback. | F6, F17 | the state directory, step 4a |
-| 8. Foundations proofs | Quota boundary, reassembly reserve, retry backstop, durable contents, every-mask tables, `Published`, Observation rows. | G34-G40 | `test_foundations`, `test_contract`, `test_observation` |
-| 9. Measured gate | `dannan_bench`: 32 MiB on DATA, CONTROL round trips under load, MB/s, RSS, over the path ruling A leaves; compose-bed run. Recorded, never asserted. The laptop's numbers are not comparable to the Pis'. | parity 6 | Macha's baselines at whichever release is then deployed, when Tom says |
+| 8. Foundations proofs and the account bound | Ruling D's per-principal bound in `Budget`. Quota boundary, reassembly reserve, retry backstop, durable contents, every-mask tables, `Published`, Observation rows. | G34-G40 | `test_foundations`, `test_contract`, `test_observation` |
+| 9. Measured gate | `dannan_bench`: 32 MiB on DATA, CONTROL round trips under load, MB/s, RSS, over the per-call strand and timer the required deadline costs; compose-bed run. Recorded, never asserted. The laptop's numbers are not comparable to the Pis'. | parity 6 | Macha's baselines at whichever release is then deployed, when Tom says |
 | 10. Linux | ASan, UBSan and TSan on arm64 Debian 13 in Docker; the BBR path; whether Boost 1.83 suffices. | parity 8, G1 | the Pis' OS and architecture; no Macha case |
 | 11. Release | A tag at Tom's word, with its sanitizer runs. The port pins it. | | Macha's mapped cases green on it |
 
@@ -667,7 +669,10 @@ modified until they're ready."). Macha can still produce artefacts for this plan
   (`membership.cpp:12-16`) and no encoder, so Dannan builds those samples by hand from the
   reader's layout. A copy from macnessa is better evidence and waits on Tom's word.
 
-**Open with Tom:** who takes the Pi baselines, ruling C, and the rulings above.
+**Open:** whether step 3 starts now, and where Macha's tree-native merge stands against
+`cac5998` (Tom says it is already done on Macha; being asked of the Macha session). The real
+IGD run stays held. The macnessa copy stays under `build/`, out of the repository, since it
+names real hosts.
 
 ## Next
 

@@ -1420,6 +1420,7 @@ Ranked by what they would break at the cutover. "Facade" means no Dannan change;
   where Macha waits. Fix, facade: pass zero for all four `NodeConfig` deadlines and
   notices, and run Macha's own `wait_for_reply` loop over `CallHandle::idle_for`.
   That also keeps Macha's exact journal lines.
+- **F2, ruled by Tom:** every call specifies its deadline, with no default and no blanket facade constant; Macha adapts in the refactor. The recommendation below did not stand.
 - **F2. `Routes::call` requires a wall deadline; Macha has none.** The rule "no call waits
   without a deadline" (`context.h:47-51`) against `data_no_progress_deadline` 0, "off for
   data, whose transfers have their own logic" (`config.hpp:685-688`). A facade constant
