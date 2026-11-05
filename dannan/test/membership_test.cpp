@@ -361,5 +361,22 @@ TEST(Membership, AllKnownReachableExcludesPairsThatCannotMeet) {
   EXPECT_TRUE(members.all_known_reachable());
 }
 
+// Encoded in one order, reaching the file in another: the older is skipped.
+TEST(SequencedFile, AnOlderWriteIsSkipped) {
+  test::TempDir dir;
+  SequencedFile file(dir.path() / "roster");
+  const auto contents = [&] {
+    std::ifstream in(dir.path() / "roster");
+    return std::string(std::istreambuf_iterator<char>(in), {});
+  };
+  file.write(2, "newer");
+  file.write(1, "older");
+  EXPECT_EQ(contents(), "newer");
+  file.write(2, "again");
+  EXPECT_EQ(contents(), "newer");
+  file.write(3, "newest");
+  EXPECT_EQ(contents(), "newest");
+}
+
 }  // namespace
 }  // namespace dannan::membership

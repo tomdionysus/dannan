@@ -16,10 +16,13 @@
 
 #include <boost/asio/ip/tcp.hpp>
 #include <fstream>
+#include <future>
+#include <thread>
 
 #include "dannan/reach/connectivity.h"
 #include "dannan/reach/dial_back.h"
 #include "dannan/reach/inbound.h"
+#include "dannan/test/fixtures/gate.h"
 #include "dannan/test/fixtures/stepped_time.h"
 #include "dannan/test/fixtures/temp_dir.h"
 
@@ -170,6 +173,23 @@ ConnectivityConfig upnp_on() {
   ConnectivityConfig config;
   config.upnp.enabled = true;
   return config;
+}
+
+// Status reads what is known: a probe in progress, however slow, delays no one.
+TEST(PublicConnectivity, StatusNeverWaitsOnAProbe) {
+  test::Gate gate;
+  ConnectivityConfig config;
+  config.check.enabled = true;
+  PublicConnectivity connectivity(config, id(1), {"10.0.0.1", 7437}, nullptr, nullptr, [&](const net::Endpoint&, std::chrono::milliseconds, std::string&) {
+    gate.enter_and_wait();
+    return true;
+  });
+  std::thread prober([&] { (void)connectivity.refresh(true, true); });
+  ASSERT_TRUE(gate.wait_for_entries(1));
+  auto read = std::async(std::launch::async, [&] { return connectivity.status(); });
+  EXPECT_EQ(read.wait_for(std::chrono::seconds(10)), std::future_status::ready);
+  gate.open();
+  prober.join();
 }
 
 // A mapping made, verified and owned: the gateway's address is advertised;
