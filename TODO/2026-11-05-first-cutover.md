@@ -1,5 +1,7 @@
 # First cutover: Macha on Dannan's transport and node
 
+**Baseline moved, 2026-11-05: Macha `develop` at `cac5998`, tag 0.92.4 on `70cf4a4`.** Citations below were read at `00861dd`. In the moving files only `src/cluster/cluster.cpp` (from about `:225`), `cluster.hpp` (from `:122`), `net.cpp` (one line moves at `:2304`, a net shift of one after it) and comments in `src/types.hpp` and `src/config.hpp` changed, so those line numbers are off by a few, not re-cited. Read a copy at `build/scratch/macha-cac5998`.
+
 Status: specification, 2026-11-05. Nothing here is built. The first of two
 cutovers: Macha runs on Dannan's transport and node with Macha's own store, in
 one flag day, then a soak. Macha's code is the source of truth: where it and a
@@ -1518,6 +1520,7 @@ Ranked by what they would break at the cutover. "Facade" means no Dannan change;
   `read-ahead` (`net.cpp:638`), not `sched::frame_type_name`'s `read_ahead`.
   `message_timings` needs `dial_back` shown as `dial_back_probe` and its reply likewise.
   New core types (relay, channel, revocations) appear only if used.
+- **F15, as of 0.92.4:** Macha now reports the transport's real created, reused and canonical counts, and counts a dial only after the identity check. The text below describes `00861dd`. Dannan must match the new behaviour; `node.cpp:969` still has the old form.
 - **F15. `rpc_transport.canonical_connections` has no source: the one Status gap.** Macha
   counts usable routes, both directions (`net.cpp:3004-3009`). `ClientStats` has none.
   `connections_created` differs too: Macha counts after the handshake (`:2304`), Dannan's
