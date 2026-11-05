@@ -22,6 +22,7 @@
 
 #include "dannan/test/fixtures/gate.h"
 #include "dannan/test/fixtures/recording_sink.h"
+#include "dannan/test/fixtures/stepped_time.h"
 #include "dannan/test/fixtures/temp_dir.h"
 
 namespace dannan {
@@ -254,6 +255,62 @@ TEST(Node, APublicConnectivityRefreshRunsWhenAskedAndAnswersOnTheExecutor) {
   EXPECT_GT(probes.load(), asked);
   node.stop();
   EXPECT_FALSE(ask().has_value());
+}
+
+// Gossip waits out its cap however much demand there is: wakes sample the local
+// record, and only the injected second lets one out.
+TEST(Node, GossipWaitsOutItsCapHoweverMuchDemandThereIs) {
+  test::SteppedTime time;
+  Pair pair([&](NodeConfig& b) {
+    b.time = &time;
+    b.telemetry_interval = 1h;
+  });
+  pair.b->start();
+  const auto b = pair.b->context().identity().id();
+  ASSERT_TRUE(eventually([&] { return pair.b->context().nodes().directly_reachable(pair.a->context().identity().id()); }));
+  const auto seen_at_a = [&]() -> uint64_t {
+    for (const auto& record : pair.a->context().telemetry().all())
+      if (record.node_id() == b) return record.sequence();
+    return 0;
+  };
+  const auto local = [&] { return pair.b->context().telemetry().local()->sequence(); };
+  ASSERT_TRUE(eventually([&] {
+    time.advance(1s);
+    pair.b->context().telemetry().refresh();
+    return seen_at_a() > 0;
+  }));
+  // Time stands still from here. A tick or two lets out what the last step
+  // allowed; after that the record moves on and the gossip does not.
+  const auto settling = local();
+  ASSERT_TRUE(eventually([&] {
+    pair.b->context().telemetry().refresh();
+    return local() > settling + 2;
+  }));
+  std::this_thread::sleep_for(50ms);
+  const auto before = local();
+  ASSERT_TRUE(eventually([&] {
+    pair.b->context().telemetry().refresh();
+    return local() > before + 5;
+  }));
+  std::this_thread::sleep_for(50ms);
+  EXPECT_LE(seen_at_a(), before);
+  time.advance(1s);
+  const auto after = local();
+  EXPECT_TRUE(eventually([&] {
+    pair.b->context().telemetry().refresh();
+    return seen_at_a() >= after;
+  }));
+}
+
+// A peer is told of this node on observing it, not at the next interval.
+TEST(Node, APeerObservationGossipsSoonerThanTheInterval) {
+  Pair pair([](NodeConfig& b) { b.telemetry_interval = 1h; });
+  pair.b->start();
+  const auto b = pair.b->context().identity().id();
+  EXPECT_TRUE(eventually([&] {
+    const auto all = pair.a->context().telemetry().all();
+    return std::any_of(all.begin(), all.end(), [&](const status::Telemetry& record) { return record.node_id() == b; });
+  }));
 }
 
 // A hosted system that is nothing but a counter: a user type registered

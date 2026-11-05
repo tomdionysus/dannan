@@ -120,14 +120,16 @@ Membership::Encoded Membership::encode_locked() {
   return {++_sequence, std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size())};
 }
 
-void Membership::write(const Encoded& roster) {
+void SequencedFile::write(uint64_t sequence, const std::string& bytes) {
   if (_path.empty()) return;
-  contract::Lock lock(_persist_mutex);
+  contract::Lock lock(_mutex);
   // Encoded later, written already: this one is older.
-  if (roster.sequence <= _written) return;
-  identity::durable_replace_file(_path, roster.bytes);
-  _written = roster.sequence;
+  if (sequence <= _written) return;
+  identity::durable_replace_file(_path, bytes);
+  _written = sequence;
 }
+
+void Membership::write(const Encoded& roster) { _file.write(roster.sequence, roster.bytes); }
 
 NodeRecord Membership::self() const {
   contract::Lock lock(_mutex);

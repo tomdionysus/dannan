@@ -31,10 +31,24 @@ namespace dannan::membership {
 // node knows its peers
 // and which of them it must not dial before it has heard from anyone.
 //
+// A file replaced durably by states encoded under one lock and written outside
+// it: a state encoded earlier that reaches the file later is skipped, so the
+// file never goes backwards. An empty path writes nothing. Thread-safe; waits
+// on the file.
+class SequencedFile {
+ public:
+  explicit SequencedFile(std::filesystem::path path) : _path(std::move(path)) {}
+  void write(uint64_t sequence, const std::string& bytes);
+
+ private:
+  const std::filesystem::path _path;
+  contract::IoMutex _mutex;
+  uint64_t _written DANNAN_GUARDED_BY(_mutex) = 0;
+};
+
 // Thread-safe. Waits only to write the roster file, never while holding
-// the roster: it is encoded under _mutex and written under _persist_mutex,
-// in sequence order (lock order: _mutex is never taken with
-// _persist_mutex held).
+// the roster: it is encoded under _mutex and written by a SequencedFile, in
+// sequence order (_mutex is not held across the write).
 class Membership {
  public:
   // `known_path` empty: nothing persisted. `forget_after` is raised to
@@ -123,8 +137,7 @@ class Membership {
   uint64_t _sequence DANNAN_GUARDED_BY(_mutex) = 0;
 
   // Guards nothing but the order of writes.
-  mutable contract::IoMutex _persist_mutex;
-  uint64_t _written DANNAN_GUARDED_BY(_persist_mutex) = 0;
+  SequencedFile _file{_path};
 };
 
 }  // namespace dannan::membership

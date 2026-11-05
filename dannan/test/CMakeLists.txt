@@ -73,7 +73,7 @@ foreach(kind running writes_on_stop declining faulting faulting_after_start mism
   target_link_libraries(dannan_test_plugin_${kind} PRIVATE Boost::headers)
   add_dependencies(dannan_tests dannan_test_plugin_${kind})
 endforeach()
-target_compile_definitions(dannan_tests PRIVATE DANNAN_TEST_PLUGIN_DIR="${DANNAN_TEST_PLUGIN_DIR}")
+target_compile_definitions(dannan_tests PRIVATE DANNAN_TEST_PLUGIN_DIR="${DANNAN_TEST_PLUGIN_DIR}" DANNAN_TEST_FIXTURES="${PROJECT_SOURCE_DIR}/dannan/test/fixtures")
 
 # The two-process test runs dannan-node as a child.
 target_compile_definitions(dannan_tests PRIVATE DANNAN_NODE_BINARY="$<TARGET_FILE:dannan-node>" DANNAN_CA_BINARY="$<TARGET_FILE:dannan-ca>")
