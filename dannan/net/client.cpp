@@ -1379,7 +1379,7 @@ void Client::await_ping(const std::shared_ptr<Probe>& probe) {
     if (live && live->path_progress() > probe->sent) {
       probe->sent = live->path_progress();
       probe->give_up_at = _options.time->now() + std::max(_options.dead_after / 3, std::chrono::milliseconds(100));
-      probe->deadline = std::max(probe->deadline, probe->give_up_at);
+      probe->deadline = std::max(probe->deadline, _options.time->now() + _options.dead_after);
       return await_ping(probe);
     }
     if (_options.time->now() >= probe->deadline) {
