@@ -120,6 +120,7 @@ Core (Dannan's, 1 to 511; a hosted system's from 512, registered freely):
 | 14 | relay_offer | control, control | section 6; reply 107 |
 | 15 | relay_data | both, any, notification | u64 circuit, bytes |
 | 16 | relay_close | both, control, notification | u64 circuit, string why |
+| 21 | relay_credit | both, control, notification | u64 circuit, u64 chunks |
 | 100 | ok | both, any | |
 | 101 | members_reply | control, control | u32 count, records |
 | 102 | telemetry_reply | control, any | telemetry set |
@@ -205,7 +206,22 @@ relay R; R sees only ciphertext.
    it (A as dialler); bytes travel as `relay_data{circuit, bytes}` on A to
    R and R to B, in the class of the frame they carry, on the lane the
    circuit is for.
-4. Either end, or R, ends it with `relay_close`.
+4. Either end, or R, ends it with `relay_close`. R sends it on after what it
+   still holds for that end, and an end writes what it holds to its session
+   first, so a circuit's tail arrives.
+
+Flow control is end to end, per circuit. An end sends at most 32 chunks of at
+most 64 KiB beyond those the far end has written to its session; the far end
+gives `relay_credit{circuit, chunks}` back along the circuit in batches of 8.
+R holds what its next session cannot yet take, at most the window per direction
+per circuit, and waits; a full queue never closes a circuit, and only a session
+lost closes one. A DATA circuit's bytes and its close take the DATA lane at each
+hop where there is one, chosen when the circuit opens and kept, so bulk never
+waits in front of the CONTROL session's pings; credit takes CONTROL and overtakes.
+A session's pings wait behind what is on its own circuit, so the far end's bytes
+or credit moving count as its proof of life. The three types are handled by their arrival on the session,
+in order and ahead of every queue, so no queue can refuse a piece of a byte
+stream.
 
 Rules from the design: CONTROL relay is unconditional; DATA relay is
 charged to R's loader class and refused past its budget; R publishes

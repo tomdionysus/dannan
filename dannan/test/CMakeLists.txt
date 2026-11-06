@@ -67,7 +67,7 @@ target_sources(dannan_tests PRIVATE $<TARGET_OBJECTS:dannan_fuzz_targets>)
 # The supervisor's test plugins, one behaviour each, built as loadable
 # modules into one directory the tests point the supervisor at.
 set(DANNAN_TEST_PLUGIN_DIR "${PROJECT_BINARY_DIR}/test-plugins")
-foreach(kind running writes_on_stop declining faulting faulting_after_start mismatched no_entry)
+foreach(kind running writes_on_stop declining faulting faulting_after_start mismatched no_entry null_entry)
   add_library(dannan_test_plugin_${kind} MODULE plugins/test_plugin.cpp)
   target_include_directories(dannan_test_plugin_${kind} PRIVATE "${PROJECT_SOURCE_DIR}")
   target_compile_definitions(dannan_test_plugin_${kind} PRIVATE DANNAN_TEST_PLUGIN_KIND="${kind}")

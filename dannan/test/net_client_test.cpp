@@ -44,6 +44,7 @@ constexpr MessageType sluggish{1201};
 constexpr MessageType news{1202};
 constexpr MessageType sluggish_throw{1203};
 constexpr MessageType hurried{1204};
+constexpr MessageType noticed{4242};
 
 struct Io {
   asio::io_context context;
@@ -75,6 +76,9 @@ std::shared_ptr<const RouteTable> table() {
   Registration quick{"hurried", Lanes::control, Frames::control_only, false};
   quick.no_progress = 100ms;
   routes.add(hurried, quick);
+  Registration watched{"noticed", Lanes::control, Frames::control_only, false};
+  watched.stall_notice = 1h;
+  routes.add(noticed, watched);
   return std::make_shared<const RouteTable>(std::move(routes));
 }
 
@@ -129,7 +133,7 @@ struct Node {
         [this](const membership::NodeRecord& peer, FrameType, const Message& request) {
           if (request.type == message::dial_request) return ignore_dial_requests ? Handled::processed() : client->handle_dial_request(peer, request);
           if (request.type == slow) ++slow_started;
-          if (request.type == slow || request.type == hurried || (request.type == put_object && hold_data)) gate.enter_and_wait();
+          if (request.type == slow || request.type == hurried || request.type == noticed || (request.type == put_object && hold_data)) gate.enter_and_wait();
           if (request.type == slow) ++slow_finished;
           if (request.type == put_object && slow_data) std::this_thread::sleep_for(300ms);
           if (request.type == put_object && on_put) on_put(request.payload.size());
@@ -1020,6 +1024,8 @@ TEST(Journal, EachEndLogsItsConnectionAtInfo) {
   }));
 }
 
+// A call's dial failure goes to the caller, not the journal, as Macha's does.
+// Only lane maintenance says so: net.cpp:2775.
 TEST(Journal, ADialFailureIsADebugLine) {
   Io io;
   auto log = std::make_shared<test::RecordingSink>();
@@ -1027,9 +1033,10 @@ TEST(Journal, ADialFailureIsADebugLine) {
   tuning.log = log;
   tuning.dial_hook = [](const Endpoint&, Lane) { return std::string("link is down"); };
   Node a(io, tuning), b(io);
-  EXPECT_FALSE(call(a, b.self).reply);
-  EXPECT_EQ(log->count(status::LogLevel::debug, "node connection failed lane=control"), 1u);
-  EXPECT_EQ(log->count(status::LogLevel::debug, "link is down"), 1u);
+  const auto outcome = call(a, b.self);
+  EXPECT_FALSE(outcome.reply);
+  EXPECT_NE(outcome.failure.find("link is down"), std::string::npos) << outcome.failure;
+  EXPECT_EQ(log->count(status::LogLevel::debug, "link is down"), 0u);
 }
 
 TEST(Journal, ALivenessFailureIsADebugLine) {
@@ -1108,8 +1115,10 @@ TEST(Journal, StoppingSaysSoAtDebug) {
     Node a(io, tuning), b(io);
     ASSERT_TRUE(call(a, b.self).reply);
   }
-  for (const auto* line : {"shutdown: client stop begin", "shutdown: client stop complete connections=1", "shutdown: server stop begin",
-                           "shutdown: sessions reaping count=", "shutdown: sessions reaped", "shutdown: server stop complete"})
+  for (const auto* line :
+       {"shutdown: RpcClient::stop begin", "shutdown: RpcClient::stop complete connections=1", "shutdown: RpcServer::stop begin",
+        "shutdown: RPC accept thread joining", "shutdown: RPC accept thread joined", "shutdown: RPC sessions reaping count=", "shutdown: RPC sessions reaped",
+        "shutdown: RPC queued requests dropped count=", "shutdown: RPC workers joining", "shutdown: RPC workers joined", "shutdown: RpcServer::stop complete"})
     EXPECT_EQ(log->count(status::LogLevel::debug, line), 1u) << line;
 }
 
@@ -1403,6 +1412,269 @@ TEST(Client, ADialHookRefusesADial) {
   } else {
     EXPECT_TRUE(outcome.reply) << outcome.failure;
   }
+}
+
+// The transport's remaining lines, level and words (first cutover, section 5).
+TEST(Journal, LaneMaintenanceSaysWhyItCouldNotOpenALane) {
+  Io io;
+  auto log = std::make_shared<test::RecordingSink>();
+  ClientOptions tuning;
+  tuning.log = log;
+  tuning.heartbeat = 100ms;
+  tuning.dial_hook = [](const Endpoint&, Lane) { return std::string("link is down"); };
+  Node hub(io), site(io, tuning, incapable);
+  site.client->set_maintained_peers([&] { return std::vector<membership::NodeRecord>{hub.self}; });
+  const auto prefix = to_string(hub.self.id).substr(0, 12);
+  EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::debug, "lane maintenance peer=" + prefix + " lane=control: dial to ") >= 1; }));
+  EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::debug, "lane maintenance peer=" + prefix + " lane=data: dial to ") >= 1; }));
+}
+
+TEST(Journal, AReverseDialIsSaidAtBothEnds) {
+  Io io;
+  auto site_log = std::make_shared<test::RecordingSink>();
+  auto hub_log = std::make_shared<test::RecordingSink>();
+  ClientOptions site_tuning, hub_tuning;
+  site_tuning.log = site_log;
+  hub_tuning.log = hub_log;
+  Node site(io, site_tuning, incapable), hub(io, hub_tuning);
+  ASSERT_TRUE(call(site, hub.self).reply);
+  ASSERT_TRUE(eventually([&] { return hub.client->has_route(site.self.id, Lane::control); }));
+  ASSERT_TRUE(call(hub, site.self, put_object, FrameType::foreground, Bytes(5000, 3)).reply);
+  const auto site_id = to_string(site.self.id).substr(0, 12);
+  const auto hub_id = to_string(hub.self.id).substr(0, 12);
+  EXPECT_EQ(hub_log->count(status::LogLevel::debug, "dial request sent peer=" + site_id + " lane=data"), 1u);
+  EXPECT_TRUE(eventually([&] { return hub_log->count(status::LogLevel::debug, "dial request answered peer=" + site_id + " lane=data") == 1; }));
+  EXPECT_EQ(site_log->count(status::LogLevel::debug, "dial request received peer=" + hub_id), 1u);
+}
+
+TEST(Journal, AProbeAcceptedIsSaid) {
+  Io io;
+  auto log = std::make_shared<test::RecordingSink>();
+  ClientOptions tuning;
+  tuning.log = log;
+  Node a(io), b(io, tuning);
+  std::promise<std::string> done;
+  a.client->probe(b.endpoint(), b.self.id, io.context.get_executor(), [&](std::string error) { done.set_value(std::move(error)); });
+  ASSERT_EQ(done.get_future().get(), "");
+  EXPECT_TRUE(eventually([&] {
+    return log->count(status::LogLevel::debug, "node connection probe accepted peer=" + to_string(a.self.id).substr(0, 12) + " remote=127.0.0.1") == 1;
+  }));
+}
+
+// Macha's own words for a lost ping, with the deadline past and one outstanding:
+// net.cpp:2901.
+TEST(Journal, ALivenessFailureNamesTheLaneAndTheBudget) {
+  Io io;
+  auto log = std::make_shared<test::RecordingSink>();
+  ClientOptions tuning;
+  tuning.log = log;
+  tuning.heartbeat = 100ms;
+  tuning.dead_after = 600ms;
+  Node a(io, tuning), b(io);
+  ASSERT_TRUE(call(a, b.self).reply);
+  b.hang_pings = 1000;
+  const auto line =
+      "peer 127.0.0.1:" + std::to_string(b.self.port) + " lane=control liveness failure: health unavailable until dead_after: ping made no progress for 200 ms";
+  EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::debug, line) >= 1; })) << line;
+}
+
+// An error on a DATA probe ends it without a word: only CONTROL speaks for the
+// peer. net.cpp:2950.
+TEST(Health, AStalledDataPingIsRetriedAndAnErrorOnOneIsSilent) {
+  Io io;
+  auto log = std::make_shared<test::RecordingSink>();
+  ClientOptions tuning;
+  tuning.log = log;
+  tuning.heartbeat = 100ms;
+  tuning.dead_after = 600ms;
+  Node a(io, tuning), b(io);
+  ASSERT_TRUE(call(a, b.self, put_object, FrameType::foreground, Bytes(10, 1)).reply);
+  ASSERT_TRUE(a.client->has_route(b.self.id, Lane::data));
+  b.hang_pings = 1000;
+  EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::debug, " lane=data liveness failure: health unavailable until dead_after: ") >= 1; }));
+  EXPECT_EQ(log->count(status::LogLevel::debug, " lane=data liveness failure: RPC cancelled"), 0u);
+}
+
+// The words a stalled call's caller and the journal both get: net.cpp:2527.
+TEST(Journal, AStallsWordsAreMachasAndTheCallerGetsTheSame) {
+  Io io;
+  test::SteppedTime time;
+  auto log = std::make_shared<test::RecordingSink>();
+  ClientOptions tuning;
+  tuning.log = log;
+  tuning.time = &time;
+  tuning.heartbeat = 24h;
+  tuning.dead_after = 72h;
+  tuning.control_stall_notice = 1h;
+  tuning.control_no_progress = 2h;
+  Node a(io, tuning), b(io);
+  ASSERT_TRUE(call(a, b.self).reply);
+  std::thread stepper([&] {
+    b.gate.wait_for_entries(1);
+    time.advance(1h);
+    EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::debug, "RPC stalled") == 1; }));
+    time.advance(1h);
+  });
+  const auto stalled = call(a, b.self, slow);
+  stepper.join();
+  b.gate.open();
+  EXPECT_FALSE(stalled.reply);
+  const auto named = "(control) peer=" + to_string(b.self.id).substr(0, 12) + " message=slow age_ms=";
+  EXPECT_EQ(log->count(status::LogLevel::debug, "RPC stalled " + named), 1u);
+  EXPECT_EQ(log->count(status::LogLevel::debug, " no_progress_ms=3600000; deadline_ms=7200000"), 1u);
+  EXPECT_EQ(log->count(status::LogLevel::debug, "RPC made no progress for 7200000 ms " + named), 1u);
+  EXPECT_NE(stalled.failure.find("RPC made no progress for 7200000 ms " + named), std::string::npos) << stalled.failure;
+  EXPECT_NE(stalled.failure.find("; cancelled for retry"), std::string::npos) << stalled.failure;
+}
+
+// The whole shape of Macha's case: a slow CONTROL call held across a live DATA
+// transfer and past the liveness window ends neither, because pings go ahead
+// of both.
+TEST(Liveness, ASlowControlCallDoesNotAbortADataTransfer) {
+  Io io;
+  ClientOptions tuning;
+  tuning.heartbeat = 50ms;
+  tuning.dead_after = 300ms;
+  Node a(io, tuning), b(io);
+  ASSERT_TRUE(call(a, b.self).reply);
+  auto held = std::async(std::launch::async, [&] { return call(a, b.self, slow); });
+  ASSERT_TRUE(b.gate.wait_for_entries(1));
+  const auto transfer = call(a, b.self, put_object, FrameType::foreground, Bytes(4 * 1024 * 1024, 5));
+  EXPECT_TRUE(transfer.reply) << transfer.failure;
+  std::this_thread::sleep_for(600ms);
+  EXPECT_TRUE(a.client->has_route(b.self.id, Lane::control));
+  b.gate.open();
+  const auto answered = held.get();
+  EXPECT_TRUE(answered.reply) << answered.failure;
+}
+
+// The other lane's settings, and a type's own notice in place of its lane's.
+TEST(Journal, TheDataLanesNoticeBindsOnlyDataCalls) {
+  Io io;
+  test::SteppedTime time;
+  auto log = std::make_shared<test::RecordingSink>();
+  ClientOptions tuning;
+  tuning.log = log;
+  tuning.time = &time;
+  tuning.heartbeat = 24h;
+  tuning.dead_after = 72h;
+  tuning.data_stall_notice = 1h;
+  Node a(io, tuning), b(io);
+  ASSERT_TRUE(call(a, b.self).reply);
+  b.hold_data = true;
+  std::thread stepper([&] {
+    b.gate.wait_for_entries(1);
+    time.advance(1h);
+    EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::debug, "RPC stalled (foreground) peer=") >= 1; }));
+    b.gate.open();
+  });
+  EXPECT_TRUE(call(a, b.self, put_object, FrameType::foreground, Bytes(100, 1)).reply);
+  stepper.join();
+}
+
+TEST(Journal, ATypesOwnNoticeReplacesItsLanes) {
+  Io io;
+  test::SteppedTime time;
+  auto log = std::make_shared<test::RecordingSink>();
+  ClientOptions tuning;
+  tuning.log = log;
+  tuning.time = &time;
+  tuning.heartbeat = 24h;
+  tuning.dead_after = 72h;
+  Node a(io, tuning), b(io);
+  ASSERT_TRUE(call(a, b.self).reply);
+  std::thread stepper([&] {
+    b.gate.wait_for_entries(1);
+    time.advance(1h);
+    EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::debug, "RPC stalled (control) peer=") >= 1; }));
+    EXPECT_GE(log->count(status::LogLevel::debug, " message=noticed age_ms="), 1u);
+    b.gate.open();
+  });
+  EXPECT_TRUE(call(a, b.self, noticed).reply);
+  stepper.join();
+}
+
+// The options on the sockets the transport itself dialled and accepted, read
+// back from the kernel. Every connected TCP socket of this process that has
+// the server's port on either end.
+TEST(PeerSocket, TheTransportsOwnSocketsCarryTheOptions) {
+  Io io;
+  Node a(io), b(io);
+  ASSERT_TRUE(call(a, b.self).reply);
+  ASSERT_TRUE(call(a, b.self, put_object, FrameType::foreground, Bytes(10, 1)).reply);
+  int checked = 0;
+  for (int fd = 3; fd < 4096; ++fd) {
+    sockaddr_in local{}, remote{};
+    socklen_t size = sizeof(local);
+    if (::getsockname(fd, reinterpret_cast<sockaddr*>(&local), &size) != 0 || local.sin_family != AF_INET) continue;
+    size = sizeof(remote);
+    if (::getpeername(fd, reinterpret_cast<sockaddr*>(&remote), &size) != 0) continue;
+    if (ntohs(local.sin_port) != b.self.port && ntohs(remote.sin_port) != b.self.port) continue;
+    int on = 0;
+    socklen_t length = sizeof(on);
+    ASSERT_EQ(::getsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &on, &length), 0);
+    EXPECT_NE(on, 0) << fd;
+    on = 0;
+    length = sizeof(on);
+    ASSERT_EQ(::getsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &on, &length), 0);
+    EXPECT_NE(on, 0) << fd;
+#ifdef TCP_CONGESTION
+    char name[16]{};
+    length = sizeof(name);
+    ASSERT_EQ(::getsockopt(fd, IPPROTO_TCP, TCP_CONGESTION, name, &length), 0);
+    // BBR where the kernel has it: a kernel without it has a warning instead.
+    if (std::string(name) != "bbr") EXPECT_NE(std::string(name), "");
+#endif
+    ++checked;
+  }
+  // Both lanes, both ends.
+  EXPECT_GE(checked, 4);
+}
+
+// CONTROL's route goes while a ping is out: the probe's next attempt dials it
+// again, with no call asking for it. net.cpp:2975.
+TEST(Health, AControlProbeWhoseRouteWentDialsItAgain) {
+  Io io;
+  ClientOptions tuning;
+  tuning.heartbeat = 100ms;
+  tuning.dead_after = 5s;
+  Node a(io, tuning), b(io);
+  ASSERT_TRUE(call(a, b.self).reply);
+  const auto dials = a.client->stats().dials;
+  b.hang_pings = 1;
+  ASSERT_TRUE(b.gate.wait_for_entries(1));
+  a.client->close_route(b.self.id, Lane::control, "severed by the test");
+  b.gate.open();
+  EXPECT_TRUE(eventually([&] { return a.client->has_route(b.self.id, Lane::control); }));
+  EXPECT_GT(a.client->stats().dials, dials);
+}
+
+// A relayed session's ping waits behind what is on its circuit, so a slow
+// circuit under load delays it past its budget. While the far end's bytes keep
+// moving the session is alive; once they stop, the budgets run as ever.
+TEST(Health, APathThatKeepsMovingIsAliveThoughItsPingsAreLate) {
+  Io io;
+  auto log = std::make_shared<test::RecordingSink>();
+  ClientOptions tuning;
+  tuning.log = log;
+  tuning.heartbeat = 100ms;
+  tuning.dead_after = 300ms;
+  Node a(io, tuning), b(io);
+  ASSERT_TRUE(call(a, b.self).reply);
+  b.hang_pings = 1000;
+  std::atomic<bool> moving{true};
+  std::thread path([&] {
+    while (moving) {
+      a.client->note_path_progress(b.self.id, Lane::control);
+      std::this_thread::sleep_for(10ms);
+    }
+  });
+  std::this_thread::sleep_for(1500ms);
+  EXPECT_TRUE(a.client->has_route(b.self.id, Lane::control));
+  EXPECT_EQ(log->count(status::LogLevel::debug, " liveness failure: "), 0u);
+  moving = false;
+  path.join();
+  EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::debug, " liveness failure: ") >= 1; }));
 }
 
 }  // namespace

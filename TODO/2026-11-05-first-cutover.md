@@ -1121,70 +1121,69 @@ Every log statement in the moving code, from a scan of `cluster/net.cpp`, `membe
 that move with them (`supervised`, `observation`, `diagnostics`, `contract/work`,
 `config_base`). `membership.cpp` has none: the roster's lines are in `cluster.cpp`.
 The text is Macha's expression with `std::string` and `substr` removed. "Macha" means
-the facade writes it. Totals: 83 lines; 11 written, 2 merged, 11 reworded, 3 no
-longer apply, 12 Macha's, **44 missing**.
+the facade writes it. Totals, re-measured 2026-11-06 from the source and the tests: 83 lines; 71 Dannan writes in Macha's words, 12 Macha's, none missing. Each of the 71 has a named case asserting level and words, or is reached by the goldens.
 
 | Macha | Level | Text | Dannan writes it? | Where |
 |---|---|---|---|---|
-| `cluster/net.cpp:87` | warn | `("peer sockets keep the system congestion control: ") + peer_congestion_control + " unavailable (" + strerror(errno) + ")"` | yes | `net/server.cpp:46` |
-| `cluster/net.cpp:1632` | debug | `("peer writer: ") + error.what()` | merged | into `peer channel:`, `net/session.cpp:345` |
-| `cluster/net.cpp:1711` | debug | `("peer channel: ") + error.what()` | yes | `net/session.cpp:345` |
-| `cluster/net.cpp:2368` | info | `"node connection outbound peer=" + to_string(fresh->peer().id) + " lane=" + (transport_lane_name(lane)) + " endpoint=" + endpoint_key(endpoint)` | yes | `net/client.cpp:746` |
-| `cluster/net.cpp:2532` | debug | `text` | reworded | `net/client.cpp:102`: peer is an id prefix, frame `read_ahead` |
-| `cluster/net.cpp:2536` | debug | `("RPC stalled (") + frame_type_name(frame_type) + ") peer=" + (peer) + " message=" + message_type_name(type) + " age_ms=" + (elapsed_ms(call_started)) + " no_progress_...` | reworded | `net/client.cpp:96`: the same differences |
-| `cluster/net.cpp:2607` | debug | `"peer " + endpoint_key(endpoint) + " liveness failure: " + reason` | reworded | `net/client.cpp:1274`: `host:port`, not `[host]:port` |
-| `cluster/net.cpp:2693` | debug | `"dial request sent peer=" + to_string(peer) + " lane=" + transport_lane_name(lane)` | yes | `net/client.cpp:365` |
-| `cluster/net.cpp:2703` | debug | `"dial request answered peer=" + to_string(peer) + " lane=" + transport_lane_name(lane)` | yes | `net/client.cpp:797` |
-| `cluster/net.cpp:2774` | debug | `"lane maintenance peer=" + to_string(peer.id) + " lane=" + transport_lane_name(lane) + ": " + error.what()` | reworded | `net/client.cpp:715`: `node connection failed lane=... endpoint=...: why` |
-| `cluster/net.cpp:2900` | debug | `"peer " + endpoint_key(probe.endpoint) + " lane=" + transport_lane_name(probe.lane) + " liveness failure: " + reason` | reworded | `net/client.cpp:1261` |
-| `cluster/net.cpp:3173` | debug | `"shutdown: RpcClient::stop begin"` | reworded | `net/client.cpp:1328`: `shutdown: client stop begin` |
-| `cluster/net.cpp:3206` | debug | `"shutdown: RpcClient::stop complete connections=" + (connections.size())` | reworded | `net/client.cpp:1340` |
-| `cluster/net.cpp:3550` | debug | `("accepted peer writer: ") + error.what()` | merged | into `peer channel:`, `net/session.cpp:345` |
-| `cluster/net.cpp:4073` | debug | `"shutdown: RpcServer::stop begin"` | reworded | `net/server.cpp:239` |
-| `cluster/net.cpp:4087` | debug | `"shutdown: RPC accept thread joining"` | n/a | no accept thread on Asio |
-| `cluster/net.cpp:4089` | debug | `"shutdown: RPC accept thread joined"` | n/a | no accept thread on Asio |
-| `cluster/net.cpp:4102` | debug | `"shutdown: RPC sessions reaping count=" + (sessions.size())` | reworded | `net/server.cpp:240` |
-| `cluster/net.cpp:4104` | debug | `"shutdown: RPC sessions reaped"` | reworded | `net/server.cpp:247` |
-| `cluster/net.cpp:4137` | debug | `"shutdown: RPC queued requests dropped count=" + (dropped.size())` | **missing** | the scheduler drops silently |
-| `cluster/net.cpp:4148` | debug | `"shutdown: RPC workers joining"` | **missing** |  |
-| `cluster/net.cpp:4153` | debug | `"shutdown: RPC workers joined"` | **missing** |  |
-| `cluster/net.cpp:4156` | debug | `"shutdown: RpcServer::stop complete"` | reworded | `net/server.cpp:249` |
-| `cluster/net.cpp:4241` | debug | `"node connection probe accepted peer=" + to_string(session->peer.id) + " remote=" + session->remote_host` | yes | `net/server.cpp:180` |
-| `cluster/net.cpp:4298` | info | `"node connection inbound peer=" + to_string(session->peer.id) + " lane=" + (transport_lane_name(session->channel->lane())) + " remote=" + session->remote_host + " adve...` | yes | `net/server.cpp:213` |
-| `cluster/net.cpp:4386` | debug | `("RPC session: ") + error.what()` | yes | `net/server.cpp:176` |
-| `cluster/net.cpp:4433` | debug | `("RPC handler: ") + error.what()` | yes | `net/server.cpp:89` |
-| `cluster/telemetry.cpp:541` | warn | `"persisted telemetry ignored: " + (error.what())` | **missing** | silent catch, `status/telemetry.cpp:322` |
-| `cluster/public_connectivity.cpp:439` | info | `"UPnP port mapping active gateway_external=" + status.upnp.external_address + ":" + (status.upnp.external_port) + " internal=" + status.upnp.lan_address + ":" + (confi...` | **missing** | `PublicConnectivity` has no logger |
-| `cluster/public_connectivity.cpp:444` | warn | `"UPnP gateway WAN address is private address=" + status.upnp.external_address + " probable_cgnat=true"` | **missing** | `PublicConnectivity` has no logger |
-| `cluster/public_connectivity.cpp:447` | warn | `status.upnp.error` | **missing** | `PublicConnectivity` has no logger |
-| `cluster/public_connectivity.cpp:452` | info | `"external IP discovered source=aws address=" + status.external_ip.address` | **missing** | `PublicConnectivity` has no logger |
-| `cluster/public_connectivity.cpp:454` | warn | `status.external_ip.error` | **missing** | `PublicConnectivity` has no logger |
-| `cluster/public_connectivity.cpp:469` | info | `"connectivity self probe reachable endpoint=" + status.advertised.host + ":" + (status.advertised.port) + " external_verification=unknown"` | **missing** | `PublicConnectivity` has no logger |
-| `cluster/public_connectivity.cpp:474` | warn | `"connectivity self probe failed endpoint=" + status.advertised.host + ":" + (status.advertised.port) + " external_reachability=unknown reason=\"" + status.self_probe_e...` | **missing** | `PublicConnectivity` has no logger |
-| `cluster/public_connectivity.cpp:495` | debug | `"UPnP owned mapping no longer matches; leaving external_port=" + ext` | **missing** | `PublicConnectivity` has no logger |
-| `cluster/public_connectivity.cpp:503` | debug | `"UPnP port mapping removed external_port=" + ext` | **missing** | `PublicConnectivity` has no logger |
-| `cluster/public_connectivity.cpp:505` | debug | `"UPnP port mapping removal failed code=" + (result)` | **missing** | `PublicConnectivity` has no logger |
-| `subsystem/subsystem_supervisor.cpp:99` | warn | `"subsystem plugin discovery failed dir=" + plugin_dir_.string() + " error=" + discovery_error.message()` | **missing** | `supervise::Supervisor` has no logger |
-| `subsystem/subsystem_supervisor.cpp:112` | error | `"subsystem plugin '" + entry->name + "' failed to load: " + (::dlerror())` | **missing** | `supervise::Supervisor` has no logger |
-| `subsystem/subsystem_supervisor.cpp:129` | debug | `"subsystem plugin candidate '" + entry->name + "' has no entry symbol '" + kSubsystemEntrySymbol + "', skipping as not a macha plugin: " + (symbol_error ? symbol_error...` | **missing** | `supervise::Supervisor` has no logger |
-| `subsystem/subsystem_supervisor.cpp:140` | error | `"subsystem plugin '" + entry->name + "' entry function returned null"` | **missing** | `supervise::Supervisor` has no logger |
-| `subsystem/subsystem_supervisor.cpp:149` | error | `"subsystem plugin '" + entry->name + "' build identity mismatch: plugin=" + (entry->plugin->build_identity) + " core=" + (kBuildIdentity) + "; refusing to load (partia...` | **missing** | `supervise::Supervisor` has no logger |
-| `subsystem/subsystem_supervisor.cpp:216` | info | `"subsystem plugin '" + entry.name + "' loaded but its capability is not enabled on this node path=" + entry.origin()` | **missing** | `supervise::Supervisor` has no logger |
-| `subsystem/subsystem_supervisor.cpp:225` | info | `"subsystem plugin '" + entry.name + "' loaded and running path=" + entry.origin()` | **missing** | `supervise::Supervisor` has no logger |
-| `subsystem/subsystem_supervisor.cpp:251` | warn | `"subsystem '" + entry.name + "' stop() threw: " + e.what()` | **missing** | `supervise::Supervisor` has no logger |
-| `subsystem/subsystem_supervisor.cpp:253` | warn | `"subsystem '" + entry.name + "' stop() threw an unknown exception"` | **missing** | `supervise::Supervisor` has no logger |
-| `subsystem/subsystem_supervisor.cpp:263` | error | `"subsystem '" + entry.name + "' faulted while running: " + fault` | **missing** | `supervise::Supervisor` has no logger |
-| `subsystem/subsystem_supervisor.cpp:267` | error | `"subsystem '" + entry.name + "' failed to start: " + fault` | **missing** | `supervise::Supervisor` has no logger |
-| `subsystem/subsystem_supervisor.cpp:280` | error | `"subsystem '" + entry.name + "' disabled after " + (retry.failures_in_window()) + " failed attempts; needs an operator"` | **missing** | `supervise::Supervisor` has no logger |
-| `cluster/cluster.cpp:105` | warn | `"inbound resolution ignored: " + (error.what())` | **missing** | silent catch, `reach/inbound.cpp:52` |
+| `cluster/net.cpp:87` | warn | `("peer sockets keep the system congestion control: ") + peer_congestion_control + " unavailable (" + strerror(errno) + ")"` | yes | `net/server.cpp:27` |
+| `cluster/net.cpp:1632` | debug | `("peer writer: ") + error.what()` | yes | `net/session.cpp:347` |
+| `cluster/net.cpp:1711` | debug | `("peer channel: ") + error.what()` | yes | `net/session.cpp:347` |
+| `cluster/net.cpp:2368` | info | `"node connection outbound peer=" + to_string(fresh->peer().id) + " lane=" + (transport_lane_name(lane)) + " endpoint=" + endpoint_key(endpoint)` | yes | `net/client.cpp:811` |
+| `cluster/net.cpp:2532` | debug | `text` | yes | `net/client.cpp`: the stall text |
+| `cluster/net.cpp:2536` | debug | `("RPC stalled (") + frame_type_name(frame_type) + ") peer=" + (peer) + " message=" + message_type_name(type) + " age_ms=" + (elapsed_ms(call_started)) + " no_progress_...` | yes | `net/client.cpp:94` |
+| `cluster/net.cpp:2607` | debug | `"peer " + endpoint_key(endpoint) + " liveness failure: " + reason` | yes | `net/client.cpp:1331` |
+| `cluster/net.cpp:2693` | debug | `"dial request sent peer=" + to_string(peer) + " lane=" + transport_lane_name(lane)` | yes | `net/client.cpp:402` |
+| `cluster/net.cpp:2703` | debug | `"dial request answered peer=" + to_string(peer) + " lane=" + transport_lane_name(lane)` | yes | `net/client.cpp:862` |
+| `cluster/net.cpp:2774` | debug | `"lane maintenance peer=" + to_string(peer.id) + " lane=" + transport_lane_name(lane) + ": " + error.what()` | yes | `net/client.cpp:572` |
+| `cluster/net.cpp:2900` | debug | `"peer " + endpoint_key(probe.endpoint) + " lane=" + transport_lane_name(probe.lane) + " liveness failure: " + reason` | yes | `net/client.cpp:1331` |
+| `cluster/net.cpp:3173` | debug | `"shutdown: RpcClient::stop begin"` | yes | `net/client.cpp:1437` |
+| `cluster/net.cpp:3206` | debug | `"shutdown: RpcClient::stop complete connections=" + (connections.size())` | yes | `net/client.cpp:1449` |
+| `cluster/net.cpp:3550` | debug | `("accepted peer writer: ") + error.what()` | yes | `net/session.cpp:347` |
+| `cluster/net.cpp:4073` | debug | `"shutdown: RpcServer::stop begin"` | yes | `net/server.cpp:237` |
+| `cluster/net.cpp:4087` | debug | `"shutdown: RPC accept thread joining"` | yes | `net/server.cpp:238` |
+| `cluster/net.cpp:4089` | debug | `"shutdown: RPC accept thread joined"` | yes | `net/server.cpp:247` |
+| `cluster/net.cpp:4102` | debug | `"shutdown: RPC sessions reaping count=" + (sessions.size())` | yes | `net/server.cpp:248` |
+| `cluster/net.cpp:4104` | debug | `"shutdown: RPC sessions reaped"` | yes | `net/server.cpp:255` |
+| `cluster/net.cpp:4137` | debug | `"shutdown: RPC queued requests dropped count=" + (dropped.size())` | yes | `net/scheduler.cpp:343` |
+| `cluster/net.cpp:4148` | debug | `"shutdown: RPC workers joining"` | yes | `net/scheduler.cpp:344` |
+| `cluster/net.cpp:4153` | debug | `"shutdown: RPC workers joined"` | yes | `net/scheduler.cpp:346` |
+| `cluster/net.cpp:4156` | debug | `"shutdown: RpcServer::stop complete"` | yes | `net/server.cpp:257` |
+| `cluster/net.cpp:4241` | debug | `"node connection probe accepted peer=" + to_string(session->peer.id) + " remote=" + session->remote_host` | yes | `net/server.cpp:184` |
+| `cluster/net.cpp:4298` | info | `"node connection inbound peer=" + to_string(session->peer.id) + " lane=" + (transport_lane_name(session->channel->lane())) + " remote=" + session->remote_host + " adve...` | yes | `net/server.cpp:217` |
+| `cluster/net.cpp:4386` | debug | `("RPC session: ") + error.what()` | yes | `net/session.cpp:347` |
+| `cluster/net.cpp:4433` | debug | `("RPC handler: ") + error.what()` | yes | `net/server.cpp:93` |
+| `cluster/telemetry.cpp:541` | warn | `"persisted telemetry ignored: " + (error.what())` | yes | `node.cpp:419` |
+| `cluster/public_connectivity.cpp:439` | info | `"UPnP port mapping active gateway_external=" + status.upnp.external_address + ":" + (status.upnp.external_port) + " internal=" + status.upnp.lan_address + ":" + (confi...` | yes | `reach/connectivity.cpp:232` |
+| `cluster/public_connectivity.cpp:444` | warn | `"UPnP gateway WAN address is private address=" + status.upnp.external_address + " probable_cgnat=true"` | yes | `reach/connectivity.cpp:234` |
+| `cluster/public_connectivity.cpp:447` | warn | `status.upnp.error` | yes | `reach/connectivity.cpp:236` |
+| `cluster/public_connectivity.cpp:452` | info | `"external IP discovered source=aws address=" + status.external_ip.address` | yes | `reach/connectivity.cpp:241` |
+| `cluster/public_connectivity.cpp:454` | warn | `status.external_ip.error` | yes | `reach/connectivity.cpp:243` |
+| `cluster/public_connectivity.cpp:469` | info | `"connectivity self probe reachable endpoint=" + status.advertised.host + ":" + (status.advertised.port) + " external_verification=unknown"` | yes | `reach/connectivity.cpp:258` |
+| `cluster/public_connectivity.cpp:474` | warn | `"connectivity self probe failed endpoint=" + status.advertised.host + ":" + (status.advertised.port) + " external_reachability=unknown reason=\"" + status.self_probe_e...` | yes | `reach/connectivity.cpp:263` |
+| `cluster/public_connectivity.cpp:495` | debug | `"UPnP owned mapping no longer matches; leaving external_port=" + ext` | yes | `reach/connectivity.cpp:286` |
+| `cluster/public_connectivity.cpp:503` | debug | `"UPnP port mapping removed external_port=" + ext` | yes | `reach/connectivity.cpp:282` |
+| `cluster/public_connectivity.cpp:505` | debug | `"UPnP port mapping removal failed code=" + (result)` | yes | `reach/connectivity.cpp:284` |
+| `subsystem/subsystem_supervisor.cpp:99` | warn | `"subsystem plugin discovery failed dir=" + plugin_dir_.string() + " error=" + discovery_error.message()` | yes | `supervise/supervisor.cpp:88` |
+| `subsystem/subsystem_supervisor.cpp:112` | error | `"subsystem plugin '" + entry->name + "' failed to load: " + (::dlerror())` | yes | `supervise/supervisor.cpp:103` |
+| `subsystem/subsystem_supervisor.cpp:129` | debug | `"subsystem plugin candidate '" + entry->name + "' has no entry symbol '" + kSubsystemEntrySymbol + "', skipping as not a macha plugin: " + (symbol_error ? symbol_error...` | yes | `supervise/supervisor.cpp`: `system_name` is "macha" |
+| `subsystem/subsystem_supervisor.cpp:140` | error | `"subsystem plugin '" + entry->name + "' entry function returned null"` | yes | `supervise/supervisor.cpp:121` |
+| `subsystem/subsystem_supervisor.cpp:149` | error | `"subsystem plugin '" + entry->name + "' build identity mismatch: plugin=" + (entry->plugin->build_identity) + " core=" + (kBuildIdentity) + "; refusing to load (partia...` | yes | `supervise/supervisor.cpp:125` |
+| `subsystem/subsystem_supervisor.cpp:216` | info | `"subsystem plugin '" + entry.name + "' loaded but its capability is not enabled on this node path=" + entry.origin()` | yes | `supervise/supervisor.cpp:170` |
+| `subsystem/subsystem_supervisor.cpp:225` | info | `"subsystem plugin '" + entry.name + "' loaded and running path=" + entry.origin()` | yes | `supervise/supervisor.cpp:176` |
+| `subsystem/subsystem_supervisor.cpp:251` | warn | `"subsystem '" + entry.name + "' stop() threw: " + e.what()` | yes | `supervise/supervisor.cpp:200` |
+| `subsystem/subsystem_supervisor.cpp:253` | warn | `"subsystem '" + entry.name + "' stop() threw an unknown exception"` | yes | `supervise/supervisor.cpp:202` |
+| `subsystem/subsystem_supervisor.cpp:263` | error | `"subsystem '" + entry.name + "' faulted while running: " + fault` | yes | `supervise/supervisor.cpp:208` |
+| `subsystem/subsystem_supervisor.cpp:267` | error | `"subsystem '" + entry.name + "' failed to start: " + fault` | yes | `supervise/supervisor.cpp:210` |
+| `subsystem/subsystem_supervisor.cpp:280` | error | `"subsystem '" + entry.name + "' disabled after " + (retry.failures_in_window()) + " failed attempts; needs an operator"` | yes | `supervise/supervisor.cpp:220` |
+| `cluster/cluster.cpp:105` | warn | `"inbound resolution ignored: " + (error.what())` | yes | `node.cpp:418` |
 | `cluster/cluster.cpp:369` | warn | `"configuration: " + warning` | Macha | the facade keeps it |
 | `cluster/cluster.cpp:372` | info | `("node inbound_capable=") + (resolution.inbound_capable ? "true" : "false") + " (" + (tristate_name(resolution.inbound_capable_mode)) + ", " + resolution.source + ") h...` | Macha | the facade, from `Diagnostics::inbound` |
 | `cluster/cluster.cpp:388` | info | `"node " + to_string(identity_.id) + " listening on " + (server_.bound_port()) + " domain=" + members_.self().failure_domain + " state=recovering"` | Macha | the facade, from `Node::port()` |
-| `cluster/cluster.cpp:469` | warn | `"inbound resolution not persisted: " + (error.what())` | **missing** | worse: the throw ends the loop, F12 |
-| `cluster/cluster.cpp:481` | info | `("node inbound resolution changed inbound_capable=") + (inbound_capable ? "true" : "false") + " hosts_extents=" + (hosts ? "true" : "false") + " previous_inbound_capab...` | **missing** | `node.cpp:973` is silent, and nothing tells the facade |
-| `cluster/cluster.cpp:550` | debug | `"dial-back probe not answered peer=" + to_string(peer->id) + " error=" + error` | **missing** | `node.cpp:1051` |
-| `cluster/cluster.cpp:567` | debug | `"dial-back probe peer=" + to_string(peer->id) + " endpoint=" + self.host + ":" + (self.port) + " reachable=" + (reachable ? "true" : "false") + (error.empty() ? "" : "...` | **missing** | `node.cpp:1054` |
-| `cluster/cluster.cpp:595` | debug | `"shutdown: node maintenance request_stop"` | n/a | no `request_stop`, F9 |
+| `cluster/cluster.cpp:469` | warn | `"inbound resolution not persisted: " + (error.what())` | yes | `node.cpp:1121` |
+| `cluster/cluster.cpp:481` | info | `("node inbound resolution changed inbound_capable=") + (inbound_capable ? "true" : "false") + " hosts_extents=" + (hosts ? "true" : "false") + " previous_inbound_capab...` | yes | `node.cpp:1030` |
+| `cluster/cluster.cpp:550` | debug | `"dial-back probe not answered peer=" + to_string(peer->id) + " error=" + error` | yes | `node.cpp:1110` |
+| `cluster/cluster.cpp:567` | debug | `"dial-back probe peer=" + to_string(peer->id) + " endpoint=" + self.host + ":" + (self.port) + " reachable=" + (reachable ? "true" : "false") + (error.empty() ? "" : "...` | yes | `node.cpp:1120` |
+| `cluster/cluster.cpp:595` | debug | `"shutdown: node maintenance request_stop"` | yes | `node.cpp:608` |
 | `cluster/cluster.cpp:604` | debug | `"shutdown: cancelling outbound RPC calls"` | Macha | the facade can keep it |
 | `cluster/cluster.cpp:610` | debug | `"shutdown: NodeRuntime::stop already stopped"` | Macha | the facade can keep it |
 | `cluster/cluster.cpp:613` | debug | `"shutdown: NodeRuntime::stop begin"` | Macha | the facade can keep it |
@@ -1193,38 +1192,26 @@ longer apply, 12 Macha's, **44 missing**.
 | `cluster/cluster.cpp:620` | debug | `"shutdown: RpcClient::stop calling"` | Macha | the facade can keep it, as one step |
 | `cluster/cluster.cpp:622` | debug | `"shutdown: RpcClient::stop returned"` | Macha | the facade can keep it, as one step |
 | `cluster/cluster.cpp:629` | debug | `"shutdown: NodeRuntime::stop complete"` | Macha | the facade can keep it |
-| `cluster/cluster.cpp:763` | debug | `"dial request received peer=" + to_string(peer.id) + " lane=" + transport_lane_name(lane)` | **missing** | `net/client.cpp:468` counts it only |
-| `cluster/cluster.cpp:791` | debug | `"dial-back probe for peer=" + to_string(peer.id) + " endpoint=" + target.host + ":" + (target.port) + " reachable=" + (error.empty() ? "true" : "false") + (error.empty...` | **missing** | `reach/dial_back.cpp:58` |
-| `cluster/cluster.cpp:907` | info | `"node advertised endpoint changed from=" + before.host + ":" + (before.port) + " to=" + status.advertised.host + ":" + (status.advertised.port) + " source=" + status.a...` | **missing** | `node.cpp:627` |
-| `cluster/cluster.cpp:991` | debug | `"telemetry refresh skipped: " + (error.what())` | **missing** | silent catch, `node.cpp:965` |
-| `cluster/cluster.cpp:1008` | info | `"node identity association reset scope=" + identity_reset_key(reset.host, reset.port) + " stale_node_id=" + (reset.stale_node_id == NodeId{} ? ("<any>") : to_string(r...` | **missing** | `node.cpp:1062` |
-| `cluster/cluster.cpp:1031` | debug | `"identity reset propagation to " + peer.host + ": " + error.what()` | yes | `node.cpp:1106` |
-| `cluster/cluster.cpp:1086` | info | `"membership: forgot " + (forgotten) + " node(s) not heard of for the absence horizon"` | **missing** | `node.cpp:900` |
-| `cluster/cluster.cpp:1119` | debug | `"bootstrap: " + (error.what())` | **missing** | silent catch, `node.cpp:921` |
-| `cluster/cluster.cpp:1133` | debug | `"peer " + node.host + ": " + error.what()` | **missing** | silent catch, `node.cpp:931` |
-| `supervised.cpp:89` | error | `"thread '" + (name) + "' faulted (" + fault.code + "): " + fault.message + "; " + (outcome)` | **missing** | `supervise/supervised.cpp:50` records it, writes nothing; no logger |
-| `observation.cpp:289` | debug | `"observation: cannot write " + path_.string()` | **missing** | no logger in `status/observation.cpp` |
-| `observation.cpp:343` | debug | `"observation: gauge sampling failed: " + (error.what())` | **missing** | no logger in `status/observation.cpp` |
-| `diagnostics.cpp:131` | debug | `thread_cpu_message("DIAG high thread CPU", name_, wall_ms, cpu_ms, pct, iterations_)` | **missing** | no `ThreadCpuReporter` in Dannan |
-| `diagnostics.cpp:137` | debug | `thread_cpu_message("DIAG thread CPU recovered", name_, wall_ms, cpu_ms, pct, iterations_)` | **missing** | no `ThreadCpuReporter` in Dannan |
-| `contract/work.cpp:55` | warn | `message` | yes | `sched/work.cpp:60` |
+| `cluster/cluster.cpp:763` | debug | `"dial request received peer=" + to_string(peer.id) + " lane=" + transport_lane_name(lane)` | yes | `net/client.cpp:526` |
+| `cluster/cluster.cpp:791` | debug | `"dial-back probe for peer=" + to_string(peer.id) + " endpoint=" + target.host + ":" + (target.port) + " reachable=" + (error.empty() ? "true" : "false") + (error.empty...` | yes | `reach/dial_back.cpp:59` |
+| `cluster/cluster.cpp:907` | info | `"node advertised endpoint changed from=" + before.host + ":" + (before.port) + " to=" + status.advertised.host + ":" + (status.advertised.port) + " source=" + status.a...` | yes | `node.cpp:659` |
+| `cluster/cluster.cpp:991` | debug | `"telemetry refresh skipped: " + (error.what())` | yes | `node.cpp:1016` |
+| `cluster/cluster.cpp:1008` | info | `"node identity association reset scope=" + identity_reset_key(reset.host, reset.port) + " stale_node_id=" + (reset.stale_node_id == NodeId{} ? ("<any>") : to_string(r...` | yes | `node.cpp:1136` |
+| `cluster/cluster.cpp:1031` | debug | `"identity reset propagation to " + peer.host + ": " + error.what()` | yes | `node.cpp:1180` |
+| `cluster/cluster.cpp:1086` | info | `"membership: forgot " + (forgotten) + " node(s) not heard of for the absence horizon"` | yes | `node.cpp:936` |
+| `cluster/cluster.cpp:1119` | debug | `"bootstrap: " + (error.what())` | yes | `node.cpp:960` |
+| `cluster/cluster.cpp:1133` | debug | `"peer " + node.host + ": " + error.what()` | yes | `node.cpp:207` |
+| `supervised.cpp:89` | error | `"thread '" + (name) + "' faulted (" + fault.code + "): " + fault.message + "; " + (outcome)` | yes | `supervise/supervised.cpp:68` |
+| `observation.cpp:289` | debug | `"observation: cannot write " + path_.string()` | yes | `status/observation.cpp:303` |
+| `observation.cpp:343` | debug | `"observation: gauge sampling failed: " + (error.what())` | yes | `status/observation.cpp:355` |
+| `diagnostics.cpp:131` | debug | `thread_cpu_message("DIAG high thread CPU", name_, wall_ms, cpu_ms, pct, iterations_)` | yes | `status/thread_cpu.cpp:63` |
+| `diagnostics.cpp:137` | debug | `thread_cpu_message("DIAG thread CPU recovered", name_, wall_ms, cpu_ms, pct, iterations_)` | yes | `status/thread_cpu.cpp:68` |
+| `contract/work.cpp:55` | warn | `message` | yes | `sched/work.cpp` |
 | `config_base.cpp:52` | warn | `"MEMORY OVER LIMIT: the configured parts total " + mib(total) + ", over runtime.memory_bytes " + mib(limit) + "; each shrinks by the same fraction: " + said + " (in-fl...` | Macha | keep Macha's validate; `node.cpp:408` says `foreground` otherwise |
 
-The missing lines, by what an operator loses:
+How this is measured: each row's literal fragments, taken from Macha's statement at the baseline, are looked for in Dannan's source and its tests. Two differences a scan cannot see were found by reading and fixed: `frame_type_name` said `read_ahead` where Macha says `read-ahead` (it also feeds Status, `api/status_api.cpp:989`), and a health probe's lines and retries (`net.cpp:2885-2957`).
 
-- A thread's fault (`supervised.cpp:89`, error) and all twelve subsystem lines,
-  among them `disabled after N failed attempts; needs an operator`.
-- All nine connectivity lines: mapping active, CGNAT warning, self-probe failure.
-- Inbound changes (`cluster.cpp:481`) and the endpoint change (`:907`), both info.
-- `node identity association reset` (`:1008`), info, and `membership: forgot`
-  (`:1086`), info.
-- The bootstrap and peer exchange failures (`:1119`, `:1133`), the first thing read
-  when two nodes will not meet. Parity item 2 lists the transport's dial failures and
-  not these.
-- `DIAG high thread CPU`, which the diagnostics memory relies on.
-
-F13 says how to close them. The rewording is within parity's scope, but a watch
-that greps `RPC stalled (read-ahead)` or a `[host]:port` will miss.
+Dynamic lines (`status.upnp.error`, `status.external_ip.error`, the guard's `message`, the stall's `text`) are asserted against the same text the caller gets.
 
 ## 6. Hosted telemetry layout
 

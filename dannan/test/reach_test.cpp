@@ -164,22 +164,27 @@ struct FakeGateway : Gateway {
   std::optional<Mapping> existing;
   bool add_ok = true;
   int deletes = 0;
+  int delete_code = 0;
+  bool private_wan = false;
   std::optional<Session> discover(std::chrono::milliseconds, std::string& error) override {
     if (!found) {
       error = "no IGD";
       return std::nullopt;
     }
-    return Session{usable, lan, wan, 1};
+    return Session{usable, lan, wan, 1, private_wan};
   }
-  std::optional<Mapping> mapping(uint16_t) override { return existing; }
+  // The gateway says it made the mapping and then does not show it.
+  bool forgets = false;
+  std::optional<Mapping> mapping(uint16_t) override { return forgets ? std::nullopt : existing; }
   std::string add(uint16_t, uint16_t internal, const std::string& client, const std::string&, uint32_t) override {
     if (!add_ok) return "refused";
     existing = Mapping{client, internal};
     return {};
   }
-  void remove(uint16_t) override {
+  int remove(uint16_t) override {
     ++deletes;
-    existing.reset();
+    if (delete_code == 0) existing.reset();
+    return delete_code;
   }
 };
 
@@ -335,6 +340,88 @@ TEST(ImpossibleCluster, IsRefusedWithAReason) {
   EXPECT_NO_THROW(refuse_impossible_cluster(Inbound::no, bootstrap, {}, id(1)));
   EXPECT_NO_THROW(refuse_impossible_cluster(Inbound::no, bootstrap, {record(2, "10.0.0.2", 7437, true)}, id(1)));
   EXPECT_THROW(refuse_impossible_cluster(Inbound::no, bootstrap, {record(2, "10.0.0.2", 7437, false)}, id(1)), std::runtime_error);
+}
+
+// The rest of the connectivity lines, level and words (first cutover, section 5).
+TEST(PublicConnectivity, APrivateWanAddressIsWarnedOf) {
+  auto log = std::make_shared<test::RecordingSink>();
+  auto gateway = std::make_shared<FakeGateway>();
+  gateway->wan = "100.64.0.5";
+  gateway->private_wan = true;
+  PublicConnectivity connectivity(upnp_on(), id(1), {"10.0.0.1", 7437}, gateway, nullptr, nullptr, &contract::system_wall_clock(), log);
+  (void)connectivity.refresh(false);
+  EXPECT_EQ(log->count(status::LogLevel::warn, "UPnP gateway WAN address is private address=100.64.0.5 probable_cgnat=true"), 1u);
+}
+
+TEST(PublicConnectivity, AMappingThatFailedIsWarnedOfInItsOwnWords) {
+  auto log = std::make_shared<test::RecordingSink>();
+  auto gateway = std::make_shared<FakeGateway>();
+  gateway->add_ok = false;
+  PublicConnectivity connectivity(upnp_on(), id(1), {"10.0.0.1", 7437}, gateway, nullptr, nullptr, &contract::system_wall_clock(), log);
+  const auto status = connectivity.refresh(false);
+  ASSERT_FALSE(status.upnp.error.empty());
+  EXPECT_EQ(log->count(status::LogLevel::warn, status.upnp.error), 1u);
+}
+
+TEST(PublicConnectivity, AFailedExternalIpIsWarnedOfInItsOwnWords) {
+  auto log = std::make_shared<test::RecordingSink>();
+  ConnectivityConfig config;
+  config.external_ip.enabled = true;
+  PublicConnectivity connectivity(
+      config, id(1), {"10.0.0.1", 7437}, nullptr, [](std::chrono::milliseconds) -> std::string { throw std::runtime_error("no answer"); }, nullptr,
+      &contract::system_wall_clock(), log);
+  const auto status = connectivity.refresh(false);
+  ASSERT_FALSE(status.external_ip.error.empty());
+  EXPECT_EQ(log->count(status::LogLevel::warn, status.external_ip.error), 1u);
+}
+
+TEST(PublicConnectivity, AReachableSelfProbeIsSaid) {
+  auto log = std::make_shared<test::RecordingSink>();
+  ConnectivityConfig config;
+  config.check.enabled = true;
+  PublicConnectivity connectivity(
+      config, id(1), {"10.0.0.1", 7437}, nullptr, nullptr, [](const net::Endpoint&, std::chrono::milliseconds, std::string&) { return true; },
+      &contract::system_wall_clock(), log);
+  (void)connectivity.refresh(true);
+  EXPECT_EQ(log->count(status::LogLevel::info, "connectivity self probe reachable endpoint=10.0.0.1:7437 external_verification=unknown"), 1u);
+}
+
+TEST(PublicConnectivity, AMappingChangedSinceIsLeftAndSaid) {
+  auto log = std::make_shared<test::RecordingSink>();
+  auto gateway = std::make_shared<FakeGateway>();
+  {
+    PublicConnectivity connectivity(upnp_on(), id(1), {"10.0.0.1", 7437}, gateway, nullptr, nullptr, &contract::system_wall_clock(), log);
+    (void)connectivity.refresh(false);
+    gateway->existing = Gateway::Mapping{"192.168.1.99", 7437};
+  }
+  EXPECT_EQ(gateway->deletes, 0);
+  EXPECT_EQ(log->count(status::LogLevel::debug, "UPnP owned mapping no longer matches; leaving external_port=7437"), 1u);
+}
+
+TEST(PublicConnectivity, ARemovalTheGatewayRefusesIsSaidWithItsCode) {
+  auto log = std::make_shared<test::RecordingSink>();
+  auto gateway = std::make_shared<FakeGateway>();
+  gateway->delete_code = 714;
+  {
+    PublicConnectivity connectivity(upnp_on(), id(1), {"10.0.0.1", 7437}, gateway, nullptr, nullptr, &contract::system_wall_clock(), log);
+    (void)connectivity.refresh(false);
+  }
+  EXPECT_EQ(log->count(status::LogLevel::debug, "UPnP port mapping removal failed code=714"), 1u);
+  EXPECT_EQ(log->count(status::LogLevel::debug, "UPnP port mapping removed"), 0u);
+}
+
+TEST(PublicConnectivity, NamesAMappingThatCouldNotBeVerified) {
+  auto gateway = std::make_shared<FakeGateway>();
+  gateway->forgets = true;
+  PublicConnectivity connectivity(upnp_on(), id(1), {"10.0.0.1", 7437}, gateway, nullptr, nullptr);
+  const auto status = connectivity.refresh(false);
+  EXPECT_EQ(status.upnp.error_code, "mapping_verification_failed");
+  EXPECT_FALSE(status.upnp.mapping_active);
+}
+
+TEST(PublicConnectivity, NamesAGatewayItWasBuiltWithout) {
+  PublicConnectivity connectivity(upnp_on(), id(1), {"10.0.0.1", 7437}, nullptr, nullptr, nullptr);
+  EXPECT_EQ(connectivity.refresh(false).upnp.error_code, "support_not_built");
 }
 
 }  // namespace
