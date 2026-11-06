@@ -44,11 +44,13 @@ session as a request, once. Sent (R1 to R6): which ruled changes count as change
 clone at `../macha-port`; the Pi baselines; two machines for a timed run; a tag and push; the real IGD
 run.
 
-**Dannan's list toward Yes, no longer amendments:** rollback from `*.macha` opened by Macha; the storage
-key known answer; a long roster with resets; G44's three cases, G45's non-std throw, custody without
-certificates; the importer writing `dagda/extents` as `Bytes{1}`; widened goldens; the relaxed atomics
-reviewed, arm64 repeats, a clang TSan attempt; a two-machine measurement against Macha's baselines; a
-timed run; every seam owned. Facade writes the three `dagda/*` adverts until stage one.
+**Dannan's list toward Yes.** Done (`dannan_tests` 568 on macOS, not yet rerun on Debian or arm64): the
+storage key against Macha's own output; a 65,536-node roster with every kind of reset; files restored
+byte for byte; G44's cases, G45's non-std throw (custody without certificates already had
+`Node.OpensItsKeyCustody`); the importer writing `dagda/extents` as `Bytes{1}`; the supervisor clearing at
+stop as Macha's does; the relaxed atomics read (parity file). Left, each needing R1 to R6 or the Macha
+session: Macha opening a rolled-back state; widened goldens; arm64 repeats and a clang TSan attempt; a
+two-machine measurement against Macha's baselines; a timed run; every seam owned; the facade itself. Facade writes the three `dagda/*` adverts until stage one.
 
 **Last gate before the pause:** at this commit's code, Debian 13 plain, ASan with UBSan, and TSan, 562 each; macOS ASan with UBSan and TSan, 560 each with the BBR case skipped; no sanitizer reports. Compose bed: the two original cases pass; the relay measurement does not.
 
