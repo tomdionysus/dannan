@@ -54,6 +54,7 @@ inline constexpr MessageType channel_publish{17};
 inline constexpr MessageType channel_replay{18};
 inline constexpr MessageType channel_bulk{19};
 inline constexpr MessageType revocations{20};
+inline constexpr MessageType relay_credit{21};
 inline constexpr MessageType ok{100};
 inline constexpr MessageType members_reply{101};
 inline constexpr MessageType telemetry_reply{102};
@@ -92,6 +93,10 @@ struct Registration {
   // lane's; zero turns one off. Unset, the lane's apply.
   std::optional<std::chrono::milliseconds> no_progress = std::nullopt;
   std::optional<std::chrono::milliseconds> stall_notice = std::nullopt;
+  // A notification handled by its arrival, on the session's strand, in the
+  // order it arrived and ahead of every queue: never queued, so never
+  // refused. Its handler must not wait.
+  bool on_session = false;
 };
 
 // What each type may do on the wire. Built once at start, before any
@@ -124,6 +129,7 @@ class RouteTable {
   bool is_notification(MessageType type) const noexcept;
   bool is_fast_control(MessageType type) const noexcept;
   bool is_ordered(MessageType type) const noexcept;
+  bool is_on_session(MessageType type) const noexcept;
   // The registered name, or the number in decimal.
   std::string name(MessageType type) const;
 

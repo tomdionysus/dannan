@@ -205,6 +205,12 @@ class Client {
   // False without a route, or when the session refuses it; with
   // `best_effort`, also when it would have to queue behind other traffic.
   bool send(const identity::NodeId& peer, Lane lane, const Message& message, sched::FrameType frame, bool best_effort = false);
+  // The same for a sender that paces itself and must lose nothing. Says
+  // whether the session took it, its queue is full for now, or there is no
+  // route; when taken, `sent` is told on `executor` whether it was written.
+  enum class Paced { taken, full, gone };
+  Paced send_paced(const identity::NodeId& peer, Lane lane, Message message, sched::FrameType frame, boost::asio::any_io_executor executor,
+                   std::function<void(bool)> sent);
 
   // Starts the health pings.
   void start();

@@ -1091,6 +1091,23 @@ bool Client::send(const identity::NodeId& peer, Lane lane, const Message& messag
   }
 }
 
+Client::Paced Client::send_paced(const identity::NodeId& peer, Lane lane, Message message, sched::FrameType frame, asio::any_io_executor executor,
+                                 std::function<void(bool)> sent) {
+  std::shared_ptr<Session> route;
+  {
+    contract::Lock lock(_mutex);
+    if (_stopped) return Paced::gone;
+    route = route_locked(peer, lane);
+  }
+  if (!route) return Paced::gone;
+  try {
+    route->notify(std::move(message), frame, std::move(executor), std::move(sent));
+    return Paced::taken;
+  } catch (const OutboundRefused&) {
+    return Paced::full;
+  }
+}
+
 void Client::probe(const Endpoint& endpoint, const identity::NodeId& expected, asio::any_io_executor executor, std::function<void(std::string)> done) {
   dial(Target{expected, endpoint}, Lane::probe,
        [executor, done = std::move(done)](std::shared_ptr<Session>, std::string why) { asio::post(executor, [done, why = std::move(why)] { done(why); }); });

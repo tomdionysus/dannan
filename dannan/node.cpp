@@ -749,6 +749,7 @@ net::Handled Node::handle(const NodeRecord& peer, sched::FrameType frame, const 
   if (type == m::relay_offer) return _paths->relay_offer(peer, request);
   if (type == m::relay_data) return _paths->relay_data(peer, request);
   if (type == m::relay_close) return _paths->relay_close(peer, request);
+  if (type == m::relay_credit) return _paths->relay_credit(peer, request);
   if (type == m::channel_publish) return _fanout->on_publish(peer, request);
   if (type == m::channel_replay) return _fanout->on_replay(peer, request);
   if (type == m::channel_bulk) return _fanout->on_bulk(peer, request);

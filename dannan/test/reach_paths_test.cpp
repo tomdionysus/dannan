@@ -300,6 +300,75 @@ TEST(LevelZero, TwoNodesMeetThroughARelayWhenAPunchCannotWork) {
   for (const auto& circuit : relay.circuits) EXPECT_GT(circuit.bytes, 0u);
 }
 
+// A transfer much larger than anything queued on the way: bytes through a relay are paced
+// end to end, so nothing is dropped and the circuit lives. Macha's size.
+TEST(LevelZero, ALargeTransferCrossesARelayIntact) {
+  Cluster cluster(true, PathClass::relay_only, PathClass::relay_only);
+  ASSERT_TRUE(eventually([&] { return cluster.ready(); }));
+  const auto peer = cluster.record(*cluster.b, *cluster.a);
+  ASSERT_TRUE(peer.has_value());
+  net::Bytes payload(32 * 1024 * 1024);
+  for (size_t i = 0; i < payload.size(); ++i) payload[i] = static_cast<uint8_t>(i * 31 >> 3);
+  const auto outcome = cluster.a->context().routes().call_and_wait(*peer, echo_data, payload, sched::FrameType::foreground, 120s);
+  ASSERT_TRUE(outcome.reply) << outcome.failure;
+  EXPECT_EQ(outcome.reply->payload, payload);
+  EXPECT_EQ(cluster.a->context().nodes().path(peer->id, net::Lane::data), net::Purpose::relayed);
+  // Twice: the circuit is still good.
+  EXPECT_TRUE(cluster.a->context().routes().call_and_wait(*peer, echo_data, net::Bytes(1024, 3), sched::FrameType::foreground, 60s).reply);
+}
+
+// Both ways at once, on one circuit, with the control circuit answering all
+// through it: credit for one direction never waits on the other's bytes, and
+// control never queues behind data (law 1).
+TEST(LevelZero, TransfersBothWaysShareARelayAndControlStillAnswers) {
+  Cluster cluster(true, PathClass::relay_only, PathClass::relay_only);
+  ASSERT_TRUE(eventually([&] { return cluster.ready(); }));
+  const auto to_b = cluster.record(*cluster.b, *cluster.a);
+  const auto to_a = cluster.record(*cluster.a, *cluster.b);
+  ASSERT_TRUE(to_b && to_a);
+  net::Bytes payload(16 * 1024 * 1024);
+  for (size_t i = 0; i < payload.size(); ++i) payload[i] = static_cast<uint8_t>(i * 17 >> 2);
+  const auto send = [&](Node& from, const membership::NodeRecord& peer) {
+    return std::async(std::launch::async,
+                      [&from, peer, &payload] { return from.context().routes().call_and_wait(peer, echo_data, payload, sched::FrameType::foreground, 120s); });
+  };
+  auto forward = send(*cluster.a, *to_b);
+  auto backward = send(*cluster.b, *to_a);
+  for (int i = 0; i < 20; ++i) {
+    const auto control = cluster.echo(*cluster.a, *cluster.b, false);
+    ASSERT_TRUE(control.reply) << control.failure;
+  }
+  const auto there = forward.get();
+  const auto back = backward.get();
+  ASSERT_TRUE(there.reply) << there.failure;
+  ASSERT_TRUE(back.reply) << back.failure;
+  EXPECT_EQ(there.reply->payload, payload);
+  EXPECT_EQ(back.reply->payload, payload);
+}
+
+// Many transfers at once, far past what any one queue on the way would hold
+// if a circuit were not paced: nothing is refused and every byte arrives.
+TEST(LevelZero, ManyTransfersAtOnceCrossARelayIntact) {
+  Cluster cluster(true, PathClass::relay_only, PathClass::relay_only);
+  ASSERT_TRUE(eventually([&] { return cluster.ready(); }));
+  const auto peer = cluster.record(*cluster.b, *cluster.a);
+  ASSERT_TRUE(peer.has_value());
+  std::vector<std::future<std::pair<net::Bytes, net::CallOutcome>>> running;
+  for (int t = 0; t < 8; ++t) {
+    running.push_back(std::async(std::launch::async, [&cluster, peer, t] {
+      net::Bytes payload(4 * 1024 * 1024, static_cast<uint8_t>(t + 1));
+      auto outcome = cluster.a->context().routes().call_and_wait(*peer, echo_data, payload, sched::FrameType::foreground, 120s);
+      return std::make_pair(std::move(payload), std::move(outcome));
+    }));
+  }
+  for (auto& one : running) {
+    const auto [payload, outcome] = one.get();
+    ASSERT_TRUE(outcome.reply) << outcome.failure;
+    EXPECT_EQ(outcome.reply->payload, payload);
+  }
+  EXPECT_EQ(cluster.a->context().nodes().path(peer->id, net::Lane::data), net::Purpose::relayed);
+}
+
 // A relayed pair whose relay-only end becomes punchable moves up: the lower
 // id punches, both ends keep the punched session over the relayed one, and
 // the relayed one retires. Calls keep working throughout.

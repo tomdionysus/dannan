@@ -106,6 +106,15 @@ size_t* RequestScheduler::bytes_for(Queue which) {
 }
 
 void RequestScheduler::submit(membership::NodeRecord peer, Frame frame, Reply reply) {
+  if (_routes->is_on_session(frame.message.type)) {
+    {
+      contract::Lock lock(_mutex);
+      if (_stopping) return;
+    }
+    const auto now = _time->now();
+    run(Job{std::move(peer), std::move(frame), std::move(reply), now, {}});
+    return;
+  }
   const auto bytes = frame.message.payload.size();
   bool refused = false;
   {
