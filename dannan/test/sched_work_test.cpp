@@ -18,6 +18,7 @@
 
 #include "dannan/sched/work.h"
 #include "dannan/status/log.h"
+#include "dannan/test/fixtures/recording_sink.h"
 
 namespace dannan::sched {
 namespace {
@@ -53,7 +54,7 @@ TEST(FrameType, DecodesOnlyTheFiveWireValues) {
 TEST(FrameType, NamesAreStable) {
   EXPECT_EQ(std::string(frame_type_name(FrameType::control)), "control");
   EXPECT_EQ(std::string(frame_type_name(FrameType::foreground)), "foreground");
-  EXPECT_EQ(std::string(frame_type_name(FrameType::read_ahead)), "read_ahead");
+  EXPECT_EQ(std::string(frame_type_name(FrameType::read_ahead)), "read-ahead");
   EXPECT_EQ(std::string(frame_type_name(FrameType::loader)), "loader");
   EXPECT_EQ(std::string(frame_type_name(FrameType::speculative)), "speculative");
 }
@@ -185,6 +186,16 @@ TEST(Waits, MayEnterIsASubsetOverEveryMask) {
   for (unsigned allowed = 0; allowed < 16; ++allowed)
     for (unsigned declared = 0; declared < 16; ++declared)
       EXPECT_EQ(may_enter(static_cast<Waits>(allowed), static_cast<Waits>(declared)), (declared & ~allowed) == 0);
+}
+
+// Macha's words and level, once per origin and operation: contract/work.cpp:43.
+TEST(WaitGuard, AViolationIsWarnedOfOnceInMachasWords) {
+  auto sink = std::make_shared<test::RecordingSink>();
+  WaitGuard guard(status::ScopedLogger(sink, "waits"), WaitGuard::Mode::record);
+  const WorkContext context(FrameType::foreground, {}, nullptr, "a read", Waits::locks);
+  EXPECT_FALSE(guard.enter(context, Waits::network, "the network"));
+  EXPECT_FALSE(guard.enter(context, Waits::network, "the network"));
+  EXPECT_EQ(sink->count(status::LogLevel::warn, "work (a read) entered the network, which may wait on what the work does not allow"), 1u);
 }
 
 }  // namespace

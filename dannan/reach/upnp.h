@@ -60,7 +60,7 @@ class UpnpGateway final : public Gateway {
   std::optional<Mapping> mapping(uint16_t external_port) override;
   std::string add(uint16_t external_port, uint16_t internal_port, const std::string& internal_client, const std::string& description,
                   uint32_t lease_seconds) override;
-  void remove(uint16_t external_port) override;
+  int remove(uint16_t external_port) override;
 
  private:
   // The response body, or nothing with `error` set; a SOAP fault is a body.

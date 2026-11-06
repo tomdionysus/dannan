@@ -13,6 +13,8 @@
 // completion is posted to the caller's executor, never run inline.
 
 #include <gtest/gtest.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 #include <boost/asio/local/connect_pair.hpp>
 #include <boost/asio/local/stream_protocol.hpp>
@@ -24,6 +26,7 @@
 
 #include "dannan/net/session.h"
 #include "dannan/test/fixtures/gate.h"
+#include "dannan/test/fixtures/recording_sink.h"
 #include "dannan/test/fixtures/temp_dir.h"
 
 namespace dannan::net {
@@ -78,12 +81,18 @@ struct Pair {
   std::shared_future<std::string> dialler_closed = dialler_closing.get_future().share();
   std::shared_future<std::string> acceptor_closed = acceptor_closing.get_future().share();
   std::shared_ptr<TransportTraffic> traffic = std::make_shared<TransportTraffic>();
+  // The two sockets again, for a test to break one direction of.
+  int dialler_end = -1;
+  int acceptor_end = -1;
 
   Pair(Io& io, SessionHandlers dialler_handlers, SessionHandlers acceptor_handlers, Lane lane = Lane::control, size_t max_frame = 65536,
-       sched::RetainedMemoryLedger* memory = nullptr, std::shared_ptr<const RouteTable> dialler_routes = nullptr)
+       sched::RetainedMemoryLedger* memory = nullptr, std::shared_ptr<const RouteTable> dialler_routes = nullptr,
+       std::shared_ptr<status::LogSink> log = nullptr, bool start_dialler = true, bool start_acceptor = true)
       : io(io) {
     asio::local::stream_protocol::socket a(io.context), b(io.context);
     asio::local::connect_pair(a, b);
+    dialler_end = ::dup(a.native_handle());
+    acceptor_end = ::dup(b.native_handle());
     Session::Socket sa(io.context, Session::Socket::protocol_type(AF_UNIX, SOCK_STREAM), a.release());
     Session::Socket sb(io.context, Session::Socket::protocol_type(AF_UNIX, SOCK_STREAM), b.release());
     const auto key = test_key();
@@ -113,10 +122,11 @@ struct Pair {
     SessionOptions options;
     options.memory = memory;
     options.traffic = traffic;
+    options.log = log;
     dialler = Session::create(std::move(sa), std::move(d), Role::dialler, dialler_routes ? dialler_routes : table(), std::move(dialler_handlers), options);
     acceptor = Session::create(std::move(sb), std::move(c), Role::acceptor, table(), std::move(acceptor_handlers), options);
-    dialler->start();
-    acceptor->start();
+    if (start_dialler) dialler->start();
+    if (start_acceptor) acceptor->start();
   }
   // The close handlers reach into this object: wait until both have run.
   ~Pair() {
@@ -124,6 +134,8 @@ struct Pair {
     acceptor->close("test over");
     dialler_closed.wait_for(10s);
     acceptor_closed.wait_for(10s);
+    ::close(dialler_end);
+    ::close(acceptor_end);
   }
 };
 
@@ -514,6 +526,45 @@ TEST(Session, AFrameOffItsLaneEndsTheSessionUndispatched) {
   EXPECT_FALSE(future.get().reply);
   ASSERT_EQ(pair.acceptor_closed.wait_for(10s), std::future_status::ready);
   EXPECT_EQ(dispatched.load(), 0);
+}
+
+// Which side and which direction a session failed on, in Macha's words:
+// net.cpp:1632, :1711, :3550 and :4386.
+TEST(Session, AFailureIsSaidBySideAndDirection) {
+  Io io;
+  const auto notify = [&](Session& session) { session.notify({MessageType{9}, Bytes(1024, 1), {}}, FrameType::control, io.context.get_executor()); };
+  // Each side alone is started, so nothing can answer its half-close: the
+  // write is the only thing that can fail.
+  {
+    auto log = std::make_shared<test::RecordingSink>();
+    Pair pair(io, {}, {}, Lane::control, 65536, nullptr, nullptr, log, true, false);
+    ::shutdown(pair.dialler_end, SHUT_WR);
+    notify(*pair.dialler);
+    ASSERT_EQ(pair.dialler_closed.wait_for(10s), std::future_status::ready);
+    EXPECT_EQ(log->count(status::LogLevel::debug, "peer writer: "), 1u);
+  }
+  {
+    auto log = std::make_shared<test::RecordingSink>();
+    Pair pair(io, {}, {}, Lane::control, 65536, nullptr, nullptr, log, false, true);
+    ::shutdown(pair.acceptor_end, SHUT_WR);
+    notify(*pair.acceptor);
+    ASSERT_EQ(pair.acceptor_closed.wait_for(10s), std::future_status::ready);
+    EXPECT_EQ(log->count(status::LogLevel::debug, "accepted peer writer: "), 1u);
+  }
+  {
+    auto log = std::make_shared<test::RecordingSink>();
+    Pair pair(io, {}, {}, Lane::control, 65536, nullptr, nullptr, log);
+    pair.acceptor->close("done");
+    ASSERT_EQ(pair.dialler_closed.wait_for(10s), std::future_status::ready);
+    EXPECT_EQ(log->count(status::LogLevel::debug, "peer channel: peer closed"), 1u);
+  }
+  {
+    auto log = std::make_shared<test::RecordingSink>();
+    Pair pair(io, {}, {}, Lane::control, 65536, nullptr, nullptr, log);
+    pair.dialler->close("done");
+    ASSERT_EQ(pair.acceptor_closed.wait_for(10s), std::future_status::ready);
+    EXPECT_EQ(log->count(status::LogLevel::debug, "RPC session: peer closed"), 1u);
+  }
 }
 
 }  // namespace

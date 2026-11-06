@@ -277,8 +277,9 @@ TEST(Supervisor, TheSubsystemsAreJournalled) {
     supervisor.start({});
     EXPECT_TRUE(eventually([&] { return status_of(supervisor, "scanner")->state == SubsystemState::disabled; }));
     EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::info, "subsystem plugin 'fuse' loaded and running path=built in") == 1; }));
-    EXPECT_TRUE(eventually(
-        [&] { return log->count(status::LogLevel::info, "subsystem plugin 'torrent' loaded but its capability is not enabled on this node") == 1; }));
+    EXPECT_TRUE(eventually([&] {
+      return log->count(status::LogLevel::info, "subsystem plugin 'torrent' loaded but its capability is not enabled on this node path=built in") == 1;
+    }));
     EXPECT_EQ(log->count(status::LogLevel::error, "subsystem 'scanner' failed to start: no catalogue"), 4u);
     EXPECT_EQ(log->count(status::LogLevel::error, "subsystem 'scanner' disabled after 4 failed attempts; needs an operator"), 1u);
     supervisor.stop();
@@ -512,6 +513,82 @@ TEST(StartupStallGate, StallsOnNoProgressNotOnSlowness) {
   StartupProgress progress;
   progress.note(3);
   EXPECT_EQ(progress.value(), 3u);
+}
+
+// The plugin lines, level and words (first cutover, section 5).
+TEST(Supervisor, ThePluginsThatCannotRunAreJournalled) {
+  auto log = std::make_shared<test::RecordingSink>();
+  auto settings = options(DANNAN_TEST_PLUGIN_DIR);
+  settings.log = log;
+  settings.system_name = "macha";
+  {
+    Supervisor supervisor(settings);
+    supervisor.start({});
+    EXPECT_TRUE(eventually([&] { return status_of(supervisor, "running") && status_of(supervisor, "running")->state == SubsystemState::running; }));
+    supervisor.stop();
+  }
+  EXPECT_EQ(log->count(status::LogLevel::debug,
+                       "subsystem plugin candidate 'no_entry' has no entry symbol 'dannan_test_subsystem_entry', skipping as not a macha plugin: "),
+            1u);
+  EXPECT_EQ(log->count(status::LogLevel::error, "subsystem plugin 'null_entry' entry function returned null"), 1u);
+  EXPECT_EQ(
+      log->count(status::LogLevel::error,
+                 "subsystem plugin 'mismatched' build identity mismatch: plugin=some other build core=dannan test build; refusing to load (partial deploy?)"),
+      1u);
+}
+
+TEST(Supervisor, ADirectoryThatCannotBeListedIsWarnedOf) {
+  test::TempDir dir;
+  const auto locked = dir.path() / "locked";
+  std::filesystem::create_directories(locked);
+  std::filesystem::permissions(locked, std::filesystem::perms::none);
+  auto log = std::make_shared<test::RecordingSink>();
+  auto settings = options(locked);
+  settings.log = log;
+  {
+    Supervisor supervisor(settings);
+    supervisor.start({});
+    supervisor.stop();
+  }
+  std::filesystem::permissions(locked, std::filesystem::perms::owner_all);
+  EXPECT_EQ(log->count(status::LogLevel::warn, "subsystem plugin discovery failed dir=" + locked.string() + " error="), 1u);
+}
+
+TEST(Supervisor, AStopThatThrowsAnythingElseIsJournalled) {
+  struct Throwing final : Subsystem {
+    std::string_view name() const noexcept override { return "bad"; }
+    void attach_fault_sink(FaultSink) override {}
+    void start() override {}
+    void stop() override { throw 7; }
+  };
+  auto log = std::make_shared<test::RecordingSink>();
+  auto settings = options();
+  settings.log = log;
+  Supervisor supervisor(settings);
+  supervisor.add_builtin("bad", [](const SubsystemContext&) { return std::make_unique<Throwing>(); });
+  supervisor.start({});
+  EXPECT_TRUE(eventually([&] { return status_of(supervisor, "bad")->state == SubsystemState::running; }));
+  supervisor.stop();
+  EXPECT_EQ(log->count(status::LogLevel::warn, "subsystem 'bad' stop() threw an unknown exception"), 1u);
+}
+
+TEST(Supervisor, AFaultWhileRunningIsJournalled) {
+  auto log = std::make_shared<test::RecordingSink>();
+  std::atomic<int> stops{0};
+  std::atomic<int> built{0};
+  auto settings = options();
+  settings.log = log;
+  Supervisor supervisor(settings);
+  supervisor.add_builtin("fuse", [&](const SubsystemContext&) {
+    const int n = ++built;
+    return std::make_unique<Builtin>("fuse", &stops, [n](Subsystem::FaultSink& sink) {
+      if (n == 1) sink("mount went away");
+    });
+  });
+  supervisor.start({});
+  EXPECT_TRUE(eventually([&] { return built.load() == 2 && status_of(supervisor, "fuse")->state == SubsystemState::running; }));
+  EXPECT_EQ(log->count(status::LogLevel::error, "subsystem 'fuse' faulted while running: mount went away"), 1u);
+  supervisor.stop();
 }
 
 }  // namespace

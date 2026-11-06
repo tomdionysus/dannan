@@ -334,9 +334,16 @@ std::string UpnpGateway::add(uint16_t external_port, uint16_t internal_port, con
   return {};
 }
 
-void UpnpGateway::remove(uint16_t external_port) {
+int UpnpGateway::remove(uint16_t external_port) {
   std::string error;
-  (void)call("DeletePortMapping", {{"NewRemoteHost", ""}, {"NewExternalPort", std::to_string(external_port)}, {"NewProtocol", "TCP"}}, error);
+  const auto response = call("DeletePortMapping", {{"NewRemoteHost", ""}, {"NewExternalPort", std::to_string(external_port)}, {"NewProtocol", "TCP"}}, error);
+  if (!response) return -3;  // miniupnpc's UPNPCOMMAND_HTTP_ERROR, which Macha's journal prints
+  if (!soap_fault(*response)) return 0;
+  try {
+    return std::stoi(element(*response, "errorCode").value_or("-1"));
+  } catch (const std::exception&) {
+    return -1;
+  }
 }
 
 }  // namespace dannan::reach

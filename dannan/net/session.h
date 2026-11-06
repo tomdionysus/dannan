@@ -180,7 +180,7 @@ class Session : public std::enable_shared_from_this<Session> {
   void kick_writer();
   void write_next();
   // Called on the strand when the connection breaks.
-  void fail(const std::string& why);
+  void fail(const std::string& why, bool writing = false);
   // Marks the session closed and fails every waiting call; false if it
   // already was. Any thread; the queue is abandoned later, by shut().
   bool mark_closed(const std::string& why);

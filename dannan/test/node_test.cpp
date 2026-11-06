@@ -1148,5 +1148,151 @@ TEST(Node, CancellingOutboundCallsReleasesAWaitingWorker) {
   release.set_value();
 }
 
+// The node's own lines, level and words (first cutover, section 5).
+TEST(Journal, AnInboundChangeAndItsProbesAreSaid) {
+  auto log = std::make_shared<test::RecordingSink>();
+  auto hub_log = std::make_shared<test::RecordingSink>();
+  Io io;
+  test::TempDir dir;
+  const auto key = cluster_key(dir.path());
+  auto hub_config = config(dir.path() / "a", key);
+  hub_config.log = hub_log;
+  Node hub(io.context, hub_config);
+  hub.start();
+  auto settings = config(dir.path() / "b", key, {{"127.0.0.1", hub.port()}});
+  settings.log = log;
+  settings.inbound = reach::Inbound::automatic;
+  settings.inbound_journal_fields = [](bool capable) { return std::string(" hosts_extents=") + (capable ? "true" : "false"); };
+  Node site(io.context, settings);
+  site.start();
+  EXPECT_TRUE(eventually([&] {
+    return log->count(status::LogLevel::info, "node inbound resolution changed inbound_capable=true hosts_extents=true previous_inbound_capable=") >= 1;
+  }));
+  const auto hub_id = identity::to_string(hub.context().identity().id()).substr(0, 12);
+  EXPECT_GE(log->count(status::LogLevel::debug, "dial-back probe peer=" + hub_id + " endpoint="), 1u);
+  EXPECT_GE(log->count(status::LogLevel::debug, " reachable=true consecutive_failures=0"), 1u);
+  const auto site_id = identity::to_string(site.context().identity().id()).substr(0, 12);
+  EXPECT_GE(hub_log->count(status::LogLevel::debug, "dial-back probe for peer=" + site_id + " endpoint="), 1u);
+  site.stop();
+  hub.stop();
+}
+
+TEST(Journal, AnInboundFileThatCannotBeWrittenIsWarnedOf) {
+  auto log = std::make_shared<test::RecordingSink>();
+  Io io;
+  test::TempDir dir;
+  const auto key = cluster_key(dir.path());
+  Node hub(io.context, config(dir.path() / "a", key));
+  hub.start();
+  // A directory where the file belongs.
+  std::filesystem::create_directories(dir.path() / "b" / "connectivity" / "inbound.bin" / "held");
+  auto settings = config(dir.path() / "b", key, {{"127.0.0.1", hub.port()}});
+  settings.log = log;
+  settings.inbound = reach::Inbound::automatic;
+  Node site(io.context, settings);
+  site.start();
+  EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::warn, "inbound resolution not persisted: ") >= 1; }));
+  site.stop();
+  hub.stop();
+}
+
+// A peer that answers with anything but its verdict: here, past its rate limit.
+TEST(Journal, ADialBackNobodyAnswersIsSaid) {
+  auto log = std::make_shared<test::RecordingSink>();
+  Io io;
+  test::TempDir dir;
+  const auto key = cluster_key(dir.path());
+  auto hub_config = config(dir.path() / "a", key);
+  hub_config.dial_back_min_interval = std::chrono::hours(1);
+  Node hub(io.context, hub_config);
+  hub.start();
+  auto settings = config(dir.path() / "b", key, {{"127.0.0.1", hub.port()}});
+  settings.log = log;
+  settings.inbound = reach::Inbound::automatic;
+  // Asks again at once: the first is answered, the next is past the limit.
+  settings.reprobe_while_capable = 100ms;
+  settings.reprobe_while_incapable = 100ms;
+  Node site(io.context, settings);
+  site.start();
+  const auto hub_id = identity::to_string(hub.context().identity().id()).substr(0, 12);
+  EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::debug, "dial-back probe not answered peer=" + hub_id + " error=") >= 1; }));
+  site.stop();
+  hub.stop();
+}
+
+TEST(Journal, StoppingTheLoopsIsSaid) {
+  auto log = std::make_shared<test::RecordingSink>();
+  Pair pair([&](NodeConfig& c) { c.log = log; });
+  pair.b->start();
+  pair.b->stop();
+  EXPECT_EQ(log->count(status::LogLevel::debug, "shutdown: node maintenance request_stop"), 1u);
+}
+
+TEST(Journal, ATelemetrySampleThatFailsIsSaidAndTheLoopGoesOn) {
+  auto log = std::make_shared<test::RecordingSink>();
+  Pair pair([&](NodeConfig& c) {
+    c.log = log;
+    c.telemetry_fields = [](status::Telemetry&) { throw std::runtime_error("sampling broke"); };
+  });
+  pair.b->start();
+  EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::debug, "telemetry refresh skipped: sampling broke") >= 2; }));
+}
+
+TEST(Journal, AnIdentityResetThatCannotReachAPeerIsSaid) {
+  auto log = std::make_shared<test::RecordingSink>();
+  Io io;
+  test::TempDir dir;
+  const auto key = cluster_key(dir.path());
+  auto a_config = config(dir.path() / "a", key);
+  a_config.log = log;
+  Node a(io.context, a_config);
+  a.start();
+  Node b(io.context, config(dir.path() / "b", key, {{"127.0.0.1", a.port()}}));
+  b.start();
+  ASSERT_TRUE(eventually([&] { return knows(a, b.context().identity().id()); }));
+  const auto host = a.membership().active().front().host;
+  b.stop();
+  membership::IdentityReset reset;
+  reset.host = "10.9.9.9";
+  reset.port = 7437;
+  reset.epoch = 1;
+  reset.reset_unix_ms = 1;
+  reset.reason = "disk replaced";
+  a.propagate_identity_reset(reset, 500ms);
+  EXPECT_GE(log->count(status::LogLevel::debug, "identity reset propagation to " + host + ": "), 1u);
+  a.stop();
+}
+
+TEST(Journal, AnEndpointThatChangesIsSaid) {
+  auto log = std::make_shared<test::RecordingSink>();
+  Pair pair([&](NodeConfig& c) {
+    c.log = log;
+    c.connectivity.external_ip.enabled = true;
+    c.external_ip = [](std::chrono::milliseconds) { return std::string("203.0.113.7"); };
+  });
+  pair.b->start();
+  EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::info, "node advertised endpoint changed from=127.0.0.1:") == 1; }));
+  EXPECT_EQ(log->count(status::LogLevel::info, " to=203.0.113.7:"), 1u);
+}
+
+TEST(Journal, ANodeForgottenAtTheHorizonIsSaid) {
+  auto log = std::make_shared<test::RecordingSink>();
+  Io io;
+  test::TempDir dir;
+  const auto key = cluster_key(dir.path());
+  auto a_config = config(dir.path() / "a", key);
+  a_config.log = log;
+  a_config.dead_after = 200ms;
+  a_config.forget_after = 300ms;
+  Node a(io.context, a_config);
+  a.start();
+  Node b(io.context, config(dir.path() / "b", key, {{"127.0.0.1", a.port()}}));
+  b.start();
+  ASSERT_TRUE(eventually([&] { return knows(a, b.context().identity().id()); }));
+  b.stop();
+  EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::info, "membership: forgot 1 node(s) not heard of for the absence horizon") == 1; }));
+  a.stop();
+}
+
 }  // namespace
 }  // namespace dannan

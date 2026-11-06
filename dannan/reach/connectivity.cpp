@@ -271,18 +271,20 @@ void PublicConnectivity::remove_owned_locked() noexcept {
   if (!_owned || !_owned_port || !_gateway) return;
   try {
     std::string error;
-    if (const auto session = _gateway->discover(_config.upnp.discovery_timeout, error)) {
-      const auto existing = _gateway->mapping(_owned_port);
-      // Only the mapping this node made: one changed since is not ours.
-      if (existing && existing->internal_port == _configured.port && existing->internal_client == session->lan_address) {
-        _gateway->remove(_owned_port);
+    const auto session = _gateway->discover(_config.upnp.discovery_timeout, error);
+    // Still ours: the next attempt may find the gateway.
+    if (!session) return;
+    const auto existing = _gateway->mapping(_owned_port);
+    // Only the mapping this node made: one changed since is not ours.
+    if (existing && existing->internal_port == _configured.port && existing->internal_client == session->lan_address) {
+      const auto code = _gateway->remove(_owned_port);
+      if (code == 0)
         _log.debug("UPnP port mapping removed external_port=" + std::to_string(_owned_port));
-      } else {
-        _log.debug("UPnP owned mapping no longer matches; leaving external_port=" + std::to_string(_owned_port));
-      }
+      else
+        _log.debug("UPnP port mapping removal failed code=" + std::to_string(code));
+    } else {
+      _log.debug("UPnP owned mapping no longer matches; leaving external_port=" + std::to_string(_owned_port));
     }
-  } catch (const std::exception& error) {
-    _log.debug(std::string("UPnP port mapping removal failed: ") + error.what());
   } catch (...) {
   }
   _owned = false;
