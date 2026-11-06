@@ -18,9 +18,13 @@
 #include <boost/asio/strand.hpp>
 #include <fstream>
 #include <future>
+#include <set>
 #include <thread>
 
 #include "dannan/test/fixtures/gate.h"
+#include "dannan/test/fixtures/ports.h"
+#include "dannan/test/fixtures/recording_sink.h"
+#include "dannan/test/fixtures/stepped_time.h"
 #include "dannan/test/fixtures/temp_dir.h"
 
 namespace dannan {
@@ -115,6 +119,417 @@ TEST(Node, TwoNodesFormOneCluster) {
     return std::any_of(all.begin(), all.end(), [&](const status::Telemetry& t) { return t.node_id() == b && t.text(status::field::version) == "0.1.0-test"; });
   }));
   EXPECT_TRUE(eventually([&] { return pair.b->context().nodes().latency(a).has_value(); }));
+}
+
+// The transport writes through the sink the node was given, so a hosted
+// system's own sink keeps its line format.
+TEST(Node, TheTransportWritesThroughTheNodesSink) {
+  auto log = std::make_shared<test::RecordingSink>();
+  Pair pair([&](NodeConfig& b) { b.log = log; });
+  pair.b->start();
+  EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::info, "node connection outbound peer=") >= 1; }));
+}
+
+TEST(Node, ADialHookInTheConfigRefusesADial) {
+  std::atomic<int> refused{0};
+  Pair pair([&](NodeConfig& b) {
+    b.dial_hook = [&](const net::Endpoint&, net::Lane) {
+      ++refused;
+      return std::string("link is down");
+    };
+  });
+  pair.b->start();
+  EXPECT_TRUE(eventually([&] { return refused.load() >= 1; }));
+  EXPECT_FALSE(knows(*pair.b, pair.a->context().identity().id()));
+}
+
+// The memory limit, as Macha's configuration has it: every part shrinks by the
+// same fraction, the hosted system's included, and one warning is logged.
+TEST(Node, TheMemoryLimitShrinksEveryPartAndWarnsOnce) {
+  test::TempDir dir;
+  Io io;
+  auto log = std::make_shared<test::RecordingSink>();
+  auto settings = config(dir.path() / "a", cluster_key(dir.path()));
+  settings.log = log;
+  settings.memory_limit_bytes = 400ull << 20;
+  settings.memory_bytes = 600ull << 20;
+  settings.control_reserve_bytes = 60ull << 20;
+  settings.foreground_reserve_bytes = 60ull << 20;
+  settings.loader_reserve_bytes = 60ull << 20;
+  settings.reassembly_reserve_bytes = 60ull << 20;
+  std::vector<sched::MemoryPart> hosted{{"cache", 200ull << 20}};
+  fit_memory_limit(settings, hosted);
+  EXPECT_EQ(hosted[0].bytes, 100ull << 20);
+  EXPECT_EQ(settings.memory_bytes, 300ull << 20);
+  EXPECT_EQ(settings.control_reserve_bytes, 30ull << 20);
+  Node node(io.context, settings);
+  EXPECT_EQ(log->count(status::LogLevel::warn, "MEMORY OVER LIMIT: the configured parts total 800M, over runtime.memory_bytes 400M"), 1u);
+  EXPECT_EQ(log->count(status::LogLevel::warn, "cache 200M to 100M"), 1u);
+}
+
+TEST(Node, ANodeWithNoHostedPartsFitsItselfAndUnderTheLimitNothingShrinks) {
+  test::TempDir dir;
+  Io io;
+  auto log = std::make_shared<test::RecordingSink>();
+  auto settings = config(dir.path() / "a", cluster_key(dir.path()));
+  settings.log = log;
+  settings.memory_limit_bytes = 1ull << 40;
+  {
+    Node roomy(io.context, settings);
+  }
+  EXPECT_EQ(log->count(status::LogLevel::warn, "MEMORY OVER LIMIT"), 0u);
+  settings.memory_limit_bytes = 100ull << 20;
+  settings.state_path = dir.path() / "b";
+  Node tight(io.context, settings);
+  EXPECT_EQ(log->count(status::LogLevel::warn, "MEMORY OVER LIMIT"), 1u);
+}
+
+// The node's one wait guard, reached through the Context, logs through its sink.
+TEST(Node, TheWaitGuardIsTheNodesOwn) {
+  auto log = std::make_shared<test::RecordingSink>();
+  test::TempDir dir;
+  Io io;
+  auto settings = config(dir.path() / "a", cluster_key(dir.path()));
+  settings.log = log;
+  Node node(io.context, settings);
+  const sched::WorkContext context(sched::FrameType::control, {}, nullptr, "a test", sched::Waits::none);
+  EXPECT_FALSE(node.context().wait_guard().enter(context, sched::Waits::network, "a blocking thing"));
+  EXPECT_EQ(node.context().wait_guard().violations(), 1u);
+  EXPECT_EQ(log->count(status::LogLevel::warn, "a blocking thing"), 1u);
+}
+
+TEST(Node, ObservationsAreWrittenFromTheStart) {
+  test::TempDir dir;
+  Io io;
+  auto settings = config(dir.path() / "a", cluster_key(dir.path()));
+  settings.observation_interval = 10ms;
+  settings.observation_gauges = [] { return std::map<std::string, uint64_t>{{"parked", 7}}; };
+  Node node(io.context, settings);
+  node.start();
+  const auto path = dir.path() / "a" / "observation" / "observations.jsonl";
+  const auto contents = [&] {
+    std::ifstream in(path);
+    return std::string(std::istreambuf_iterator<char>(in), {});
+  };
+  EXPECT_TRUE(eventually([&] {
+    const auto text = contents();
+    return text.find("0.1.0-test") != std::string::npos && text.find("parked") != std::string::npos;
+  })) << contents();
+  node.stop();
+}
+
+TEST(Node, ObservationsCanBeTurnedOff) {
+  test::TempDir dir;
+  Io io;
+  auto settings = config(dir.path() / "a", cluster_key(dir.path()));
+  settings.observation_interval = 0ms;
+  Node node(io.context, settings);
+  node.start();
+  node.stop();
+  EXPECT_FALSE(std::filesystem::exists(dir.path() / "a" / "observation" / "observations.jsonl"));
+}
+
+// A forced refresh runs now, on the node's loop rather than the caller's thread,
+// and answers on the caller's executor; a node not running answers empty.
+TEST(Node, APublicConnectivityRefreshRunsWhenAskedAndAnswersOnTheExecutor) {
+  test::TempDir dir;
+  Io io;
+  std::atomic<int> probes{0};
+  auto settings = config(dir.path() / "a", cluster_key(dir.path()));
+  settings.heartbeat = 1h;
+  settings.connectivity.check.enabled = false;
+  settings.self_probe = [&](const net::Endpoint&, std::chrono::milliseconds, std::string&) {
+    ++probes;
+    return true;
+  };
+  Node node(io.context, settings);
+  const auto ask = [&] {
+    std::promise<std::optional<reach::PublicConnectivityStatus>> answer;
+    auto future = answer.get_future();
+    node.context().nodes().refresh_public_connectivity(true, true, io.context.get_executor(), [&](auto status) { answer.set_value(std::move(status)); });
+    EXPECT_EQ(future.wait_for(10s), std::future_status::ready);
+    return future.get();
+  };
+  EXPECT_FALSE(ask().has_value());
+  node.start();
+  const auto asked = probes.load();
+  EXPECT_TRUE(ask().has_value());
+  EXPECT_GT(probes.load(), asked);
+  node.stop();
+  EXPECT_FALSE(ask().has_value());
+}
+
+// Gossip waits out its cap however much demand there is: wakes sample the local
+// record, and only the injected second lets one out.
+TEST(Node, GossipWaitsOutItsCapHoweverMuchDemandThereIs) {
+  test::SteppedTime time;
+  Pair pair([&](NodeConfig& b) {
+    b.time = &time;
+    b.telemetry_interval = 1h;
+  });
+  pair.b->start();
+  const auto b = pair.b->context().identity().id();
+  ASSERT_TRUE(eventually([&] { return pair.b->context().nodes().directly_reachable(pair.a->context().identity().id()); }));
+  const auto seen_at_a = [&]() -> uint64_t {
+    for (const auto& record : pair.a->context().telemetry().all())
+      if (record.node_id() == b) return record.sequence();
+    return 0;
+  };
+  const auto local = [&] { return pair.b->context().telemetry().local()->sequence(); };
+  ASSERT_TRUE(eventually([&] {
+    time.advance(1s);
+    pair.b->context().telemetry().refresh();
+    return seen_at_a() > 0;
+  }));
+  // Time stands still from here. A tick or two lets out what the last step
+  // allowed; after that the record moves on and the gossip does not.
+  const auto settling = local();
+  ASSERT_TRUE(eventually([&] {
+    pair.b->context().telemetry().refresh();
+    return local() > settling + 2;
+  }));
+  std::this_thread::sleep_for(50ms);
+  const auto before = local();
+  ASSERT_TRUE(eventually([&] {
+    pair.b->context().telemetry().refresh();
+    return local() > before + 5;
+  }));
+  std::this_thread::sleep_for(50ms);
+  EXPECT_LE(seen_at_a(), before);
+  time.advance(1s);
+  const auto after = local();
+  EXPECT_TRUE(eventually([&] {
+    pair.b->context().telemetry().refresh();
+    return seen_at_a() >= after;
+  }));
+}
+
+// A peer is told of this node on observing it, not at the next interval.
+TEST(Node, APeerObservationGossipsSoonerThanTheInterval) {
+  Pair pair([](NodeConfig& b) { b.telemetry_interval = 1h; });
+  pair.b->start();
+  const auto b = pair.b->context().identity().id();
+  EXPECT_TRUE(eventually([&] {
+    const auto all = pair.a->context().telemetry().all();
+    return std::any_of(all.begin(), all.end(), [&](const status::Telemetry& record) { return record.node_id() == b; });
+  }));
+}
+
+// A node watches no call unless asked; a call asks for itself.
+TEST(Node, ACallIsWatchedOnlyIfItAsks) {
+  EXPECT_EQ(NodeConfig{}.control_no_progress, 0ms);
+  EXPECT_EQ(NodeConfig{}.data_no_progress, 0ms);
+  EXPECT_EQ(NodeConfig{}.control_stall_notice, 0ms);
+  EXPECT_EQ(NodeConfig{}.data_stall_notice, 0ms);
+  constexpr net::MessageType held{1301};
+  test::Gate gate;
+  Pair pair({}, [&](Node& a) {
+    a.context().routes().add(held, {"held", net::Lanes::control, net::Frames::control_only, false},
+                             [&](const membership::NodeRecord&, sched::FrameType, const net::Message& request) {
+                               gate.enter_and_wait();
+                               return net::Handled::processed({net::message::ok, request.payload, {}});
+                             });
+  });
+  pair.b->start();
+  const auto a = pair.a->context().identity().id();
+  ASSERT_TRUE(eventually([&] { return knows(*pair.b, a); }));
+  const net::Endpoint at{"127.0.0.1", pair.a->port()};
+  const auto watched = pair.b->context().routes().call_and_wait(at, held, {}, sched::FrameType::control, 10s, net::CallWatch{100ms, std::nullopt});
+  EXPECT_FALSE(watched.reply);
+  EXPECT_NE(watched.failure.find("cancelled for retry"), std::string::npos) << watched.failure;
+  std::thread opener([&] {
+    std::this_thread::sleep_for(300ms);
+    gate.open();
+  });
+  const auto unwatched = pair.b->context().routes().call_and_wait(at, held, {}, sched::FrameType::control, 10s);
+  opener.join();
+  EXPECT_TRUE(unwatched.reply) << unwatched.failure;
+}
+
+// Asking the loops to stop returns at once; stop() afterwards still finishes it.
+TEST(Node, RequestStopAsksAndStopFinishes) {
+  Pair pair;
+  pair.b->start();
+  pair.b->request_stop();
+  pair.b->request_stop();
+  pair.b->stop();
+  EXPECT_TRUE(pair.b->context().readiness().control_plane_online() == false);
+}
+
+TEST(Node, ThreadsAreRecordedInDiagnostics) {
+  Pair pair;
+  std::set<std::string> names;
+  EXPECT_TRUE(eventually([&] {
+    names.clear();
+    for (const auto& thread : pair.a->context().threads().statuses()) names.insert(thread.name);
+    return names.contains("net-rpc-control-worker") && names.contains("net-rpc-metadata-worker") && names.contains("reach-path-worker");
+  }));
+}
+
+// Each node names the other as its seed: they settle on one session a lane and stop
+// dialling.
+TEST(Node, MutualSeedsSettleOnOneSessionAndStopDialling) {
+  Io io;
+  test::TempDir dir;
+  const auto key = cluster_key(dir.path());
+  const uint16_t first_port = test::free_port();
+  const uint16_t second_port = test::free_port();
+  auto a_config = config(dir.path() / "a", key, {{"127.0.0.1", second_port}});
+  a_config.port = first_port;
+  auto b_config = config(dir.path() / "b", key, {{"127.0.0.1", first_port}});
+  b_config.port = second_port;
+  Node a(io.context, a_config), b(io.context, b_config);
+  a.start();
+  b.start();
+  const auto a_id = a.context().identity().id();
+  const auto b_id = b.context().identity().id();
+  ASSERT_TRUE(eventually([&] { return knows(a, b_id) && knows(b, a_id); }));
+  ASSERT_TRUE(eventually([&] { return a.diagnostics().work.sessions == 1 || b.diagnostics().work.sessions == 1; }));
+  // Quiet: several heartbeats pass, and neither dials again.
+  std::this_thread::sleep_for(300ms);
+  const auto a_dials = a.diagnostics().client.dials;
+  const auto b_dials = b.diagnostics().client.dials;
+  std::this_thread::sleep_for(1s);
+  EXPECT_EQ(a.diagnostics().client.dials, a_dials);
+  EXPECT_EQ(b.diagnostics().client.dials, b_dials);
+  EXPECT_LE(a.diagnostics().work.sessions + b.diagnostics().work.sessions, 2u);
+  b.stop();
+  a.stop();
+}
+
+// What one node says it sent is what the other says it received, class by class.
+TEST(Node, TrafficAgreesAcrossTwoNodesByClass) {
+  constexpr net::MessageType echo{1302};
+  Pair pair({}, [&](Node& a) {
+    a.context().routes().add(
+        echo, {"echo", net::Lanes::both, net::Frames::any, false},
+        [](const membership::NodeRecord&, sched::FrameType, const net::Message&) { return net::Handled::processed({net::message::ok, {}, {}}); });
+  });
+  pair.b->start();
+  ASSERT_TRUE(eventually([&] { return knows(*pair.b, pair.a->context().identity().id()); }));
+  const net::Endpoint at{"127.0.0.1", pair.a->port()};
+  const auto outcome = pair.b->context().routes().call_and_wait(at, echo, net::Bytes(10000, 1), sched::FrameType::foreground, 10s);
+  ASSERT_TRUE(outcome.reply) << outcome.failure;
+  const auto index = static_cast<size_t>(sched::FrameType::foreground);
+  // One request of 10,000 bytes and its overhead, and an empty reply.
+  EXPECT_TRUE(eventually([&] {
+    const auto sent = pair.b->diagnostics().traffic;
+    const auto got = pair.a->diagnostics().traffic;
+    return sent.out_bytes[index] == got.in_bytes[index] && sent.in_bytes[index] == got.out_bytes[index];
+  }));
+  EXPECT_EQ(pair.b->diagnostics().traffic.out_bytes[index], 10056u);
+}
+
+// A number given up is not reused, and not re-registered by mistake.
+TEST(Node, ARetiredMessageNumberIsRefused) {
+  test::TempDir dir;
+  Io io;
+  Node node(io.context, config(dir.path() / "a", cluster_key(dir.path())));
+  node.context().routes().retire(net::MessageType{549});
+  EXPECT_THROW(node.context().routes().add(net::MessageType{549}, {"taken", net::Lanes::control, net::Frames::control_only, false}), std::invalid_argument);
+  EXPECT_THROW(node.context().routes().retire(net::MessageType{1}), std::invalid_argument);
+  node.start();
+  EXPECT_THROW(node.context().routes().retire(net::MessageType{550}), std::logic_error);
+  node.stop();
+}
+
+// Over real dial-backs: a node nobody can reach goes incapable once confirmed, keeps
+// that across a restart, and comes back once its address works.
+TEST(Node, AnUnreachableAutomaticNodeGoesIncapableAndPeersStopDialling) {
+  Io io;
+  test::TempDir dir;
+  const auto key = cluster_key(dir.path());
+  auto hub_config = config(dir.path() / "hub", key);
+  hub_config.dial_back_min_interval = 10ms;
+  Node hub(io.context, hub_config);
+  hub.start();
+  const uint16_t site_port = test::free_port();
+  const auto site_settings = [&](const std::string& advertised) {
+    auto out = config(dir.path() / "site", key, {{"127.0.0.1", hub.port()}});
+    out.inbound = reach::Inbound::automatic;
+    out.port = site_port;
+    out.advertise_host = advertised;
+    out.reprobe_while_capable = 100ms;
+    out.reprobe_while_incapable = 100ms;
+    return out;
+  };
+  identity::NodeId site_id;
+  {
+    Node site(io.context, site_settings("192.0.2.1"));
+    site_id = site.context().identity().id();
+    site.start();
+    EXPECT_TRUE(eventually([&] { return !site.context().nodes().inbound_capable(site_id); }, 30s));
+    EXPECT_TRUE(eventually([&] { return !hub.context().nodes().inbound_capable(site_id); }, 30s));
+    site.stop();
+  }
+  {
+    Node site(io.context, site_settings("127.0.0.1"));
+    EXPECT_FALSE(site.context().nodes().inbound_capable(site_id));
+    site.start();
+    EXPECT_TRUE(eventually([&] { return site.context().nodes().inbound_capable(site_id); }, 30s));
+    EXPECT_TRUE(eventually([&] { return hub.context().nodes().inbound_capable(site_id); }, 30s));
+    site.stop();
+  }
+  hub.stop();
+}
+
+TEST(Node, WhatTheNodeDoesIsJournalled) {
+  auto log = std::make_shared<test::RecordingSink>();
+  Pair pair([&](NodeConfig& b) {
+    b.log = log;
+    b.bootstrap.push_back({"127.0.0.1", test::free_port()});
+  });
+  pair.b->start();
+  EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::debug, "bootstrap: ") >= 1; }));
+  membership::IdentityReset reset;
+  reset.host = "192.0.2.9";
+  reset.port = 7;
+  reset.epoch = 3;
+  reset.reset_by = pair.b->context().identity().id();
+  reset.reason = "testing";
+  EXPECT_TRUE(pair.b->context().nodes().apply_identity_reset(reset));
+  EXPECT_EQ(log->count(status::LogLevel::info, "node identity association reset scope=[192.0.2.9]:7 stale_node_id=<any> epoch=3"), 1u);
+  EXPECT_EQ(log->count(status::LogLevel::info, "reason=testing"), 1u);
+}
+
+TEST(Node, ACorruptPersistedFileIsSaidAndSurvived) {
+  test::TempDir dir;
+  Io io;
+  auto log = std::make_shared<test::RecordingSink>();
+  std::filesystem::create_directories(dir.path() / "a" / "connectivity");
+  std::filesystem::create_directories(dir.path() / "a" / "telemetry");
+  std::ofstream(dir.path() / "a" / "connectivity" / "inbound.bin") << "not this";
+  std::ofstream(dir.path() / "a" / "telemetry" / "last-known.bin") << "not this";
+  auto settings = config(dir.path() / "a", cluster_key(dir.path()));
+  settings.log = log;
+  settings.inbound = reach::Inbound::automatic;
+  Node node(io.context, settings);
+  EXPECT_EQ(log->count(status::LogLevel::warn, "inbound resolution ignored: "), 1u);
+  EXPECT_EQ(log->count(status::LogLevel::warn, "persisted telemetry ignored: "), 1u);
+}
+
+// Status reads Macha's names for the three loops; ruling B, 2026-11-05.
+TEST(Node, TheLoopsCarryTheirNames) {
+  Pair pair;
+  std::set<std::string> names;
+  EXPECT_TRUE(eventually([&] {
+    names.clear();
+    for (const auto& thread : pair.a->context().threads().statuses()) names.insert(thread.name);
+    return names.contains("cluster-telemetry") && names.contains("cluster-maintenance") && names.contains("cluster-connectivity");
+  }));
+  EXPECT_FALSE(names.contains("node-telemetry"));
+}
+
+// The record reports the transport's counts, not a guess from the peers it knows.
+TEST(Node, TheTelemetryRecordCarriesTheTransportsCounts) {
+  Pair pair;
+  pair.b->start();
+  const auto b = pair.b->context().identity().id();
+  EXPECT_TRUE(eventually([&] {
+    const auto local = pair.b->context().telemetry().local();
+    return local && local->u64(status::field::connections_created) >= 1 && local->u64(status::field::connections_canonical) >= 1;
+  }));
+  (void)b;
 }
 
 // A hosted system that is nothing but a counter: a user type registered
@@ -556,8 +971,9 @@ TEST(Node, AdvertsReachPeersAndSteerPlacement) {
   ASSERT_TRUE(eventually([&] { return knows(*pair.a, b) && knows(*pair.b, a); }));
   const auto topology = pair.b->context().events().count(status::NodeEvents::topology);
   // Membership moved when A joined, and an advert does not move it.
+  // Known a moment before the event: wait for it.
+  ASSERT_TRUE(eventually([&] { return pair.b->context().events().count(status::NodeEvents::membership) > 0; }));
   const auto members = pair.b->context().events().count(status::NodeEvents::membership);
-  EXPECT_GT(members, 0u);
   pair.a->context().nodes().advertise("capacity", membership::u64_advert(4096));
   const auto advertised = [&] {
     for (const auto& node : pair.b->context().nodes().active())
@@ -730,6 +1146,316 @@ TEST(Node, CancellingOutboundCallsReleasesAWaitingWorker) {
   worker.join();
   EXPECT_LT(std::chrono::steady_clock::now() - started, 3s);
   release.set_value();
+}
+
+// The node's own lines, level and words (first cutover, section 5).
+TEST(Journal, AnInboundChangeAndItsProbesAreSaid) {
+  auto log = std::make_shared<test::RecordingSink>();
+  auto hub_log = std::make_shared<test::RecordingSink>();
+  Io io;
+  test::TempDir dir;
+  const auto key = cluster_key(dir.path());
+  auto hub_config = config(dir.path() / "a", key);
+  hub_config.log = hub_log;
+  Node hub(io.context, hub_config);
+  hub.start();
+  auto settings = config(dir.path() / "b", key, {{"127.0.0.1", hub.port()}});
+  settings.log = log;
+  settings.inbound = reach::Inbound::automatic;
+  settings.inbound_journal_fields = [](bool capable) { return std::string(" hosts_extents=") + (capable ? "true" : "false"); };
+  Node site(io.context, settings);
+  site.start();
+  EXPECT_TRUE(eventually([&] {
+    return log->count(status::LogLevel::info, "node inbound resolution changed inbound_capable=true hosts_extents=true previous_inbound_capable=") >= 1;
+  }));
+  const auto hub_id = identity::to_string(hub.context().identity().id()).substr(0, 12);
+  EXPECT_GE(log->count(status::LogLevel::debug, "dial-back probe peer=" + hub_id + " endpoint="), 1u);
+  EXPECT_GE(log->count(status::LogLevel::debug, " reachable=true consecutive_failures=0"), 1u);
+  const auto site_id = identity::to_string(site.context().identity().id()).substr(0, 12);
+  EXPECT_GE(hub_log->count(status::LogLevel::debug, "dial-back probe for peer=" + site_id + " endpoint="), 1u);
+  site.stop();
+  hub.stop();
+}
+
+TEST(Journal, AnInboundFileThatCannotBeWrittenIsWarnedOf) {
+  auto log = std::make_shared<test::RecordingSink>();
+  Io io;
+  test::TempDir dir;
+  const auto key = cluster_key(dir.path());
+  Node hub(io.context, config(dir.path() / "a", key));
+  hub.start();
+  // A directory where the file belongs.
+  std::filesystem::create_directories(dir.path() / "b" / "connectivity" / "inbound.bin" / "held");
+  auto settings = config(dir.path() / "b", key, {{"127.0.0.1", hub.port()}});
+  settings.log = log;
+  settings.inbound = reach::Inbound::automatic;
+  Node site(io.context, settings);
+  site.start();
+  EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::warn, "inbound resolution not persisted: ") >= 1; }));
+  site.stop();
+  hub.stop();
+}
+
+// A peer that answers with anything but its verdict: here, past its rate limit.
+TEST(Journal, ADialBackNobodyAnswersIsSaid) {
+  auto log = std::make_shared<test::RecordingSink>();
+  Io io;
+  test::TempDir dir;
+  const auto key = cluster_key(dir.path());
+  auto hub_config = config(dir.path() / "a", key);
+  hub_config.dial_back_min_interval = std::chrono::hours(1);
+  Node hub(io.context, hub_config);
+  hub.start();
+  auto settings = config(dir.path() / "b", key, {{"127.0.0.1", hub.port()}});
+  settings.log = log;
+  settings.inbound = reach::Inbound::automatic;
+  // Asks again at once: the first is answered, the next is past the limit.
+  settings.reprobe_while_capable = 100ms;
+  settings.reprobe_while_incapable = 100ms;
+  Node site(io.context, settings);
+  site.start();
+  const auto hub_id = identity::to_string(hub.context().identity().id()).substr(0, 12);
+  EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::debug, "dial-back probe not answered peer=" + hub_id + " error=") >= 1; }));
+  site.stop();
+  hub.stop();
+}
+
+TEST(Journal, StoppingTheLoopsIsSaid) {
+  auto log = std::make_shared<test::RecordingSink>();
+  Pair pair([&](NodeConfig& c) { c.log = log; });
+  pair.b->start();
+  pair.b->stop();
+  EXPECT_EQ(log->count(status::LogLevel::debug, "shutdown: node maintenance request_stop"), 1u);
+}
+
+TEST(Journal, ATelemetrySampleThatFailsIsSaidAndTheLoopGoesOn) {
+  auto log = std::make_shared<test::RecordingSink>();
+  Pair pair([&](NodeConfig& c) {
+    c.log = log;
+    c.telemetry_fields = [](status::Telemetry&) { throw std::runtime_error("sampling broke"); };
+  });
+  pair.b->start();
+  EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::debug, "telemetry refresh skipped: sampling broke") >= 2; }));
+}
+
+TEST(Journal, AnIdentityResetThatCannotReachAPeerIsSaid) {
+  auto log = std::make_shared<test::RecordingSink>();
+  Io io;
+  test::TempDir dir;
+  const auto key = cluster_key(dir.path());
+  auto a_config = config(dir.path() / "a", key);
+  a_config.log = log;
+  Node a(io.context, a_config);
+  a.start();
+  Node b(io.context, config(dir.path() / "b", key, {{"127.0.0.1", a.port()}}));
+  b.start();
+  ASSERT_TRUE(eventually([&] { return knows(a, b.context().identity().id()); }));
+  const auto host = a.membership().active().front().host;
+  b.stop();
+  membership::IdentityReset reset;
+  reset.host = "10.9.9.9";
+  reset.port = 7437;
+  reset.epoch = 1;
+  reset.reset_unix_ms = 1;
+  reset.reason = "disk replaced";
+  a.propagate_identity_reset(reset, 500ms);
+  EXPECT_GE(log->count(status::LogLevel::debug, "identity reset propagation to " + host + ": "), 1u);
+  a.stop();
+}
+
+TEST(Journal, AnEndpointThatChangesIsSaid) {
+  auto log = std::make_shared<test::RecordingSink>();
+  Pair pair([&](NodeConfig& c) {
+    c.log = log;
+    c.connectivity.external_ip.enabled = true;
+    c.external_ip = [](std::chrono::milliseconds) { return std::string("203.0.113.7"); };
+  });
+  pair.b->start();
+  EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::info, "node advertised endpoint changed from=127.0.0.1:") == 1; }));
+  EXPECT_EQ(log->count(status::LogLevel::info, " to=203.0.113.7:"), 1u);
+}
+
+TEST(Journal, ANodeForgottenAtTheHorizonIsSaid) {
+  auto log = std::make_shared<test::RecordingSink>();
+  Io io;
+  test::TempDir dir;
+  const auto key = cluster_key(dir.path());
+  auto a_config = config(dir.path() / "a", key);
+  a_config.log = log;
+  a_config.dead_after = 200ms;
+  a_config.forget_after = 300ms;
+  Node a(io.context, a_config);
+  a.start();
+  Node b(io.context, config(dir.path() / "b", key, {{"127.0.0.1", a.port()}}));
+  b.start();
+  ASSERT_TRUE(eventually([&] { return knows(a, b.context().identity().id()); }));
+  b.stop();
+  EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::info, "membership: forgot 1 node(s) not heard of for the absence horizon") == 1; }));
+  a.stop();
+}
+
+// Macha's defaults where Macha has them; the four no-progress settings are
+// zero, by ruling A: every call states its own.
+TEST(NodeConfig, TheDefaultsAreMachasOrRuled) {
+  const NodeConfig defaults;
+  EXPECT_EQ(defaults.control_no_progress.count(), 0);
+  EXPECT_EQ(defaults.data_no_progress.count(), 0);
+  EXPECT_EQ(defaults.control_stall_notice.count(), 0);
+  EXPECT_EQ(defaults.data_stall_notice.count(), 0);
+  EXPECT_EQ(defaults.exchange_budget, 30s);
+  EXPECT_EQ(defaults.dial_back_min_interval, 10s);
+  EXPECT_EQ(defaults.reprobe_while_incapable, 10min);
+  EXPECT_EQ(defaults.reprobe_while_capable, 1h);
+}
+
+// cluster.cpp:38: a node with no failure domain of its own is its host's.
+TEST(Node, AnEmptyFailureDomainIsTheHost) {
+  Pair pair;
+  EXPECT_EQ(pair.a->membership().self().failure_domain, "127.0.0.1");
+  Pair named([](NodeConfig& c) { c.failure_domain = "rack-2"; });
+  EXPECT_EQ(named.b->membership().self().failure_domain, "rack-2");
+}
+
+// A seed, not a master: it goes, and those who met through it carry on.
+TEST(Node, TheOthersCarryOnWithoutTheSeed) {
+  Io io;
+  test::TempDir dir;
+  const auto key = cluster_key(dir.path());
+  auto seed = std::make_unique<Node>(io.context, config(dir.path() / "s", key));
+  seed->start();
+  const std::vector<net::Endpoint> bootstrap{{"127.0.0.1", seed->port()}};
+  Node b(io.context, config(dir.path() / "b", key, bootstrap));
+  Node c(io.context, config(dir.path() / "c", key, bootstrap));
+  b.start();
+  c.start();
+  const auto b_id = b.context().identity().id();
+  const auto c_id = c.context().identity().id();
+  ASSERT_TRUE(eventually([&] { return knows(b, c_id) && knows(c, b_id); }));
+  seed->stop();
+  seed.reset();
+  std::this_thread::sleep_for(3s);  // past dead_after
+  EXPECT_TRUE(knows(b, c_id));
+  EXPECT_TRUE(knows(c, b_id));
+  std::optional<membership::NodeRecord> peer;
+  for (const auto& node : b.context().nodes().active())
+    if (node.id == c_id) peer = node;
+  ASSERT_TRUE(peer.has_value());
+  EXPECT_TRUE(b.context().routes().call_and_wait(*peer, net::message::members, {}, sched::FrameType::control, 5s).reply);
+  c.stop();
+  b.stop();
+}
+
+// The loop re-probes on its cadence, and a capability it resolves reaches a
+// peer by gossip.
+TEST(Node, AnAutomaticNodeReprobesAndItsCapabilityReachesAPeer) {
+  auto log = std::make_shared<test::RecordingSink>();
+  Pair pair([&](NodeConfig& c) {
+    c.log = log;
+    c.inbound = reach::Inbound::automatic;
+    c.reprobe_while_capable = 150ms;
+    c.reprobe_while_incapable = 150ms;
+  });
+  pair.b->start();
+  const auto b_id = pair.b->context().identity().id();
+  EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::debug, "dial-back probe peer=") >= 1; }));
+  EXPECT_TRUE(eventually([&] {
+    for (const auto& node : pair.a->context().nodes().active())
+      if (node.id == b_id && node.inbound_capable()) return true;
+    return false;
+  }));
+}
+
+// One traffic instance: a node's accepted sessions and its dialled ones count
+// in the same place.
+TEST(Node, ItsDialledAndAcceptedSessionsCountInOneInstance) {
+  constexpr net::MessageType echo_data{4243};
+  const auto answer = [](const membership::NodeRecord&, sched::FrameType, const net::Message& request) {
+    return net::Handled::processed({net::message::ok, request.payload, {}});
+  };
+  Io io;
+  test::TempDir dir;
+  const auto key = cluster_key(dir.path());
+  Node a(io.context, config(dir.path() / "a", key));
+  a.context().routes().add(echo_data, {"echo_data", net::Lanes::data, net::Frames::not_control, false}, answer);
+  a.start();
+  Node b(io.context, config(dir.path() / "b", key, {{"127.0.0.1", a.port()}}));
+  b.context().routes().add(echo_data, {"echo_data", net::Lanes::data, net::Frames::not_control, false}, answer);
+  b.start();
+  const auto b_id = b.context().identity().id();
+  ASSERT_TRUE(eventually([&] { return knows(a, b_id); }));
+  std::optional<membership::NodeRecord> peer;
+  for (const auto& node : a.context().nodes().active())
+    if (node.id == b_id) peer = node;
+  ASSERT_TRUE(peer.has_value());
+  const auto control_class = static_cast<size_t>(sched::FrameType::control);
+  const auto foreground_class = static_cast<size_t>(sched::FrameType::foreground);
+  // CONTROL arrived on the session B dialled; A dials DATA itself for this call.
+  ASSERT_TRUE(eventually([&] { return a.traffic().in_bytes[control_class] > 0; }));
+  EXPECT_EQ(a.traffic().in_bytes[foreground_class], 0u);
+  ASSERT_TRUE(a.context().routes().call_and_wait(*peer, echo_data, net::Bytes(5000, 1), sched::FrameType::foreground, 10s).reply);
+  EXPECT_TRUE(eventually([&] { return a.traffic().in_bytes[foreground_class] >= 5000; }));
+  EXPECT_GT(a.traffic().in_bytes[control_class], 0u);
+  b.stop();
+  a.stop();
+}
+
+TEST(StateLock, ASecondNodeOnOneStatePathIsRefused) {
+  Io io;
+  test::TempDir dir;
+  const auto key = cluster_key(dir.path());
+  Node first(io.context, config(dir.path() / "a", key));
+  // A file a second node would read and complain of, had it got that far.
+  std::filesystem::create_directories(dir.path() / "a" / "telemetry");
+  std::ofstream(dir.path() / "a" / "telemetry" / "last-known.bin") << "not this";
+  auto settings = config(dir.path() / "a", key);
+  auto log = std::make_shared<test::RecordingSink>();
+  settings.log = log;
+  EXPECT_THROW(Node second(io.context, settings), std::exception);
+  EXPECT_EQ(log->count(status::LogLevel::warn, "persisted telemetry ignored"), 0u);
+}
+
+// The node's timer and a call's deadline follow its injected time, so a
+// hosted system testing on stepped time can move them.
+TEST(Time, AfterAndACallsDeadlineFollowTheInjectedTime) {
+  constexpr net::MessageType held{4244};
+  test::Gate gate;
+  test::GateOpener opener(gate);
+  test::SteppedTime time;
+  Io io;
+  test::TempDir dir;
+  const auto key = cluster_key(dir.path());
+  auto a_config = config(dir.path() / "a", key);
+  a_config.time = &time;
+  Node a(io.context, a_config);
+  a.start();
+  Node b(io.context, config(dir.path() / "b", key));
+  b.context().routes().add(held, {"held", net::Lanes::control, net::Frames::control_only, false},
+                           [&](const membership::NodeRecord&, sched::FrameType, const net::Message&) {
+                             gate.enter_and_wait();
+                             return net::Handled::processed({net::message::ok, {}, {}});
+                           });
+  b.start();
+  std::atomic<bool> fired{false};
+  a.context().time().after(1h, [&] { fired = true; });
+  std::this_thread::sleep_for(50ms);
+  EXPECT_FALSE(fired.load());
+  std::promise<net::CallOutcome> answered;
+  auto future = answered.get_future();
+  a.context().routes().call(b.context().nodes().self(), held, {}, sched::FrameType::control, 2h, io.context.get_executor(),
+                            [&](net::CallOutcome outcome) { answered.set_value(std::move(outcome)); });
+  ASSERT_TRUE(gate.wait_for_entries(1));
+  EXPECT_EQ(future.wait_for(50ms), std::future_status::timeout);
+  time.advance(1h);
+  EXPECT_TRUE(eventually([&] { return fired.load(); }));
+  EXPECT_EQ(future.wait_for(50ms), std::future_status::timeout);
+  time.advance(1h);
+  ASSERT_EQ(future.wait_for(10s), std::future_status::ready);
+  const auto outcome = future.get();
+  EXPECT_FALSE(outcome.reply);
+  EXPECT_NE(outcome.failure.find("deadline of 7200000 ms passed"), std::string::npos) << outcome.failure;
+  gate.open();
+  b.stop();
+  a.stop();
 }
 
 }  // namespace

@@ -246,5 +246,109 @@ TEST(TelemetryStore, RefreshesTheLocalRecord) {
   EXPECT_EQ(second.traffic_window_ms(), 2000u);
 }
 
+// A hosted system's own fields: every kind a record like Macha's needs (wide and
+// narrow numbers, text, a variable-length list), in the layout it names. They cross
+// the wire and the persisted file as they were, and a reader that does not know them
+// keeps them. The field table is the hosted system's; these ids are only examples.
+TEST(Telemetry, AHostedLayoutOfEveryKindRoundTrips) {
+  constexpr uint16_t wide = field::first_hosted;
+  constexpr uint16_t narrow = field::first_hosted + 1;
+  constexpr uint16_t text_field = field::first_hosted + 2;
+  constexpr uint16_t list = field::first_hosted + 3;
+  constexpr uint16_t unset = field::first_hosted + 4;
+  Telemetry record;
+  record.set_bytes(field::node_id, identity::NodeId::random().bytes);
+  record.set_u64(field::sequence, 7);
+  record.set_u64(wide, 4'398'046'511'104ull);
+  record.set_u32(narrow, 32);
+  record.set_text(text_field, "https://node.example/api");
+  const net::Bytes rates{0, 5, 'v', 'i', 'd', 'e', 'o', 0, 0, 4, 56};
+  record.set_bytes(list, rates);
+  record.set_u64(unset, 0);
+  record.order_by({list, wide, narrow, text_field});
+  EXPECT_EQ(record.fields().front().first, list);
+  const auto check = [&](const Telemetry& got) {
+    EXPECT_EQ(got.u64(wide), 4'398'046'511'104ull);
+    EXPECT_EQ(got.u32(narrow), 32u);
+    EXPECT_EQ(got.text(text_field), "https://node.example/api");
+    const auto bytes = got.get(list);
+    ASSERT_TRUE(bytes.has_value());
+    EXPECT_EQ(net::Bytes(bytes->begin(), bytes->end()), rates);
+    // Zero is not written, and absent reads as "did not say".
+    EXPECT_FALSE(got.get(unset).has_value());
+    EXPECT_EQ(got.u64(unset), 0u);
+  };
+  check(decode_telemetry(encode_telemetry(record)));
+  const auto set = decode_telemetry_set(encode_telemetry_set({record, record}));
+  ASSERT_EQ(set.size(), 2u);
+  check(set[1]);
+  // A figure read at the wrong width is refused, not guessed.
+  const auto decoded = decode_telemetry(encode_telemetry(record));
+  EXPECT_THROW((void)decoded.u32(wide), net::DecodeError);
+}
+
+TEST(Telemetry, ATruncatedRecordIsRefused) {
+  Telemetry record;
+  record.set_bytes(field::node_id, identity::NodeId::random().bytes);
+  record.set_u64(field::sequence, 7);
+  record.set_text(field::first_hosted, "some text");
+  const auto bytes = encode_telemetry(record);
+  for (size_t keep = 0; keep < bytes.size(); ++keep) {
+    EXPECT_THROW((void)decode_telemetry(std::span<const uint8_t>(bytes).first(keep)), net::DecodeError) << keep;
+  }
+}
+
+TEST(Telemetry, AnUnknownFieldLeavesTheNextRecordWhole) {
+  Telemetry first;
+  first.set_bytes(field::node_id, identity::NodeId::random().bytes);
+  first.set_u64(field::sequence, 1);
+  first.set_bytes(60000, net::Bytes(50, 9));
+  Telemetry second;
+  second.set_bytes(field::node_id, identity::NodeId::random().bytes);
+  second.set_u64(field::sequence, 2);
+  const auto set = decode_telemetry_set(encode_telemetry_set({first, second}));
+  ASSERT_EQ(set.size(), 2u);
+  EXPECT_EQ(set[0].get(60000)->size(), 50u);
+  EXPECT_EQ(set[1].sequence(), 2u);
+  EXPECT_EQ(set[1].node_id(), second.node_id());
+}
+
+// A hosted layout of every kind Macha's record uses, in a mixed set with
+// records that do not have them, through the wire and the disk.
+TEST(TelemetryStore, AHostedLayoutOfEveryKindSurvivesTheDisk) {
+  test::TempDir dir;
+  const auto path = dir.path() / "telemetry";
+  constexpr uint16_t used = 1024, count = 1025, label = 1026, list = 1027;
+  const net::Bytes rates{1, 2, 3, 4, 5};
+  auto record = sample(2, 1, 100);
+  record.set_u64(used, 0x0102030405060708ULL);
+  record.set_u32(count, 77);
+  record.set_text(label, "lounge");
+  record.set_bytes(list, rates);
+  {
+    Store s;
+    TelemetryStore store(id(1), path, &s.time, &s.wall);
+    store.observe(record);
+    store.observe(sample(3, 1, 100));
+    store.persist();
+  }
+  Store s;
+  TelemetryStore reloaded(id(1), path, &s.time, &s.wall);
+  ASSERT_EQ(reloaded.persisted().size(), 2u);
+  for (const auto& one : reloaded.persisted()) {
+    if (one.node_id() != id(2)) {
+      EXPECT_EQ(one.u64(used), 0u);
+      EXPECT_EQ(one.text(label), "");
+      continue;
+    }
+    EXPECT_EQ(one.u64(used), 0x0102030405060708ULL);
+    EXPECT_EQ(one.u32(count), 77u);
+    EXPECT_EQ(one.text(label), "lounge");
+    const auto bytes = one.get(list);
+    ASSERT_TRUE(bytes.has_value());
+    EXPECT_EQ(net::Bytes(bytes->begin(), bytes->end()), rates);
+  }
+}
+
 }  // namespace
 }  // namespace dannan::status

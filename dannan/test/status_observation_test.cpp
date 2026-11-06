@@ -13,8 +13,13 @@
 #include <gtest/gtest.h>
 
 #include <fstream>
+#include <limits>
+#include <thread>
+#include <tuple>
+#include <vector>
 
 #include "dannan/status/observation.h"
+#include "dannan/test/fixtures/recording_sink.h"
 #include "dannan/test/fixtures/stepped_time.h"
 #include "dannan/test/fixtures/temp_dir.h"
 
@@ -162,6 +167,260 @@ TEST(ObservedDuration, TimesASpanOnTheInjectedClock) {
   const auto& histogram = snapshot.histograms.at("store.barrier_us");
   EXPECT_EQ(histogram.count, 2u);
   EXPECT_EQ(histogram.sum, 3500u);
+}
+
+TEST(Observation, EveryValueLiesInItsBucketAndBucketsTileTheRange) {
+  size_t previous = 0;
+  for (uint64_t value = 0; value <= (1U << 20); ++value) {
+    const auto bucket = bucket_of(value);
+    ASSERT_GE(bucket, previous);
+    ASSERT_LE(bucket_lower(bucket), value);
+    ASSERT_LE(value, bucket_upper(bucket));
+    previous = bucket;
+  }
+  for (unsigned shift = 3; shift < 64; ++shift) {
+    const auto power = uint64_t{1} << shift;
+    for (const auto value : {power - 1, power, power + 1}) {
+      EXPECT_LE(bucket_lower(bucket_of(value)), value);
+      EXPECT_LE(value, bucket_upper(bucket_of(value)));
+    }
+  }
+  const auto top = std::numeric_limits<uint64_t>::max();
+  EXPECT_EQ(bucket_lower(0), 0u);
+  EXPECT_EQ(bucket_of(top), bucket_count - 1);
+  for (size_t bucket = 0; bucket < bucket_count; ++bucket) {
+    const auto lower = bucket_lower(bucket);
+    const auto upper = bucket_upper(bucket);
+    EXPECT_EQ(bucket_of(lower), bucket);
+    EXPECT_EQ(bucket_of(upper), bucket);
+    // Exact below 8, at most an eighth above.
+    if (bucket < 8)
+      EXPECT_EQ(lower, upper);
+    else
+      EXPECT_LE(upper - lower + 1, lower / 8);
+  }
+}
+
+HistogramSnapshot recorded(std::initializer_list<uint64_t> values) {
+  Histogram histogram;
+  for (const auto value : values) histogram.record(value);
+  return histogram.snapshot();
+}
+
+TEST(Observation, QuantilesClampAndAnInconsistentSnapshotAnswersMax) {
+  EXPECT_EQ(HistogramSnapshot{}.quantile(0.5), 0u);
+  const auto small = recorded({1, 2, 3, 4, 5, 6, 7});
+  EXPECT_EQ(small.quantile(0.0), 1u);
+  EXPECT_EQ(small.quantile(-1.0), 1u);
+  EXPECT_EQ(small.quantile(0.5), 4u);
+  EXPECT_EQ(small.quantile(1.0), 7u);
+  EXPECT_EQ(small.quantile(2.0), 7u);
+  const auto wide = recorded({100, 1000, 1001});
+  EXPECT_EQ(wide.quantile(0.3), bucket_upper(bucket_of(100)));
+  EXPECT_EQ(wide.quantile(1.0), 1001u);
+  HistogramSnapshot inconsistent;
+  inconsistent.count = 3;
+  inconsistent.max = 42;
+  inconsistent.buckets[1] = 1;
+  EXPECT_EQ(inconsistent.quantile(1.0), 42u);
+}
+
+TEST(Observation, AWindowIsTheDifferenceAndReversedSaturates) {
+  Histogram histogram;
+  histogram.record(5);
+  histogram.record(900);
+  const auto first = histogram.snapshot();
+  histogram.record(6);
+  histogram.record(7);
+  const auto second = histogram.snapshot();
+  const auto window = second.since(first);
+  EXPECT_EQ(window.count, 2u);
+  EXPECT_EQ(window.sum, 13u);
+  EXPECT_EQ(window.buckets[6], 1u);
+  EXPECT_EQ(window.max, 7u);
+  const auto empty = second.since(second);
+  EXPECT_EQ(empty.count, 0u);
+  EXPECT_EQ(empty.max, 0u);
+  const auto reversed = first.since(second);
+  EXPECT_EQ(reversed.count, 0u);
+  EXPECT_EQ(reversed.sum, 0u);
+}
+
+TEST(Observation, AHistogramRecordsFromManyThreads) {
+  Histogram histogram;
+  std::vector<std::thread> threads;
+  for (uint64_t thread = 0; thread < 4; ++thread)
+    threads.emplace_back([&histogram, thread] {
+      for (uint64_t value = 1; value <= 20'000; ++value) histogram.record(value * 4 + thread);
+    });
+  for (auto& thread : threads) thread.join();
+  const auto snapshot = histogram.snapshot();
+  EXPECT_EQ(snapshot.count, 80'000u);
+  EXPECT_EQ(snapshot.max, 80'003u);
+  uint64_t expected = 0;
+  for (uint64_t thread = 0; thread < 4; ++thread)
+    for (uint64_t value = 1; value <= 20'000; ++value) expected += value * 4 + thread;
+  EXPECT_EQ(snapshot.sum, expected);
+}
+
+TEST(Observation, TheRegistryFoldsPastItsBound) {
+  Observations registry(2, 2);
+  auto& first = registry.histogram("a");
+  EXPECT_EQ(&registry.histogram("a"), &first);
+  registry.record("b", 3);
+  registry.record("c", 4);
+  registry.add("x");
+  registry.add("y", 2);
+  registry.add("z", 5);
+  const auto snapshot = registry.snapshot();
+  EXPECT_TRUE(snapshot.histograms.contains("a"));
+  EXPECT_FALSE(snapshot.histograms.contains("c"));
+  EXPECT_EQ(snapshot.histograms.at(std::string(Observations::overflow_series)).count, 1u);
+  EXPECT_EQ(snapshot.counters.at("y"), 2u);
+  EXPECT_FALSE(snapshot.counters.contains("z"));
+  EXPECT_EQ(snapshot.counters.at(std::string(Observations::overflow_series)), 2u);
+  EXPECT_EQ(snapshot.counters.at(std::string(Observations::events_dropped_series)), 0u);
+}
+
+TEST(Observation, ASnapshotWindowCountsNewSeriesFromZero) {
+  Observations registry;
+  registry.add("kept", 3);
+  registry.record("latency", 10);
+  const auto first = registry.snapshot();
+  registry.add("kept", 2);
+  registry.add("new", 7);
+  registry.record("latency", 11);
+  const auto window = registry.snapshot().since(first);
+  EXPECT_EQ(window.counters.at("kept"), 2u);
+  EXPECT_EQ(window.counters.at("new"), 7u);
+  EXPECT_EQ(window.histograms.at("latency").count, 1u);
+  EXPECT_EQ(registry.snapshot().since(ObservationSnapshot{}).histograms.at("latency").count, 2u);
+}
+
+// Macha's table, row for row.
+TEST(Observation, RouteLabelsAreMachas) {
+  const std::vector<std::tuple<std::string, std::string, std::string>> cases{
+      {"GET", "/api/v1/status", "api GET /api/v1/status"},
+      {"POST", "/api/v1/torrents/jobs", "api POST /api/v1/torrents/jobs"},
+      {"PUT", "/api/v1/catalogue/items/3f9a0c", "api PUT /api/v1/catalogue/items/:id"},
+      {"PATCH", "/api/v1/playback/sessions/abc/segments/12.ts", "api PATCH /api/v1/playback/sessions/abc"},
+      {"DELETE", "/api/v1/a//b", "api DELETE /api/v1/a/:id/b"},
+      {"GET", "/api/v1/" + std::string(33, 'a'), "api GET /api/v1/:id"},
+      {"GET", "/api/v1/Status", "api GET /api/v1/:id"},
+      {"GET", "/api/v1/~status", "api GET /api/v1/:id"},
+      {"GET", "/api/v1/media_information/x-y", "api GET /api/v1/media_information/x-y"},
+      {"GET", "/api/v1/", "api GET /api/v1"},
+      {"GET", "/api/v2/status", "api GET /api/:other"},
+      {"HEAD", "/index.html", "api OTHER web"},
+      {"GET", "/", "api GET web"},
+  };
+  for (const auto& [method, path, label] : cases) EXPECT_EQ(route_label(method, path), label) << method << " " << path;
+}
+
+std::vector<std::string> lines_of(const std::filesystem::path& path) {
+  std::ifstream in(path);
+  std::vector<std::string> out;
+  for (std::string line; std::getline(in, line);) out.push_back(line);
+  return out;
+}
+
+TEST(Observation, RotationEdges) {
+  test::TempDir dir;
+  const auto path = dir.path() / "nested" / "observations.jsonl";
+  auto rotated = path;
+  rotated += ".1";
+  ObservationLog log(path, 10);
+  log.append("12345");
+  log.append("abc");
+  log.append("more");
+  EXPECT_EQ(lines_of(path), std::vector<std::string>{"more"});
+  EXPECT_EQ(lines_of(rotated), (std::vector<std::string>{"12345", "abc"}));
+  log.append("0123456789");
+  EXPECT_EQ(lines_of(path), std::vector<std::string>{"0123456789"});
+  // An existing empty file is appended to, never rotated.
+  const auto empty = dir.path() / "empty.jsonl";
+  {
+    std::ofstream touch(empty);
+  }
+  ObservationLog empty_log(empty, 1);
+  empty_log.append("first");
+  EXPECT_EQ(lines_of(empty), std::vector<std::string>{"first"});
+  auto empty_rotated = empty;
+  empty_rotated += ".1";
+  EXPECT_FALSE(std::filesystem::exists(empty_rotated));
+  // The newline counts.
+  const auto edge = dir.path() / "edge.jsonl";
+  ObservationLog edge_log(edge, 10);
+  edge_log.append("12345");
+  edge_log.append("abcd");
+  EXPECT_EQ(lines_of(edge), std::vector<std::string>{"abcd"});
+}
+
+TEST(Observation, AnUnwritablePathIsSaidOncePerRunOfFailures) {
+  test::TempDir dir;
+  const auto path = dir.path() / "observations.jsonl";
+  auto journal = std::make_shared<test::RecordingSink>();
+  std::filesystem::create_directories(path);
+  ObservationLog log(path, 1024, journal);
+  log.append("lost");
+  log.append("lost again");
+  EXPECT_EQ(journal->count(LogLevel::debug, "observation: cannot write"), 1u);
+  std::filesystem::remove(path);
+  log.append("kept");
+  EXPECT_EQ(lines_of(path), std::vector<std::string>{"kept"});
+  std::filesystem::remove(path);
+  std::filesystem::create_directories(path);
+  log.append("lost after a success");
+  EXPECT_EQ(journal->count(LogLevel::debug, "observation: cannot write"), 2u);
+}
+
+// A sampler's std::exception costs the gauges, not the window, and is said; anything
+// else leaves tick() for the supervised loop to record.
+TEST(Observation, ASamplerFailureLosesOnlyTheGauges) {
+  test::TempDir dir;
+  const auto path = dir.path() / "observations.jsonl";
+  auto journal = std::make_shared<test::RecordingSink>();
+  Observations registry;
+  auto log = std::make_shared<ObservationLog>(path, 1 << 20, journal);
+  int samples = 0;
+  ObservationRecorder recorder(registry, log, "v", std::chrono::hours(1), [&] {
+    if (++samples == 2) throw std::runtime_error("sampler failed");
+    return std::map<std::string, uint64_t>{{"sample", static_cast<uint64_t>(samples)}};
+  });
+  recorder.tick(100);
+  recorder.tick(200);
+  const auto lines = lines_of(path);
+  ASSERT_EQ(lines.size(), 2u);
+  EXPECT_NE(lines[0].find("\"sample\":1"), std::string::npos) << lines[0];
+  EXPECT_EQ(lines[1].find("sample"), std::string::npos) << lines[1];
+  EXPECT_EQ(journal->count(LogLevel::debug, "observation: gauge sampling failed: sampler failed"), 1u);
+  ObservationRecorder strange(registry, log, "v", std::chrono::hours(1), []() -> std::map<std::string, uint64_t> { throw 42; });
+  EXPECT_ANY_THROW(strange.tick(300));
+  EXPECT_EQ(lines_of(path).size(), 2u);
+}
+
+TEST(Observation, TheRecorderWritesAFinalWindowAndASecondStopNothing) {
+  test::TempDir dir;
+  const auto path = dir.path() / "observations.jsonl";
+  Observations registry;
+  auto log = std::make_shared<ObservationLog>(path, 1 << 20);
+  {
+    ObservationRecorder never(registry, log, "v", std::chrono::milliseconds(1), {});
+    never.stop();
+  }
+  EXPECT_FALSE(std::filesystem::exists(path));
+  ObservationRecorder recorder(registry, log, "v", std::chrono::milliseconds(5), {});
+  recorder.start();
+  for (int i = 0; i < 2000 && lines_of(path).size() < 2; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  const auto periodic = lines_of(path).size();
+  EXPECT_GE(periodic, 2u);
+  registry.event({1, "shutdown", {}, {}});
+  recorder.stop();
+  const auto lines = lines_of(path);
+  ASSERT_GE(lines.size(), periodic + 2);
+  EXPECT_NE(lines[lines.size() - 2].find("shutdown"), std::string::npos);
+  recorder.stop();
+  EXPECT_EQ(lines_of(path).size(), lines.size());
 }
 
 }  // namespace

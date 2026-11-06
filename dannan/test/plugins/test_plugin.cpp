@@ -13,6 +13,7 @@
 #include <fstream>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <thread>
 
 #include "dannan/supervise/subsystem.h"
@@ -55,5 +56,7 @@ const dannan::supervise::PluginEntry entry{kind == "mismatched" ? "some other bu
 }  // namespace
 
 #ifndef DANNAN_TEST_PLUGIN_NO_ENTRY
-extern "C" const dannan::supervise::PluginEntry* dannan_test_subsystem_entry() { return &entry; }
+extern "C" const dannan::supervise::PluginEntry* dannan_test_subsystem_entry() {
+  return std::string_view(DANNAN_TEST_PLUGIN_KIND) == "null_entry" ? nullptr : &entry;
+}
 #endif

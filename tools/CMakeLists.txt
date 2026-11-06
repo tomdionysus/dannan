@@ -19,3 +19,14 @@ target_include_directories(dannan-node PRIVATE "${PROJECT_SOURCE_DIR}")
 # dannan-ca: the cluster's certificate authority, on an operator's machine.
 add_executable(dannan-ca dannan_ca.cpp)
 target_link_libraries(dannan-ca PRIVATE dannan dannan_warnings)
+
+# dannan-import-macha: Macha's state files into Dannan's formats, once, at the
+# first cutover.
+add_executable(dannan-import-macha dannan_import_macha.cpp macha_import.cpp)
+target_link_libraries(dannan-import-macha PRIVATE dannan dannan_warnings)
+target_include_directories(dannan-import-macha PRIVATE "${PROJECT_SOURCE_DIR}")
+
+# dannan-bench: figures to compare, recorded and never asserted. Not in the gate.
+add_executable(dannan-bench dannan_bench.cpp)
+target_link_libraries(dannan-bench PRIVATE dannan dannan_warnings)
+target_include_directories(dannan-bench PRIVATE "${PROJECT_SOURCE_DIR}")

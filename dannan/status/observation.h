@@ -23,6 +23,8 @@
 
 #include "dannan/contract/thread_safety.h"
 #include "dannan/contract/time_source.h"
+#include "dannan/status/log.h"
+#include "dannan/supervise/supervised.h"
 
 // Measurement probes, written only to a local file (one JSON line per
 // window, protocol 23's observations.jsonl). Nothing here reaches Status or
@@ -164,13 +166,16 @@ std::string render_event(const ObservationEvent& event);
 // waits on the file.
 class ObservationLog {
  public:
-  ObservationLog(std::filesystem::path path, uint64_t max_bytes) : _path(std::move(path)), _max_bytes(max_bytes) {}
+  ObservationLog(std::filesystem::path path, uint64_t max_bytes, std::shared_ptr<LogSink> journal = nullptr)
+      : _path(std::move(path)), _max_bytes(max_bytes), _journal(journal ? std::move(journal) : null_sink(), "observation") {}
   const std::filesystem::path& path() const noexcept { return _path; }
+  const ScopedLogger& journal() const noexcept { return _journal; }
   void append(const std::string& line);
 
  private:
   const std::filesystem::path _path;
   const uint64_t _max_bytes;
+  const ScopedLogger _journal;
   // Held across the append and the rotation.
   contract::IoMutex _mutex;
   bool _failing DANNAN_GUARDED_BY(_mutex) = false;
@@ -184,7 +189,7 @@ class ObservationRecorder {
   using Gauges = std::function<std::map<std::string, uint64_t>()>;
 
   ObservationRecorder(Observations& registry, std::shared_ptr<ObservationLog> log, std::string version, std::chrono::milliseconds interval, Gauges gauges,
-                      const contract::WallClock* wall = &contract::system_wall_clock());
+                      const contract::WallClock* wall = &contract::system_wall_clock(), supervise::SupervisedThreads* threads = nullptr);
   ~ObservationRecorder();
   ObservationRecorder(const ObservationRecorder&) = delete;
   ObservationRecorder& operator=(const ObservationRecorder&) = delete;
@@ -202,6 +207,7 @@ class ObservationRecorder {
   const std::chrono::milliseconds _interval;
   const Gauges _gauges;
   const contract::WallClock* const _wall;
+  supervise::SupervisedThreads* const _threads;
   contract::IoMutex _tick_mutex;
   ObservationSnapshot _previous DANNAN_GUARDED_BY(_tick_mutex);
   uint64_t _previous_unix_ms DANNAN_GUARDED_BY(_tick_mutex) = 0;

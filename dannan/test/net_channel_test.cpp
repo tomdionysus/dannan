@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <fstream>
+#include <functional>
 #include <tuple>
 
 #include "dannan/net/channel.h"
@@ -135,6 +136,71 @@ TEST(Channel, TheWireVersionStartsAtOne) {
   EXPECT_EQ(pair.client.version, 1);
   EXPECT_EQ(pair.server.version, 1);
   EXPECT_FALSE(pair.client.peer_certificate);
+}
+
+TEST(Channel, AHelloWithNoCommonVersionIsRefused) {
+  const auto k = key("cluster");
+  ClientHandshake client(k, node("10.0.0.1"), 65536, Lane::control);
+  try {
+    (void)server_handshake(k, node("10.0.0.2"), 65536, body(client.hello_blob()), {"192.0.2.7", 1}, nullptr, WireVersions{5, 6});
+    ADD_FAILURE() << "a hello below our range was answered";
+  } catch (const HandshakeRefused& refused) {
+    EXPECT_NE(std::string(refused.what()).find("no common wire version"), std::string::npos) << refused.what();
+  }
+}
+
+// An ack correctly authenticated by a key holder but saying what no honest
+// server would: `edit` changes it, and the MAC is made afresh.
+std::string forged_ack_refusal(const std::function<void(Bytes&)>& edit, size_t client_frame = 65536) {
+  const auto k = key("cluster");
+  ClientHandshake client(k, node("10.0.0.1"), client_frame, Lane::control);
+  const auto reply = server_handshake(k, node("10.0.0.2"), 65536, body(client.hello_blob()), {"192.0.2.7", 1});
+  Reader hello_envelope(body(client.hello_blob()));
+  const auto hello = hello_envelope.bytes(max_handshake_blob);
+  Reader envelope(body(reply.response_blob));
+  auto ack = envelope.bytes(max_handshake_blob);
+  edit(ack);
+  Bytes material;
+  const std::string label = "dannan/ack/1";
+  material.insert(material.end(), label.begin(), label.end());
+  material.insert(material.end(), hello.begin(), hello.end());
+  material.insert(material.end(), ack.begin(), ack.end());
+  Writer forged;
+  forged.bytes(ack);
+  forged.fixed(identity::hmac_sha256(k.auth, material));
+  const auto bytes = forged.take();
+  try {
+    (void)client.finish(bytes);
+  } catch (const HandshakeRefused& refused) {
+    return refused.what();
+  }
+  return {};
+}
+
+TEST(Channel, AnAckOutsideTheRangeIsRefused) {
+  const auto why = forged_ack_refusal([](Bytes& ack) {
+    ack[0] = 0;
+    ack[1] = 9;
+  });
+  EXPECT_NE(why.find("outside our range"), std::string::npos) << why;
+  const auto zero = forged_ack_refusal([](Bytes& ack) {
+    ack[0] = 0;
+    ack[1] = 0;
+  });
+  EXPECT_NE(zero.find("outside our range"), std::string::npos) << zero;
+}
+
+TEST(Channel, ANegotiatedFrameAboveTheLimitIsRefused) {
+  // The client offered 16 KiB; the forged ack "negotiates" 32 KiB.
+  const auto why = forged_ack_refusal(
+      [](Bytes& ack) {
+        ack[2] = 0;
+        ack[3] = 0;
+        ack[4] = 0x80;
+        ack[5] = 0;
+      },
+      16384);
+  EXPECT_NE(why.find("invalid frame size"), std::string::npos) << why;
 }
 
 constexpr uint64_t now_ms = 1'800'000'000'000;

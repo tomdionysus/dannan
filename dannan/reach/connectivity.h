@@ -18,6 +18,7 @@
 #include "dannan/contract/time_source.h"
 #include "dannan/identity/node_id.h"
 #include "dannan/net/client.h"
+#include "dannan/status/log.h"
 
 namespace dannan::reach {
 
@@ -63,7 +64,9 @@ class Gateway {
   // The reason it failed; empty on success.
   virtual std::string add(uint16_t external_port, uint16_t internal_port, const std::string& internal_client, const std::string& description,
                           uint32_t lease_seconds) = 0;
-  virtual void remove(uint16_t external_port) = 0;
+  // 0 when it is gone; otherwise the gateway's UPnP error, or negative when
+  // the gateway could not be asked.
+  virtual int remove(uint16_t external_port) = 0;
 };
 
 // This node's address as the internet sees it; throws with the reason.
@@ -128,7 +131,7 @@ struct PublicConnectivityStatus {
 class PublicConnectivity {
  public:
   PublicConnectivity(ConnectivityConfig config, identity::NodeId node, net::Endpoint configured, std::shared_ptr<Gateway> gateway, ExternalIpLookup lookup,
-                     SelfProbe probe, const contract::WallClock* wall = &contract::system_wall_clock());
+                     SelfProbe probe, const contract::WallClock* wall = &contract::system_wall_clock(), std::shared_ptr<status::LogSink> log = nullptr);
   ~PublicConnectivity();
   PublicConnectivity(const PublicConnectivity&) = delete;
   PublicConnectivity& operator=(const PublicConnectivity&) = delete;
@@ -149,6 +152,7 @@ class PublicConnectivity {
   const ExternalIpLookup _lookup;
   const SelfProbe _probe;
   const contract::WallClock* const _wall;
+  const status::ScopedLogger _log;
   mutable contract::IoMutex _work_mutex;
   mutable contract::Mutex _mutex;
   PublicConnectivityStatus _status DANNAN_GUARDED_BY(_mutex);

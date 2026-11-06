@@ -51,6 +51,11 @@ add_executable(dannan_tests
   status_process_test.cpp
   status_surface_test.cpp
   status_telemetry_test.cpp
+  macha_import_test.cpp
+  ${PROJECT_SOURCE_DIR}/tools/macha_import.cpp
+  sched_class_waits_test.cpp
+  status_readiness_test.cpp
+  status_thread_cpu_test.cpp
   supervise_test.cpp
   two_process_test.cpp
   version_test.cpp
@@ -62,7 +67,7 @@ target_sources(dannan_tests PRIVATE $<TARGET_OBJECTS:dannan_fuzz_targets>)
 # The supervisor's test plugins, one behaviour each, built as loadable
 # modules into one directory the tests point the supervisor at.
 set(DANNAN_TEST_PLUGIN_DIR "${PROJECT_BINARY_DIR}/test-plugins")
-foreach(kind running writes_on_stop declining faulting faulting_after_start mismatched no_entry)
+foreach(kind running writes_on_stop declining faulting faulting_after_start mismatched no_entry null_entry)
   add_library(dannan_test_plugin_${kind} MODULE plugins/test_plugin.cpp)
   target_include_directories(dannan_test_plugin_${kind} PRIVATE "${PROJECT_SOURCE_DIR}")
   target_compile_definitions(dannan_test_plugin_${kind} PRIVATE DANNAN_TEST_PLUGIN_KIND="${kind}")
@@ -73,7 +78,10 @@ foreach(kind running writes_on_stop declining faulting faulting_after_start mism
   target_link_libraries(dannan_test_plugin_${kind} PRIVATE Boost::headers)
   add_dependencies(dannan_tests dannan_test_plugin_${kind})
 endforeach()
-target_compile_definitions(dannan_tests PRIVATE DANNAN_TEST_PLUGIN_DIR="${DANNAN_TEST_PLUGIN_DIR}")
+target_compile_definitions(dannan_tests PRIVATE DANNAN_TEST_PLUGIN_DIR="${DANNAN_TEST_PLUGIN_DIR}" DANNAN_TEST_FIXTURES="${PROJECT_SOURCE_DIR}/dannan/test/fixtures" DANNAN_SOURCE_DIR="${PROJECT_SOURCE_DIR}/dannan")
+
+# Its fsync, on Linux, is the one the library calls (membership_test.cpp).
+set_target_properties(dannan_tests PROPERTIES ENABLE_EXPORTS ON)
 
 # The two-process test runs dannan-node as a child.
 target_compile_definitions(dannan_tests PRIVATE DANNAN_NODE_BINARY="$<TARGET_FILE:dannan-node>" DANNAN_CA_BINARY="$<TARGET_FILE:dannan-ca>")
