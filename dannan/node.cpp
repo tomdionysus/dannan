@@ -615,6 +615,12 @@ void Node::start() {
   _loops.emplace_back([this](std::stop_token stop) { _threads.loop("cluster-maintenance", stop, [this, stop] { membership_loop(stop); }); });
   _loops.emplace_back([this](std::stop_token stop) { _threads.loop("cluster-telemetry", stop, [this, stop] { telemetry_loop(stop); }); });
   _loops.emplace_back([this](std::stop_token stop) { _threads.loop("cluster-connectivity", stop, [this, stop] { connectivity_loop(stop); }); });
+  // Law 1: an io thread learns of a peer and goes on; the disk is this thread's.
+  _members.defer_observed_writes([this] {
+    _roster_wanted.store(true);
+    _roster_wake.notify_all();
+  });
+  _loops.emplace_back([this](std::stop_token stop) { _threads.loop("cluster-roster", stop, [this, stop] { roster_loop(stop); }); });
 }
 
 void Node::cancel_outbound_calls() {
@@ -645,6 +651,13 @@ void Node::stop() {
   }
   for (auto& loop : loops)
     if (loop.joinable()) loop.join();
+  // A clean stop leaves the last state on disk, and any later observation writes for itself.
+  _members.defer_observed_writes({});
+  try {
+    _members.flush();
+  } catch (const std::exception& error) {
+    status::ScopedLogger(_config.log, "node").warn(std::string("known-node roster not written at stop: ") + error.what());
+  }
   std::deque<ConnectivityRefresh> unserved;
   {
     contract::Lock lock(_refresh_mutex);
@@ -945,6 +958,18 @@ void Node::sleep_until(std::stop_token stop, contract::TimePoint due) {
   std::unique_lock lock(_wait_mutex);
   const auto now = _config.time->now();
   if (due > now) _wake.wait_for(lock, stop, due - now, [] { return false; });
+}
+
+void Node::roster_loop(std::stop_token stop) {
+  status::ThreadCpuReporter cpu("cluster-roster", std::chrono::seconds(5), status::ScopedLogger(_config.log, "node"));
+  while (!stop.stop_requested()) {
+    cpu.tick();
+    _members.flush();
+    std::unique_lock lock(_roster_mutex);
+    // Bounded: a wake between the flush and this wait is met at the next pass.
+    // Observations made during a write combine into the next.
+    _roster_wake.wait_for(lock, stop, std::chrono::seconds(1), [this] { return _roster_wanted.exchange(false); });
+  }
 }
 
 void Node::membership_loop(std::stop_token stop) {

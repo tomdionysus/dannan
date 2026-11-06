@@ -60,9 +60,14 @@ struct Server::Handshaking {
   Endpoint remote;
 
   // The family is read before the descriptor is released: arguments of one call have no
-  // order, and g++ evaluates these right to left.
-  Handshaking(asio::io_context& io, asio::ip::tcp::socket& tcp, Endpoint from)
-      : Handshaking(io, tcp, std::move(from), tcp.local_endpoint().protocol().family()) {}
+  // order, and g++ evaluates these right to left. Asked of the socket as opened, not of
+  // the kernel: a peer's reset may already have left it no local address to report.
+  static int family_of(const asio::ip::tcp::socket& tcp) {
+    boost::system::error_code ec;
+    const auto local = tcp.local_endpoint(ec);
+    return ec ? AF_INET : local.protocol().family();
+  }
+  Handshaking(asio::io_context& io, asio::ip::tcp::socket& tcp, Endpoint from) : Handshaking(io, tcp, std::move(from), family_of(tcp)) {}
   Handshaking(asio::io_context& io, asio::ip::tcp::socket& tcp, Endpoint from, int family)
       : strand(asio::make_strand(io.get_executor())),
         socket(strand, Session::Socket::protocol_type(family, SOCK_STREAM), tcp.release()),
@@ -97,7 +102,8 @@ Server::Server(asio::io_context& io, std::string listen_host, uint16_t port, Ser
           _options.memory, _options.time, _options.threads, _options.log),
       _admitted(std::move(admitted)),
       // On a strand: its accept handler and stop()'s close never run at once.
-      _acceptor(asio::make_strand(io)) {
+      _acceptor(asio::make_strand(io)),
+      _accept_pause(_acceptor.get_executor()) {
   if (!_options.traffic) _options.traffic = std::make_shared<TransportTraffic>();
 }
 
@@ -133,13 +139,32 @@ void Server::accept() {
     ++_operations;
   }
   _acceptor.async_accept(_io, [this](const boost::system::error_code& error, asio::ip::tcp::socket tcp) {
-    if (!error) admit(std::move(tcp));
-    if (error != asio::error::operation_aborted) accept();
-    end_operation();
+    // One connection's trouble is that connection's: whatever happens, the
+    // listener goes on and this operation ends.
+    try {
+      if (!error) admit(std::move(tcp));
+    } catch (const std::exception& failure) {
+      _log.debug(std::string("RPC session: ") + failure.what());
+    } catch (...) {
+      _log.debug("RPC session: admitting a connection failed");
+    }
+    if (error == asio::error::operation_aborted) return end_operation();
+    if (!error) {
+      accept();
+      return end_operation();
+    }
+    // Out of descriptors, say: the listener stays readable, so asking again at
+    // once would spin an io thread until one frees.
+    _accept_pause.expires_after(std::chrono::milliseconds(100));
+    _accept_pause.async_wait([this](const boost::system::error_code& waited) {
+      if (!waited) accept();
+      end_operation();
+    });
   });
 }
 
 void Server::admit(asio::ip::tcp::socket tcp) {
+  if (_options.admit_hook) _options.admit_hook();
   boost::system::error_code ec;
   const auto remote = tcp.remote_endpoint(ec);
   if (ec) return;
@@ -158,8 +183,12 @@ void Server::admit(asio::ip::tcp::socket tcp) {
     connection->timer.async_wait([connection](const boost::system::error_code& error) {
       if (!error) connection->close();
     });
-    async_accept_handshake(connection->socket, _options.credentials, _options.local(), _options.max_frame, connection->remote,
-                           [this, connection](std::exception_ptr error, Established session) { established(connection, error, std::move(session)); });
+    try {
+      async_accept_handshake(connection->socket, _options.credentials, _options.local(), _options.max_frame, connection->remote,
+                             [this, connection](std::exception_ptr error, Established session) { established(connection, error, std::move(session)); });
+    } catch (...) {
+      established(connection, std::current_exception(), {});
+    }
   });
 }
 
@@ -240,6 +269,7 @@ void Server::stop() {
   asio::post(_acceptor.get_executor(), [this] {
     boost::system::error_code ignored;
     _acceptor.close(ignored);
+    _accept_pause.cancel();
     end_operation();
   });
   for (auto& connection : handshaking) asio::post(connection->strand, [connection] { connection->close(); });

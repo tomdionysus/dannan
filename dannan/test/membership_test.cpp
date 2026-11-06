@@ -622,5 +622,55 @@ TEST(Membership, ARosterWriteHoldsNoReader) {
 }
 #endif
 
+// Deferred, an observation is known at once and reaches the disk by flush, several
+// combining into one write. An identity reset never waits: it is durable as it returns.
+TEST(Membership, DeferredObservationsCombineAndAnIdentityResetDoesNotWait) {
+  Clocks clocks;
+  test::TempDir dir;
+  const auto path = dir.path() / "known-nodes";
+  auto members = make(clocks, path);
+  int wakes = 0;
+  members.defer_observed_writes([&] { ++wakes; });
+  const auto first = node(2, "10.0.0.2");
+  const auto second = node(3, "10.0.0.3");
+  members.observe(first, true);
+  members.observe(second, true);
+  EXPECT_EQ(wakes, 2);
+  EXPECT_TRUE(listed(members.all(), first.id));
+  EXPECT_FALSE(std::filesystem::exists(path));
+  members.flush();
+  {
+    auto reloaded = make(clocks, path);
+    EXPECT_TRUE(listed(reloaded.all(), first.id));
+    EXPECT_TRUE(listed(reloaded.all(), second.id));
+  }
+  IdentityReset reset;
+  reset.host = "10.9.9.9";
+  reset.port = 7437;
+  reset.epoch = 1;
+  reset.reset_unix_ms = 1;
+  reset.reason = "disk replaced";
+  ASSERT_TRUE(members.apply_identity_reset(reset));
+  auto reloaded = make(clocks, path);
+  EXPECT_EQ(reloaded.identity_resets().size(), 1u);
+}
+
+// A write that fails leaves it still to write.
+TEST(Membership, AFlushThatFailsIsWrittenByTheNext) {
+  Clocks clocks;
+  test::TempDir dir;
+  const auto path = dir.path() / "known-nodes";
+  auto members = make(clocks, path);
+  members.defer_observed_writes([] {});
+  const auto peer = node(2, "10.0.0.2");
+  members.observe(peer, true);
+  std::filesystem::create_directories(path / "in-the-way");
+  EXPECT_THROW(members.flush(), std::exception);
+  std::filesystem::remove_all(path);
+  members.flush();
+  auto reloaded = make(clocks, path);
+  EXPECT_TRUE(listed(reloaded.all(), peer.id));
+}
+
 }  // namespace
 }  // namespace dannan::membership
