@@ -205,22 +205,25 @@ struct Cluster {
   bool forced_a, forced_b;
 
   Cluster(bool relay, std::optional<PathClass> a_class, std::optional<PathClass> b_class, std::chrono::milliseconds upgrade_every = std::chrono::minutes(1),
-          size_t relay_data_circuits = 32)
+          size_t relay_data_circuits = 32, std::chrono::milliseconds dead_after = 3s)
       : forced_a(a_class.has_value()), forced_b(b_class.has_value()) {
     std::ofstream(dir.path() / "k") << "level zero";
     key = identity::load_cluster_key(dir.path() / "k");
     auto hub_config = config(dir.path() / "hub", key, {}, Inbound::yes);
     hub_config.relay = relay;
     hub_config.relay_data_circuits = relay_data_circuits;
+    hub_config.dead_after = dead_after;
     hub = std::make_unique<Node>(io.context, hub_config);
     hub->start();
     const std::vector<net::Endpoint> seed{{"127.0.0.1", hub->port()}};
     auto a_config = config(dir.path() / "a", key, seed, Inbound::no);
     a_config.path_class = a_class;
     a_config.path_upgrade_every = upgrade_every;
+    a_config.dead_after = dead_after;
     auto b_config = config(dir.path() / "b", key, seed, Inbound::no);
     b_config.path_class = b_class;
     b_config.path_upgrade_every = upgrade_every;
+    b_config.dead_after = dead_after;
     a = std::make_unique<Node>(io.context, a_config);
     b = std::make_unique<Node>(io.context, b_config);
     for (auto* node : {a.get(), b.get()}) {
@@ -303,7 +306,8 @@ TEST(LevelZero, TwoNodesMeetThroughARelayWhenAPunchCannotWork) {
 // A transfer much larger than anything queued on the way: bytes through a relay are paced
 // end to end, so nothing is dropped and the circuit lives. Macha's size.
 TEST(LevelZero, ALargeTransferCrossesARelayIntact) {
-  Cluster cluster(true, PathClass::relay_only, PathClass::relay_only);
+  // A bulk case, on an instrumented build as well: a budget that tests the bytes, not the speed.
+  Cluster cluster(true, PathClass::relay_only, PathClass::relay_only, std::chrono::minutes(1), 32, 30s);
   ASSERT_TRUE(eventually([&] { return cluster.ready(); }));
   const auto peer = cluster.record(*cluster.b, *cluster.a);
   ASSERT_TRUE(peer.has_value());
@@ -331,7 +335,8 @@ TEST(LevelZero, ALargeTransferCrossesARelayIntact) {
 // through it: credit for one direction never waits on the other's bytes, and
 // control never queues behind data (law 1).
 TEST(LevelZero, TransfersBothWaysShareARelayAndControlStillAnswers) {
-  Cluster cluster(true, PathClass::relay_only, PathClass::relay_only);
+  // A bulk case, on an instrumented build as well: a budget that tests the bytes, not the speed.
+  Cluster cluster(true, PathClass::relay_only, PathClass::relay_only, std::chrono::minutes(1), 32, 30s);
   ASSERT_TRUE(eventually([&] { return cluster.ready(); }));
   const auto to_b = cluster.record(*cluster.b, *cluster.a);
   const auto to_a = cluster.record(*cluster.a, *cluster.b);
@@ -359,7 +364,8 @@ TEST(LevelZero, TransfersBothWaysShareARelayAndControlStillAnswers) {
 // Many transfers at once, far past what any one queue on the way would hold
 // if a circuit were not paced: nothing is refused and every byte arrives.
 TEST(LevelZero, ManyTransfersAtOnceCrossARelayIntact) {
-  Cluster cluster(true, PathClass::relay_only, PathClass::relay_only);
+  // A bulk case, on an instrumented build as well: a budget that tests the bytes, not the speed.
+  Cluster cluster(true, PathClass::relay_only, PathClass::relay_only, std::chrono::minutes(1), 32, 30s);
   ASSERT_TRUE(eventually([&] { return cluster.ready(); }));
   const auto peer = cluster.record(*cluster.b, *cluster.a);
   ASSERT_TRUE(peer.has_value());
