@@ -56,14 +56,34 @@ std::string SupervisedThreads::run(std::string_view name, const std::function<vo
   return fault.empty() ? code : fault;
 }
 
+void SupervisedThreads::say(std::string_view name, std::string_view outcome) noexcept {
+  try {
+    std::string code, fault;
+    {
+      contract::Lock lock(_mutex);
+      const auto& status = _statuses.at(std::string(name));
+      code = status.last_fault_code;
+      fault = status.last_fault;
+    }
+    _log.error("thread '" + std::string(name) + "' faulted (" + code + "): " + fault + "; " + std::string(outcome));
+  } catch (...) {
+    // Saying so failed. Still nothing escapes a thread's entry point.
+  }
+}
+
 void SupervisedThreads::loop(std::string_view name, std::stop_token stop, const std::function<void()>& body) noexcept {
   status::set_thread_name(name);
   size_t consecutive = 0;
   while (!stop.stop_requested()) {
-    const auto started = contract::Clock::now();
+    const auto started = _time->now();
     if (run(name, body).empty()) return;
     // A long healthy run earns a fresh backoff.
-    consecutive = contract::Clock::now() - started > _ceiling ? 1 : consecutive + 1;
+    consecutive = _time->now() - started > _ceiling ? 1 : consecutive + 1;
+    if (stop.stop_requested()) {
+      say(name, "stopping, not restarted");
+      return;
+    }
+    say(name, "restarting in " + std::to_string(restart_delay(consecutive, _initial, _ceiling).count()) + " ms");
     adjust(name, 0, 1);
     {
       std::mutex mutex;
@@ -75,13 +95,22 @@ void SupervisedThreads::loop(std::string_view name, std::stop_token stop, const 
   }
 }
 
-void SupervisedThreads::once(std::string_view name, const std::function<void()>& body) noexcept { (void)run(name, body); }
+void supervised_loop(SupervisedThreads* threads, std::string_view name, std::stop_token stop, const std::function<void()>& body) noexcept {
+  static SupervisedThreads unrecorded;
+  (threads ? *threads : unrecorded).loop(name, stop, body);
+}
+
+void SupervisedThreads::once(std::string_view name, const std::function<void()>& body) noexcept {
+  if (!run(name, body).empty()) say(name, "thread ended");
+}
 
 void SupervisedThreads::escalating(std::string_view name, const std::function<void()>& body, const std::function<void(std::string)>& escalate) noexcept {
   auto fault = run(name, body);
-  if (fault.empty() || !escalate) return;
+  if (fault.empty()) return;
+  say(name, "escalated to its subsystem's supervisor");
+  if (!escalate) return;
   try {
-    escalate(std::move(fault));
+    escalate("thread '" + std::string(name) + "' faulted: " + fault);
   } catch (...) {
   }
 }

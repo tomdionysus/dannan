@@ -205,22 +205,25 @@ struct Cluster {
   bool forced_a, forced_b;
 
   Cluster(bool relay, std::optional<PathClass> a_class, std::optional<PathClass> b_class, std::chrono::milliseconds upgrade_every = std::chrono::minutes(1),
-          size_t relay_data_circuits = 32)
+          size_t relay_data_circuits = 32, std::chrono::milliseconds dead_after = 3s)
       : forced_a(a_class.has_value()), forced_b(b_class.has_value()) {
     std::ofstream(dir.path() / "k") << "level zero";
     key = identity::load_cluster_key(dir.path() / "k");
     auto hub_config = config(dir.path() / "hub", key, {}, Inbound::yes);
     hub_config.relay = relay;
     hub_config.relay_data_circuits = relay_data_circuits;
+    hub_config.dead_after = dead_after;
     hub = std::make_unique<Node>(io.context, hub_config);
     hub->start();
     const std::vector<net::Endpoint> seed{{"127.0.0.1", hub->port()}};
     auto a_config = config(dir.path() / "a", key, seed, Inbound::no);
     a_config.path_class = a_class;
     a_config.path_upgrade_every = upgrade_every;
+    a_config.dead_after = dead_after;
     auto b_config = config(dir.path() / "b", key, seed, Inbound::no);
     b_config.path_class = b_class;
     b_config.path_upgrade_every = upgrade_every;
+    b_config.dead_after = dead_after;
     a = std::make_unique<Node>(io.context, a_config);
     b = std::make_unique<Node>(io.context, b_config);
     for (auto* node : {a.get(), b.get()}) {
@@ -300,6 +303,88 @@ TEST(LevelZero, TwoNodesMeetThroughARelayWhenAPunchCannotWork) {
   for (const auto& circuit : relay.circuits) EXPECT_GT(circuit.bytes, 0u);
 }
 
+// A transfer much larger than anything queued on the way: bytes through a relay are paced
+// end to end, so nothing is dropped and the circuit lives. Macha's size.
+TEST(LevelZero, ALargeTransferCrossesARelayIntact) {
+  // A bulk case, on an instrumented build as well: a budget that tests the bytes, not the speed.
+  Cluster cluster(true, PathClass::relay_only, PathClass::relay_only, std::chrono::minutes(1), 32, 30s);
+  ASSERT_TRUE(eventually([&] { return cluster.ready(); }));
+  const auto peer = cluster.record(*cluster.b, *cluster.a);
+  ASSERT_TRUE(peer.has_value());
+  net::Bytes payload(32 * 1024 * 1024);
+  for (size_t i = 0; i < payload.size(); ++i) payload[i] = static_cast<uint8_t>(i * 31 >> 3);
+  const auto outcome = cluster.a->context().routes().call_and_wait(*peer, echo_data, payload, sched::FrameType::foreground, 120s);
+  ASSERT_TRUE(outcome.reply) << outcome.failure;
+  EXPECT_EQ(outcome.reply->payload, payload);
+  EXPECT_EQ(cluster.a->context().nodes().path(peer->id, net::Lane::data), net::Purpose::relayed);
+  // Bulk on DATA at each hop, as wire v1 section 6 has it: never in front of
+  // the pings on the CONTROL session to the relay.
+  bool data_circuit = false;
+  for (const auto& circuit : cluster.hub->diagnostics().paths.circuits) {
+    if (circuit.lane != net::Lane::data) continue;
+    data_circuit = true;
+    EXPECT_EQ(circuit.carrier_a, net::Lane::data);
+    EXPECT_EQ(circuit.carrier_b, net::Lane::data);
+  }
+  EXPECT_TRUE(data_circuit);
+  // Twice: the circuit is still good.
+  EXPECT_TRUE(cluster.a->context().routes().call_and_wait(*peer, echo_data, net::Bytes(1024, 3), sched::FrameType::foreground, 60s).reply);
+}
+
+// Both ways at once, on one circuit, with the control circuit answering all
+// through it: credit for one direction never waits on the other's bytes, and
+// control never queues behind data (law 1).
+TEST(LevelZero, TransfersBothWaysShareARelayAndControlStillAnswers) {
+  // A bulk case, on an instrumented build as well: a budget that tests the bytes, not the speed.
+  Cluster cluster(true, PathClass::relay_only, PathClass::relay_only, std::chrono::minutes(1), 32, 30s);
+  ASSERT_TRUE(eventually([&] { return cluster.ready(); }));
+  const auto to_b = cluster.record(*cluster.b, *cluster.a);
+  const auto to_a = cluster.record(*cluster.a, *cluster.b);
+  ASSERT_TRUE(to_b && to_a);
+  net::Bytes payload(16 * 1024 * 1024);
+  for (size_t i = 0; i < payload.size(); ++i) payload[i] = static_cast<uint8_t>(i * 17 >> 2);
+  const auto send = [&](Node& from, const membership::NodeRecord& peer) {
+    return std::async(std::launch::async,
+                      [&from, peer, &payload] { return from.context().routes().call_and_wait(peer, echo_data, payload, sched::FrameType::foreground, 120s); });
+  };
+  auto forward = send(*cluster.a, *to_b);
+  auto backward = send(*cluster.b, *to_a);
+  for (int i = 0; i < 20; ++i) {
+    const auto control = cluster.echo(*cluster.a, *cluster.b, false);
+    ASSERT_TRUE(control.reply) << control.failure;
+  }
+  const auto there = forward.get();
+  const auto back = backward.get();
+  ASSERT_TRUE(there.reply) << there.failure;
+  ASSERT_TRUE(back.reply) << back.failure;
+  EXPECT_EQ(there.reply->payload, payload);
+  EXPECT_EQ(back.reply->payload, payload);
+}
+
+// Many transfers at once, far past what any one queue on the way would hold
+// if a circuit were not paced: nothing is refused and every byte arrives.
+TEST(LevelZero, ManyTransfersAtOnceCrossARelayIntact) {
+  // A bulk case, on an instrumented build as well: a budget that tests the bytes, not the speed.
+  Cluster cluster(true, PathClass::relay_only, PathClass::relay_only, std::chrono::minutes(1), 32, 30s);
+  ASSERT_TRUE(eventually([&] { return cluster.ready(); }));
+  const auto peer = cluster.record(*cluster.b, *cluster.a);
+  ASSERT_TRUE(peer.has_value());
+  std::vector<std::future<std::pair<net::Bytes, net::CallOutcome>>> running;
+  for (int t = 0; t < 8; ++t) {
+    running.push_back(std::async(std::launch::async, [&cluster, peer, t] {
+      net::Bytes payload(4 * 1024 * 1024, static_cast<uint8_t>(t + 1));
+      auto outcome = cluster.a->context().routes().call_and_wait(*peer, echo_data, payload, sched::FrameType::foreground, 120s);
+      return std::make_pair(std::move(payload), std::move(outcome));
+    }));
+  }
+  for (auto& one : running) {
+    const auto [payload, outcome] = one.get();
+    ASSERT_TRUE(outcome.reply) << outcome.failure;
+    EXPECT_EQ(outcome.reply->payload, payload);
+  }
+  EXPECT_EQ(cluster.a->context().nodes().path(peer->id, net::Lane::data), net::Purpose::relayed);
+}
+
 // A relayed pair whose relay-only end becomes punchable moves up: the lower
 // id punches, both ends keep the punched session over the relayed one, and
 // the relayed one retires. Calls keep working throughout.
@@ -318,7 +403,8 @@ TEST(LevelZero, ARelayedPairMovesUpToAPunch) {
            cluster.b->context().nodes().path(a, net::Lane::control) == net::Purpose::punched;
   }));
   const auto lower = a < b ? cluster.a.get() : cluster.b.get();
-  EXPECT_GE(lower->diagnostics().paths.upgrades_made, 1u);
+  // Counted once the upgrade's call returns, which may be after the path shows.
+  EXPECT_TRUE(eventually([&] { return lower->diagnostics().paths.upgrades_made >= 1u; }));
   const auto outcome = cluster.echo(*cluster.a, *cluster.b, false);
   ASSERT_TRUE(outcome.reply) << outcome.failure;
   // The relay's circuit goes with the relayed session.

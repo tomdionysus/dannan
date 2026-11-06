@@ -28,6 +28,7 @@
 #include "dannan/membership/identity_reset.h"
 #include "dannan/net/scheduler.h"
 #include "dannan/net/session.h"
+#include "dannan/status/log.h"
 
 namespace dannan::net {
 
@@ -69,6 +70,14 @@ class CallHandle {
   std::optional<sched::FrameType> _promoted DANNAN_GUARDED_BY(_mutex);
 };
 
+// How one call is watched for progress, in place of its type's and its lane's
+// settings: a deadline cancels it, a notice only logs. Macha watches a synchronous
+// call and leaves an asynchronous one to its caller, so a call says which it is.
+struct CallWatch {
+  std::optional<std::chrono::milliseconds> no_progress = std::nullopt;
+  std::optional<std::chrono::milliseconds> stall_notice = std::nullopt;
+};
+
 struct ClientOptions {
   // How this node proves itself and checks its peers.
   Credentials credentials;
@@ -88,6 +97,12 @@ struct ClientOptions {
   // ever. Per lane, since a DATA reply may legitimately take long to start.
   std::chrono::milliseconds control_no_progress{0};
   std::chrono::milliseconds data_no_progress{0};
+  // Logged at debug, again each period, while a call makes no progress; zero
+  // for none. A type's registration may name its own, as for the deadlines.
+  std::chrono::milliseconds control_stall_notice{0};
+  std::chrono::milliseconds data_stall_notice{0};
+  // Where the client writes its journal lines; none, nowhere.
+  std::shared_ptr<status::LogSink> log;
   // Health: every heartbeat each peer with a route is pinged on each lane
   // it has; a ping that hangs is abandoned after a third of dead_after and
   // retried, and a CONTROL route with no answer for dead_after is closed.
@@ -102,6 +117,9 @@ struct ClientOptions {
   // Tests only: consulted before every dial; a non-empty answer is the
   // reason the dial fails, as if the network refused it.
   std::function<std::string(const Endpoint&, Lane)> dial_hook;
+  // Called with the session just before a call is placed on it, for a test that
+  // retires it there.
+  std::function<void(Session&)> place_hook;
   // Level 0: asked for a path to a peer that can be neither dialled nor
   // asked to dial back (it takes no inbound connection, and neither does
   // this node, or it has no session here to ask over). The maker hands the
@@ -113,7 +131,13 @@ struct ClientOptions {
 
 struct ClientStats {
   uint64_t dials = 0;
+  // Dials that became sessions, counted once the peer's identity has been checked.
+  uint64_t connections_created = 0;
+  // Routes usable now, whichever end dialled them: a lane to a peer counts once.
+  uint64_t canonical_connections = 0;
   uint64_t dial_failures = 0;
+  // Health pings sent, retries included.
+  uint64_t pings = 0;
   // Calls placed on a route that already existed.
   uint64_t reused = 0;
   // Sessions retired by reconciliation: a simultaneous dial's loser, or a
@@ -157,10 +181,10 @@ class Client {
   // fails. `done` is posted to `executor` exactly once. The handle controls
   // the call while it is pending. Waits on nothing.
   std::shared_ptr<CallHandle> call(const membership::NodeRecord& peer, MessageType type, Bytes payload, sched::FrameType frame,
-                                   boost::asio::any_io_executor executor, Done done);
+                                   boost::asio::any_io_executor executor, Done done, CallWatch watch = {});
   // As above, to an address whose node is not known yet (a bootstrap).
   std::shared_ptr<CallHandle> call(const Endpoint& endpoint, MessageType type, Bytes payload, sched::FrameType frame, boost::asio::any_io_executor executor,
-                                   Done done);
+                                   Done done, CallWatch watch = {});
 
   // A session a peer opened to this node, from the server: a route back.
   void admit(const std::shared_ptr<Session>& session);
@@ -181,6 +205,12 @@ class Client {
   // False without a route, or when the session refuses it; with
   // `best_effort`, also when it would have to queue behind other traffic.
   bool send(const identity::NodeId& peer, Lane lane, const Message& message, sched::FrameType frame, bool best_effort = false);
+  // The same for a sender that paces itself and must lose nothing. Says
+  // whether the session took it, its queue is full for now, or there is no
+  // route; when taken, `sent` is told on `executor` whether it was written.
+  enum class Paced { taken, full, gone };
+  Paced send_paced(const identity::NodeId& peer, Lane lane, Message message, sched::FrameType frame, boost::asio::any_io_executor executor,
+                   std::function<void(bool)> sent);
 
   // Starts the health pings.
   void start();
@@ -228,6 +258,12 @@ class Client {
   void invalidate_identity_association(const membership::IdentityReset& reset);
   // Closes this node's routes to `peer` on `lane`, both directions.
   void close_route(const identity::NodeId& peer, Lane lane, const std::string& why);
+  // The path under the route to `peer` on `lane` moved the far end's bytes:
+  // its pings are waiting behind them, so the peer is alive.
+  void note_path_progress(const identity::NodeId& peer, Lane lane);
+  // Starts dialling `lane` to `peer` unless a route or a dial is there already.
+  // Never waits.
+  void open_lane(const membership::NodeRecord& peer, Lane lane);
 
   bool has_route(const identity::NodeId& peer, Lane lane) const;
   ClientStats stats() const;
@@ -251,6 +287,7 @@ class Client {
     // closed under it.
     int reroutes = 0;
     std::shared_ptr<CallHandle> handle;
+    CallWatch watch{};
   };
   struct Target {
     std::optional<identity::NodeId> id;
@@ -265,6 +302,8 @@ class Client {
     std::shared_ptr<boost::asio::steady_timer> timer;
     std::string backoff_key;
     bool path = false;
+    // Waiting for the peer's own session, after a dial of this end's was retired.
+    bool peers_session = false;
   };
   struct Backoff {
     unsigned failures = 0;
@@ -294,10 +333,14 @@ class Client {
   std::vector<std::shared_ptr<Session>> control_routes_locked() const DANNAN_REQUIRES(_mutex);
   // The health loop, on its strand.
   void arm_heartbeat();
+  void await_heartbeat();
   void health_pass();
   void attempt(const std::shared_ptr<Probe>& probe);
+  void redial(const std::shared_ptr<Probe>& probe);
   void answered(const std::shared_ptr<Probe>& probe, CallOutcome outcome);
   void retry(const std::shared_ptr<Probe>& probe);
+  void await_ping(const std::shared_ptr<Probe>& probe);
+  void await_retry(const std::shared_ptr<Probe>& probe, contract::TimePoint resume_at);
   // Lanes a peer asked for, and those an incapable node maintains. On the
   // health strand.
   void open_lanes();
@@ -308,6 +351,7 @@ class Client {
   bool local_capable() const;
   // Asks an incapable peer for `key`'s lane over `control`, and arms the
   // wait for its reverse dial.
+  void await_peers_session(Target target, Lane lane, Call call);
   void ask_for_lane(const RouteKey& key, const std::shared_ptr<Session>& control, const std::shared_ptr<boost::asio::steady_timer>& timer);
   void reverse_expired(const RouteKey& key, const std::shared_ptr<boost::asio::steady_timer>& timer);
   // Asks the path maker for `key`, the wait already armed.
@@ -323,9 +367,13 @@ class Client {
 
   boost::asio::io_context& _io;
   ClientOptions _options;
+  const status::ScopedLogger _log;
   const identity::NodeId _self;
   boost::asio::strand<boost::asio::io_context::executor_type> _health_strand;
+  // The health pass running; on the health strand.
+  std::weak_ptr<void> _health_pass;
   boost::asio::steady_timer _heartbeat;
+  contract::TimePoint _next_heartbeat{};  // on the health strand
 
   mutable contract::Mutex _mutex;
   std::condition_variable _idle;

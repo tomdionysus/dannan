@@ -17,6 +17,9 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
+#include <fstream>
+#include <limits>
 #include <map>
 #include <random>
 #include <set>
@@ -186,6 +189,114 @@ TEST(Placement, ASchemeNamesItsSalts) {
   bool differs = false;
   for (uint32_t k = 0; k < 200 && !differs; ++k) differs = by_capacity(key_of(k), nodes, 1, scheme) != by_capacity(key_of(k), nodes, 1, other);
   EXPECT_TRUE(differs);
+}
+
+// Macha is the source of truth for where its bytes live: a different answer
+// here re-homes every object. The reference is Macha's, generated on Linux
+// aarch64 and owned by the Macha session.
+TEST(Placement, MatchesMachasReferenceEverywhere) {
+  std::ifstream in(DANNAN_TEST_FIXTURES "/placement-vectors.txt");
+  ASSERT_TRUE(in.good());
+  while (in.peek() == '#') in.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+  const auto hex = [](const std::string& text) {
+    std::vector<uint8_t> out;
+    for (size_t i = 0; i + 1 < text.size(); i += 2) out.push_back(static_cast<uint8_t>(std::stoi(text.substr(i, 2), nullptr, 16)));
+    return out;
+  };
+  const auto indices = [&](size_t count) {
+    std::vector<size_t> out(count);
+    for (auto& index : out) in >> index;
+    return out;
+  };
+  const Scheme machas{"macha/data-fallback/v7", "macha/data-extra-domain/v7", "capacity"};
+  size_t cases = 0;
+  size_t orders = 0;
+  size_t capacities = 0;
+  in >> cases;
+  EXPECT_EQ(cases, 10u);
+  for (size_t c = 0; c < cases; ++c) {
+    std::string name;
+    size_t count = 0;
+    in >> name >> count;
+    std::vector<NodeRecord> nodes;
+    std::map<identity::NodeId, size_t> position;
+    for (size_t n = 0; n < count; ++n) {
+      std::string id, domain;
+      uint64_t capacity = 0;
+      in >> id >> domain >> capacity;
+      NodeRecord record;
+      const auto bytes = hex(id);
+      std::copy(bytes.begin(), bytes.end(), record.id.bytes.begin());
+      record.failure_domain = domain == "-" ? "" : domain;
+      record.adverts["capacity"] = membership::u64_advert(capacity);
+      position[record.id] = n;
+      nodes.push_back(std::move(record));
+    }
+    const auto order = [&](const std::vector<NodeRecord>& placed) {
+      std::vector<size_t> out;
+      for (const auto& node : placed) out.push_back(position.at(node.id));
+      return out;
+    };
+    size_t logical = 0;
+    in >> logical;
+    for (size_t l = 0; l < logical; ++l, ++capacities) {
+      size_t replicas = 0;
+      uint64_t expected = 0;
+      in >> replicas >> expected;
+      EXPECT_EQ(logical_capacity(nodes, replicas, "capacity"), expected) << name << " R=" << replicas;
+    }
+    size_t keys = 0;
+    in >> keys;
+    for (size_t k = 0; k < keys; ++k) {
+      std::string key_name, key_hex;
+      size_t placements = 0;
+      in >> key_name >> key_hex >> placements;
+      const auto key = hex(key_hex);
+      for (size_t p = 0; p < placements; ++p, orders += 2) {
+        size_t replicas = 0, length = 0;
+        in >> replicas >> length;
+        const auto capacity_order = indices(length);
+        in >> length;
+        const auto rendezvous_order = indices(length);
+        EXPECT_EQ(order(by_capacity(key, nodes, replicas, machas)), capacity_order) << name << " " << key_name << " R=" << replicas;
+        EXPECT_EQ(order(rendezvous(key, nodes, replicas)), rendezvous_order) << name << " " << key_name << " R=" << replicas;
+      }
+    }
+  }
+  EXPECT_EQ(orders, 2704u);
+  EXPECT_EQ(capacities, 26u);
+}
+
+// Macha's exact boundary: the 8 GiB node owns 3,354,133 of 2^32 shards, the tail of
+// the shard space, with these ids.
+TEST(Placement, TheQuotaBoundaryIsExact) {
+  constexpr uint64_t GiB = 1024ull * 1024 * 1024;
+  constexpr uint64_t TiB = 1024 * GiB;
+  const auto at = [](uint8_t tag, uint64_t capacity) {
+    NodeRecord record;
+    record.id.bytes.back() = tag;
+    record.adverts["capacity"] = membership::u64_advert(capacity);
+    return record;
+  };
+  const std::vector<NodeRecord> nodes{at(1, 10 * TiB), at(2, 10 * TiB), at(3, 8 * GiB)};
+  EXPECT_EQ(logical_capacity(nodes, 2, "capacity"), 10 * TiB + 4 * GiB);
+  EXPECT_EQ(logical_capacity({nodes[0], nodes[2]}, 2, "capacity"), 8 * GiB);
+  const Scheme machas{"macha/data-fallback/v7", "macha/data-extra-domain/v7", "capacity"};
+  const auto shard = [](uint32_t value) {
+    std::array<uint8_t, 32> key{};
+    for (int i = 0; i < 4; ++i) key[static_cast<size_t>(i)] = static_cast<uint8_t>(value >> (24 - 8 * i));
+    return key;
+  };
+  const auto small_owns = [&](uint32_t value) {
+    const auto placed = by_capacity(shard(value), nodes, 2, machas);
+    EXPECT_EQ(placed.size(), 3u);
+    EXPECT_NE(placed[0].id, placed[1].id);
+    return placed[0].id == nodes[2].id || placed[1].id == nodes[2].id;
+  };
+  const auto first_small = static_cast<uint32_t>(shard_count - 3'354'133);
+  EXPECT_FALSE(small_owns(first_small - 1));
+  EXPECT_TRUE(small_owns(first_small));
+  EXPECT_TRUE(small_owns(std::numeric_limits<uint32_t>::max()));
 }
 
 }  // namespace

@@ -300,12 +300,19 @@ void ObservationLog::append(const std::string& line) {
   std::ofstream out(_path, std::ios::app | std::ios::binary);
   out << line << '\n';
   out.flush();
+  if (!out && !_failing) _journal.debug("observation: cannot write " + _path.string());
   _failing = !out;
 }
 
 ObservationRecorder::ObservationRecorder(Observations& registry, std::shared_ptr<ObservationLog> log, std::string version, std::chrono::milliseconds interval,
-                                         Gauges gauges, const contract::WallClock* wall)
-    : _registry(registry), _log(std::move(log)), _version(std::move(version)), _interval(interval), _gauges(std::move(gauges)), _wall(wall) {}
+                                         Gauges gauges, const contract::WallClock* wall, supervise::SupervisedThreads* threads)
+    : _registry(registry),
+      _log(std::move(log)),
+      _version(std::move(version)),
+      _interval(interval),
+      _gauges(std::move(gauges)),
+      _wall(wall),
+      _threads(threads) {}
 
 ObservationRecorder::~ObservationRecorder() { stop(); }
 
@@ -315,14 +322,16 @@ void ObservationRecorder::start() {
     _previous_unix_ms = _wall->unix_ms();
   }
   _thread = std::jthread([this](std::stop_token stop) {
-    while (!stop.stop_requested()) {
-      {
-        std::unique_lock lock(_wait_mutex);
-        _wake.wait_for(lock, stop, _interval, [] { return false; });
+    supervise::supervised_loop(_threads, "observation-recorder", stop, [this, stop] {
+      while (!stop.stop_requested()) {
+        {
+          std::unique_lock lock(_wait_mutex);
+          _wake.wait_for(lock, stop, _interval, [] { return false; });
+        }
+        if (stop.stop_requested()) return;
+        tick(_wall->unix_ms());
       }
-      if (stop.stop_requested()) return;
-      tick(_wall->unix_ms());
-    }
+    });
   });
 }
 
@@ -341,8 +350,9 @@ void ObservationRecorder::tick(uint64_t now_unix_ms) {
   if (_gauges) {
     try {
       gauges = _gauges();
-    } catch (const std::exception&) {
+    } catch (const std::exception& error) {
       // A failed sample loses the gauges, not the window.
+      _log->journal().debug(std::string("observation: gauge sampling failed: ") + error.what());
     }
   }
   for (const auto& event : _registry.drain_events()) _log->append(render_event(event));

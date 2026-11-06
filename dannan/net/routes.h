@@ -7,8 +7,11 @@
 
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <map>
+#include <optional>
+#include <set>
 #include <string>
 
 #include "dannan/sched/work.h"
@@ -51,6 +54,7 @@ inline constexpr MessageType channel_publish{17};
 inline constexpr MessageType channel_replay{18};
 inline constexpr MessageType channel_bulk{19};
 inline constexpr MessageType revocations{20};
+inline constexpr MessageType relay_credit{21};
 inline constexpr MessageType ok{100};
 inline constexpr MessageType members_reply{101};
 inline constexpr MessageType telemetry_reply{102};
@@ -85,6 +89,14 @@ struct Registration {
   // Executed one job per peer at a time, in arrival order, by the server's
   // ordered pool: mutations whose order matters.
   bool ordered = false;
+  // This type's own no-progress deadline and stall notice, in place of its
+  // lane's; zero turns one off. Unset, the lane's apply.
+  std::optional<std::chrono::milliseconds> no_progress = std::nullopt;
+  std::optional<std::chrono::milliseconds> stall_notice = std::nullopt;
+  // A notification handled by its arrival, on the session's strand, in the
+  // order it arrived and ahead of every queue: never queued, so never
+  // refused. Its handler must not wait.
+  bool on_session = false;
 };
 
 // What each type may do on the wire. Built once at start, before any
@@ -100,6 +112,9 @@ class RouteTable {
   // first_user_type or one already taken. Not thread-safe: registration
   // happens before the node starts.
   void add(MessageType type, Registration registration);
+  // A number no longer in use, so it is not reused for something else while old
+  // peers may still send it: add() then refuses it. The same limits as add().
+  void retire(MessageType type);
 
   // The registration, or null for a type nobody registered.
   const Registration* find(MessageType type) const noexcept;
@@ -114,6 +129,7 @@ class RouteTable {
   bool is_notification(MessageType type) const noexcept;
   bool is_fast_control(MessageType type) const noexcept;
   bool is_ordered(MessageType type) const noexcept;
+  bool is_on_session(MessageType type) const noexcept;
   // The registered name, or the number in decimal.
   std::string name(MessageType type) const;
 
@@ -121,6 +137,7 @@ class RouteTable {
   void add_core(MessageType type, Registration registration);
 
   std::map<MessageType, Registration> _types;
+  std::set<MessageType> _retired;
 };
 
 }  // namespace dannan::net

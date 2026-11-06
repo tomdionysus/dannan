@@ -18,9 +18,12 @@
 
 #include "dannan/sched/work.h"
 #include "dannan/status/log.h"
+#include "dannan/test/fixtures/recording_sink.h"
 
 namespace dannan::sched {
 namespace {
+
+using namespace std::chrono_literals;
 
 // The wire values are protocol 23's and never change.
 TEST(FrameType, WireValuesAreFixed) {
@@ -51,7 +54,7 @@ TEST(FrameType, DecodesOnlyTheFiveWireValues) {
 TEST(FrameType, NamesAreStable) {
   EXPECT_EQ(std::string(frame_type_name(FrameType::control)), "control");
   EXPECT_EQ(std::string(frame_type_name(FrameType::foreground)), "foreground");
-  EXPECT_EQ(std::string(frame_type_name(FrameType::read_ahead)), "read_ahead");
+  EXPECT_EQ(std::string(frame_type_name(FrameType::read_ahead)), "read-ahead");
   EXPECT_EQ(std::string(frame_type_name(FrameType::loader)), "loader");
   EXPECT_EQ(std::string(frame_type_name(FrameType::speculative)), "speculative");
 }
@@ -159,6 +162,40 @@ TEST(WaitGuard, ThrowsOnARefusalWhenTestsAskIt) {
   EXPECT_THROW(guard.enter(control, Waits::network, "peer call"), std::logic_error);
   EXPECT_EQ(guard.violations(), 1u);
   EXPECT_NO_THROW(guard.enter(control, Waits::locks, "table read"));
+}
+
+TEST(Waits, ComposeAndIncludeOverEveryMask) {
+  for (unsigned a = 0; a < 16; ++a)
+    for (unsigned b = 0; b < 16; ++b) {
+      const auto combined = static_cast<Waits>(a) | static_cast<Waits>(b);
+      EXPECT_EQ(static_cast<unsigned>(combined), a | b);
+      for (const unsigned bit : {1U, 2U, 4U, 8U}) EXPECT_EQ(includes(combined, static_cast<Waits>(bit)), ((a | b) & bit) != 0);
+    }
+  EXPECT_FALSE(includes(Waits::none, Waits::network));
+}
+
+// Work may allow itself less, never more; allowed means a subset, every mask against
+// every mask.
+TEST(Waits, MayEnterIsASubsetOverEveryMask) {
+  const WorkContext read(FrameType::foreground, {}, nullptr, "read", Waits::state_device | Waits::locks);
+  EXPECT_TRUE(may_enter(read.allowed(), Waits::state_device));
+  EXPECT_FALSE(may_enter(read.allowed(), Waits::network));
+  const WorkContext control(FrameType::control, {}, nullptr, "control", Waits::state_device | Waits::data_device | Waits::network | Waits::locks);
+  EXPECT_FALSE(may_enter(control.allowed(), Waits::network));
+  EXPECT_FALSE(may_enter(control.allowed(), Waits::data_device));
+  for (unsigned allowed = 0; allowed < 16; ++allowed)
+    for (unsigned declared = 0; declared < 16; ++declared)
+      EXPECT_EQ(may_enter(static_cast<Waits>(allowed), static_cast<Waits>(declared)), (declared & ~allowed) == 0);
+}
+
+// Macha's words and level, once per origin and operation: contract/work.cpp:43.
+TEST(WaitGuard, AViolationIsWarnedOfOnceInMachasWords) {
+  auto sink = std::make_shared<test::RecordingSink>();
+  WaitGuard guard(status::ScopedLogger(sink, "waits"), WaitGuard::Mode::record);
+  const WorkContext context(FrameType::foreground, {}, nullptr, "a read", Waits::locks);
+  EXPECT_FALSE(guard.enter(context, Waits::network, "the network"));
+  EXPECT_FALSE(guard.enter(context, Waits::network, "the network"));
+  EXPECT_EQ(sink->count(status::LogLevel::warn, "work (a read) entered the network, which may wait on what the work does not allow"), 1u);
 }
 
 }  // namespace

@@ -129,5 +129,15 @@ TEST(DurableFile, MakesItsDirectoriesOwnerOnly) {
             std::filesystem::perms::owner_all | std::filesystem::perms::group_read | std::filesystem::perms::group_exec);
 }
 
+TEST(DurableFile, KeepsEmptyAndBinaryContentsExactly) {
+  test::TempDir dir;
+  const auto path = dir.path() / "nested" / "state.json";
+  for (const auto& expected : {std::string(), std::string("one"), std::string(4096, 'x'), std::string("contains\nnewlines\nand\0binary", 28)}) {
+    durable_replace_file(path, expected);
+    EXPECT_EQ(read(path), expected);
+    EXPECT_EQ(entries(path.parent_path()), 1u);
+  }
+}
+
 }  // namespace
 }  // namespace dannan::identity

@@ -7,3 +7,9 @@
 # and TSan cannot see it. Only the reactor's own internals are suppressed.
 race:boost::asio::detail::kqueue_reactor::run
 race:boost::asio::detail::kqueue_reactor::allocate_descriptor_state
+
+# Asio's executor count (detail/atomic_count.hpp, ref_count_down) is a release
+# decrement and then an acquire fence before the delete. That is correct, and
+# g++'s TSan does not model atomic_thread_fence (-Wtsan says so), so it reports
+# the delete as racing the decrement. Only this destructor is suppressed.
+race:boost::asio::execution::detail::shared_target_executor::~shared_target_executor

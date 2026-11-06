@@ -22,6 +22,7 @@
 
 #include "dannan/net/scheduler.h"
 #include "dannan/test/fixtures/gate.h"
+#include "dannan/test/fixtures/stepped_time.h"
 
 namespace dannan::net {
 namespace {
@@ -388,6 +389,146 @@ TEST(Scheduler, AThrowIsCountedAsAFailure) {
   EXPECT_EQ(refusal_of(broken.get())->status, 500);
   for (int spin = 0; spin < 200 && scheduler.stats().message_timings.empty(); ++spin) std::this_thread::sleep_for(5ms);
   EXPECT_EQ(scheduler.stats().message_timings.at(have_object).failed, 1u);
+}
+
+// Held ordered work delays no other class.
+TEST(Scheduler, HeldOrderedWorkDelaysNoOtherClass) {
+  test::Gate gate;
+  RequestScheduler scheduler(routes(), {}, [&](const membership::NodeRecord&, FrameType, const Message& request) {
+    if (request.type == put_commit) gate.enter_and_wait();
+    return Handled::processed({message::ok, {}, {}});
+  });
+  auto held = ask(scheduler, peer(1), 1, put_commit, FrameType::control);
+  ASSERT_TRUE(gate.wait_for_entries(1));
+  auto ping = ask(scheduler, peer(1), 2, message::ping, FrameType::control);
+  auto have = ask(scheduler, peer(1), 3, have_object, FrameType::control);
+  auto get = ask(scheduler, peer(1), 4, get_object, FrameType::foreground);
+  EXPECT_TRUE(answered_within(ping, 5s));
+  EXPECT_TRUE(answered_within(have, 5s));
+  EXPECT_TRUE(answered_within(get, 5s));
+  gate.open();
+  EXPECT_TRUE(answered_within(held, 5s));
+}
+
+// One peer's control mutation is not queued behind that peer's own background
+// mutations: Macha's order, 1, 5, 2, 3, 4.
+TEST(Scheduler, AControlMutationOvertakesItsOwnPeersBackgroundWork) {
+  test::Gate gate;
+  std::mutex mutex;
+  std::vector<uint8_t> order;
+  RequestScheduler scheduler(routes(), {}, [&](const membership::NodeRecord&, FrameType, const Message& request) {
+    {
+      std::lock_guard lock(mutex);
+      order.push_back(request.payload.at(0));
+    }
+    if (request.payload.at(0) == 1) gate.enter_and_wait();
+    return Handled::processed({message::ok, {}, {}});
+  });
+  std::vector<std::future<Message>> answers;
+  answers.push_back(ask(scheduler, peer(1), 1, put_commit, FrameType::loader, {1}));
+  ASSERT_TRUE(gate.wait_for_entries(1));
+  for (uint8_t n = 2; n <= 4; ++n) answers.push_back(ask(scheduler, peer(1), n, put_commit, FrameType::loader, {n}));
+  answers.push_back(ask(scheduler, peer(1), 5, put_commit, FrameType::control, {5}));
+  gate.open();
+  for (auto& answer : answers) EXPECT_TRUE(answered_within(answer, 5s));
+  std::lock_guard lock(mutex);
+  EXPECT_EQ(order, (std::vector<uint8_t>{1, 5, 2, 3, 4}));
+}
+
+TEST(Scheduler, ATimingRecordsItsWaitAndHandlerTime) {
+  test::SteppedTime time;
+  test::Gate gate;
+  RequestScheduler scheduler(
+      routes(), {},
+      [&](const membership::NodeRecord&, FrameType, const Message&) {
+        time.advance(7ms);
+        return Handled::processed({message::ok, {}, {}});
+      },
+      nullptr, &time);
+  auto answer = ask(scheduler, peer(1), 1, have_object, FrameType::control);
+  ASSERT_TRUE(answered_within(answer, 5s));
+  ASSERT_TRUE([&] {
+    for (int i = 0; i < 1000; ++i) {
+      if (scheduler.stats().message_timings.contains(have_object)) return true;
+      std::this_thread::sleep_for(5ms);
+    }
+    return false;
+  }());
+  const auto timing = scheduler.stats().message_timings.at(have_object);
+  EXPECT_EQ(timing.handler_us_total, 7000u);
+  EXPECT_EQ(timing.handler_us_max, 7000u);
+}
+
+// Macha's rule for asking again: 429, 500, 502, 503, 504, and a refusal that names
+// no status. Any other refusal stands.
+TEST(Refusal, ATextOnlyErrorReadsAtStatusZeroAndMayBeAskedAgain) {
+  Writer writer;
+  writer.string("only text");
+  const auto refusal = refusal_of({message::error, writer.take(), {}});
+  ASSERT_TRUE(refusal.has_value());
+  EXPECT_EQ(refusal->status, 0u);
+  EXPECT_EQ(refusal->message, "only text");
+  EXPECT_TRUE(try_later(*refusal));
+  for (const int status : {429, 500, 502, 503, 504}) EXPECT_TRUE(try_later(Refusal{static_cast<uint16_t>(status), {}, {}})) << status;
+  for (const int status : {400, 401, 403, 404, 409, 410, 413, 501, 507}) EXPECT_FALSE(try_later(Refusal{static_cast<uint16_t>(status), {}, {}})) << status;
+}
+
+// A type marked on_session is handled by the arrival itself: in order, ahead
+// of every queue, and never refused, though every queue is full and every
+// worker held. A handler that throws costs the session nothing.
+TEST(Scheduler, AnOnSessionNotificationIsNeverQueuedOrRefused) {
+  constexpr MessageType immediate{2100};
+  auto table = RouteTable::with_dannan_types();
+  table.add(put_commit, {"put_metadata_commit", Lanes::control, Frames::any, false, false, true});
+  table.add(immediate, {"immediate", Lanes::both, Frames::any, true, false, false, std::nullopt, std::nullopt, true});
+  auto shared = std::make_shared<const RouteTable>(std::move(table));
+  test::Gate gate;
+  std::mutex mutex;
+  std::vector<uint8_t> seen;
+  std::vector<std::thread::id> threads;
+  ServerLimits limits;
+  limits.ordered_pending_jobs = 2;
+  RequestScheduler scheduler(shared, limits, [&](const membership::NodeRecord&, FrameType, const Message& message) {
+    if (message.type != immediate) {
+      gate.enter_and_wait();
+      return Handled::processed();
+    }
+    if (message.payload.at(0) == 99) throw std::runtime_error("this handler fails");
+    std::lock_guard lock(mutex);
+    seen.push_back(message.payload.at(0));
+    threads.push_back(std::this_thread::get_id());
+    return Handled::processed();
+  });
+  std::vector<std::future<Message>> held;
+  for (uint64_t i = 1; i <= 6; ++i) held.push_back(ask(scheduler, peer(1), i * 2, put_commit, FrameType::control));
+  ASSERT_TRUE(gate.wait_for_entries(1));
+  ASSERT_GT(scheduler.stats().ordered_rejected, 0u);
+  for (const uint8_t i : std::vector<uint8_t>{1, 99, 2, 3}) scheduler.submit(peer(1), Frame{0, FrameType::loader, {immediate, Bytes{i}, {}}}, Reply{});
+  {
+    std::lock_guard lock(mutex);
+    EXPECT_EQ(seen, (std::vector<uint8_t>{1, 2, 3}));
+    for (const auto& thread : threads) EXPECT_EQ(thread, std::this_thread::get_id());
+  }
+  gate.open();
+  for (auto& answer : held) EXPECT_TRUE(answered_within(answer, 10s));
+  scheduler.stop();
+}
+
+// Only a notification may be marked: a request's reply would be written from
+// the arrival, and a queue's rules do not apply to what never queues.
+TEST(Routes, OnSessionIsOnlyForAPlainNotification) {
+  auto table = RouteTable::with_dannan_types();
+  EXPECT_THROW(table.add(MessageType{2101}, {"call", Lanes::control, Frames::any, false, false, false, std::nullopt, std::nullopt, true}),
+               std::invalid_argument);
+  EXPECT_THROW(table.add(MessageType{2102}, {"ordered", Lanes::control, Frames::any, true, false, true, std::nullopt, std::nullopt, true}),
+               std::invalid_argument);
+  EXPECT_THROW(table.add(MessageType{2103}, {"fast", Lanes::control, Frames::any, true, true, false, std::nullopt, std::nullopt, true}), std::invalid_argument);
+  table.add(MessageType{2104}, {"plain", Lanes::control, Frames::any, true, false, false, std::nullopt, std::nullopt, true});
+  EXPECT_TRUE(table.is_on_session(MessageType{2104}));
+  EXPECT_FALSE(table.is_ordered(MessageType{2104}));
+  EXPECT_TRUE(table.is_on_session(message::relay_data));
+  EXPECT_TRUE(table.is_on_session(message::relay_credit));
+  EXPECT_TRUE(table.is_on_session(message::relay_close));
 }
 
 }  // namespace

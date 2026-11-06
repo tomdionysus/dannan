@@ -7,6 +7,8 @@
 
 #include "dannan/status/log.h"
 
+#include <unistd.h>
+
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -14,6 +16,7 @@
 #include <ctime>
 #include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 
 namespace dannan::status {
@@ -44,6 +47,26 @@ LogLevel parse_log_level(std::string_view value) {
   if (level == "ERROR") return LogLevel::error;
   throw std::invalid_argument("invalid log level: " + std::string(value) + " (expected ALL, DEBUG, INFO, WARN or ERROR)");
 }
+
+namespace {
+
+// One record, whole. Every node in a process may have a sink on stderr, so stderr gets
+// one write and no shared formatting state; a test's stream is only that sink's.
+void emit(contract::IoMutex& mutex, std::ostream* out, const std::string& line) {
+  if (out) {
+    contract::Lock lock(mutex);
+    *out << line;
+    return;
+  }
+  size_t written = 0;
+  while (written < line.size()) {
+    const auto wrote = ::write(STDERR_FILENO, line.data() + written, line.size() - written);
+    if (wrote <= 0) return;
+    written += static_cast<size_t>(wrote);
+  }
+}
+
+}  // namespace
 
 bool ConsoleSink::enabled(LogLevel level) const noexcept { return static_cast<int>(level) >= static_cast<int>(_level); }
 
@@ -92,22 +115,22 @@ void json_string(std::ostream& out, std::string_view text) {
 
 void ConsoleSink::write(LogLevel level, std::string_view scope, std::string_view message) {
   const auto tm = utc_now();
-  contract::Lock lock(_mutex);
-  auto& out = _out ? *_out : std::cerr;
-  out << std::put_time(&tm, "%F %TZ") << ' ' << log_level_name(level) << ' ' << scope << ": " << message << '\n';
+  std::ostringstream line;
+  line << std::put_time(&tm, "%F %TZ") << ' ' << log_level_name(level) << ' ' << scope << ": " << message << '\n';
+  emit(_mutex, _out, line.str());
 }
 
 bool JsonSink::enabled(LogLevel level) const noexcept { return static_cast<int>(level) >= static_cast<int>(_level); }
 
 void JsonSink::write(LogLevel level, std::string_view scope, std::string_view message) {
   const auto tm = utc_now();
-  contract::Lock lock(_mutex);
-  auto& out = _out ? *_out : std::cerr;
+  std::ostringstream out;
   out << "{\"time\":\"" << std::put_time(&tm, "%FT%TZ") << "\",\"level\":\"" << log_level_name(level) << "\",\"scope\":";
   json_string(out, scope);
   out << ",\"message\":";
   json_string(out, message);
   out << "}\n";
+  emit(_mutex, _out, out.str());
 }
 
 LogFormat parse_log_format(std::string_view value) {
@@ -116,6 +139,16 @@ LogFormat parse_log_format(std::string_view value) {
   if (format == "text") return LogFormat::text;
   if (format == "json") return LogFormat::json;
   throw std::invalid_argument("invalid log format: " + std::string(value) + " (expected text or json)");
+}
+
+std::shared_ptr<LogSink> null_sink() {
+  class Null final : public LogSink {
+   public:
+    bool enabled(LogLevel) const noexcept override { return false; }
+    void write(LogLevel, std::string_view, std::string_view) override {}
+  };
+  static const auto sink = std::make_shared<Null>();
+  return sink;
 }
 
 std::shared_ptr<LogSink> console_sink(LogFormat format, LogLevel level) {

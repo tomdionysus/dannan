@@ -10,9 +10,16 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
+#include <functional>
+#include <mutex>
+#include <string>
+#include <thread>
 
 #include "dannan/contract/time_source.h"
+#include "dannan/status/log.h"
+#include "dannan/supervise/supervised.h"
 
 namespace dannan::supervise {
 
@@ -59,6 +66,46 @@ class StartupStallGate {
   const contract::TimePoint _started;
   contract::TimePoint _last_progress_at;
   uint64_t _last_progress;
+};
+
+// Watches a startup from its own thread and ends the process when it stalls:
+// the stuck thread may never be joinable, so unwinding is unsafe, and the
+// process supervisor starts a fresh instance whose recovery resolves the state.
+// The hosted system starts it, and calls finish() when the startup is done; a
+// node never ends its process unless something asked for this. `stalled` is
+// for tests that observe the stall and live; by default, std::_Exit(1).
+class StartupWatch {
+ public:
+  struct Options {
+    std::chrono::milliseconds no_progress{120000};
+    std::chrono::milliseconds ceiling{0};
+    // What the startup is waiting for, for the line.
+    std::function<std::string()> describe;
+    std::function<void(const std::string& diagnostic)> stalled;
+    const contract::TimeSource* time = &contract::steady_time_source();
+    // Where a fault in the watch itself is recorded; none, nowhere readable.
+    SupervisedThreads* threads = nullptr;
+  };
+
+  StartupWatch(const StartupProgress& progress, status::ScopedLogger log, Options options);
+  // Finishes first. Waits for the thread.
+  ~StartupWatch();
+  StartupWatch(const StartupWatch&) = delete;
+  StartupWatch& operator=(const StartupWatch&) = delete;
+
+  // The startup is done; the watch ends. Waits for the thread; thread-safe.
+  void finish();
+
+ private:
+  void watch(std::stop_token stop);
+
+  const StartupProgress& _progress;
+  const status::ScopedLogger _log;
+  const Options _options;
+  // Guards nothing: the thread's wait lock.
+  std::mutex _wait_mutex;
+  std::condition_variable_any _wake;
+  std::jthread _thread;
 };
 
 }  // namespace dannan::supervise

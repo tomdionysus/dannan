@@ -13,6 +13,8 @@
 // completion is posted to the caller's executor, never run inline.
 
 #include <gtest/gtest.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 #include <boost/asio/local/connect_pair.hpp>
 #include <boost/asio/local/stream_protocol.hpp>
@@ -24,6 +26,7 @@
 
 #include "dannan/net/session.h"
 #include "dannan/test/fixtures/gate.h"
+#include "dannan/test/fixtures/recording_sink.h"
 #include "dannan/test/fixtures/temp_dir.h"
 
 namespace dannan::net {
@@ -62,8 +65,11 @@ membership::NodeRecord record(const std::string& host) {
   return node;
 }
 
+constexpr MessageType news_for_test{1100};
+
 std::shared_ptr<const RouteTable> table() {
   auto routes = RouteTable::with_dannan_types();
+  routes.add(news_for_test, {"news_for_test", Lanes::both, Frames::any, true});
   routes.add(MessageType{1029}, {"put_object", Lanes::data, Frames::not_control, false});
   return std::make_shared<const RouteTable>(std::move(routes));
 }
@@ -78,12 +84,18 @@ struct Pair {
   std::shared_future<std::string> dialler_closed = dialler_closing.get_future().share();
   std::shared_future<std::string> acceptor_closed = acceptor_closing.get_future().share();
   std::shared_ptr<TransportTraffic> traffic = std::make_shared<TransportTraffic>();
+  // The two sockets again, for a test to break one direction of.
+  int dialler_end = -1;
+  int acceptor_end = -1;
 
   Pair(Io& io, SessionHandlers dialler_handlers, SessionHandlers acceptor_handlers, Lane lane = Lane::control, size_t max_frame = 65536,
-       sched::RetainedMemoryLedger* memory = nullptr)
+       sched::RetainedMemoryLedger* memory = nullptr, std::shared_ptr<const RouteTable> dialler_routes = nullptr,
+       std::shared_ptr<status::LogSink> log = nullptr, bool start_dialler = true, bool start_acceptor = true)
       : io(io) {
     asio::local::stream_protocol::socket a(io.context), b(io.context);
     asio::local::connect_pair(a, b);
+    dialler_end = ::dup(a.native_handle());
+    acceptor_end = ::dup(b.native_handle());
     Session::Socket sa(io.context, Session::Socket::protocol_type(AF_UNIX, SOCK_STREAM), a.release());
     Session::Socket sb(io.context, Session::Socket::protocol_type(AF_UNIX, SOCK_STREAM), b.release());
     const auto key = test_key();
@@ -113,10 +125,11 @@ struct Pair {
     SessionOptions options;
     options.memory = memory;
     options.traffic = traffic;
-    dialler = Session::create(std::move(sa), std::move(d), Role::dialler, table(), std::move(dialler_handlers), options);
+    options.log = log;
+    dialler = Session::create(std::move(sa), std::move(d), Role::dialler, dialler_routes ? dialler_routes : table(), std::move(dialler_handlers), options);
     acceptor = Session::create(std::move(sb), std::move(c), Role::acceptor, table(), std::move(acceptor_handlers), options);
-    dialler->start();
-    acceptor->start();
+    if (start_dialler) dialler->start();
+    if (start_acceptor) acceptor->start();
   }
   // The close handlers reach into this object: wait until both have run.
   ~Pair() {
@@ -124,6 +137,8 @@ struct Pair {
     acceptor->close("test over");
     dialler_closed.wait_for(10s);
     acceptor_closed.wait_for(10s);
+    ::close(dialler_end);
+    ::close(acceptor_end);
   }
 };
 
@@ -494,6 +509,177 @@ TEST(Session, AReplyNamesThePeer) {
   ASSERT_TRUE(outcome.reply);
   EXPECT_EQ(outcome.peer.id, pair.dialler->peer().id);
   EXPECT_EQ(outcome.peer.host, "10.0.0.2");
+}
+
+// A peer whose table differs sends a frame off its lane: the session ends, and the
+// handler never sees it.
+TEST(Session, AFrameOffItsLaneEndsTheSessionUndispatched) {
+  Io io;
+  auto permissive = RouteTable::with_dannan_types();
+  permissive.add(MessageType{1029}, {"put_object", Lanes::both, Frames::any, false});
+  std::atomic<int> dispatched{0};
+  SessionHandlers acceptor;
+  acceptor.request = [&](Frame, Reply) { ++dispatched; };
+  Pair pair(io, {}, std::move(acceptor), Lane::control, 65536, nullptr, std::make_shared<const RouteTable>(std::move(permissive)));
+  std::promise<CallOutcome> done;
+  (void)pair.dialler->call(MessageType{1029}, Bytes(10, 1), FrameType::foreground, io.context.get_executor(),
+                           [&](CallOutcome outcome) { done.set_value(std::move(outcome)); });
+  auto future = done.get_future();
+  ASSERT_EQ(future.wait_for(10s), std::future_status::ready);
+  EXPECT_FALSE(future.get().reply);
+  ASSERT_EQ(pair.acceptor_closed.wait_for(10s), std::future_status::ready);
+  EXPECT_EQ(dispatched.load(), 0);
+}
+
+// Which side and which direction a session failed on, in Macha's words:
+// net.cpp:1632, :1711, :3550 and :4386.
+TEST(Session, AFailureIsSaidBySideAndDirection) {
+  Io io;
+  const auto notify = [&](Session& session) { session.notify({MessageType{9}, Bytes(1024, 1), {}}, FrameType::control, io.context.get_executor()); };
+  // Each side alone is started, so nothing can answer its half-close: the
+  // write is the only thing that can fail.
+  {
+    auto log = std::make_shared<test::RecordingSink>();
+    Pair pair(io, {}, {}, Lane::control, 65536, nullptr, nullptr, log, true, false);
+    ::shutdown(pair.dialler_end, SHUT_WR);
+    notify(*pair.dialler);
+    ASSERT_EQ(pair.dialler_closed.wait_for(10s), std::future_status::ready);
+    EXPECT_EQ(log->count(status::LogLevel::debug, "peer writer: "), 1u);
+  }
+  {
+    auto log = std::make_shared<test::RecordingSink>();
+    Pair pair(io, {}, {}, Lane::control, 65536, nullptr, nullptr, log, false, true);
+    ::shutdown(pair.acceptor_end, SHUT_WR);
+    notify(*pair.acceptor);
+    ASSERT_EQ(pair.acceptor_closed.wait_for(10s), std::future_status::ready);
+    EXPECT_EQ(log->count(status::LogLevel::debug, "accepted peer writer: "), 1u);
+  }
+  {
+    auto log = std::make_shared<test::RecordingSink>();
+    Pair pair(io, {}, {}, Lane::control, 65536, nullptr, nullptr, log);
+    pair.acceptor->close("done");
+    ASSERT_EQ(pair.dialler_closed.wait_for(10s), std::future_status::ready);
+    EXPECT_EQ(log->count(status::LogLevel::debug, "peer channel: peer closed"), 1u);
+  }
+  {
+    auto log = std::make_shared<test::RecordingSink>();
+    Pair pair(io, {}, {}, Lane::control, 65536, nullptr, nullptr, log);
+    pair.dialler->close("done");
+    ASSERT_EQ(pair.acceptor_closed.wait_for(10s), std::future_status::ready);
+    EXPECT_EQ(log->count(status::LogLevel::debug, "RPC session: peer closed"), 1u);
+  }
+}
+
+// Macha's numbers, net.hpp:161-175: the rules are asserted elsewhere by name,
+// so these are what pins the values.
+TEST(Limits, TheOutboundAndPendingLimitsAreMachas) {
+  EXPECT_EQ(max_pending_replies, 512u);
+  EXPECT_EQ(max_outbound_messages, 256u);
+  EXPECT_EQ(max_outbound_bytes, 128ull * 1024 * 1024);
+  EXPECT_EQ(small_message, 64u * 1024);
+  EXPECT_EQ(small_reserve_messages, 32u);
+  EXPECT_EQ(small_reserve_bytes, 8ull * 1024 * 1024);
+  EXPECT_EQ(max_outbound_with_refusals, 768u);
+}
+
+namespace {
+// The sealed bytes of one notification, read off the wire before the far
+// session has started.
+Bytes sealed_notification(Io& io, Pair& pair) {
+  pair.dialler->notify({news_for_test, Bytes(100, 7), {}}, FrameType::control, io.context.get_executor());
+  Bytes out(4096);
+  ssize_t got = -1;
+  for (int spin = 0; spin < 1000 && got <= 0; ++spin) {
+    got = ::recv(pair.acceptor_end, out.data(), out.size(), MSG_DONTWAIT);
+    if (got <= 0) std::this_thread::sleep_for(5ms);
+  }
+  out.resize(got > 0 ? static_cast<size_t>(got) : 0);
+  return out;
+}
+}  // namespace
+
+// A live session ends on these, as Macha's does: the opener alone is
+// asserted elsewhere.
+TEST(Session, ATamperedFragmentEndsTheLiveSession) {
+  Io io;
+  auto log = std::make_shared<test::RecordingSink>();
+  Pair pair(io, {}, {}, Lane::control, 65536, nullptr, nullptr, log, true, false);
+  auto bytes = sealed_notification(io, pair);
+  ASSERT_FALSE(bytes.empty());
+  bytes.back() ^= 1;
+  ASSERT_EQ(::send(pair.dialler_end, bytes.data(), bytes.size(), 0), static_cast<ssize_t>(bytes.size()));
+  pair.acceptor->start();
+  ASSERT_EQ(pair.acceptor_closed.wait_for(10s), std::future_status::ready);
+  EXPECT_EQ(log->count(status::LogLevel::debug, "RPC session: frame failed authentication"), 1u);
+}
+
+TEST(Session, AReplayedFragmentEndsTheLiveSession) {
+  Io io;
+  auto log = std::make_shared<test::RecordingSink>();
+  std::atomic<int> heard{0};
+  SessionHandlers listening;
+  listening.request = [&](Frame, Reply) { ++heard; };
+  Pair pair(io, {}, std::move(listening), Lane::control, 65536, nullptr, nullptr, log, true, false);
+  const auto bytes = sealed_notification(io, pair);
+  ASSERT_FALSE(bytes.empty());
+  for (int twice = 0; twice < 2; ++twice) ASSERT_EQ(::send(pair.dialler_end, bytes.data(), bytes.size(), 0), static_cast<ssize_t>(bytes.size()));
+  pair.acceptor->start();
+  ASSERT_EQ(pair.acceptor_closed.wait_for(10s), std::future_status::ready);
+  EXPECT_EQ(log->count(status::LogLevel::debug, "RPC session: bad frame sequence"), 1u);
+}
+
+// A real connection behind a peer that stopped reading: nothing here waits,
+// large messages stop short of the reserve, and a ping still goes in.
+TEST(Session, BehindAPeerThatStoppedReadingNothingWaitsAndAPingIsAdmitted) {
+  Io io;
+  Pair pair(io, {}, {}, Lane::control, 65536, nullptr, nullptr, nullptr, true, false);
+  const Bytes large(128 * 1024, 1);
+  std::string refused;
+  size_t taken = 0;
+  for (; taken < 1000 && refused.empty(); ++taken) {
+    try {
+      pair.dialler->notify({news_for_test, large, {}}, FrameType::loader, io.context.get_executor());
+    } catch (const OutboundRefused& error) {
+      refused = error.what();
+    }
+  }
+  EXPECT_NE(refused, "");
+  EXPECT_GE(taken, max_outbound_messages - small_reserve_messages);
+  EXPECT_LE(taken, max_outbound_messages);
+  // The way a broadcast goes: it says no rather than waits.
+  EXPECT_FALSE(pair.dialler->try_notify({news_for_test, large, {}}, FrameType::loader));
+  EXPECT_NO_THROW(pair.dialler->notify({message::ping, {}, {}}, FrameType::control, io.context.get_executor()));
+}
+
+// Past the bound the session closes, which is what answers its callers:
+// session.cpp's queue_reply.
+TEST(Session, PastTheBoundOnRefusalsTheSessionCloses) {
+  Io io;
+  std::atomic<int> requests{0};
+  SessionHandlers counted;
+  counted.request = [&requests](Frame frame, Reply reply) {
+    ++requests;
+    // More replies than its budget of callers allows: one honest caller's 512
+    // fit exactly, so only a session past its own budget gets here.
+    auto again = reply;
+    reply({message::ok, frame.message.payload, {}});
+    again({message::ok, frame.message.payload, {}});
+  };
+  Pair pair(io, {}, std::move(counted), Lane::control, 65536, nullptr, nullptr, nullptr, false, true);
+  const Bytes filler(60 * 1024, 2);
+  for (size_t i = 0; i < max_outbound_messages + small_reserve_messages; ++i) {
+    try {
+      pair.acceptor->notify({news_for_test, filler, {}}, FrameType::loader, io.context.get_executor());
+    } catch (const OutboundRefused&) {
+      break;
+    }
+  }
+  for (size_t i = 0; i < max_pending_replies; ++i) {
+    (void)pair.dialler->call(message::members, {}, FrameType::control, io.context.get_executor(), [](CallOutcome) {});
+    if (i % 64 == 63) std::this_thread::sleep_for(10ms);
+  }
+  ASSERT_EQ(pair.acceptor_closed.wait_for(30s), std::future_status::ready) << "requests " << requests.load();
+  EXPECT_NE(pair.acceptor_closed.get().find("refusals"), std::string::npos) << pair.acceptor_closed.get();
 }
 
 }  // namespace

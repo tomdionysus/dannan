@@ -15,6 +15,7 @@
 
 #include "dannan/sched/retry.h"
 #include "dannan/supervise/subsystem.h"
+#include "dannan/supervise/supervised.h"
 
 namespace dannan::supervise {
 
@@ -28,11 +29,18 @@ struct SubsystemStatus {
 using SubsystemFactory = std::function<std::unique_ptr<Subsystem>(const SubsystemContext&)>;
 
 struct SupervisorOptions {
+  // Where the lifecycle threads' faults are recorded; none, nowhere readable.
+  SupervisedThreads* threads = nullptr;
+  // Where the plugins and their faults are journalled; none, nowhere.
+  std::shared_ptr<status::LogSink> log;
   // Where plugins (.so, .dylib) are found; a missing directory loads none.
   std::filesystem::path plugin_dir;
   // The hosted system's names: the entry symbol its plugins export, and the
   // build identity they must carry.
   std::string entry_symbol = "dannan_subsystem_entry";
+  // What the journal calls a plugin of this system ("macha" reads "a macha
+  // plugin"); none, just "a plugin".
+  std::string system_name;
   std::string build_identity;
   sched::RetryPolicy policy;
   const contract::TimeSource* time = &contract::steady_time_source();
@@ -45,6 +53,7 @@ struct SupervisorOptions {
 // process stays up. One lifecycle thread per subsystem.
 class Supervisor {
  public:
+  struct Entry;
   explicit Supervisor(SupervisorOptions options);
   ~Supervisor();
   Supervisor(const Supervisor&) = delete;
@@ -61,11 +70,11 @@ class Supervisor {
   std::vector<SubsystemStatus> statuses() const;
 
  private:
-  struct Entry;
   void discover();
   void run(Entry& entry, std::stop_token stop);
 
   const SupervisorOptions _options;
+  const status::ScopedLogger _log;
   SubsystemContext _context;
   std::vector<std::unique_ptr<Entry>> _entries;
 };
