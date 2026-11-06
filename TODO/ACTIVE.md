@@ -45,8 +45,12 @@ requires. Dagda's arbiter and `IoReserve` are on `sched::ClassWaits`, on its `fe
 local and unmerged until a tag has it: 449 of 449 on the Mac against `415c6c4`, no case changed, not
 yet run on Linux. The goldens are re-cut at 0.93.4, in
 `../macha/build/macha-fixtures/goldens-0.93.4/`, compared with its `mask-list-with-cac5998.txt`.
-Tom cleared the arm64 run; it is on inverbeg from `415c6c4`, alongside live replication, so its
-figures are not quiet ones. Open: the relay defect below, the real IGD run (at Tom's word), step 11's release (at Tom's
+The arm64 run, inverbeg from `415c6c4` at Tom's word, read here from its outputs: plain 562 of 562,
+ASan with UBSan 562 of 562 with no reports. No TSan on arm64: g++ 14's TSan refuses this kernel's
+47-bit address space at start, so that coverage is x86_64 only. Loopback, under live replication and
+load about 2.5, so not a baseline: 282 to 347 MB/s at the default frame, 103 to 128 at 4 KiB, idle
+ping p50 under 0.2 ms, loaded p99 6 to 9 ms, peak RSS 177 to 207 MB. Macha's own baselines wait for its
+import to finish. Open: the relay defect below, the real IGD run (at Tom's word), step 11's release (at Tom's
 word).
 
 Written for a session starting from nothing. **The plan is "The first cutover"
@@ -652,7 +656,7 @@ Each step is a `feature/macha-parity` milestone, gate green, committed and merge
 | 7. The importer, **done** (532) | `dannan-import-macha`: `MACHMEM1` to `4`, `MACHINB1`, `MACHTEL3`, both lock files, `--dry-run`, safe to rerun, keeps `*.macha` for rollback; Dannan's loader checks a roster before anything changes. Ran clean on copies of macnessa's three files and a scratch node's. The hosted table and advert name are written in the tool, from the adopted table, not read from a place Macha owns. | F6, F17 | the state directory, step 4a |
 | 8. Foundations proofs and the budget table, **done** | Ruling D: the table is in `2026-11-04-macha-parity.md`, every budget in Dannan's layer expressible. `sched::ClassWaits` is the shared mechanism, smaller than first proposed: waiters by class and the wait itself; rules, figures and leases stay the caller's. The ledger is on it. Dagda's rebuild is its own step, on a tag. Quota boundary, reassembly reserve, retry backstop, durable contents, every-mask tables, `Published`, Observation rows. | G34-G40 | `test_foundations`, `test_contract`, `test_observation` |
 | 9. Measured gate, **tool done; no comparison yet** | `dannan-bench`: 32 MiB on DATA, CONTROL round trips under load, MB/s, RSS, over the per-call strand and timer the required deadline costs; compose-bed run. Recorded, never asserted. The laptop's numbers are not comparable to the Pis'. | parity 6 | Macha's baselines at whichever release is then deployed, when Tom says |
-| 10. Linux, **done on x86_64** | `test/linux`: Debian 13, g++ 14, Boost 1.83, which is now the minimum. The laptop is x86_64, so this is not arm64: the Pis' architecture is unproven. It found and fixed two bugs macOS never showed: every inbound connection crashed under g++ (argument evaluation order, `net/server.cpp`), and stopping could destroy a condition variable in use (`end_operation`). It also fixed a punch failing 1 in 6 on Linux loopback, by retrying sooner after a refusal. One TSan report remains, 1 in 100 runs of level 0: Boost's `ref_count_down`, an acquire fence TSan cannot model. | parity 8, G1 | the Pis' OS and architecture; no Macha case |
+| 10. Linux, **done** | `test/linux`: Debian 13, g++ 14, Boost 1.83, which is now the minimum. x86_64 here, and arm64 on inverbeg without TSan (see above). It found and fixed two bugs macOS never showed: every inbound connection crashed under g++ (argument evaluation order, `net/server.cpp`), and stopping could destroy a condition variable in use (`end_operation`). It also fixed a punch failing 1 in 6 on Linux loopback, by retrying sooner after a refusal. One TSan report remains, 1 in 100 runs of level 0: Boost's `ref_count_down`, an acquire fence TSan cannot model. | parity 8, G1 | the Pis' OS and architecture; no Macha case |
 | 11. Release | A tag at Tom's word, with its sanitizer runs. The port pins it. | | Macha's mapped cases green on it |
 
 **For the hosted systems at the next tag:** `NodeConfig`'s `control_no_progress` no longer defaults to 30 s, so a call is watched only if it asks (`net::CallWatch`); `Routes::call` and `call_and_wait` gain that argument; the Context gains `wait_guard` and `refresh_public_connectivity`; `Readiness::fail` keeps the first failure; an escalated fault's text names the thread.
