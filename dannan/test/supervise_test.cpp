@@ -20,6 +20,7 @@
 #include <regex>
 #include <thread>
 
+#include "dannan/status/observation.h"
 #include "dannan/supervise/registry.h"
 #include "dannan/supervise/startup.h"
 #include "dannan/supervise/supervised.h"
@@ -300,6 +301,78 @@ TEST(Supervisor, AStopThatThrowsIsJournalled) {
   EXPECT_TRUE(eventually([&] { return status_of(supervisor, "bad")->state == SubsystemState::running; }));
   supervisor.stop();
   EXPECT_EQ(log->count(status::LogLevel::warn, "subsystem 'bad' stop() threw: stuck"), 1u);
+}
+
+TEST(Supervisor, AnEmptyDirectoryLoadsNone) {
+  test::TempDir empty;
+  Supervisor supervisor(options(empty.path()));
+  supervisor.start({});
+  EXPECT_TRUE(supervisor.statuses().empty());
+  supervisor.stop();
+}
+
+TEST(Supervisor, StatusesAreEmptyAfterStop) {
+  std::atomic<int> stops{0};
+  Supervisor supervisor(options());
+  supervisor.add_builtin("fuse", [&](const SubsystemContext&) { return std::make_unique<Builtin>("fuse", &stops, nullptr); });
+  supervisor.start({});
+  EXPECT_TRUE(eventually([&] { return !supervisor.statuses().empty() && supervisor.statuses().front().state == SubsystemState::running; }));
+  supervisor.stop();
+  EXPECT_TRUE(supervisor.statuses().empty());
+  supervisor.stop();
+}
+
+// Its fault sink points into the entry, so an instance is gone before its replacement is built.
+TEST(Supervisor, AFaultedInstanceGoesBeforeItsReplacement) {
+  struct Counted final : Subsystem {
+    std::atomic<int>& alive;
+    FaultSink sink;
+    const bool fault;
+    Counted(std::atomic<int>& alive, bool fault) : alive(alive), fault(fault) { ++alive; }
+    ~Counted() override { --alive; }
+    std::string_view name() const noexcept override { return "fuse"; }
+    void attach_fault_sink(FaultSink s) override { sink = std::move(s); }
+    void start() override {
+      if (fault) sink("gone");
+    }
+    void stop() override {}
+  };
+  std::atomic<int> alive{0};
+  std::atomic<int> built{0};
+  std::atomic<int> most_alive_when_built{0};
+  Supervisor supervisor(options());
+  supervisor.add_builtin("fuse", [&](const SubsystemContext&) {
+    most_alive_when_built = std::max(most_alive_when_built.load(), alive.load());
+    return std::make_unique<Counted>(alive, ++built == 1);
+  });
+  supervisor.start({});
+  EXPECT_TRUE(
+      eventually([&] { return built.load() == 2 && status_of(supervisor, "fuse") && status_of(supervisor, "fuse")->state == SubsystemState::running; }));
+  EXPECT_EQ(most_alive_when_built.load(), 0);
+  supervisor.stop();
+  EXPECT_EQ(alive.load(), 0);
+}
+
+// A throw that is not a std::exception, out of the recorder's window, is recorded by its
+// supervised loop; it does not end the process.
+TEST(SupervisedThreads, ANonStandardThrowFromTheRecorderIsRecorded) {
+  test::TempDir dir;
+  SupervisedThreads threads(1ms, 5ms);
+  status::Observations registry;
+  auto log = std::make_shared<status::ObservationLog>(dir.path() / "observations.jsonl", 1 << 20);
+  status::ObservationRecorder recorder(
+      registry, log, "v", 1ms, []() -> std::map<std::string, uint64_t> { throw 42; }, &contract::system_wall_clock(), &threads);
+  recorder.start();
+  EXPECT_TRUE(eventually([&] {
+    for (const auto& status : threads.statuses())
+      if (status.name == "observation-recorder" && status.last_fault_code == "unknown_exception") return true;
+    return false;
+  }));
+  // The stop's own final window throws too; it reaches the caller, not std::terminate.
+  try {
+    recorder.stop();
+  } catch (...) {
+  }
 }
 
 // A thread escaping its body ends the process: every thread in the library starts
