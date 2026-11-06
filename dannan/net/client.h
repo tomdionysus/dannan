@@ -261,6 +261,9 @@ class Client {
   // The path under the route to `peer` on `lane` moved the far end's bytes:
   // its pings are waiting behind them, so the peer is alive.
   void note_path_progress(const identity::NodeId& peer, Lane lane);
+  // Starts dialling `lane` to `peer` unless a route or a dial is there already.
+  // Never waits.
+  void open_lane(const membership::NodeRecord& peer, Lane lane);
 
   bool has_route(const identity::NodeId& peer, Lane lane) const;
   ClientStats stats() const;
@@ -367,6 +370,8 @@ class Client {
   const status::ScopedLogger _log;
   const identity::NodeId _self;
   boost::asio::strand<boost::asio::io_context::executor_type> _health_strand;
+  // The health pass running; on the health strand.
+  std::weak_ptr<void> _health_pass;
   boost::asio::steady_timer _heartbeat;
   contract::TimePoint _next_heartbeat{};  // on the health strand
 

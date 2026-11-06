@@ -215,7 +215,11 @@ most 64 KiB beyond those the far end has written to its session; the far end
 gives `relay_credit{circuit, chunks}` back along the circuit in batches of 8.
 R holds what its next session cannot yet take, at most the window per direction
 per circuit, and waits; a full queue never closes a circuit, and only a session
-lost closes one. The three types are handled by their arrival on the session,
+lost closes one. A DATA circuit's bytes and its close take the DATA lane at each
+hop where there is one, chosen when the circuit opens and kept, so bulk never
+waits in front of the CONTROL session's pings; credit takes CONTROL and overtakes.
+A session's pings wait behind what is on its own circuit, so the far end's bytes
+or credit moving count as its proof of life. The three types are handled by their arrival on the session,
 in order and ahead of every queue, so no queue can refuse a piece of a byte
 stream.
 
