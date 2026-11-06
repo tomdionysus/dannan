@@ -1294,5 +1294,125 @@ TEST(Journal, ANodeForgottenAtTheHorizonIsSaid) {
   a.stop();
 }
 
+// Macha's defaults where Macha has them; the four no-progress settings are
+// zero, by ruling A: every call states its own.
+TEST(NodeConfig, TheDefaultsAreMachasOrRuled) {
+  const NodeConfig defaults;
+  EXPECT_EQ(defaults.control_no_progress.count(), 0);
+  EXPECT_EQ(defaults.data_no_progress.count(), 0);
+  EXPECT_EQ(defaults.control_stall_notice.count(), 0);
+  EXPECT_EQ(defaults.data_stall_notice.count(), 0);
+  EXPECT_EQ(defaults.exchange_budget, 30s);
+  EXPECT_EQ(defaults.dial_back_min_interval, 10s);
+  EXPECT_EQ(defaults.reprobe_while_incapable, 10min);
+  EXPECT_EQ(defaults.reprobe_while_capable, 1h);
+}
+
+// cluster.cpp:38: a node with no failure domain of its own is its host's.
+TEST(Node, AnEmptyFailureDomainIsTheHost) {
+  Pair pair;
+  EXPECT_EQ(pair.a->membership().self().failure_domain, "127.0.0.1");
+  Pair named([](NodeConfig& c) { c.failure_domain = "rack-2"; });
+  EXPECT_EQ(named.b->membership().self().failure_domain, "rack-2");
+}
+
+// A seed, not a master: it goes, and those who met through it carry on.
+TEST(Node, TheOthersCarryOnWithoutTheSeed) {
+  Io io;
+  test::TempDir dir;
+  const auto key = cluster_key(dir.path());
+  auto seed = std::make_unique<Node>(io.context, config(dir.path() / "s", key));
+  seed->start();
+  const std::vector<net::Endpoint> bootstrap{{"127.0.0.1", seed->port()}};
+  Node b(io.context, config(dir.path() / "b", key, bootstrap));
+  Node c(io.context, config(dir.path() / "c", key, bootstrap));
+  b.start();
+  c.start();
+  const auto b_id = b.context().identity().id();
+  const auto c_id = c.context().identity().id();
+  ASSERT_TRUE(eventually([&] { return knows(b, c_id) && knows(c, b_id); }));
+  seed->stop();
+  seed.reset();
+  std::this_thread::sleep_for(3s);  // past dead_after
+  EXPECT_TRUE(knows(b, c_id));
+  EXPECT_TRUE(knows(c, b_id));
+  std::optional<membership::NodeRecord> peer;
+  for (const auto& node : b.context().nodes().active())
+    if (node.id == c_id) peer = node;
+  ASSERT_TRUE(peer.has_value());
+  EXPECT_TRUE(b.context().routes().call_and_wait(*peer, net::message::members, {}, sched::FrameType::control, 5s).reply);
+  c.stop();
+  b.stop();
+}
+
+// The loop re-probes on its cadence, and a capability it resolves reaches a
+// peer by gossip.
+TEST(Node, AnAutomaticNodeReprobesAndItsCapabilityReachesAPeer) {
+  auto log = std::make_shared<test::RecordingSink>();
+  Pair pair([&](NodeConfig& c) {
+    c.log = log;
+    c.inbound = reach::Inbound::automatic;
+    c.reprobe_while_capable = 150ms;
+    c.reprobe_while_incapable = 150ms;
+  });
+  pair.b->start();
+  const auto b_id = pair.b->context().identity().id();
+  EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::debug, "dial-back probe peer=") >= 1; }));
+  EXPECT_TRUE(eventually([&] {
+    for (const auto& node : pair.a->context().nodes().active())
+      if (node.id == b_id && node.inbound_capable()) return true;
+    return false;
+  }));
+}
+
+// One traffic instance: a node's accepted sessions and its dialled ones count
+// in the same place.
+TEST(Node, ItsDialledAndAcceptedSessionsCountInOneInstance) {
+  constexpr net::MessageType echo_data{4243};
+  const auto answer = [](const membership::NodeRecord&, sched::FrameType, const net::Message& request) {
+    return net::Handled::processed({net::message::ok, request.payload, {}});
+  };
+  Io io;
+  test::TempDir dir;
+  const auto key = cluster_key(dir.path());
+  Node a(io.context, config(dir.path() / "a", key));
+  a.context().routes().add(echo_data, {"echo_data", net::Lanes::data, net::Frames::not_control, false}, answer);
+  a.start();
+  Node b(io.context, config(dir.path() / "b", key, {{"127.0.0.1", a.port()}}));
+  b.context().routes().add(echo_data, {"echo_data", net::Lanes::data, net::Frames::not_control, false}, answer);
+  b.start();
+  const auto b_id = b.context().identity().id();
+  ASSERT_TRUE(eventually([&] { return knows(a, b_id); }));
+  std::optional<membership::NodeRecord> peer;
+  for (const auto& node : a.context().nodes().active())
+    if (node.id == b_id) peer = node;
+  ASSERT_TRUE(peer.has_value());
+  const auto control_class = static_cast<size_t>(sched::FrameType::control);
+  const auto foreground_class = static_cast<size_t>(sched::FrameType::foreground);
+  // CONTROL arrived on the session B dialled; A dials DATA itself for this call.
+  ASSERT_TRUE(eventually([&] { return a.traffic().in_bytes[control_class] > 0; }));
+  EXPECT_EQ(a.traffic().in_bytes[foreground_class], 0u);
+  ASSERT_TRUE(a.context().routes().call_and_wait(*peer, echo_data, net::Bytes(5000, 1), sched::FrameType::foreground, 10s).reply);
+  EXPECT_TRUE(eventually([&] { return a.traffic().in_bytes[foreground_class] >= 5000; }));
+  EXPECT_GT(a.traffic().in_bytes[control_class], 0u);
+  b.stop();
+  a.stop();
+}
+
+TEST(StateLock, ASecondNodeOnOneStatePathIsRefused) {
+  Io io;
+  test::TempDir dir;
+  const auto key = cluster_key(dir.path());
+  Node first(io.context, config(dir.path() / "a", key));
+  // A file a second node would read and complain of, had it got that far.
+  std::filesystem::create_directories(dir.path() / "a" / "telemetry");
+  std::ofstream(dir.path() / "a" / "telemetry" / "last-known.bin") << "not this";
+  auto settings = config(dir.path() / "a", key);
+  auto log = std::make_shared<test::RecordingSink>();
+  settings.log = log;
+  EXPECT_THROW(Node second(io.context, settings), std::exception);
+  EXPECT_EQ(log->count(status::LogLevel::warn, "persisted telemetry ignored"), 0u);
+}
+
 }  // namespace
 }  // namespace dannan

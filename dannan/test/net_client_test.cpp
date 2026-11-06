@@ -44,6 +44,7 @@ constexpr MessageType sluggish{1201};
 constexpr MessageType news{1202};
 constexpr MessageType sluggish_throw{1203};
 constexpr MessageType hurried{1204};
+constexpr MessageType noticed{4242};
 
 struct Io {
   asio::io_context context;
@@ -75,6 +76,9 @@ std::shared_ptr<const RouteTable> table() {
   Registration quick{"hurried", Lanes::control, Frames::control_only, false};
   quick.no_progress = 100ms;
   routes.add(hurried, quick);
+  Registration watched{"noticed", Lanes::control, Frames::control_only, false};
+  watched.stall_notice = 1h;
+  routes.add(noticed, watched);
   return std::make_shared<const RouteTable>(std::move(routes));
 }
 
@@ -129,7 +133,7 @@ struct Node {
         [this](const membership::NodeRecord& peer, FrameType, const Message& request) {
           if (request.type == message::dial_request) return ignore_dial_requests ? Handled::processed() : client->handle_dial_request(peer, request);
           if (request.type == slow) ++slow_started;
-          if (request.type == slow || request.type == hurried || (request.type == put_object && hold_data)) gate.enter_and_wait();
+          if (request.type == slow || request.type == hurried || request.type == noticed || (request.type == put_object && hold_data)) gate.enter_and_wait();
           if (request.type == slow) ++slow_finished;
           if (request.type == put_object && slow_data) std::this_thread::sleep_for(300ms);
           if (request.type == put_object && on_put) on_put(request.payload.size());
@@ -1521,6 +1525,110 @@ TEST(Journal, AStallsWordsAreMachasAndTheCallerGetsTheSame) {
   EXPECT_EQ(log->count(status::LogLevel::debug, "RPC made no progress for 7200000 ms " + named), 1u);
   EXPECT_NE(stalled.failure.find("RPC made no progress for 7200000 ms " + named), std::string::npos) << stalled.failure;
   EXPECT_NE(stalled.failure.find("; cancelled for retry"), std::string::npos) << stalled.failure;
+}
+
+// The whole shape of Macha's case: a slow CONTROL call held across a live DATA
+// transfer and past the liveness window ends neither, because pings go ahead
+// of both.
+TEST(Liveness, ASlowControlCallDoesNotAbortADataTransfer) {
+  Io io;
+  ClientOptions tuning;
+  tuning.heartbeat = 50ms;
+  tuning.dead_after = 300ms;
+  Node a(io, tuning), b(io);
+  ASSERT_TRUE(call(a, b.self).reply);
+  auto held = std::async(std::launch::async, [&] { return call(a, b.self, slow); });
+  ASSERT_TRUE(b.gate.wait_for_entries(1));
+  const auto transfer = call(a, b.self, put_object, FrameType::foreground, Bytes(4 * 1024 * 1024, 5));
+  EXPECT_TRUE(transfer.reply) << transfer.failure;
+  std::this_thread::sleep_for(600ms);
+  EXPECT_TRUE(a.client->has_route(b.self.id, Lane::control));
+  b.gate.open();
+  const auto answered = held.get();
+  EXPECT_TRUE(answered.reply) << answered.failure;
+}
+
+// The other lane's settings, and a type's own notice in place of its lane's.
+TEST(Journal, TheDataLanesNoticeBindsOnlyDataCalls) {
+  Io io;
+  test::SteppedTime time;
+  auto log = std::make_shared<test::RecordingSink>();
+  ClientOptions tuning;
+  tuning.log = log;
+  tuning.time = &time;
+  tuning.heartbeat = 24h;
+  tuning.dead_after = 72h;
+  tuning.data_stall_notice = 1h;
+  Node a(io, tuning), b(io);
+  ASSERT_TRUE(call(a, b.self).reply);
+  b.hold_data = true;
+  std::thread stepper([&] {
+    b.gate.wait_for_entries(1);
+    time.advance(1h);
+    EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::debug, "RPC stalled (foreground) peer=") >= 1; }));
+    b.gate.open();
+  });
+  EXPECT_TRUE(call(a, b.self, put_object, FrameType::foreground, Bytes(100, 1)).reply);
+  stepper.join();
+}
+
+TEST(Journal, ATypesOwnNoticeReplacesItsLanes) {
+  Io io;
+  test::SteppedTime time;
+  auto log = std::make_shared<test::RecordingSink>();
+  ClientOptions tuning;
+  tuning.log = log;
+  tuning.time = &time;
+  tuning.heartbeat = 24h;
+  tuning.dead_after = 72h;
+  Node a(io, tuning), b(io);
+  ASSERT_TRUE(call(a, b.self).reply);
+  std::thread stepper([&] {
+    b.gate.wait_for_entries(1);
+    time.advance(1h);
+    EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::debug, "RPC stalled (control) peer=") >= 1; }));
+    EXPECT_GE(log->count(status::LogLevel::debug, " message=noticed age_ms="), 1u);
+    b.gate.open();
+  });
+  EXPECT_TRUE(call(a, b.self, noticed).reply);
+  stepper.join();
+}
+
+// The options on the sockets the transport itself dialled and accepted, read
+// back from the kernel. Every connected TCP socket of this process that has
+// the server's port on either end.
+TEST(PeerSocket, TheTransportsOwnSocketsCarryTheOptions) {
+  Io io;
+  Node a(io), b(io);
+  ASSERT_TRUE(call(a, b.self).reply);
+  ASSERT_TRUE(call(a, b.self, put_object, FrameType::foreground, Bytes(10, 1)).reply);
+  int checked = 0;
+  for (int fd = 3; fd < 4096; ++fd) {
+    sockaddr_in local{}, remote{};
+    socklen_t size = sizeof(local);
+    if (::getsockname(fd, reinterpret_cast<sockaddr*>(&local), &size) != 0 || local.sin_family != AF_INET) continue;
+    size = sizeof(remote);
+    if (::getpeername(fd, reinterpret_cast<sockaddr*>(&remote), &size) != 0) continue;
+    if (ntohs(local.sin_port) != b.self.port && ntohs(remote.sin_port) != b.self.port) continue;
+    int on = 0;
+    socklen_t length = sizeof(on);
+    ASSERT_EQ(::getsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &on, &length), 0);
+    EXPECT_NE(on, 0) << fd;
+    on = 0;
+    length = sizeof(on);
+    ASSERT_EQ(::getsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &on, &length), 0);
+    EXPECT_NE(on, 0) << fd;
+#ifdef TCP_CONGESTION
+    char name[16]{};
+    length = sizeof(name);
+    ASSERT_EQ(::getsockopt(fd, IPPROTO_TCP, TCP_CONGESTION, name, &length), 0);
+    // BBR where the kernel has it: a kernel without it has a warning instead.
+    if (std::string(name) != "bbr") EXPECT_NE(std::string(name), "");
+#endif
+    ++checked;
+  }
+  // Both lanes, both ends.
+  EXPECT_GE(checked, 4);
 }
 
 }  // namespace

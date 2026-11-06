@@ -591,5 +591,38 @@ TEST(Supervisor, AFaultWhileRunningIsJournalled) {
   supervisor.stop();
 }
 
+// A sink kept past the stop is ignored: first reason wins, and nothing is left
+// to rebuild.
+TEST(Supervisor, AFaultAfterStoppingIsIgnored) {
+  auto log = std::make_shared<test::RecordingSink>();
+  std::atomic<int> stops{0};
+  std::atomic<int> built{0};
+  Subsystem::FaultSink kept;
+  auto settings = options();
+  settings.log = log;
+  Supervisor supervisor(settings);
+  supervisor.add_builtin("fuse", [&](const SubsystemContext&) {
+    ++built;
+    return std::make_unique<Builtin>("fuse", &stops, [&kept](Subsystem::FaultSink& sink) { kept = sink; });
+  });
+  supervisor.start({});
+  EXPECT_TRUE(eventually([&] { return status_of(supervisor, "fuse") && status_of(supervisor, "fuse")->state == SubsystemState::running; }));
+  supervisor.stop();
+  kept("too late");
+  EXPECT_EQ(built.load(), 1);
+  EXPECT_EQ(log->count(status::LogLevel::error, "too late"), 0u);
+}
+
+// When it faulted, for `threads` in Status.
+TEST(SupervisedThreads, AFaultSaysWhenItHappened) {
+  SupervisedThreads threads(5ms, 20ms);
+  threads.once("scan", [] { throw std::runtime_error("bad file"); });
+  const auto now = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+  const auto statuses = threads.statuses();
+  ASSERT_EQ(statuses.size(), 1u);
+  EXPECT_GT(statuses.front().last_fault_unix_ms, now - 60000);
+  EXPECT_LE(statuses.front().last_fault_unix_ms, now + 1000);
+}
+
 }  // namespace
 }  // namespace dannan::supervise
