@@ -318,12 +318,12 @@ void Session::write_next() {
   try {
     _wire = _sealer.seal(fragment->request_id, fragment->frame, fragment->type, fragment->first, fragment->last, fragment->payload);
   } catch (const std::exception& error) {
-    return fail(error.what());
+    return fail(error.what(), true);
   }
   const auto frame = fragment->frame;
   asio::async_write(_socket, asio::buffer(_wire),
                     asio::bind_executor(_strand, [self = shared_from_this(), frame](const boost::system::error_code& error, size_t bytes) {
-                      if (error) return self->fail(error.message());
+                      if (error) return self->fail(error.message(), true);
                       if (self->_options.traffic) self->_options.traffic->note(true, frame, bytes);
                       {
                         contract::Lock lock(self->_mutex);
@@ -341,9 +341,12 @@ void Session::close(const std::string& why) {
   asio::dispatch(_strand, [self = shared_from_this(), why] { self->shut(why); });
 }
 
-void Session::fail(const std::string& why) {
+void Session::fail(const std::string& why, bool writing) {
   if (!mark_closed(why)) return;
-  if (_options.log) status::ScopedLogger(_options.log, "net").debug("peer channel: " + why);
+  if (_options.log) {
+    const std::string said = _role == Role::dialler ? (writing ? "peer writer: " : "peer channel: ") : (writing ? "accepted peer writer: " : "RPC session: ");
+    status::ScopedLogger(_options.log, "net").debug(said + why);
+  }
   shut(why);
 }
 

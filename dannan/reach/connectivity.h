@@ -64,7 +64,9 @@ class Gateway {
   // The reason it failed; empty on success.
   virtual std::string add(uint16_t external_port, uint16_t internal_port, const std::string& internal_client, const std::string& description,
                           uint32_t lease_seconds) = 0;
-  virtual void remove(uint16_t external_port) = 0;
+  // 0 when it is gone; otherwise the gateway's UPnP error, or negative when
+  // the gateway could not be asked.
+  virtual int remove(uint16_t external_port) = 0;
 };
 
 // This node's address as the internet sees it; throws with the reason.

@@ -233,6 +233,10 @@ void Server::stop() {
     // covers it.
     ++_operations;
   }
+  if (!again) {
+    _log.debug("shutdown: RpcServer::stop begin");
+    _log.debug("shutdown: RPC accept thread joining");
+  }
   asio::post(_acceptor.get_executor(), [this] {
     boost::system::error_code ignored;
     _acceptor.close(ignored);
@@ -240,17 +244,17 @@ void Server::stop() {
   });
   for (auto& connection : handshaking) asio::post(connection->strand, [connection] { connection->close(); });
   if (!again) {
-    _log.debug("shutdown: server stop begin");
-    _log.debug("shutdown: sessions reaping count=" + std::to_string(sessions.size()));
+    _log.debug("shutdown: RPC accept thread joined");
+    _log.debug("shutdown: RPC sessions reaping count=" + std::to_string(sessions.size()));
   }
   for (auto& session : sessions) session->close("server stopping");
   {
     contract::Lock lock(_mutex);
     _idle.wait(lock.native(), [&]() DANNAN_REQUIRES(_mutex) { return _operations == 0; });
   }
-  if (!again) _log.debug("shutdown: sessions reaped");
+  if (!again) _log.debug("shutdown: RPC sessions reaped");
   _scheduler.stop();
-  if (!again) _log.debug("shutdown: server stop complete");
+  if (!again) _log.debug("shutdown: RpcServer::stop complete");
 }
 
 size_t Server::sessions() const {

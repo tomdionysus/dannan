@@ -111,8 +111,8 @@ void Supervisor::discover() {
     if (symbol_error || !symbol) {
       // Not a plugin of this system: a directory may hold other libraries.
       // None of its code was called, so it may be unloaded.
-      _log.debug("subsystem plugin candidate '" + entry->name + "' has no entry symbol '" + _options.entry_symbol +
-                 "', skipping as not a plugin: " + (symbol_error ? symbol_error : "null symbol"));
+      _log.debug("subsystem plugin candidate '" + entry->name + "' has no entry symbol '" + _options.entry_symbol + "', skipping as not a " +
+                 _options.system_name + (_options.system_name.empty() ? "" : " ") + "plugin: " + (symbol_error ? symbol_error : "symbol resolved to null"));
       ::dlclose(entry->handle);
       continue;
     }

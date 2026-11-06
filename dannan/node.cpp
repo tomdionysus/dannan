@@ -605,6 +605,7 @@ void Node::cancel_outbound_calls() {
 void Node::request_stop() {
   {
     contract::Lock lock(_loops_mutex);
+    if (!_loops.empty() && !_said_stopping.exchange(true)) status::ScopedLogger(_config.log, "node").debug("shutdown: node maintenance request_stop");
     for (auto& loop : _loops) loop.request_stop();
   }
   _wake.notify_all();
@@ -1022,12 +1023,13 @@ void Node::telemetry_loop(std::stop_token stop) {
 void Node::apply_inbound(bool capable) {
   const bool before = _members.self().inbound_capable();
   if (_members.set_inbound_capable(capable)) {
-    status::ScopedLogger(_config.log, "node")
-        .info(std::string("node inbound resolution changed inbound_capable=") + (capable ? "true" : "false") +
-              " previous_inbound_capable=" + (before ? "true" : "false") + " source=" + _inbound.state().source);
     topology_changed();
     signal_telemetry();
   }
+  status::ScopedLogger(_config.log, "node")
+      .info(std::string("node inbound resolution changed inbound_capable=") + (capable ? "true" : "false") +
+            (_config.inbound_journal_fields ? _config.inbound_journal_fields(capable) : std::string{}) +
+            " previous_inbound_capable=" + (before ? "true" : "false") + " source=" + _inbound.state().source);
 }
 
 std::chrono::milliseconds Node::classify() {
