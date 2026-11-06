@@ -42,8 +42,10 @@ diff of `808fa0f..9a08846` over the moving files was read here: nothing in the t
 telemetry or config moves. The facade gains `startup.data_storage_degraded` and `NodeEvent::storage`
 on a disk coming back. The torrent is leaving Macha, so no more torrent parity than the mapping
 requires. Next: Dagda on `sched::ClassWaits`, required before stage one, gated by every existing case
-on both sides; the goldens re-cut by the Macha session at 0.93.4; its Pi baselines and an arm64
-check. Open: the relay defect below, the real IGD run (at Tom's word), step 11's release (at Tom's
+on both sides. The goldens are re-cut at 0.93.4, in
+`../macha/build/macha-fixtures/goldens-0.93.4/`, compared with its `mask-list-with-cac5998.txt`.
+Tom cleared the arm64 run; it is on inverbeg from `415c6c4`, alongside live replication, so its
+figures are not quiet ones. Open: the relay defect below, the real IGD run (at Tom's word), step 11's release (at Tom's
 word).
 
 Written for a session starting from nothing. **The plan is "The first cutover"
