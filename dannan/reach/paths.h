@@ -271,7 +271,8 @@ class Paths {
                              net::PathToken token);
   // An end of a circuit at this node: its pump, registered before any byte
   // can arrive for it.
-  std::shared_ptr<Pump> open_end(uint64_t circuit, const identity::NodeId& relay, net::Lane lane, int* session_end, int* family);
+  std::shared_ptr<Pump> open_end(uint64_t circuit, const identity::NodeId& relay, const identity::NodeId& far_end, net::Lane lane, int* session_end,
+                                 int* family);
   void close_end(uint64_t circuit, const std::string& why, bool tell_relay);
   // Sends a relay's next message for one direction of `circuit`, if it has one
   // and none is on its way.

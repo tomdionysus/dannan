@@ -465,12 +465,15 @@ void Paths::with(const std::shared_ptr<Owner>& owner, const std::function<void(P
 
 class Paths::Pump : public std::enable_shared_from_this<Pump> {
  public:
-  Pump(asio::io_context& io, std::shared_ptr<Paths::Owner> owner, uint64_t circuit, identity::NodeId relay, net::Lane lane, int descriptor)
+  Pump(asio::io_context& io, std::shared_ptr<Paths::Owner> owner, uint64_t circuit, identity::NodeId relay, identity::NodeId far_end, net::Lane lane,
+       int descriptor)
       : _strand(asio::make_strand(io.get_executor())),
         _socket(_strand, net::Session::Socket::protocol_type(AF_UNIX, SOCK_STREAM), descriptor),
         _owner(std::move(owner)),
         _circuit(circuit),
         _relay(relay),
+        _far_end(far_end),
+        _lane(lane),
         _frame(lane == net::Lane::data ? sched::FrameType::loader : sched::FrameType::control) {}
 
   const identity::NodeId& relay() const noexcept { return _relay; }
@@ -481,6 +484,7 @@ class Paths::Pump : public std::enable_shared_from_this<Pump> {
   void deliver(net::Bytes bytes) {
     asio::post(_strand, [self = shared_from_this(), bytes = std::move(bytes)]() mutable {
       if (self->_closed) return;
+      self->far_end_moved();
       self->_out.push_back(std::move(bytes));
       if (self->_out.size() == 1) self->write();
     });
@@ -489,6 +493,7 @@ class Paths::Pump : public std::enable_shared_from_this<Pump> {
   void credit(uint64_t chunks) {
     asio::post(_strand, [self = shared_from_this(), chunks] {
       self->_unanswered -= std::min(chunks, self->_unanswered);
+      self->far_end_moved();
       self->read();
     });
   }
@@ -509,6 +514,9 @@ class Paths::Pump : public std::enable_shared_from_this<Pump> {
   }
 
  private:
+  void far_end_moved() {
+    Paths::with(_owner, [&](Paths& paths) { paths._client.note_path_progress(_far_end, _lane); });
+  }
   // One read at a time, and none past the window or with a chunk still
   // waiting to go: the session writing into the far side of the socket feels
   // a slow circuit as a slow socket.
@@ -585,6 +593,8 @@ class Paths::Pump : public std::enable_shared_from_this<Pump> {
   const std::shared_ptr<Paths::Owner> _owner;
   const uint64_t _circuit;
   const identity::NodeId _relay;
+  const identity::NodeId _far_end;
+  const net::Lane _lane;
   const sched::FrameType _frame;
   std::array<uint8_t, relay_chunk_bytes> _buffer{};
   std::deque<net::Bytes> _out;
@@ -757,7 +767,7 @@ std::string Paths::try_relay(const NodeRecord& peer, net::Lane lane) {
       }
       int session_end = -1;
       int family = AF_UNIX;
-      const auto pump = open_end(answer.circuit, relay.id, lane, &session_end, &family);
+      const auto pump = open_end(answer.circuit, relay.id, peer.id, lane, &session_end, &family);
       if (!pump) {
         why = "the node is stopping";
         break;
@@ -776,10 +786,11 @@ std::string Paths::try_relay(const NodeRecord& peer, net::Lane lane) {
   return why;
 }
 
-std::shared_ptr<Paths::Pump> Paths::open_end(uint64_t circuit, const identity::NodeId& relay, net::Lane lane, int* session_end, int* family) {
+std::shared_ptr<Paths::Pump> Paths::open_end(uint64_t circuit, const identity::NodeId& relay, const identity::NodeId& far_end, net::Lane lane, int* session_end,
+                                             int* family) {
   int pair[2] = {-1, -1};
   if (::socketpair(AF_UNIX, SOCK_STREAM, 0, pair) != 0) throw std::runtime_error("socketpair failed");
-  auto pump = std::make_shared<Pump>(_io, _owner, circuit, relay, lane, pair[1]);
+  auto pump = std::make_shared<Pump>(_io, _owner, circuit, relay, far_end, lane, pair[1]);
   {
     contract::Lock lock(_mutex);
     if (_stopped) {
@@ -953,7 +964,7 @@ net::Handled Paths::relay_offer(const NodeRecord& from, const net::Message& requ
   int family = AF_UNIX;
   std::shared_ptr<Pump> pump;
   try {
-    pump = open_end(offer.circuit, from.id, offer.lane, &session_end, &family);
+    pump = open_end(offer.circuit, from.id, offer.from, offer.lane, &session_end, &family);
   } catch (const std::exception& error) {
     return refuse(error.what());
   }

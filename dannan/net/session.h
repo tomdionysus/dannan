@@ -139,6 +139,11 @@ class Session : public std::enable_shared_from_this<Session> {
   // decides, not class: telemetry rides speculative and must survive a busy
   // writer, which still sends more urgent frames first. False if not queued.
   bool try_notify(Message message, sched::FrameType frame);
+  // The path under this session moved bytes of the far end's: for a relayed
+  // session, whose pings wait behind what is on the circuit, this is proof of
+  // life as a byte of a reply is. Nothing says so for a direct connection.
+  void note_path_progress();
+  contract::TimePoint path_progress() const { return _path_progress.load(); }
   // Cancels a call: it completes at once as cancelled, the peer is told,
   // and a late reply is dropped.
   void cancel(uint64_t request_id);
@@ -197,6 +202,7 @@ class Session : public std::enable_shared_from_this<Session> {
   const std::shared_ptr<const RouteTable> _routes;
   SessionHandlers _handlers;
   const SessionOptions _options;
+  std::atomic<contract::TimePoint> _path_progress{contract::TimePoint{}};
   const std::shared_ptr<std::atomic<bool>> _gone = std::make_shared<std::atomic<bool>>(false);
   // Reader state, on the strand.
   FrameOpener _opener;

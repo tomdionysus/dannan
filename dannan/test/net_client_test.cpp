@@ -1649,5 +1649,33 @@ TEST(Health, AControlProbeWhoseRouteWentDialsItAgain) {
   EXPECT_GT(a.client->stats().dials, dials);
 }
 
+// A relayed session's ping waits behind what is on its circuit, so a slow
+// circuit under load delays it past its budget. While the far end's bytes keep
+// moving the session is alive; once they stop, the budgets run as ever.
+TEST(Health, APathThatKeepsMovingIsAliveThoughItsPingsAreLate) {
+  Io io;
+  auto log = std::make_shared<test::RecordingSink>();
+  ClientOptions tuning;
+  tuning.log = log;
+  tuning.heartbeat = 100ms;
+  tuning.dead_after = 300ms;
+  Node a(io, tuning), b(io);
+  ASSERT_TRUE(call(a, b.self).reply);
+  b.hang_pings = 1000;
+  std::atomic<bool> moving{true};
+  std::thread path([&] {
+    while (moving) {
+      a.client->note_path_progress(b.self.id, Lane::control);
+      std::this_thread::sleep_for(10ms);
+    }
+  });
+  std::this_thread::sleep_for(1500ms);
+  EXPECT_TRUE(a.client->has_route(b.self.id, Lane::control));
+  EXPECT_EQ(log->count(status::LogLevel::debug, " liveness failure: "), 0u);
+  moving = false;
+  path.join();
+  EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::debug, " liveness failure: ") >= 1; }));
+}
+
 }  // namespace
 }  // namespace dannan::net
