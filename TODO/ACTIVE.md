@@ -36,19 +36,20 @@ current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluat
 
 **Last gate before the pause:** at this commit's code, Debian 13 plain, ASan with UBSan, and TSan, 562 each; macOS ASan with UBSan and TSan, 560 each with the BBR case skipped; no sanitizer reports. Compose bed: the two original cases pass; the relay measurement does not.
 
-**PAUSED, Tom, relayed by the Macha session, 2026-11-05: "Pause until it lands."** Nothing on
-the port, the class admission generic included, until Macha's old-code removal lands. The Macha
-session says when, with the commit and whether anything in Dannan's layer moved, and re-cuts the
-goldens after it. Then, in Macha's order: 0.92.6, the Pi baselines, and Dannan finishes on that
-baseline. Open when this resumes: the relay defect below, the real IGD run (at Tom's word), Dagda
-on `ClassWaits` (needs a tag), and step 11's release (at Tom's word).
+**Resumed 2026-11-06.** The pause (Tom: "Pause until it lands.") ended when Macha's old-code
+removal landed: 0.93.4, tag on merge `9a08846`, live on both nodes. That is the baseline now. The
+diff of `808fa0f..9a08846` over the moving files was read here: nothing in the transport, membership,
+telemetry or config moves. The facade gains `startup.data_storage_degraded` and `NodeEvent::storage`
+on a disk coming back. The torrent is leaving Macha, so no more torrent parity than the mapping
+requires. Next: Dagda on `sched::ClassWaits`, required before stage one, gated by every existing case
+on both sides; the goldens re-cut by the Macha session at 0.93.4; its Pi baselines and an arm64
+check. Open: the relay defect below, the real IGD run (at Tom's word), step 11's release (at Tom's
+word).
 
 Written for a session starting from nothing. **The plan is "The first cutover"
 below, and it replaces the order in "Next".** Tom, 2026-11-05, relayed by the Macha
 session and confirmed in his own words ("Do what the macha server agent says"):
-replan on Macha's code. The source of truth is Macha's `develop` at `cac5998` (tag
-0.92.4 on `70cf4a4`; gated on macnessa, not yet deployed, both nodes still run 0.92.3),
-as it is, not the 2026-11-02 design and not the older baselines. Where they differ, Macha's behaviour is the plan and Dannan is reshaped to
+replan on Macha's code. The source of truth is Macha's code at the baseline above, as it is, not the 2026-11-02 design and not the older baselines. Where they differ, Macha's behaviour is the plan and Dannan is reshaped to
 it. A Macha defect found on the way goes to the Macha session and is fixed in Macha
 first. `../macha` is read only from here.
 
