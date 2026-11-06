@@ -51,7 +51,10 @@ class ClassWaits {
 
   explicit ClassWaits(const contract::TimeSource* time = &contract::steady_time_source()) : _time(time) {}
 
-  // Waits until `available()`. Each is called holding the lock:
+  // Waits until `available()`. A stop, a cancel or a passed deadline is looked at first, so
+  // one that has happened gives up even when there is room, as Macha's arbiter does: a
+  // caller that wants a try-once takes what is free before calling this. Each is called
+  // holding the lock:
   //   available():  may this be admitted now?
   //   first_wait(): this waiter has just begun to wait, once per waiter.
   //   before_sleep(lock): true if it let go of the lock and did something, so look
