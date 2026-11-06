@@ -739,8 +739,9 @@ per-walk `Budget`, `DiskServiceMonitor`. If it cannot express these, it does not
 that is reported rather than bent.
 
 **From Tom, relayed by the Macha session, 2026-11-05.** The gate for the port is an independent
-review by fresh agents, from the code and the nodes only, concluding no loss of function,
-performance, reliability or data. Macha's order: old-code removal, then 0.92.6, then the Pi
+review by the Dannan and Dagda sessions themselves after their context is cleared (Tom: "by fresh
+agents I meant the library agents, after a clear"), from the code and the nodes only, concluding no
+loss of function, performance, reliability or data. Macha's order: old-code removal, then 0.92.6, then the Pi
 baselines on that, then Dannan finishes on that baseline; Macha's freeze has those exceptions,
 it says at each commit whether anything in Dannan's layer moves, and the goldens are re-cut
 once at the end. The class admission generic is required before stage one, ledger first,
