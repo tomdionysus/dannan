@@ -1095,6 +1095,8 @@ bool Client::send(const identity::NodeId& peer, Lane lane, const Message& messag
   }
 }
 
+void Client::open_lane(const membership::NodeRecord& peer, Lane lane) { ensure_lane(peer, lane); }
+
 void Client::note_path_progress(const identity::NodeId& peer, Lane lane) {
   std::shared_ptr<Session> route;
   {
@@ -1243,6 +1245,8 @@ struct Client::Probe {
   bool stalled = false;
   bool expired = false;  // the deadline passed with a ping outstanding
   std::string last_error;
+  // Held by every probe of a pass, so the pass is over when the last has gone.
+  std::shared_ptr<void> pass;
   Probe(asio::strand<asio::io_context::executor_type>& strand, const std::shared_ptr<Session>& session, Lane lane, contract::TimePoint deadline)
       : session(session), peer(session->peer()), lane(lane), deadline(deadline), timer(strand) {}
 };
@@ -1279,6 +1283,11 @@ void Client::await_heartbeat() {
 }
 
 void Client::health_pass() {
+  // One pass at a time, as Macha's loop waits for its probes: a probe that
+  // closes a dead route must not have a later pass's probe dial it again.
+  if (!_health_pass.expired()) return;
+  auto pass = std::make_shared<int>(0);
+  _health_pass = pass;
   std::vector<std::shared_ptr<Probe>> probes;
   const auto deadline = _options.time->now() + _options.dead_after;
   {
@@ -1296,7 +1305,10 @@ void Client::health_pass() {
       }
     }
   }
-  for (auto& probe : probes) attempt(probe);
+  for (auto& probe : probes) {
+    probe->pass = pass;
+    attempt(probe);
+  }
 }
 
 void Client::attempt(const std::shared_ptr<Probe>& probe) {

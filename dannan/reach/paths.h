@@ -177,6 +177,9 @@ struct CircuitStats {
   identity::NodeId b;
   net::Lane lane = net::Lane::control;
   uint64_t bytes = 0;
+  // The lanes its bytes take from the relay to each end.
+  net::Lane carrier_a = net::Lane::control;
+  net::Lane carrier_b = net::Lane::control;
 };
 
 struct PathStats {
@@ -252,6 +255,7 @@ class Paths {
     std::optional<std::string> close;
     bool sending = false;
     bool lost = false;
+    net::Lane carrier = net::Lane::control;
   };
   struct Circuit {
     identity::NodeId a;
@@ -283,7 +287,12 @@ class Paths {
   void lost(uint64_t circuit, bool toward_b);
   // A control notification that must arrive: waits out a full queue, and gives
   // up only when the route is gone.
-  void send_until_taken(identity::NodeId peer, net::Message message);
+  void send_until_taken(identity::NodeId peer, net::Lane lane, net::Message message);
+  // The lane a circuit's bytes take to `peer`: the one the circuit is for, so
+  // bulk never waits in front of CONTROL's pings, or CONTROL with no route on it.
+  net::Lane carrier_to(const identity::NodeId& peer, net::Lane lane) const;
+  // Waits, within the connect timeout, for a DATA route to `peer`.
+  void await_data_lane(const identity::NodeId& peer) const;
   // Runs `f` shortly, if this object has not stopped by then.
   void shortly(std::function<void(Paths&)> f);
   std::optional<membership::NodeRecord> known(const identity::NodeId& id) const;

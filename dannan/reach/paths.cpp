@@ -24,6 +24,7 @@
 #include <mutex>
 #include <optional>
 #include <stdexcept>
+#include <thread>
 #include <utility>
 
 #include "dannan/identity/crypto.h"
@@ -466,7 +467,7 @@ void Paths::with(const std::shared_ptr<Owner>& owner, const std::function<void(P
 class Paths::Pump : public std::enable_shared_from_this<Pump> {
  public:
   Pump(asio::io_context& io, std::shared_ptr<Paths::Owner> owner, uint64_t circuit, identity::NodeId relay, identity::NodeId far_end, net::Lane lane,
-       int descriptor)
+       net::Lane carrier, int descriptor)
       : _strand(asio::make_strand(io.get_executor())),
         _socket(_strand, net::Session::Socket::protocol_type(AF_UNIX, SOCK_STREAM), descriptor),
         _owner(std::move(owner)),
@@ -474,9 +475,11 @@ class Paths::Pump : public std::enable_shared_from_this<Pump> {
         _relay(relay),
         _far_end(far_end),
         _lane(lane),
+        _carrier(carrier),
         _frame(lane == net::Lane::data ? sched::FrameType::loader : sched::FrameType::control) {}
 
   const identity::NodeId& relay() const noexcept { return _relay; }
+  net::Lane carrier() const noexcept { return _carrier; }
 
   void start() {
     asio::dispatch(_strand, [self = shared_from_this()] { self->read(); });
@@ -515,7 +518,10 @@ class Paths::Pump : public std::enable_shared_from_this<Pump> {
 
  private:
   void far_end_moved() {
-    Paths::with(_owner, [&](Paths& paths) { paths._client.note_path_progress(_far_end, _lane); });
+    Paths::with(_owner, [&](Paths& paths) {
+      paths._client.note_path_progress(_far_end, _lane);
+      paths._client.note_path_progress(_relay, _carrier);
+    });
   }
   // One read at a time, and none past the window or with a chunk still
   // waiting to go: the session writing into the far side of the socket feels
@@ -535,7 +541,7 @@ class Paths::Pump : public std::enable_shared_from_this<Pump> {
     if (_closed) return;
     auto outcome = net::Client::Paced::gone;
     Paths::with(_owner, [&](Paths& paths) {
-      outcome = paths._client.send_paced(_relay, net::Lane::control, {m::relay_data, encode(RelayData{_circuit, *_carrying}), {}}, _frame, _strand,
+      outcome = paths._client.send_paced(_relay, _carrier, {m::relay_data, encode(RelayData{_circuit, *_carrying}), {}}, _frame, _strand,
                                          [self = shared_from_this()](bool written) {
                                            if (!written) return self->ended("the relay's session ended");
                                            self->_carrying.reset();
@@ -595,6 +601,9 @@ class Paths::Pump : public std::enable_shared_from_this<Pump> {
   const identity::NodeId _relay;
   const identity::NodeId _far_end;
   const net::Lane _lane;
+  // The lane to the relay this circuit's bytes and its close go on, fixed at
+  // the start: they may not overtake each other.
+  const net::Lane _carrier;
   const sched::FrameType _frame;
   std::array<uint8_t, relay_chunk_bytes> _buffer{};
   std::deque<net::Bytes> _out;
@@ -755,6 +764,10 @@ std::string Paths::try_relay(const NodeRecord& peer, net::Lane lane) {
       ++_stats.relays_tried;
     }
     try {
+      if (lane == net::Lane::data) {
+        _client.open_lane(relay, net::Lane::data);
+        await_data_lane(relay.id);
+      }
       const auto outcome = _caller(relay, m::relay_open, encode(RelayOpen{peer.id, lane}), _config.connect_timeout * 3);
       if (!outcome.reply || outcome.reply->type != m::relay_open_reply) {
         why = "relay " + to_string(relay.id) + ": " + (outcome.reply ? "refused" : outcome.failure);
@@ -790,7 +803,8 @@ std::shared_ptr<Paths::Pump> Paths::open_end(uint64_t circuit, const identity::N
                                              int* family) {
   int pair[2] = {-1, -1};
   if (::socketpair(AF_UNIX, SOCK_STREAM, 0, pair) != 0) throw std::runtime_error("socketpair failed");
-  auto pump = std::make_shared<Pump>(_io, _owner, circuit, relay, far_end, lane, pair[1]);
+  const auto carrier = carrier_to(relay, lane);
+  auto pump = std::make_shared<Pump>(_io, _owner, circuit, relay, far_end, lane, carrier, pair[1]);
   {
     contract::Lock lock(_mutex);
     if (_stopped) {
@@ -818,7 +832,7 @@ void Paths::close_end(uint64_t circuit, const std::string& why, bool tell_relay)
   if (!pump) return;
   if (!tell_relay) return pump->finish();
   pump->close();
-  send_until_taken(pump->relay(), {m::relay_close, encode(RelayClose{circuit, why}), {}});
+  send_until_taken(pump->relay(), pump->carrier(), {m::relay_close, encode(RelayClose{circuit, why}), {}});
 }
 
 void Paths::shortly(std::function<void(Paths&)> f) {
@@ -828,9 +842,24 @@ void Paths::shortly(std::function<void(Paths&)> f) {
   });
 }
 
-void Paths::send_until_taken(identity::NodeId peer, net::Message message) {
-  const auto outcome = _client.send_paced(peer, net::Lane::control, message, sched::FrameType::control, _io.get_executor(), {});
-  if (outcome == net::Client::Paced::full) shortly([peer, message = std::move(message)](Paths& paths) { paths.send_until_taken(peer, message); });
+void Paths::send_until_taken(identity::NodeId peer, net::Lane lane, net::Message message) {
+  const auto outcome = _client.send_paced(peer, lane, message, sched::FrameType::control, _io.get_executor(), {});
+  if (outcome == net::Client::Paced::full) shortly([peer, lane, message = std::move(message)](Paths& paths) { paths.send_until_taken(peer, lane, message); });
+}
+
+void Paths::await_data_lane(const identity::NodeId& peer) const {
+  const auto until = std::chrono::steady_clock::now() + _config.connect_timeout;
+  while (!_client.has_route(peer, net::Lane::data) && std::chrono::steady_clock::now() < until) {
+    {
+      contract::Lock lock(_mutex);
+      if (_stopped) return;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+}
+
+net::Lane Paths::carrier_to(const identity::NodeId& peer, net::Lane lane) const {
+  return lane == net::Lane::data && _client.has_route(peer, net::Lane::data) ? net::Lane::data : net::Lane::control;
 }
 
 net::Handled Paths::punch_request(const NodeRecord& from, const net::Message& request) {
@@ -915,6 +944,9 @@ net::Handled Paths::relay_open(const NodeRecord& from, const net::Message& reque
   if (!target || !_client.has_route(asked.target, net::Lane::control)) return refuse("the relay has no session with the target");
   const auto circuit = random_circuit();
   const auto token = random_token();
+  // The opener dialled its DATA lane before asking; it may not have landed here.
+  if (asked.lane == net::Lane::data) await_data_lane(from.id);
+  const auto carrier_a = carrier_to(from.id, asked.lane);
   {
     contract::Lock lock(_mutex);
     if (_stopped) return refuse("the relay is stopping");
@@ -927,6 +959,7 @@ net::Handled Paths::relay_open(const NodeRecord& from, const net::Message& reque
     }
     // Registered before the offer, so nothing the target sends is lost.
     _circuits[circuit] = Circuit{from.id, asked.target, asked.lane, 0, {}, {}};
+    _circuits[circuit].to_a.carrier = carrier_a;
   }
   const auto outcome = _caller(*target, m::relay_offer, encode(RelayOffer{circuit, from.id, asked.lane, token}), _config.connect_timeout * 2);
   std::string why;
@@ -945,9 +978,14 @@ net::Handled Paths::relay_open(const NodeRecord& from, const net::Message& reque
     _circuits.erase(circuit);
     return refuse(why);
   }
+  // The target has its lane by now, or will not soon. It sends nothing before
+  // the opener's hello, which waits on this reply, so nothing has gone yet.
+  if (asked.lane == net::Lane::data) await_data_lane(asked.target);
+  const auto carrier_b = carrier_to(asked.target, asked.lane);
   {
     contract::Lock lock(_mutex);
     ++_stats.circuits_relayed;
+    if (const auto found = _circuits.find(circuit); found != _circuits.end()) found->second.to_b.carrier = carrier_b;
   }
   return reply(m::relay_open_reply, encode(RelayOpenReply{circuit, {}, token}));
 }
@@ -960,6 +998,10 @@ net::Handled Paths::relay_offer(const NodeRecord& from, const net::Message& requ
     return net::Handled::failed(400, "invalid_request", error.what());
   }
   const auto refuse = [](const std::string& why) { return reply(m::relay_offer_reply, encode(RelayOfferReply{false, why})); };
+  if (offer.lane == net::Lane::data) {
+    _client.open_lane(from, net::Lane::data);
+    await_data_lane(from.id);
+  }
   int session_end = -1;
   int family = AF_UNIX;
   std::shared_ptr<Pump> pump;
@@ -1008,6 +1050,7 @@ net::Handled Paths::relay_data(const NodeRecord& from, const net::Message& reque
     end->deliver(std::move(data.bytes));
     return net::Handled::processed();
   }
+  if (toward_b) _client.note_path_progress(from.id, net::Lane::data);
   if (broke_window) {
     lost(data.circuit, *toward_b);
     return net::Handled::processed();
@@ -1020,6 +1063,8 @@ void Paths::advance(uint64_t circuit, bool toward_b) {
   net::Message message;
   identity::NodeId peer;
   auto frame = sched::FrameType::control;
+  // Credit goes on CONTROL and overtakes; bytes and the close keep their order.
+  auto lane = net::Lane::control;
   // Taken off the leg before the send: its completion may run on another
   // thread before the send returns. Put back only if the queue refuses it.
   uint64_t credit = 0;
@@ -1037,11 +1082,13 @@ void Paths::advance(uint64_t circuit, bool toward_b) {
       credit = std::exchange(leg.credit, 0);
       message = {m::relay_credit, encode(RelayCredit{circuit, credit}), {}};
     } else if (!leg.held.empty()) {
+      lane = leg.carrier;
       chunk = std::move(leg.held.front());
       leg.held.pop_front();
       frame = c.lane == net::Lane::data ? sched::FrameType::loader : sched::FrameType::control;
       message = {m::relay_data, encode(RelayData{circuit, *chunk}), {}};
     } else if (leg.close) {
+      lane = leg.carrier;
       last = true;
       message = {m::relay_close, encode(RelayClose{circuit, *leg.close}), {}};
     } else {
@@ -1049,9 +1096,9 @@ void Paths::advance(uint64_t circuit, bool toward_b) {
     }
     leg.sending = true;
   }
-  const auto outcome = _client.send_paced(
-      peer, net::Lane::control, std::move(message), frame, _io.get_executor(),
-      [owner = _owner, circuit, toward_b, last](bool written) { with(owner, [&](Paths& paths) { paths.advanced(circuit, toward_b, written, last); }); });
+  const auto outcome = _client.send_paced(peer, lane, std::move(message), frame, _io.get_executor(), [owner = _owner, circuit, toward_b, last](bool written) {
+    with(owner, [&](Paths& paths) { paths.advanced(circuit, toward_b, written, last); });
+  });
   if (outcome == net::Client::Paced::taken) return;
   {
     contract::Lock lock(_mutex);
@@ -1121,7 +1168,10 @@ net::Handled Paths::relay_credit(const NodeRecord& from, const net::Message& req
     }
   }
   if (end) end->credit(credit.chunks);
-  if (toward_b) advance(credit.circuit, *toward_b);
+  if (toward_b) {
+    _client.note_path_progress(from.id, net::Lane::data);
+    advance(credit.circuit, *toward_b);
+  }
   return net::Handled::processed();
 }
 
@@ -1224,7 +1274,7 @@ void Paths::sweep() {
 PathStats Paths::stats() const {
   contract::Lock lock(_mutex);
   auto out = _stats;
-  for (const auto& [circuit, c] : _circuits) out.circuits.push_back({circuit, c.a, c.b, c.lane, c.bytes});
+  for (const auto& [circuit, c] : _circuits) out.circuits.push_back({circuit, c.a, c.b, c.lane, c.bytes, c.to_a.carrier, c.to_b.carrier});
   return out;
 }
 

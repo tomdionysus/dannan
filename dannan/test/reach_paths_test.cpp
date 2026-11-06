@@ -313,6 +313,16 @@ TEST(LevelZero, ALargeTransferCrossesARelayIntact) {
   ASSERT_TRUE(outcome.reply) << outcome.failure;
   EXPECT_EQ(outcome.reply->payload, payload);
   EXPECT_EQ(cluster.a->context().nodes().path(peer->id, net::Lane::data), net::Purpose::relayed);
+  // Bulk on DATA at each hop, as wire v1 section 6 has it: never in front of
+  // the pings on the CONTROL session to the relay.
+  bool data_circuit = false;
+  for (const auto& circuit : cluster.hub->diagnostics().paths.circuits) {
+    if (circuit.lane != net::Lane::data) continue;
+    data_circuit = true;
+    EXPECT_EQ(circuit.carrier_a, net::Lane::data);
+    EXPECT_EQ(circuit.carrier_b, net::Lane::data);
+  }
+  EXPECT_TRUE(data_circuit);
   // Twice: the circuit is still good.
   EXPECT_TRUE(cluster.a->context().routes().call_and_wait(*peer, echo_data, net::Bytes(1024, 3), sched::FrameType::foreground, 60s).reply);
 }
