@@ -236,6 +236,7 @@ void Supervisor::stop() {
   }
   for (auto& entry : _entries)
     if (entry->lifecycle.joinable()) entry->lifecycle.join();
+  _entries.clear();
 }
 
 std::vector<SubsystemStatus> Supervisor::statuses() const {

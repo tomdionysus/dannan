@@ -11,6 +11,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdio>
 #include <fstream>
 #include <stdexcept>
 
@@ -193,6 +194,26 @@ TEST(Crypto, X25519PublicFromPrivate) {
   EXPECT_EQ(x25519_public(pair.private_key), pair.public_key);
   std::array<uint8_t, 32> base{9};
   EXPECT_EQ(x25519_public(pair.private_key), x25519_shared(pair.private_key, base));
+}
+
+// Macha's own code gave these (crypto.cpp at 9a08846, load_cluster_keys, this file's secret). The
+// disk is sealed under the storage key, so a difference here leaves every object unreadable.
+TEST(ClusterKey, DerivesWhatMachaDerivesFromTheSameFile) {
+  test::TempDir dir;
+  std::ofstream(dir.path() / "k") << "known answer secret\n";
+  const auto key = load_cluster_key(dir.path() / "k");
+  const auto hex = [](std::span<const uint8_t> bytes) {
+    std::string out;
+    char pair[3];
+    for (const auto byte : bytes) {
+      std::snprintf(pair, sizeof(pair), "%02x", byte);
+      out += pair;
+    }
+    return out;
+  };
+  EXPECT_EQ(hex(key.master), "899183ea0b780db7dad763cfa9603c34e807f81c0d166626d14956561f2ed36d");
+  EXPECT_EQ(hex(key.derive("macha/storage/v1")), "57632772427dd7afc4b4523f54d127611d6f3bc1d1611897957ef88d23c1cb21");
+  EXPECT_EQ(hex(key.derive("macha/auth/v1")), "0472aa22d3453676c52c4dc0e57604008e7fdeaa351db45afc0d4ed56ecdb220");
 }
 
 }  // namespace
