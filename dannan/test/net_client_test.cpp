@@ -1684,5 +1684,49 @@ TEST(Health, APathThatKeepsMovingIsAliveThoughItsPingsAreLate) {
   EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::debug, " liveness failure: ") >= 1; }));
 }
 
+// After a path has moved, the peer has the whole liveness budget again, not one
+// attempt's: once its movement has carried it past the first deadline, one gap
+// longer than an attempt and shorter than the budget is not death. Then, with
+// nothing moving, the budget does run out.
+TEST(Health, AGapAfterAPathMovedHasTheWholeBudget) {
+  Io io;
+  test::SteppedTime time;
+  auto log = std::make_shared<test::RecordingSink>();
+  ClientOptions tuning;
+  tuning.log = log;
+  tuning.time = &time;
+  tuning.heartbeat = 1h;
+  tuning.dead_after = 3h;
+  Node a(io, tuning), b(io);
+  ASSERT_TRUE(call(a, b.self).reply);
+  const auto settle = [] { std::this_thread::sleep_for(100ms); };
+  b.hang_pings = 100000;
+  time.advance(1h);  // the pass: its ping hangs
+  ASSERT_TRUE(b.gate.wait_for_entries(1));
+  settle();
+  // Moving for longer than the first budget.
+  for (int hour = 0; hour < 4; ++hour) {
+    time.advance(30min);
+    a.client->note_path_progress(b.self.id, Lane::control);
+    settle();
+    time.advance(30min);
+    settle();
+  }
+  EXPECT_TRUE(a.client->has_route(b.self.id, Lane::control));
+  // Nothing moves for an hour and a half: more than an attempt, less than the budget.
+  time.advance(45min);
+  settle();
+  time.advance(45min);
+  settle();
+  EXPECT_TRUE(a.client->has_route(b.self.id, Lane::control));
+  EXPECT_EQ(log->count(status::LogLevel::debug, " liveness failure: "), 0u);
+  // Nothing moves past the budget.
+  for (int i = 0; i < 12 && log->count(status::LogLevel::debug, " liveness failure: ") == 0; ++i) {
+    time.advance(30min);
+    settle();
+  }
+  EXPECT_GE(log->count(status::LogLevel::debug, " liveness failure: "), 1u);
+}
+
 }  // namespace
 }  // namespace dannan::net
