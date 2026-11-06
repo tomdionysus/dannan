@@ -338,10 +338,10 @@ std::pair<uint16_t, net::Endpoint> observe_from(asio::io_context& io, const net:
   if (!error) state->tcp.bind(any_on(remote, port), error);
   if (error) throw std::runtime_error("cannot bind the punch port: " + error.message());
   const uint16_t bound = state->tcp.local_endpoint().port();
-  asio::dispatch(state->strand, [state, remote, timeout, key, local] {
+  asio::dispatch(state->strand, [state, remote, timeout, key, local, bound] {
     state->timer.expires_after(timeout);
-    state->timer.async_wait([state](const boost::system::error_code& error) {
-      if (!error) state->fail("timed out");
+    state->timer.async_wait([state, bound](const boost::system::error_code& error) {
+      if (!error) state->fail(std::string("timed out at ") + (state->socket ? "the handshake" : "connect") + " from local port " + std::to_string(bound));
     });
     state->tcp.async_connect(remote, [state, key, local](const boost::system::error_code& error) {
       if (state->finished) return;
