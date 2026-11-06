@@ -258,6 +258,9 @@ class Client {
   void invalidate_identity_association(const membership::IdentityReset& reset);
   // Closes this node's routes to `peer` on `lane`, both directions.
   void close_route(const identity::NodeId& peer, Lane lane, const std::string& why);
+  // The path under the route to `peer` on `lane` moved the far end's bytes:
+  // its pings are waiting behind them, so the peer is alive.
+  void note_path_progress(const identity::NodeId& peer, Lane lane);
 
   bool has_route(const identity::NodeId& peer, Lane lane) const;
   ClientStats stats() const;

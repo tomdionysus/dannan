@@ -272,6 +272,8 @@ bool Session::try_notify(Message message, sched::FrameType frame) {
   return true;
 }
 
+void Session::note_path_progress() { _path_progress.store(_options.time->now()); }
+
 void Session::cancel(uint64_t request_id) {
   std::optional<Pending> pending;
   {

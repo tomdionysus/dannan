@@ -1095,6 +1095,16 @@ bool Client::send(const identity::NodeId& peer, Lane lane, const Message& messag
   }
 }
 
+void Client::note_path_progress(const identity::NodeId& peer, Lane lane) {
+  std::shared_ptr<Session> route;
+  {
+    contract::Lock lock(_mutex);
+    if (_stopped) return;
+    route = route_locked(peer, lane);
+  }
+  if (route) route->note_path_progress();
+}
+
 Client::Paced Client::send_paced(const identity::NodeId& peer, Lane lane, Message message, sched::FrameType frame, asio::any_io_executor executor,
                                  std::function<void(bool)> sent) {
   std::shared_ptr<Session> route;
@@ -1352,6 +1362,14 @@ void Client::await_ping(const std::shared_ptr<Probe>& probe) {
     if (error || probe->awaiting != id) return;
     if (_options.time->now() < probe->give_up_at) return await_ping(probe);
     const auto live = probe->session.lock();
+    // Its circuit moved since the ping went: the ping is behind those bytes,
+    // not lost. The budgets start again from now.
+    if (live && live->path_progress() > probe->sent) {
+      probe->sent = live->path_progress();
+      probe->give_up_at = _options.time->now() + std::max(_options.dead_after / 3, std::chrono::milliseconds(100));
+      probe->deadline = std::max(probe->deadline, probe->give_up_at);
+      return await_ping(probe);
+    }
     if (_options.time->now() >= probe->deadline) {
       // Closes exactly the route that owns this probe: a replacement the peer
       // opened meanwhile is not touched.
