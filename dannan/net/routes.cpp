@@ -46,9 +46,12 @@ RouteTable RouteTable::with_dannan_types() {
   table.add_core(message::relay_open, {"relay_open", control, control_only, false, true});
   table.add_core(message::relay_offer, {"relay_offer", control, control_only, false, true});
   // A circuit's bytes travel in the class of the frame they carry, on the
-  // lane the circuit is for, in order.
-  table.add_core(message::relay_data, {"relay_data", both, any, true, false, true});
-  table.add_core(message::relay_close, {"relay_close", both, control_only, true, true});
+  // lane the circuit is for, in order. Each is one piece of a byte stream, so
+  // none may be refused by a queue: they are handled on the session, and
+  // credit from the far end bounds what is on the way.
+  table.add_core(message::relay_data, {"relay_data", both, any, true, false, false, std::nullopt, std::nullopt, true});
+  table.add_core(message::relay_credit, {"relay_credit", both, control_only, true, false, false, std::nullopt, std::nullopt, true});
+  table.add_core(message::relay_close, {"relay_close", both, control_only, true, false, false, std::nullopt, std::nullopt, true});
   // Channels: a publish in order per origin; a replay answered fast; bulk
   // on DATA, never in the control class.
   table.add_core(message::channel_publish, {"channel_publish", control, any, true, false, true});
@@ -85,6 +88,8 @@ void RouteTable::add(MessageType type, Registration registration) {
   if (number < first_user_type) throw std::invalid_argument("message type " + std::to_string(number) + " is Dannan's; user types start at 512");
   if (_retired.contains(type)) throw std::invalid_argument("message type " + std::to_string(number) + " is retired");
   if (_types.contains(type)) throw std::invalid_argument("message type " + std::to_string(number) + " is already registered as " + _types.at(type).name);
+  if (registration.on_session && (!registration.notification || registration.fast_control || registration.ordered))
+    throw std::invalid_argument("message type " + std::to_string(number) + ": only a plain notification may be handled on the session");
   _types.emplace(type, std::move(registration));
 }
 
@@ -127,6 +132,11 @@ bool RouteTable::is_fast_control(MessageType type) const noexcept {
 bool RouteTable::is_ordered(MessageType type) const noexcept {
   const auto* registration = find(type);
   return registration && registration->ordered;
+}
+
+bool RouteTable::is_on_session(MessageType type) const noexcept {
+  const auto* registration = find(type);
+  return registration && registration->on_session;
 }
 
 std::string RouteTable::name(MessageType type) const {

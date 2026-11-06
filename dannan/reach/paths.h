@@ -84,6 +84,21 @@ struct RelayClose {
   uint64_t circuit = 0;
   std::string why;
 };
+// From the end that took chunks off the circuit, back along it: this many
+// more may be sent.
+struct RelayCredit {
+  uint64_t circuit = 0;
+  uint64_t chunks = 0;
+};
+
+// A circuit's flow control, end to end. An end sends at most this many
+// chunks of at most relay_chunk_bytes beyond those the far end has written
+// to its session, so what a circuit holds anywhere on the way is bounded,
+// and a relay holds at most relay_window_chunks * relay_chunk_bytes for each
+// direction of each circuit. Credit goes back in batches.
+inline constexpr size_t relay_chunk_bytes = 64 * 1024;
+inline constexpr uint64_t relay_window_chunks = 32;
+inline constexpr uint64_t relay_credit_batch = 8;
 
 net::Bytes encode(const PunchRequest&);
 net::Bytes encode(const PunchGo&);
@@ -94,6 +109,7 @@ net::Bytes encode(const RelayOffer&);
 net::Bytes encode(const RelayOfferReply&);
 net::Bytes encode(const RelayData&);
 net::Bytes encode(const RelayClose&);
+net::Bytes encode(const RelayCredit&);
 // Each throws net::DecodeError.
 PunchRequest decode_punch_request(std::span<const uint8_t>);
 PunchGo decode_punch_go(std::span<const uint8_t>);
@@ -104,6 +120,7 @@ RelayOffer decode_relay_offer(std::span<const uint8_t>);
 RelayOfferReply decode_relay_offer_reply(std::span<const uint8_t>);
 RelayData decode_relay_data(std::span<const uint8_t>);
 RelayClose decode_relay_close(std::span<const uint8_t>);
+RelayCredit decode_relay_credit(std::span<const uint8_t>);
 
 // What a node learns of its own reachability from where peers saw it.
 struct Observation {
@@ -206,6 +223,7 @@ class Paths {
   net::Handled relay_offer(const membership::NodeRecord& from, const net::Message& request);
   net::Handled relay_data(const membership::NodeRecord& from, const net::Message& request);
   net::Handled relay_close(const membership::NodeRecord& from, const net::Message& request);
+  net::Handled relay_credit(const membership::NodeRecord& from, const net::Message& request);
 
   // Probes up to two public peers from one local port and classifies this
   // node; waits on the network. Nothing when there is no public peer to ask.
@@ -225,11 +243,24 @@ class Paths {
   // What asynchronous completions reach this object through: cleared by
   // stop(), under its mutex, so a late completion finds nobody.
   struct Owner;
+  // One direction through a relay. Credit overtakes bytes, so one direction's
+  // bytes never hold back the other's; a close goes last, so a circuit's tail
+  // arrives. Held chunks are bounded by the window.
+  struct Leg {
+    std::deque<net::Bytes> held;
+    uint64_t credit = 0;
+    std::optional<std::string> close;
+    bool sending = false;
+    bool lost = false;
+  };
   struct Circuit {
     identity::NodeId a;
     identity::NodeId b;
     net::Lane lane = net::Lane::control;
     uint64_t bytes = 0;
+    // What waits to go on toward each end, one message at a time.
+    Leg to_a;
+    Leg to_b;
   };
 
   void work(std::stop_token stop);
@@ -242,6 +273,18 @@ class Paths {
   // can arrive for it.
   std::shared_ptr<Pump> open_end(uint64_t circuit, const identity::NodeId& relay, net::Lane lane, int* session_end, int* family);
   void close_end(uint64_t circuit, const std::string& why, bool tell_relay);
+  // Sends a relay's next message for one direction of `circuit`, if it has one
+  // and none is on its way.
+  void advance(uint64_t circuit, bool toward_b);
+  void advanced(uint64_t circuit, bool toward_b, bool written, bool last);
+  // The session toward one end is gone: the other end is told, after what
+  // it is still owed.
+  void lost(uint64_t circuit, bool toward_b);
+  // A control notification that must arrive: waits out a full queue, and gives
+  // up only when the route is gone.
+  void send_until_taken(identity::NodeId peer, net::Message message);
+  // Runs `f` shortly, if this object has not stopped by then.
+  void shortly(std::function<void(Paths&)> f);
   std::optional<membership::NodeRecord> known(const identity::NodeId& id) const;
 
   // Runs `f` on this object if it has not stopped.

@@ -22,7 +22,9 @@
 #include <boost/asio/write.hpp>
 #include <future>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
+#include <utility>
 
 #include "dannan/identity/crypto.h"
 #include "dannan/net/server.h"
@@ -184,6 +186,13 @@ net::Bytes encode(const RelayClose& value) {
   return writer.take();
 }
 
+net::Bytes encode(const RelayCredit& value) {
+  net::Writer writer;
+  writer.u64(value.circuit);
+  writer.u64(value.chunks);
+  return writer.take();
+}
+
 PunchRequest decode_punch_request(std::span<const uint8_t> bytes) {
   return decoding<PunchRequest>(bytes, [](net::Reader& reader) {
     PunchRequest out;
@@ -269,6 +278,15 @@ RelayClose decode_relay_close(std::span<const uint8_t> bytes) {
     RelayClose out;
     out.circuit = reader.u64();
     out.why = reader.string(4096);
+    return out;
+  });
+}
+
+RelayCredit decode_relay_credit(std::span<const uint8_t> bytes) {
+  return decoding<RelayCredit>(bytes, [](net::Reader& reader) {
+    RelayCredit out;
+    out.circuit = reader.u64();
+    out.chunks = reader.u64();
     return out;
   });
 }
@@ -467,6 +485,14 @@ class Paths::Pump : public std::enable_shared_from_this<Pump> {
       if (self->_out.size() == 1) self->write();
     });
   }
+  // The far end took `chunks` more off the circuit.
+  void credit(uint64_t chunks) {
+    asio::post(_strand, [self = shared_from_this(), chunks] {
+      self->_unanswered -= std::min(chunks, self->_unanswered);
+      self->read();
+    });
+  }
+  // Now: what has not reached the session is lost.
   void close() {
     asio::post(_strand, [self = shared_from_this()] {
       self->_closed = true;
@@ -474,24 +500,75 @@ class Paths::Pump : public std::enable_shared_from_this<Pump> {
       self->_socket.close(ignored);
     });
   }
+  // The far end has finished: its last bytes reach the session first.
+  void finish() {
+    asio::post(_strand, [self = shared_from_this()] {
+      self->_finishing = true;
+      if (self->_out.empty()) self->close();
+    });
+  }
 
  private:
+  // One read at a time, and none past the window or with a chunk still
+  // waiting to go: the session writing into the far side of the socket feels
+  // a slow circuit as a slow socket.
   void read() {
+    if (_closed || _reading || _carrying || _unanswered >= relay_window_chunks) return;
+    _reading = true;
     _socket.async_read_some(asio::buffer(_buffer), [self = shared_from_this()](const boost::system::error_code& error, size_t got) {
+      self->_reading = false;
       if (error) return self->ended(self->_closed ? "closed" : "the session's end closed: " + error.message());
-      const RelayData data{self->_circuit, net::Bytes(self->_buffer.begin(), self->_buffer.begin() + static_cast<std::ptrdiff_t>(got))};
-      bool sent = false;
-      Paths::with(self->_owner,
-                  [&](Paths& paths) { sent = paths._client.send(self->_relay, net::Lane::control, {m::relay_data, encode(data), {}}, self->_frame); });
-      if (!sent) return self->ended("the relay could not take the circuit's bytes");
-      self->read();
+      ++self->_unanswered;
+      self->_carrying = net::Bytes(self->_buffer.begin(), self->_buffer.begin() + static_cast<std::ptrdiff_t>(got));
+      self->carry();
     });
+  }
+  void carry() {
+    if (_closed) return;
+    auto outcome = net::Client::Paced::gone;
+    Paths::with(_owner, [&](Paths& paths) {
+      outcome = paths._client.send_paced(_relay, net::Lane::control, {m::relay_data, encode(RelayData{_circuit, *_carrying}), {}}, _frame, _strand,
+                                         [self = shared_from_this()](bool written) {
+                                           if (!written) return self->ended("the relay's session ended");
+                                           self->_carrying.reset();
+                                           self->read();
+                                         });
+    });
+    if (outcome == net::Client::Paced::gone) return ended("the relay could not take the circuit's bytes");
+    if (outcome == net::Client::Paced::full) later([](Pump& pump) { pump.carry(); });
   }
   void write() {
     asio::async_write(_socket, asio::buffer(_out.front()), [self = shared_from_this()](const boost::system::error_code& error, size_t) {
       if (error) return self->ended("the session's end closed: " + error.message());
       self->_out.pop_front();
-      if (!self->_out.empty()) self->write();
+      ++self->_owed;
+      self->pay();
+      if (!self->_out.empty()) return self->write();
+      if (self->_finishing) self->close();
+    });
+  }
+  // Credit for what has reached the session, a batch at a time. The window
+  // is several batches, so a sender out of credit always has a batch owing.
+  void pay() {
+    if (_closed || _paying || _owed < relay_credit_batch) return;
+    auto outcome = net::Client::Paced::gone;
+    Paths::with(_owner, [&](Paths& paths) {
+      outcome = paths._client.send_paced(_relay, net::Lane::control, {m::relay_credit, encode(RelayCredit{_circuit, _owed}), {}}, sched::FrameType::control,
+                                         _strand, [self = shared_from_this()](bool written) {
+                                           self->_paying = false;
+                                           if (!written) return self->ended("the relay's session ended");
+                                           self->pay();
+                                         });
+    });
+    if (outcome == net::Client::Paced::gone) return ended("the relay could not take the circuit's credit");
+    if (outcome == net::Client::Paced::full) return later([](Pump& pump) { pump.pay(); });
+    _paying = true;
+    _owed = 0;
+  }
+  void later(void (*again)(Pump&)) {
+    auto timer = std::make_shared<asio::steady_timer>(_strand, std::chrono::milliseconds(5));
+    timer->async_wait([timer, self = shared_from_this(), again](const boost::system::error_code& error) {
+      if (!error) again(*self);
     });
   }
   void ended(const std::string& why) {
@@ -509,8 +586,17 @@ class Paths::Pump : public std::enable_shared_from_this<Pump> {
   const uint64_t _circuit;
   const identity::NodeId _relay;
   const sched::FrameType _frame;
-  std::array<uint8_t, 64 * 1024> _buffer{};
+  std::array<uint8_t, relay_chunk_bytes> _buffer{};
   std::deque<net::Bytes> _out;
+  // The chunk read and not yet written to the relay's session.
+  std::optional<net::Bytes> _carrying;
+  // Chunks sent that the far end has not yet given credit for, and chunks
+  // this end has written and not yet given credit for.
+  uint64_t _unanswered = 0;
+  uint64_t _owed = 0;
+  bool _reading = false;
+  bool _paying = false;
+  bool _finishing = false;
   bool _closed = false;
   bool _ended = false;
 };
@@ -719,8 +805,21 @@ void Paths::close_end(uint64_t circuit, const std::string& why, bool tell_relay)
     }
   }
   if (!pump) return;
+  if (!tell_relay) return pump->finish();
   pump->close();
-  if (tell_relay) (void)_client.send(pump->relay(), net::Lane::control, {m::relay_close, encode(RelayClose{circuit, why}), {}}, sched::FrameType::control);
+  send_until_taken(pump->relay(), {m::relay_close, encode(RelayClose{circuit, why}), {}});
+}
+
+void Paths::shortly(std::function<void(Paths&)> f) {
+  auto timer = std::make_shared<asio::steady_timer>(_io, std::chrono::milliseconds(5));
+  timer->async_wait([timer, owner = _owner, f = std::move(f)](const boost::system::error_code& error) {
+    if (!error) with(owner, f);
+  });
+}
+
+void Paths::send_until_taken(identity::NodeId peer, net::Message message) {
+  const auto outcome = _client.send_paced(peer, net::Lane::control, message, sched::FrameType::control, _io.get_executor(), {});
+  if (outcome == net::Client::Paced::full) shortly([peer, message = std::move(message)](Paths& paths) { paths.send_until_taken(peer, message); });
 }
 
 net::Handled Paths::punch_request(const NodeRecord& from, const net::Message& request) {
@@ -816,7 +915,7 @@ net::Handled Paths::relay_open(const NodeRecord& from, const net::Message& reque
       }
     }
     // Registered before the offer, so nothing the target sends is lost.
-    _circuits[circuit] = Circuit{from.id, asked.target, asked.lane, 0};
+    _circuits[circuit] = Circuit{from.id, asked.target, asked.lane, 0, {}, {}};
   }
   const auto outcome = _caller(*target, m::relay_offer, encode(RelayOffer{circuit, from.id, asked.lane, token}), _config.connect_timeout * 2);
   std::string why;
@@ -875,20 +974,22 @@ net::Handled Paths::relay_data(const NodeRecord& from, const net::Message& reque
     return net::Handled::failed(400, "invalid_request", error.what());
   }
   std::shared_ptr<Pump> end;
-  std::optional<identity::NodeId> onward;
-  net::Lane lane = net::Lane::control;
+  std::optional<bool> toward_b;
+  bool broke_window = false;
   {
     contract::Lock lock(_mutex);
     if (const auto found = _ends.find(data.circuit); found != _ends.end() && found->second->relay() == from.id) {
       end = found->second;
     } else if (const auto circuit = _circuits.find(data.circuit); circuit != _circuits.end()) {
       auto& c = circuit->second;
-      if (from.id == c.a) onward = c.b;
-      if (from.id == c.b) onward = c.a;
-      lane = c.lane;
-      if (onward) {
+      if (from.id == c.a) toward_b = true;
+      if (from.id == c.b) toward_b = false;
+      if (toward_b) {
+        auto& leg = *toward_b ? c.to_b : c.to_a;
         c.bytes += data.bytes.size();
         _stats.relayed_bytes += data.bytes.size();
+        broke_window = leg.held.size() >= relay_window_chunks;
+        if (!broke_window && !leg.lost) leg.held.push_back(std::move(data.bytes));
       }
     }
   }
@@ -896,14 +997,120 @@ net::Handled Paths::relay_data(const NodeRecord& from, const net::Message& reque
     end->deliver(std::move(data.bytes));
     return net::Handled::processed();
   }
-  if (!onward) return net::Handled::processed();
-  const auto frame = lane == net::Lane::data ? sched::FrameType::loader : sched::FrameType::control;
-  if (!_client.send(*onward, net::Lane::control, {m::relay_data, encode(data), {}}, frame)) {
-    const RelayClose close{data.circuit, "the relay lost the other end"};
-    (void)_client.send(from.id, net::Lane::control, {m::relay_close, encode(close), {}}, sched::FrameType::control);
-    contract::Lock lock(_mutex);
-    _circuits.erase(data.circuit);
+  if (broke_window) {
+    lost(data.circuit, *toward_b);
+    return net::Handled::processed();
   }
+  if (toward_b) advance(data.circuit, *toward_b);
+  return net::Handled::processed();
+}
+
+void Paths::advance(uint64_t circuit, bool toward_b) {
+  net::Message message;
+  identity::NodeId peer;
+  auto frame = sched::FrameType::control;
+  // Taken off the leg before the send: its completion may run on another
+  // thread before the send returns. Put back only if the queue refuses it.
+  uint64_t credit = 0;
+  std::optional<net::Bytes> chunk;
+  bool last = false;
+  {
+    contract::Lock lock(_mutex);
+    const auto found = _circuits.find(circuit);
+    if (found == _circuits.end()) return;
+    auto& c = found->second;
+    auto& leg = toward_b ? c.to_b : c.to_a;
+    if (leg.sending || leg.lost) return;
+    peer = toward_b ? c.b : c.a;
+    if (leg.credit) {
+      credit = std::exchange(leg.credit, 0);
+      message = {m::relay_credit, encode(RelayCredit{circuit, credit}), {}};
+    } else if (!leg.held.empty()) {
+      chunk = std::move(leg.held.front());
+      leg.held.pop_front();
+      frame = c.lane == net::Lane::data ? sched::FrameType::loader : sched::FrameType::control;
+      message = {m::relay_data, encode(RelayData{circuit, *chunk}), {}};
+    } else if (leg.close) {
+      last = true;
+      message = {m::relay_close, encode(RelayClose{circuit, *leg.close}), {}};
+    } else {
+      return;
+    }
+    leg.sending = true;
+  }
+  const auto outcome = _client.send_paced(
+      peer, net::Lane::control, std::move(message), frame, _io.get_executor(),
+      [owner = _owner, circuit, toward_b, last](bool written) { with(owner, [&](Paths& paths) { paths.advanced(circuit, toward_b, written, last); }); });
+  if (outcome == net::Client::Paced::taken) return;
+  {
+    contract::Lock lock(_mutex);
+    const auto found = _circuits.find(circuit);
+    if (found == _circuits.end()) return;
+    auto& leg = toward_b ? found->second.to_b : found->second.to_a;
+    leg.sending = false;
+    leg.credit += credit;
+    if (chunk) leg.held.push_front(std::move(*chunk));
+  }
+  if (outcome == net::Client::Paced::gone) return lost(circuit, toward_b);
+  shortly([circuit, toward_b](Paths& paths) { paths.advance(circuit, toward_b); });
+}
+
+void Paths::advanced(uint64_t circuit, bool toward_b, bool written, bool last) {
+  if (!written) return lost(circuit, toward_b);
+  {
+    contract::Lock lock(_mutex);
+    const auto found = _circuits.find(circuit);
+    if (found == _circuits.end()) return;
+    if (last) {
+      _circuits.erase(found);
+      return;
+    }
+    (toward_b ? found->second.to_b : found->second.to_a).sending = false;
+  }
+  advance(circuit, toward_b);
+}
+
+void Paths::lost(uint64_t circuit, bool toward_b) {
+  {
+    contract::Lock lock(_mutex);
+    const auto found = _circuits.find(circuit);
+    if (found == _circuits.end()) return;
+    auto& leg = toward_b ? found->second.to_b : found->second.to_a;
+    auto& other = toward_b ? found->second.to_a : found->second.to_b;
+    leg.lost = true;
+    leg.held.clear();
+    leg.credit = 0;
+    if (other.lost) {
+      _circuits.erase(found);
+      return;
+    }
+    if (!other.close) other.close = "the relay lost the other end";
+  }
+  advance(circuit, !toward_b);
+}
+
+net::Handled Paths::relay_credit(const NodeRecord& from, const net::Message& request) {
+  RelayCredit credit;
+  try {
+    credit = decode_relay_credit(request.payload);
+  } catch (const net::DecodeError& error) {
+    return net::Handled::failed(400, "invalid_request", error.what());
+  }
+  std::shared_ptr<Pump> end;
+  std::optional<bool> toward_b;
+  {
+    contract::Lock lock(_mutex);
+    if (const auto found = _ends.find(credit.circuit); found != _ends.end() && found->second->relay() == from.id) {
+      end = found->second;
+    } else if (const auto circuit = _circuits.find(credit.circuit); circuit != _circuits.end()) {
+      auto& c = circuit->second;
+      if (from.id == c.a) toward_b = true;
+      if (from.id == c.b) toward_b = false;
+      if (toward_b && !(*toward_b ? c.to_b : c.to_a).lost) (*toward_b ? c.to_b : c.to_a).credit += credit.chunks;
+    }
+  }
+  if (end) end->credit(credit.chunks);
+  if (toward_b) advance(credit.circuit, *toward_b);
   return net::Handled::processed();
 }
 
@@ -914,20 +1121,21 @@ net::Handled Paths::relay_close(const NodeRecord& from, const net::Message& requ
   } catch (const net::DecodeError& error) {
     return net::Handled::failed(400, "invalid_request", error.what());
   }
-  std::optional<identity::NodeId> onward;
+  std::optional<bool> toward_b;
   bool ours = false;
   {
     contract::Lock lock(_mutex);
     if (const auto found = _ends.find(close.circuit); found != _ends.end() && found->second->relay() == from.id) {
       ours = true;
     } else if (const auto circuit = _circuits.find(close.circuit); circuit != _circuits.end()) {
-      if (from.id == circuit->second.a) onward = circuit->second.b;
-      if (from.id == circuit->second.b) onward = circuit->second.a;
-      if (onward) _circuits.erase(circuit);
+      auto& c = circuit->second;
+      if (from.id == c.a) toward_b = true;
+      if (from.id == c.b) toward_b = false;
+      if (toward_b && !(*toward_b ? c.to_b : c.to_a).close) (*toward_b ? c.to_b : c.to_a).close = close.why;
     }
   }
   if (ours) close_end(close.circuit, close.why, false);
-  if (onward) (void)_client.send(*onward, net::Lane::control, {m::relay_close, encode(close), {}}, sched::FrameType::control);
+  if (toward_b) advance(close.circuit, *toward_b);
   return net::Handled::processed();
 }
 
