@@ -242,6 +242,25 @@ password checks, HTTP) are Macha's, so neither is here.
 Every one is expressible and the values read equal. These compare headers by eye; only the
 ones with a case are pinned. The handshake timeout's default was not compared here.
 
+## Relaxed atomics, reviewed for weak memory (2026-11-06)
+
+arm64 has no TSan here, so each `memory_order_relaxed` in `dannan/` was read (36 sites, by reading only).
+The question for each: does a reader act on other memory because of this value? If so it would need
+acquire and release. None does.
+
+| Sites | What it is | Why relaxed is right |
+|---|---|---|
+| `net/session.h:42`, `node.cpp:696-697` | traffic totals | counts; nothing else is read because of them |
+| `status/observation.cpp:149-163`, `:184-216`, `.h:104`, `status/surface.cpp:33` | histograms and counters | figures; a snapshot may be briefly uneven between buckets and sum, which `quantile` tolerates (`Observation.QuantilesClamp...`) |
+| `status/activity.cpp:18-36` | activity bytes and last-seen stamps | each value stands alone; a stale stamp is a slightly late decision to yield |
+| `sched/work.cpp:51`, `work.h:181-183` | guard violations and mode | a count and an independent setting |
+| `identity/secure_memory.cpp:51,69` | allocations that could not lock | a count |
+| `supervise/startup.h:30-31` | startup progress | monotonic count; a late reading delays a stall decision by a poll |
+| `sched/work.h:154`, `sched/class_waits.h:76` | a caller's cancel flag | carries no data; the wait polls or is woken, so it is seen soon, and acting on it reads nothing the setter wrote |
+
+No site publishes a pointer or guards data, so weak ordering cannot break one. This is a reading, not a
+test: it does not cover acquire and release uses elsewhere, or races TSan on x86_64 could not see.
+
 ## Records
 
 Done with this respec: the inventory rows citing the deleted `Interop.*` and
