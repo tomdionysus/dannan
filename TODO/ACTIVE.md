@@ -34,6 +34,22 @@ current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluat
 
 ## Resume here (2026-11-05)
 
+**The goal (Tom, relayed by the Macha session, 2026-11-06, in his words: "development will continue
+on them with macha code frozen until they can answer Yes unconditionally, the entire reason for their
+existence is this.").** Does Macha move onto Dannan with no change in data, functionality, reliability
+and performance? Yes, with nothing attached. A restated, bounded or tolerance answer is a No. Today's
+answer is No. Dannan's reason for existing is this; Lugh, Lir and AthenaSIP do not change that. Macha
+stays frozen at the live nodes' baseline, `9a08846`. What only Tom or Macha can give goes to the Macha
+session as a request, once. Sent (R1 to R6): which ruled changes count as change; a port branch in a
+clone at `../macha-port`; the Pi baselines; two machines for a timed run; a tag and push; the real IGD
+run.
+
+**Dannan's list toward Yes, no longer amendments:** rollback from `*.macha` opened by Macha; the storage
+key known answer; a long roster with resets; G44's three cases, G45's non-std throw, custody without
+certificates; the importer writing `dagda/extents` as `Bytes{1}`; widened goldens; the relaxed atomics
+reviewed, arm64 repeats, a clang TSan attempt; a two-machine measurement against Macha's baselines; a
+timed run; every seam owned. Facade writes the three `dagda/*` adverts until stage one.
+
 **Last gate before the pause:** at this commit's code, Debian 13 plain, ASan with UBSan, and TSan, 562 each; macOS ASan with UBSan and TSan, 560 each with the BBR case skipped; no sanitizer reports. Compose bed: the two original cases pass; the relay measurement does not.
 
 **Resumed 2026-11-06.** The pause (Tom: "Pause until it lands.") ended when Macha's old-code
