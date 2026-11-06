@@ -11,22 +11,38 @@ port. That is not a claim that nothing is left. Today's tests found real defects
 called proven (listed below), so expect the port to find more. Fix them as Tom ruled: the port pauses and I
 fix them.
 
-## Gates, at this commit
+## Gates, at tag 0.5.0
+
+Each gate ran once (Tom, 2026-11-06: "Test once and be done with it."), and these are the last results. The tag was cut with
+two items open, at Tom's word; see below.
 
 | Gate | Result |
 |---|---|
-| macOS, plain | 622 of 622 (1 BBR case skipped) |
-| macOS, ASan with UBSan | 622 of 622, no reports |
-| macOS, TSan | 622 of 622 in 3 of 4 full runs, no warnings. **1 run failed** (below) |
-| Debian 13, g++ 14, plain, ASan with UBSan, TSan | 624 of 624 each, no reports (one suppression, below) |
-| Debian TSan, relay transfers under 4 CPU hogs | 14 of 14, no warnings; stopped at its time limit, 14 of 30 planned |
-| Compose bed, real NATs, relay measurement | 5 of 5 (was 2 of 8), 103 to 141 MB/s |
-| Compose bed, the two other cases | pass |
-| arm64 (inverbeg) | **Not rerun.** Last at `415c6c4`, 562 of 562 plain and ASan, before all of today's work |
+| macOS, plain | 623 of 623, at the tag's code |
+| macOS, ASan with UBSan | 623 of 623, no reports, before the last, test-only commit |
+| macOS, TSan | **Failed one test:** the handshake timeout below. 622 passed, no warnings |
+| Debian 13, g++ 14, plain and ASan with UBSan | 625 of 625 each, no reports, before the last, test-only commit |
+| Debian 13, TSan | **Failed two tests:** the relay bulk cases below. 623 passed, no warnings |
+| Compose bed, real NATs | Relay measurement 5 of 5 (was 2 of 8), 103 to 141 MB/s, and the two other cases pass. Run before the last three commits, which change a failure text, a liveness budget and tests |
+| arm64 (inverbeg) | Run after the tag, at Tom's word; results follow separately |
 
-**One failure not explained.** `LevelZero.ANodeIsObservedFromAFixedLocalPort` timed out at its 10 s handshake
-bound in one full macOS TSan run. It then passed 40 of 40 alone under TSan, 60 of 60 plain, and 119 of 119
-under 12 CPU hogs, and 3 further full runs. Cause not found, so a stuck handshake is not excluded.
+**Open 1: relay bulk transfers under Debian TSan. Not explained, and not called slowness.**
+`LevelZero.ALargeTransferCrossesARelayIntact` ran out its 120 s deadline, and
+`LevelZero.TransfersBothWaysShareARelayAndControlStillAnswers` lost a session after about 30 s with no sign of movement,
+even with a 30 s liveness budget. TSan reported no data race. They pass plain and under ASan. The first may be extreme slowness; the
+second looks real. Untested guess: with circuits opened from both ends there can be two relayed sessions, and
+`Client::note_path_progress` credits the route, not the session the bytes are for. Relay is not on Macha's path, since Macha's
+nodes dial each other, so this does not touch a direct connection. The cases stay failing under TSan as the record of it.
+
+**Open 2: a handshake timeout on macOS TSan. Not reproduced at will, cause not found, not called environmental.**
+`LevelZero.ANodeIsObservedFromAFixedLocalPort` has now failed in 2 of about 11 full macOS TSan runs. It passed 40 alone under TSan, 60
+plain, 119 under CPU hogs and 10,635 under parallel copies. The failure text added for this says `timed out at the handshake from
+local port 50040`: TCP connected and then no answer came, with neither end closing. The code that reads the answer was read and
+shows no fault. Whether it can happen on the nodes is unknown. Dial and accept share this handshake code, so this one is on
+Macha's path until shown otherwise.
+
+**A test-only risk:** `test::free_port` can collide across processes ("cannot bind the punch port: Address already in use", 2 in
+about 10,600 runs under parallel copies). A gate could fail this way if another session runs tests at the same moment. Left as it is.
 
 **One suppression added**, `shared_target_executor`'s destructor: Asio's count is a release decrement and an
 acquire fence (read in the image's `detail/atomic_count.hpp`), and g++'s TSan does not model fences.
@@ -61,6 +77,8 @@ Each was a difference from Macha, or a defect, found today:
 - A fault sink kept past a subsystem's stop was a use-after-free; it is ignored now.
 - Overlapping health passes could redial a route a probe had just closed; found only because I added the redial.
 - A call's deadline and `Time::after` now follow injected time.
+- A relayed session's pings wait behind its own circuit, so the far end's movement counts as proof of life, and gives the whole budget again. Direct sessions are unaffected.
+- A DATA circuit's bytes take the DATA lane at each hop, as wire v1 section 6 says; they had all been on CONTROL, in front of its pings.
 
 ## What the port needs from Dannan, ready to use
 
@@ -94,12 +112,12 @@ Check these on the nodes:
    budgets now match Macha's 30 s, on reading only.
 4. **A real Macha state imported and started.** The importer has run in tests, not as a full node start on a real
    state with Macha on top; nor has Macha opened a rolled-back state.
-5. **Real UPnP (R6).** Only a fake gateway and a test IGD.
+5. **Real UPnP through Macha.** Tested with a fake gateway and a test IGD; the one real run is a small separate process.
 6. **BBR chosen on the Pis.** Asserted only as "bbr or a warning"; the Debian container's kernel decides.
-7. **arm64 at this commit.** No TSan is possible there with g++ 14 (47-bit VMA); a clang attempt is untried.
+7. **TSan on arm64.** None is possible there with g++ 14 (47-bit VMA); a clang attempt is untried.
 8. **macnessa's heap corruption.** It is in Macha's code at 0.93.4, not Dannan's. Dannan's transport is modelled on
    it but shares no code, and I have not looked for a shared cause. Nothing here shows it absent from Dannan.
 
-## Waiting on Tom
+## Done at Tom's word, after this was written
 
-R5, a tag and a push (Dagda's `feature/class-waits` waits on it). R6, the real gateway. An arm64 rerun on a Pi, at his word.
+Tag 0.5.0 and the push. The arm64 rerun and the real gateway run follow; their results come separately.

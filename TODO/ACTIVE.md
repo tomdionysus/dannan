@@ -45,7 +45,7 @@ built by the Macha session, once Dannan and Dagda have reported, with both froze
 "The port will pause until the relevant agent has identified and fixed the fault, with testing." The Macha session is the
 review; the review by library agents after a clear is gone. Proving it: "We will convert macnessa and inverbeg store backends
 and install there to test, prove and iterate." Macha stays frozen at `9a08846` until the port starts. Torrent moves after all
-of the port, so its rows stay through the first cutover. Open: R5 a tag and push, R6 the real IGD.
+of the port, so its rows stay through the first cutover. Tag 0.5.0 cut and pushed at Tom's word, with two items open (the report's Gates section).
 
 **Next, for a session starting here:** wait for the Macha session's verdict on the report; fix what it or the port finds.
 

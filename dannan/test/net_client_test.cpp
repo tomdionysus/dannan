@@ -1527,25 +1527,32 @@ TEST(Journal, AStallsWordsAreMachasAndTheCallerGetsTheSame) {
   EXPECT_NE(stalled.failure.find("; cancelled for retry"), std::string::npos) << stalled.failure;
 }
 
-// The whole shape of Macha's case: a slow CONTROL call held across a live DATA
-// transfer and past the liveness window ends neither, because pings go ahead
-// of both.
+// Macha's case, test_rpc_slow_control_does_not_abort_data: a slow CONTROL call and
+// a slow DATA call are both held until more probe rounds have run than fit in the
+// liveness window, so both outlive it by construction, however slowly the host
+// runs. Pings go ahead of both, and neither is aborted.
 TEST(Liveness, ASlowControlCallDoesNotAbortADataTransfer) {
   Io io;
   ClientOptions tuning;
-  tuning.heartbeat = 50ms;
+  tuning.heartbeat = 20ms;
   tuning.dead_after = 300ms;
   Node a(io, tuning), b(io);
   ASSERT_TRUE(call(a, b.self).reply);
-  auto held = std::async(std::launch::async, [&] { return call(a, b.self, slow); });
-  ASSERT_TRUE(b.gate.wait_for_entries(1));
-  const auto transfer = call(a, b.self, put_object, FrameType::foreground, Bytes(4 * 1024 * 1024, 5));
-  EXPECT_TRUE(transfer.reply) << transfer.failure;
-  std::this_thread::sleep_for(600ms);
+  b.hold_data = true;
+  auto control = std::async(std::launch::async, [&] { return call(a, b.self, slow); });
+  auto data = std::async(std::launch::async, [&] { return call(a, b.self, put_object, FrameType::foreground, Bytes(64 * 1024, 5)); });
+  ASSERT_TRUE(b.gate.wait_for_entries(2));
+  const auto from = a.client->stats().pings;
+  const uint64_t rounds = 300 / 20 + 2;
+  const auto until = std::chrono::steady_clock::now() + 320ms;
+  EXPECT_TRUE(eventually([&] { return a.client->stats().pings >= from + 2 * rounds && std::chrono::steady_clock::now() >= until; }));
   EXPECT_TRUE(a.client->has_route(b.self.id, Lane::control));
+  EXPECT_TRUE(a.client->has_route(b.self.id, Lane::data));
   b.gate.open();
-  const auto answered = held.get();
-  EXPECT_TRUE(answered.reply) << answered.failure;
+  const auto control_answer = control.get();
+  const auto data_answer = data.get();
+  EXPECT_TRUE(control_answer.reply) << control_answer.failure;
+  EXPECT_TRUE(data_answer.reply) << data_answer.failure;
 }
 
 // The other lane's settings, and a type's own notice in place of its lane's.
@@ -1675,6 +1682,50 @@ TEST(Health, APathThatKeepsMovingIsAliveThoughItsPingsAreLate) {
   moving = false;
   path.join();
   EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::debug, " liveness failure: ") >= 1; }));
+}
+
+// After a path has moved, the peer has the whole liveness budget again, not one
+// attempt's: once its movement has carried it past the first deadline, one gap
+// longer than an attempt and shorter than the budget is not death. Then, with
+// nothing moving, the budget does run out.
+TEST(Health, AGapAfterAPathMovedHasTheWholeBudget) {
+  Io io;
+  test::SteppedTime time;
+  auto log = std::make_shared<test::RecordingSink>();
+  ClientOptions tuning;
+  tuning.log = log;
+  tuning.time = &time;
+  tuning.heartbeat = 1h;
+  tuning.dead_after = 3h;
+  Node a(io, tuning), b(io);
+  ASSERT_TRUE(call(a, b.self).reply);
+  const auto settle = [] { std::this_thread::sleep_for(100ms); };
+  b.hang_pings = 100000;
+  time.advance(1h);  // the pass: its ping hangs
+  ASSERT_TRUE(b.gate.wait_for_entries(1));
+  settle();
+  // Moving for longer than the first budget.
+  for (int hour = 0; hour < 4; ++hour) {
+    time.advance(30min);
+    a.client->note_path_progress(b.self.id, Lane::control);
+    settle();
+    time.advance(30min);
+    settle();
+  }
+  EXPECT_TRUE(a.client->has_route(b.self.id, Lane::control));
+  // Nothing moves for an hour and a half: more than an attempt, less than the budget.
+  time.advance(45min);
+  settle();
+  time.advance(45min);
+  settle();
+  EXPECT_TRUE(a.client->has_route(b.self.id, Lane::control));
+  EXPECT_EQ(log->count(status::LogLevel::debug, " liveness failure: "), 0u);
+  // Nothing moves past the budget.
+  for (int i = 0; i < 12 && log->count(status::LogLevel::debug, " liveness failure: ") == 0; ++i) {
+    time.advance(30min);
+    settle();
+  }
+  EXPECT_GE(log->count(status::LogLevel::debug, " liveness failure: "), 1u);
 }
 
 }  // namespace
