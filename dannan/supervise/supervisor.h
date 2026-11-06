@@ -53,6 +53,7 @@ struct SupervisorOptions {
 // process stays up. One lifecycle thread per subsystem.
 class Supervisor {
  public:
+  struct Entry;
   explicit Supervisor(SupervisorOptions options);
   ~Supervisor();
   Supervisor(const Supervisor&) = delete;
@@ -69,7 +70,6 @@ class Supervisor {
   std::vector<SubsystemStatus> statuses() const;
 
  private:
-  struct Entry;
   void discover();
   void run(Entry& entry, std::stop_token stop);
 

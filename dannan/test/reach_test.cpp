@@ -173,7 +173,9 @@ struct FakeGateway : Gateway {
     }
     return Session{usable, lan, wan, 1, private_wan};
   }
-  std::optional<Mapping> mapping(uint16_t) override { return existing; }
+  // The gateway says it made the mapping and then does not show it.
+  bool forgets = false;
+  std::optional<Mapping> mapping(uint16_t) override { return forgets ? std::nullopt : existing; }
   std::string add(uint16_t, uint16_t internal, const std::string& client, const std::string&, uint32_t) override {
     if (!add_ok) return "refused";
     existing = Mapping{client, internal};
@@ -406,6 +408,20 @@ TEST(PublicConnectivity, ARemovalTheGatewayRefusesIsSaidWithItsCode) {
   }
   EXPECT_EQ(log->count(status::LogLevel::debug, "UPnP port mapping removal failed code=714"), 1u);
   EXPECT_EQ(log->count(status::LogLevel::debug, "UPnP port mapping removed"), 0u);
+}
+
+TEST(PublicConnectivity, NamesAMappingThatCouldNotBeVerified) {
+  auto gateway = std::make_shared<FakeGateway>();
+  gateway->forgets = true;
+  PublicConnectivity connectivity(upnp_on(), id(1), {"10.0.0.1", 7437}, gateway, nullptr, nullptr);
+  const auto status = connectivity.refresh(false);
+  EXPECT_EQ(status.upnp.error_code, "mapping_verification_failed");
+  EXPECT_FALSE(status.upnp.mapping_active);
+}
+
+TEST(PublicConnectivity, NamesAGatewayItWasBuiltWithout) {
+  PublicConnectivity connectivity(upnp_on(), id(1), {"10.0.0.1", 7437}, nullptr, nullptr, nullptr);
+  EXPECT_EQ(connectivity.refresh(false).upnp.error_code, "support_not_built");
 }
 
 }  // namespace

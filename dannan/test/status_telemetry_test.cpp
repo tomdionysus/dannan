@@ -313,5 +313,42 @@ TEST(Telemetry, AnUnknownFieldLeavesTheNextRecordWhole) {
   EXPECT_EQ(set[1].node_id(), second.node_id());
 }
 
+// A hosted layout of every kind Macha's record uses, in a mixed set with
+// records that do not have them, through the wire and the disk.
+TEST(TelemetryStore, AHostedLayoutOfEveryKindSurvivesTheDisk) {
+  test::TempDir dir;
+  const auto path = dir.path() / "telemetry";
+  constexpr uint16_t used = 1024, count = 1025, label = 1026, list = 1027;
+  const net::Bytes rates{1, 2, 3, 4, 5};
+  auto record = sample(2, 1, 100);
+  record.set_u64(used, 0x0102030405060708ULL);
+  record.set_u32(count, 77);
+  record.set_text(label, "lounge");
+  record.set_bytes(list, rates);
+  {
+    Store s;
+    TelemetryStore store(id(1), path, &s.time, &s.wall);
+    store.observe(record);
+    store.observe(sample(3, 1, 100));
+    store.persist();
+  }
+  Store s;
+  TelemetryStore reloaded(id(1), path, &s.time, &s.wall);
+  ASSERT_EQ(reloaded.persisted().size(), 2u);
+  for (const auto& one : reloaded.persisted()) {
+    if (one.node_id() != id(2)) {
+      EXPECT_EQ(one.u64(used), 0u);
+      EXPECT_EQ(one.text(label), "");
+      continue;
+    }
+    EXPECT_EQ(one.u64(used), 0x0102030405060708ULL);
+    EXPECT_EQ(one.u32(count), 77u);
+    EXPECT_EQ(one.text(label), "lounge");
+    const auto bytes = one.get(list);
+    ASSERT_TRUE(bytes.has_value());
+    EXPECT_EQ(net::Bytes(bytes->begin(), bytes->end()), rates);
+  }
+}
+
 }  // namespace
 }  // namespace dannan::status

@@ -7,6 +7,8 @@
 
 #include "dannan/node.h"
 
+#include <unistd.h>
+
 #include <algorithm>
 #include <boost/asio/post.hpp>
 #include <boost/asio/steady_timer.hpp>
@@ -28,8 +30,17 @@ NodeRecord initial_self(const NodeConfig& config, const identity::NodeId& id, co
   NodeRecord self;
   self.id = id;
   self.host = config.advertise_host;
+  if (self.host.empty()) {
+    if (config.listen_host == "127.0.0.1" || config.listen_host == "::1") {
+      self.host = config.listen_host;
+    } else {
+      char hostname[256]{};
+      if (::gethostname(hostname, 255) == 0) self.host = hostname;
+      if (self.host.empty()) self.host = "127.0.0.1";
+    }
+  }
   self.port = config.port;
-  self.failure_domain = config.failure_domain;
+  self.failure_domain = config.failure_domain.empty() ? self.host : config.failure_domain;
   self.incarnation = incarnation;
   self.capabilities = (capable ? membership::capability_inbound : 0U) | (config.relay ? membership::capability_relay : 0U);
   return self;
