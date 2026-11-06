@@ -39,8 +39,8 @@ constexpr uint8_t flag_inbound = 1;
 constexpr uint8_t flag_hosts_extents = 2;
 constexpr uint8_t flags_absent = flag_inbound | flag_hosts_extents;
 
-// As the Macha session adopted them, 2026-11-05.
-constexpr const char* hosts_extents_advert = "macha/hosts-extents";
+// Dagda names it; a node that hosts extents carries it, whatever its value.
+constexpr const char* hosts_extents_advert = "dagda/extents";
 
 void put_magic(net::Writer& writer, std::string_view magic) { writer.raw(std::span(reinterpret_cast<const uint8_t*>(magic.data()), magic.size())); }
 
@@ -81,7 +81,7 @@ Bytes convert_roster(const Bytes& bytes, const identity::NodeId& self, uint64_t 
     const uint64_t last_heard = version >= 4 ? reader.u64() : now_unix_ms;
     if (node.id == identity::NodeId{} || node.id == self || node.host.empty() || !node.port) throw net::DecodeError("bad known-node roster entry");
     node.capabilities = (flags & flag_inbound) ? membership::capability_inbound : 0U;
-    if (flags & flag_hosts_extents) node.adverts[hosts_extents_advert] = {};
+    if (flags & flag_hosts_extents) node.adverts[hosts_extents_advert] = Bytes{1};
     const auto id = node.id;
     if (!nodes.try_emplace(id, std::move(node), last_heard).second) throw net::DecodeError("duplicate known-node roster entry");
   }
