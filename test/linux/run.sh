@@ -20,7 +20,7 @@ cmake -S /src -B "/out/$name" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DDANNA
   -DCMAKE_CXX_FLAGS="$flags" -DCMAKE_EXE_LINKER_FLAGS="$flags" -DCMAKE_SHARED_LINKER_FLAGS="$flags"
 cmake --build "/out/$name" --target dannan_tests
 cd "/out/$name"
-export ASAN_OPTIONS=detect_stack_use_after_return=1 UBSAN_OPTIONS=print_stacktrace=1 TSAN_OPTIONS="halt_on_error=0 second_deadlock_stack=1"
+export ASAN_OPTIONS=detect_stack_use_after_return=1 UBSAN_OPTIONS=print_stacktrace=1 TSAN_OPTIONS="halt_on_error=0 second_deadlock_stack=1 suppressions=/src/dannan/test/tsan-suppressions.txt"
 ./dannan_tests > "/out/$name.txt" 2>&1 && status=0 || status=$?
 tail -5 "/out/$name.txt"
 echo "$name exit $status"

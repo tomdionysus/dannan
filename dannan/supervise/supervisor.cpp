@@ -10,6 +10,7 @@
 #include <dlfcn.h>
 
 #include <condition_variable>
+#include <mutex>
 #include <thread>
 
 #include "dannan/contract/thread_safety.h"
@@ -33,6 +34,13 @@ const char* state_name(SubsystemState state) noexcept {
   }
   return "unknown";
 }
+
+// What a subsystem's fault sink reaches: outlives the instance, so a sink it
+// kept past its stop finds nobody rather than a freed entry.
+struct SinkTarget {
+  std::mutex mutex;
+  Supervisor::Entry* entry = nullptr;
+};
 
 struct Supervisor::Entry {
   std::string name;
@@ -111,8 +119,8 @@ void Supervisor::discover() {
     if (symbol_error || !symbol) {
       // Not a plugin of this system: a directory may hold other libraries.
       // None of its code was called, so it may be unloaded.
-      _log.debug("subsystem plugin candidate '" + entry->name + "' has no entry symbol '" + _options.entry_symbol +
-                 "', skipping as not a plugin: " + (symbol_error ? symbol_error : "null symbol"));
+      _log.debug("subsystem plugin candidate '" + entry->name + "' has no entry symbol '" + _options.entry_symbol + "', skipping as not a " +
+                 _options.system_name + (_options.system_name.empty() ? "" : " ") + "plugin: " + (symbol_error ? symbol_error : "symbol resolved to null"));
       ::dlclose(entry->handle);
       continue;
     }
@@ -141,6 +149,12 @@ void Supervisor::run(Entry& entry, std::stop_token stop) {
       entry.pending_fault.clear();
     }
     std::unique_ptr<Subsystem> instance;
+    std::shared_ptr<SinkTarget> sink_target;
+    const auto disown_sink = [&sink_target] {
+      if (!sink_target) return;
+      std::lock_guard held(sink_target->mutex);
+      sink_target->entry = nullptr;
+    };
     bool declined = false;
     std::string fault;
     try {
@@ -149,7 +163,12 @@ void Supervisor::run(Entry& entry, std::stop_token stop) {
       instance = entry.factory(attempt);
       if (instance) {
         // Before start(): threads started inside it may report.
-        instance->attach_fault_sink([&entry](std::string reason) {
+        sink_target = std::make_shared<SinkTarget>();
+        sink_target->entry = &entry;
+        instance->attach_fault_sink([target = sink_target](std::string reason) {
+          std::lock_guard held(target->mutex);
+          if (!target->entry) return;  // that instance is gone: a sink kept past its stop is ignored
+          auto& entry = *target->entry;
           contract::Lock lock(entry.mutex);
           if (entry.fault_requested || entry.stopping) return;  // first reason wins
           entry.fault_requested = true;
@@ -202,13 +221,15 @@ void Supervisor::run(Entry& entry, std::stop_token stop) {
           _log.warn("subsystem '" + entry.name + "' stop() threw an unknown exception");
         }
       }
-      // Destroyed before a replacement is built: its sink points here.
+      // Destroyed before a replacement is built.
       owned.reset();
+      disown_sink();
       if (!faulted) return;
       _log.error("subsystem '" + entry.name + "' faulted while running: " + fault);
     } else {
       _log.error("subsystem '" + entry.name + "' failed to start: " + fault);
       instance.reset();
+      disown_sink();
     }
     {
       contract::Lock lock(entry.mutex);

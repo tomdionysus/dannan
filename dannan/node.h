@@ -80,6 +80,9 @@ struct NodeConfig {
   size_t relay_data_circuits = 32;
   // What recovers before the node is ready, by name.
   std::vector<std::string> planes;
+  // What a hosted system adds to the inbound change's journal line, after
+  // inbound_capable=, for the capability it is told: " hosts_extents=true".
+  std::function<std::string(bool)> inbound_journal_fields;
   std::string version;
 
   std::chrono::milliseconds heartbeat{5000};
@@ -309,6 +312,7 @@ class Node final : public Context {
   mutable contract::IoSharedMutex _handlers_mutex;
   std::map<net::MessageType, net::RequestHandler> _handlers DANNAN_GUARDED_BY(_handlers_mutex);
   std::atomic<bool> _started{false};
+  std::atomic<bool> _said_stopping{false};
   std::atomic<bool> _stopping{false};
   std::atomic<bool> _calls_cancelled{false};
   std::atomic<uint16_t> _bound_port{0};

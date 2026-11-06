@@ -38,6 +38,9 @@ struct SupervisorOptions {
   // The hosted system's names: the entry symbol its plugins export, and the
   // build identity they must carry.
   std::string entry_symbol = "dannan_subsystem_entry";
+  // What the journal calls a plugin of this system ("macha" reads "a macha
+  // plugin"); none, just "a plugin".
+  std::string system_name;
   std::string build_identity;
   sched::RetryPolicy policy;
   const contract::TimeSource* time = &contract::steady_time_source();
@@ -50,6 +53,7 @@ struct SupervisorOptions {
 // process stays up. One lifecycle thread per subsystem.
 class Supervisor {
  public:
+  struct Entry;
   explicit Supervisor(SupervisorOptions options);
   ~Supervisor();
   Supervisor(const Supervisor&) = delete;
@@ -66,7 +70,6 @@ class Supervisor {
   std::vector<SubsystemStatus> statuses() const;
 
  private:
-  struct Entry;
   void discover();
   void run(Entry& entry, std::stop_token stop);
 

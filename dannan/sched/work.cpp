@@ -23,7 +23,7 @@ const char* frame_type_name(FrameType type) noexcept {
     case FrameType::foreground:
       return "foreground";
     case FrameType::read_ahead:
-      return "read_ahead";
+      return "read-ahead";
     case FrameType::loader:
       return "loader";
     case FrameType::speculative:
@@ -49,8 +49,8 @@ const char* work_class_name(WorkClass work) noexcept {
 bool WaitGuard::enter(const WorkContext& context, Waits declared, std::string_view operation) {
   if (may_enter(context.allowed(), declared)) return true;
   _violations.fetch_add(1, std::memory_order_relaxed);
-  const std::string message = std::string(work_class_name(context.work())) + " work (" + context.origin() + ") entered " + std::string(operation) +
-                              ", which may wait on what the work does not allow";
+  const std::string message =
+      std::string("work (") + context.origin() + ") entered " + std::string(operation) + ", which may wait on what the work does not allow";
   if (mode() == Mode::throw_on_violation) throw std::logic_error(message);
   bool first = false;
   {

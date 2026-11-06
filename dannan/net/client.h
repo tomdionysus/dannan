@@ -205,6 +205,12 @@ class Client {
   // False without a route, or when the session refuses it; with
   // `best_effort`, also when it would have to queue behind other traffic.
   bool send(const identity::NodeId& peer, Lane lane, const Message& message, sched::FrameType frame, bool best_effort = false);
+  // The same for a sender that paces itself and must lose nothing. Says
+  // whether the session took it, its queue is full for now, or there is no
+  // route; when taken, `sent` is told on `executor` whether it was written.
+  enum class Paced { taken, full, gone };
+  Paced send_paced(const identity::NodeId& peer, Lane lane, Message message, sched::FrameType frame, boost::asio::any_io_executor executor,
+                   std::function<void(bool)> sent);
 
   // Starts the health pings.
   void start();
@@ -252,6 +258,12 @@ class Client {
   void invalidate_identity_association(const membership::IdentityReset& reset);
   // Closes this node's routes to `peer` on `lane`, both directions.
   void close_route(const identity::NodeId& peer, Lane lane, const std::string& why);
+  // The path under the route to `peer` on `lane` moved the far end's bytes:
+  // its pings are waiting behind them, so the peer is alive.
+  void note_path_progress(const identity::NodeId& peer, Lane lane);
+  // Starts dialling `lane` to `peer` unless a route or a dial is there already.
+  // Never waits.
+  void open_lane(const membership::NodeRecord& peer, Lane lane);
 
   bool has_route(const identity::NodeId& peer, Lane lane) const;
   ClientStats stats() const;
@@ -324,6 +336,7 @@ class Client {
   void await_heartbeat();
   void health_pass();
   void attempt(const std::shared_ptr<Probe>& probe);
+  void redial(const std::shared_ptr<Probe>& probe);
   void answered(const std::shared_ptr<Probe>& probe, CallOutcome outcome);
   void retry(const std::shared_ptr<Probe>& probe);
   void await_ping(const std::shared_ptr<Probe>& probe);
@@ -357,6 +370,8 @@ class Client {
   const status::ScopedLogger _log;
   const identity::NodeId _self;
   boost::asio::strand<boost::asio::io_context::executor_type> _health_strand;
+  // The health pass running; on the health strand.
+  std::weak_ptr<void> _health_pass;
   boost::asio::steady_timer _heartbeat;
   contract::TimePoint _next_heartbeat{};  // on the health strand
 

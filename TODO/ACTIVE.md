@@ -1,6 +1,6 @@
 # Dannan - Active Work
 
-Last updated: 2026-11-05. Dannan is written in this repository as its own
+Last updated: 2026-11-06. Dannan is written in this repository as its own
 library, Macha's code at `00861dd` being the source of truth, and Macha is ported
 onto it.
 That reverses the morning's "in-tree first" (Tom, 2026-11-03: "I
@@ -32,7 +32,23 @@ live cluster is macnessa and inverbeg, both Pi 5 on Debian 13 with Boost
 contract `API_VERSION` 24. The laptop is on MacPorts for everything. Macha's
 current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluation.md`.
 
-## Resume here (2026-11-05)
+## Resume here (2026-11-06)
+
+**Where this stands.** Dannan's list is finished as far as I can take it without the port;
+[`2026-11-06-dannan-capabilities.md`](2026-11-06-dannan-capabilities.md) is the report to the Macha session, with
+its gates and what could not be shown. The answer to the goal below is still not Yes: only the port can show it.
+
+**Tom's rulings, relayed by the Macha session, 2026-11-06.** The test: "Dannan and Dagda are generalisations of
+macha's cluster and storage layer ... The fidelity point is that after that, Macha should work just as well as it ever
+did." Dannan's own wire and state formats do not count against that in themselves (the Macha session's reading). The port is
+built by the Macha session, once Dannan and Dagda have reported, with both frozen while it runs. A defect found in the port:
+"The port will pause until the relevant agent has identified and fixed the fault, with testing." The Macha session is the
+review; the review by library agents after a clear is gone. Proving it: "We will convert macnessa and inverbeg store backends
+and install there to test, prove and iterate." Macha stays frozen at `9a08846` until the port starts. Torrent moves after all
+of the port, so its rows stay through the first cutover. Open: R5 a tag and push, R6 the real IGD.
+
+**Next, for a session starting here:** wait for the Macha session's verdict on the report; fix what it or the port finds.
+
 
 **The goal (Tom, relayed by the Macha session, 2026-11-06, in his words: "development will continue
 on them with macha code frozen until they can answer Yes unconditionally, the entire reason for their
@@ -688,11 +704,8 @@ plugins rebuilt (F22), and the call filter that replaces send and admit seams.
 **Seams:** none to build. Of the 10 cases using `FaultyLinks`, 7 test transport internals
 and retire; the 3 Macha-visible ones only stall a message type leaving Macha's own node.
 
-**Known defect, off this path: relayed DATA has no flow control.** `ComposeBed.MeasuresThroughNatsAndARelay`
-fails most runs through the relay ("peer channel closed: peer closed"), passing 2 of 8. From
-reading `reach/paths.cpp:485-486` and `:901-906`: a pump pushes `relay_data` as fast as it reads, and
-a full queue closes the circuit instead of waiting. Which end closes in a given run is not pinned
-down. The case is left failing, as the record of it. Macha's nodes dial each other and do not relay.
+**Fixed 2026-11-06: relayed DATA had no flow control.** Circuits are now paced end to end by credit, carried on the DATA
+lane at each hop, and handled on the session; `ComposeBed.MeasuresThroughNatsAndARelay` passes 5 of 5 (was 2 of 8). Wire v1, section 6.
 
 **The rollback** is not "nothing on disk changed": 0.92.x refuses `DNNMEM01`, so the
 runbook restores the `*.macha` files, losing only what was learned since (F6).
