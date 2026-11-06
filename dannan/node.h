@@ -254,6 +254,7 @@ class Node final : public Context {
   void membership_loop(std::stop_token stop);
   void telemetry_loop(std::stop_token stop);
   void connectivity_loop(std::stop_token stop);
+  void roster_loop(std::stop_token stop);
   void serve_refreshes();
   void advertise(const reach::PublicConnectivityStatus& status);
   void refresh_public_connectivity(bool probe, bool force_probe, boost::asio::any_io_executor executor,
@@ -312,6 +313,9 @@ class Node final : public Context {
   mutable contract::IoSharedMutex _handlers_mutex;
   std::map<net::MessageType, net::RequestHandler> _handlers DANNAN_GUARDED_BY(_handlers_mutex);
   std::atomic<bool> _started{false};
+  std::mutex _roster_mutex;
+  std::condition_variable_any _roster_wake;
+  std::atomic<bool> _roster_wanted{false};
   std::atomic<bool> _said_stopping{false};
   std::atomic<bool> _stopping{false};
   std::atomic<bool> _calls_cancelled{false};

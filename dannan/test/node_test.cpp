@@ -1458,5 +1458,50 @@ TEST(Time, AfterAndACallsDeadlineFollowTheInjectedTime) {
   a.stop();
 }
 
+// Law 1 and a clean stop: a peer learnt on an io thread reaches the disk by the
+// roster thread, and a disk that refuses costs a recorded fault, not the transport.
+TEST(Node, TheRosterIsWrittenOffTheIoThreadsAndAtStop) {
+  Pair pair;
+  pair.b->start();
+  const auto b_id = pair.b->context().identity().id();
+  ASSERT_TRUE(eventually([&] { return knows(*pair.a, b_id); }));
+  const auto path = pair.dir.path() / "a" / "membership" / "known-nodes.bin";
+  EXPECT_TRUE(eventually([&] { return std::filesystem::exists(path); }));
+  const auto names = [&] {
+    std::set<std::string> out;
+    for (const auto& status : pair.a->diagnostics().threads) out.insert(status.name);
+    return out;
+  };
+  EXPECT_TRUE(eventually([&] { return names().contains("cluster-roster"); }));
+  pair.b->stop();
+  pair.a->stop();
+  membership::Membership reloaded(membership::NodeRecord{}, 2s, path);
+  const auto all = reloaded.all();
+  EXPECT_TRUE(std::any_of(all.begin(), all.end(), [&](const membership::NodeRecord& node) { return node.id == b_id; }));
+}
+
+TEST(Node, ARosterThatCannotBeWrittenIsAFaultAndTheNodeGoesOn) {
+  test::TempDir dir;
+  Io io;
+  const auto key = cluster_key(dir.path());
+  Node a(io.context, config(dir.path() / "a", key));
+  a.start();
+  const auto path = dir.path() / "a" / "membership" / "known-nodes.bin";
+  std::filesystem::remove_all(path);
+  std::filesystem::create_directories(path / "in-the-way");
+  Node b(io.context, config(dir.path() / "b", key, {{"127.0.0.1", a.port()}}));
+  b.start();
+  const auto b_id = b.context().identity().id();
+  EXPECT_TRUE(eventually([&] { return knows(a, b_id); }));
+  EXPECT_TRUE(eventually([&] {
+    for (const auto& status : a.diagnostics().threads)
+      if (status.name == "cluster-roster" && status.faults > 0) return true;
+    return false;
+  }));
+  std::filesystem::remove_all(path);
+  b.stop();
+  a.stop();
+}
+
 }  // namespace
 }  // namespace dannan
