@@ -330,6 +330,7 @@ class Client {
   void await_heartbeat();
   void health_pass();
   void attempt(const std::shared_ptr<Probe>& probe);
+  void redial(const std::shared_ptr<Probe>& probe);
   void answered(const std::shared_ptr<Probe>& probe, CallOutcome outcome);
   void retry(const std::shared_ptr<Probe>& probe);
   void await_ping(const std::shared_ptr<Probe>& probe);
