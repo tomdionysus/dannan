@@ -1631,5 +1631,23 @@ TEST(PeerSocket, TheTransportsOwnSocketsCarryTheOptions) {
   EXPECT_GE(checked, 4);
 }
 
+// CONTROL's route goes while a ping is out: the probe's next attempt dials it
+// again, with no call asking for it. net.cpp:2975.
+TEST(Health, AControlProbeWhoseRouteWentDialsItAgain) {
+  Io io;
+  ClientOptions tuning;
+  tuning.heartbeat = 100ms;
+  tuning.dead_after = 5s;
+  Node a(io, tuning), b(io);
+  ASSERT_TRUE(call(a, b.self).reply);
+  const auto dials = a.client->stats().dials;
+  b.hang_pings = 1;
+  ASSERT_TRUE(b.gate.wait_for_entries(1));
+  a.client->close_route(b.self.id, Lane::control, "severed by the test");
+  b.gate.open();
+  EXPECT_TRUE(eventually([&] { return a.client->has_route(b.self.id, Lane::control); }));
+  EXPECT_GT(a.client->stats().dials, dials);
+}
+
 }  // namespace
 }  // namespace dannan::net

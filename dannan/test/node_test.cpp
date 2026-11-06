@@ -1414,5 +1414,49 @@ TEST(StateLock, ASecondNodeOnOneStatePathIsRefused) {
   EXPECT_EQ(log->count(status::LogLevel::warn, "persisted telemetry ignored"), 0u);
 }
 
+// The node's timer and a call's deadline follow its injected time, so a
+// hosted system testing on stepped time can move them.
+TEST(Time, AfterAndACallsDeadlineFollowTheInjectedTime) {
+  constexpr net::MessageType held{4244};
+  test::Gate gate;
+  test::GateOpener opener(gate);
+  test::SteppedTime time;
+  Io io;
+  test::TempDir dir;
+  const auto key = cluster_key(dir.path());
+  auto a_config = config(dir.path() / "a", key);
+  a_config.time = &time;
+  Node a(io.context, a_config);
+  a.start();
+  Node b(io.context, config(dir.path() / "b", key));
+  b.context().routes().add(held, {"held", net::Lanes::control, net::Frames::control_only, false},
+                           [&](const membership::NodeRecord&, sched::FrameType, const net::Message&) {
+                             gate.enter_and_wait();
+                             return net::Handled::processed({net::message::ok, {}, {}});
+                           });
+  b.start();
+  std::atomic<bool> fired{false};
+  a.context().time().after(1h, [&] { fired = true; });
+  std::this_thread::sleep_for(50ms);
+  EXPECT_FALSE(fired.load());
+  std::promise<net::CallOutcome> answered;
+  auto future = answered.get_future();
+  a.context().routes().call(b.context().nodes().self(), held, {}, sched::FrameType::control, 2h, io.context.get_executor(),
+                            [&](net::CallOutcome outcome) { answered.set_value(std::move(outcome)); });
+  ASSERT_TRUE(gate.wait_for_entries(1));
+  EXPECT_EQ(future.wait_for(50ms), std::future_status::timeout);
+  time.advance(1h);
+  EXPECT_TRUE(eventually([&] { return fired.load(); }));
+  EXPECT_EQ(future.wait_for(50ms), std::future_status::timeout);
+  time.advance(1h);
+  ASSERT_EQ(future.wait_for(10s), std::future_status::ready);
+  const auto outcome = future.get();
+  EXPECT_FALSE(outcome.reply);
+  EXPECT_NE(outcome.failure.find("deadline of 7200000 ms passed"), std::string::npos) << outcome.failure;
+  gate.open();
+  b.stop();
+  a.stop();
+}
+
 }  // namespace
 }  // namespace dannan

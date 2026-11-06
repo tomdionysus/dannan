@@ -26,6 +26,17 @@ using membership::NodeRecord;
 
 namespace {
 
+// Runs `fn` once `time` reaches `at`, on the timer's executor, unless the timer
+// is cancelled first. In the node's injected time, so a test can move it.
+void when_time_reaches(const std::shared_ptr<asio::steady_timer>& timer, const contract::TimeSource& time, contract::TimePoint at, std::function<void()> fn) {
+  timer->expires_after(time.wake_within(std::max(std::chrono::ceil<std::chrono::milliseconds>(at - time.now()), std::chrono::milliseconds(0))));
+  timer->async_wait([timer, &time, at, fn = std::move(fn)](const boost::system::error_code& error) mutable {
+    if (error) return;
+    if (time.now() < at) return when_time_reaches(timer, time, at, std::move(fn));
+    fn();
+  });
+}
+
 NodeRecord initial_self(const NodeConfig& config, const identity::NodeId& id, const identity::NodeId& incarnation, bool capable) {
   NodeRecord self;
   self.id = id;
@@ -311,10 +322,8 @@ class Node::TimeNoun final : public Time {
   const contract::TimeSource& source() const override { return *_node._config.time; }
   asio::any_io_executor executor() const override { return _node._io.get_executor(); }
   void after(std::chrono::milliseconds delay, std::function<void()> fn) override {
-    auto timer = std::make_shared<asio::steady_timer>(_node._io, delay);
-    timer->async_wait([timer, fn = std::move(fn)](const boost::system::error_code& error) {
-      if (!error) fn();
-    });
+    auto timer = std::make_shared<asio::steady_timer>(_node._io);
+    when_time_reaches(timer, *_node._config.time, _node._config.time->now() + delay, std::move(fn));
   }
 
  private:
@@ -884,9 +893,8 @@ std::shared_ptr<net::CallHandle> Node::place_call(std::optional<NodeRecord> peer
   auto state = std::make_shared<State>();
   state->done = std::move(done);
   auto strand = asio::make_strand(_io);
-  auto timer = std::make_shared<asio::steady_timer>(strand, deadline);
-  timer->async_wait([state, executor, deadline](const boost::system::error_code& error) {
-    if (error) return;
+  auto timer = std::make_shared<asio::steady_timer>(strand);
+  when_time_reaches(timer, *_config.time, _config.time->now() + deadline, [state, executor, deadline] {
     state->expired = true;
     // The deadline is claimed before the cancel, whose own "cancelled"
     // answer would otherwise race it to the caller.
@@ -930,7 +938,7 @@ void Node::exchange(std::optional<NodeRecord> peer, const net::Endpoint& endpoin
   merge(outcome.reply->payload);
   // Revocations ride the exchange: a node that missed one learns it within
   // a heartbeat.
-  exchange_revocations(std::move(peer), endpoint, _config.connect_timeout * 2);
+  exchange_revocations(std::move(peer), endpoint, _config.exchange_budget);
 }
 
 void Node::sleep_until(std::stop_token stop, contract::TimePoint due) {
