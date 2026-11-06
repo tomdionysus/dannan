@@ -217,5 +217,14 @@ TEST(ClassWaits, ACancelIsSeenAtThePollAndAStopAtOnce) {
   EXPECT_EQ(stopped.get(), ClassWaits::Outcome::gave_up);
 }
 
+// The order callers rely on: a deadline already passed gives up even with room.
+TEST(ClassWaits, APassedDeadlineOutranksRoom) {
+  Arbiter arbiter(100, 20);
+  ClassWaits::Bounds bounds;
+  bounds.deadline = contract::Clock::now() - 1ms;
+  EXPECT_EQ(arbiter.acquire(WorkClass::foreground, 1, bounds), ClassWaits::Outcome::gave_up);
+  EXPECT_EQ(arbiter.used, 0u);
+}
+
 }  // namespace
 }  // namespace dannan::sched

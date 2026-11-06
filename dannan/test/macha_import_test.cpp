@@ -114,7 +114,8 @@ TEST(MachaImport, ARealRosterKeepsItsNodesAndItsTombstone) {
   EXPECT_FALSE(std::any_of(all.begin(), all.end(), [](const auto& node) { return node.id == id_of(node_c); }));
   // Flags 3: dialable, and hosts extents, now an advert.
   EXPECT_TRUE(b->inbound_capable());
-  EXPECT_TRUE(b->adverts.contains("macha/hosts-extents"));
+  ASSERT_TRUE(b->adverts.contains("dagda/extents"));
+  EXPECT_EQ(b->adverts.at("dagda/extents"), Bytes{1});
   const auto resets = members.identity_resets();
   ASSERT_EQ(resets.size(), 1u);
   EXPECT_EQ(resets[0].host, "127.0.0.1");
@@ -301,6 +302,87 @@ TEST(MachaImport, ARunningNodeOrMissingIdRefuses) {
   test::TempDir empty;
   EXPECT_THROW((void)import_macha_state(empty.path()), ImportRefused);
   EXPECT_THROW((void)import_macha_state(empty.path() / "nothing"), ImportRefused);
+}
+
+// A roster at Macha's size and with every kind of reset: all of it arrives, and Dannan's
+// own loader holds it. Generated, since no long-lived roster with resets exists to copy.
+TEST(MachaImport, ALargeRosterWithEveryKindOfResetArrives) {
+  constexpr uint32_t count = 65536;
+  State state;
+  net::Writer writer;
+  put_magic(writer, "MACHMEM4");
+  writer.u32(count);
+  const auto id = [](uint32_t n) {
+    identity::NodeId out;
+    out.bytes[0] = 0xf0;
+    for (int i = 0; i < 4; ++i) out.bytes[static_cast<size_t>(i + 1)] = static_cast<uint8_t>(n >> (24 - 8 * i));
+    return out;
+  };
+  for (uint32_t n = 0; n < count; ++n) {
+    writer.raw(id(n).bytes);
+    writer.string("10." + std::to_string((n >> 16) & 255) + "." + std::to_string((n >> 8) & 255) + "." + std::to_string(n & 255));
+    writer.string("domain-" + std::to_string(n % 7));
+    writer.u16(7437);
+    writer.u64(1000 + n);
+    writer.u8(static_cast<uint8_t>(n % 4));
+    writer.u64(2000 + n);
+  }
+  writer.u32(3);
+  const auto reset = [&](const std::string& host, uint16_t port, const identity::NodeId& stale, uint64_t epoch) {
+    writer.string(host);
+    writer.u16(port);
+    writer.raw(stale.bytes);
+    writer.u64(epoch);
+    writer.u64(500);
+    writer.raw(id_of(node_a).bytes);
+    writer.string("reason " + std::to_string(epoch));
+  };
+  reset("192.0.2.1", 7437, id_of(node_c), 1);       // one node at one endpoint
+  reset("192.0.2.2", 0, identity::NodeId{}, 2);     // every port, every id
+  reset("192.0.2.3", 7437, identity::NodeId{}, 3);  // one endpoint, every id
+  write(state.roster(), writer.take());
+  const auto report = import_macha_state(state.path);
+  EXPECT_NE(outcome(report, "membership/known-nodes.bin").detail.find("65536 node(s), 3 reset(s)"), std::string::npos)
+      << outcome(report, "membership/known-nodes.bin").detail;
+  test::SteppedTime time;
+  test::SteppedWall wall(1'000'000);
+  auto members = load(state, time, wall);
+  const auto all = members.all();
+  ASSERT_EQ(all.size(), count + 1u);
+  size_t capable = 0, hosting = 0;
+  for (size_t i = 1; i < all.size(); ++i) {
+    capable += all[i].inbound_capable() ? 1 : 0;
+    hosting += all[i].adverts.contains("dagda/extents") ? 1 : 0;
+  }
+  EXPECT_EQ(capable, count / 2);
+  EXPECT_EQ(hosting, count / 2);
+  const auto resets = members.identity_resets();
+  ASSERT_EQ(resets.size(), 3u);
+  const auto wide = std::find_if(resets.begin(), resets.end(), [](const auto& r) { return r.epoch == 2; });
+  ASSERT_NE(wide, resets.end());
+  EXPECT_EQ(wide->port, 0);
+  EXPECT_EQ(wide->stale_node_id, identity::NodeId{});
+  EXPECT_EQ(wide->key(), "[192.0.2.2]:*");
+}
+
+// What rollback does: the originals back in place, byte for byte, and what Dannan left beside
+// them. Macha opening the result is the port branch's to show.
+TEST(MachaImport, RollingBackRestoresEveryFileExactly) {
+  State state;
+  const auto roster = from_hex(tombstone_roster);
+  const auto inbound = macha_inbound(true, 7, "default");
+  const auto telemetry = macha_telemetry();
+  write(state.roster(), roster);
+  write(state.inbound(), inbound);
+  write(state.telemetry(), telemetry);
+  (void)import_macha_state(state.path);
+  for (const auto& path : {state.roster(), state.inbound(), state.telemetry()}) {
+    EXPECT_NE(read(path), read(path.string() + ".macha"));
+    std::filesystem::copy_file(path.string() + ".macha", path, std::filesystem::copy_options::overwrite_existing);
+  }
+  EXPECT_EQ(read(state.roster()), roster);
+  EXPECT_EQ(read(state.inbound()), inbound);
+  EXPECT_EQ(read(state.telemetry()), telemetry);
 }
 
 }  // namespace
