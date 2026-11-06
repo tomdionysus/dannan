@@ -3,6 +3,13 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
+## Handoff, 2026-11-06: toward Yes
+
+Relay flow control; the journal in Macha's words with a case per line; the inventory's partial rows; Macha's health
+probe behaviour; injected time in deadlines and timers; the supervisor's sink use-after-free. Gates: macOS 622, ASan 622, TSan 622
+in 3 of 4 full runs (one unexplained handshake timeout, `LevelZero.ANodeIsObservedFromAFixedLocalPort`); Debian plain, ASan,
+TSan 624 each; compose relay 5 of 5. arm64 not rerun. Report: `2026-11-06-dannan-capabilities.md`. Local, unpushed, untagged.
+
 ## Releases
 
 - **0.4.1** (2026-11-04, `main`, tag `0.4.1`, pushed at Tom's word;
