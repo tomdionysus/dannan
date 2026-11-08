@@ -131,7 +131,7 @@ void Session::deliver(Frame frame) {
           contract::Lock lock(_mutex);
           _queue.promote_inbound(*target, *promoted);
         }
-        if (_handlers.promoted) _handlers.promoted(*target, *promoted);
+        if (const auto handler = _handlers.promoted) handler(*target, *promoted);
         kick_writer();
       }
     } else if (type == message::cancel_transfer) {
@@ -141,7 +141,7 @@ void Session::deliver(Frame frame) {
           contract::Lock lock(_mutex);
           _queue.cancel_inbound(*target);
         }
-        if (_handlers.cancelled) _handlers.cancelled(*target);
+        if (const auto handler = _handlers.cancelled) handler(*target);
       }
     } else if (type == message::session_retire) {
       {
@@ -151,10 +151,13 @@ void Session::deliver(Frame frame) {
       }
       settle();
     } else if (_handlers.request && (_routes->is_notification(type) || !_routes->find(type))) {
+      // A copy: a reply made inside may close this session and clear the handlers,
+      // which must not destroy the one running.
+      const auto handler = _handlers.request;
       // A registered notification, or a user type nobody here registered:
       // the user's to take or ignore.
       try {
-        _handlers.request(std::move(frame), Reply{});
+        handler(std::move(frame), Reply{});
       } catch (...) {
         // A notification has no one to answer; it is dropped.
       }
@@ -183,11 +186,12 @@ void Session::deliver(Frame frame) {
   const auto id = frame.request_id;
   const auto class_of = frame.frame;
   if (!_handlers.request) return queue_reply(id, class_of, error_reply(501, "not_implemented", "no handler on this session"));
+  const auto handler = _handlers.request;
   // A handler that throws answers its request; it never ends the session.
   try {
-    _handlers.request(std::move(frame), Reply([weak = weak_from_this(), id, class_of](Message message) {
-                        if (auto self = weak.lock()) self->queue_reply(id, class_of, std::move(message));
-                      }));
+    handler(std::move(frame), Reply([weak = weak_from_this(), id, class_of](Message message) {
+              if (auto self = weak.lock()) self->queue_reply(id, class_of, std::move(message));
+            }));
   } catch (const std::exception& failure) {
     queue_reply(id, class_of, error_reply(500, "internal_error", failure.what()));
   } catch (...) {

@@ -762,5 +762,36 @@ TEST(Session, AReplyArrivingFragmentByFragmentCountsAsProgress) {
   EXPECT_TRUE(answered.load());
 }
 
+// A reply made inside the handler can close the session, past the bound on refusals,
+// and the close clears the handlers: the handler running must not be the one
+// destroyed. It reads its own captures after replying. Under ASan this is the case.
+TEST(Session, AHandlerThatClosesItsSessionByReplyingOutlivesTheClose) {
+  Io io;
+  auto witness = std::make_shared<std::string>("still here");
+  std::atomic<int> read_back{0};
+  SessionHandlers counted;
+  counted.request = [&read_back, witness](Frame frame, Reply reply) {
+    auto again = reply;
+    reply({message::ok, frame.message.payload, {}});
+    again({message::ok, frame.message.payload, {}});
+    if (*witness == "still here") ++read_back;
+  };
+  Pair pair(io, {}, std::move(counted), Lane::control, 65536, nullptr, nullptr, nullptr, false, true);
+  const Bytes filler(60 * 1024, 2);
+  for (size_t i = 0; i < max_outbound_messages + small_reserve_messages; ++i) {
+    try {
+      pair.acceptor->notify({news_for_test, filler, {}}, FrameType::loader, io.context.get_executor());
+    } catch (const OutboundRefused&) {
+      break;
+    }
+  }
+  for (size_t i = 0; i < max_pending_replies; ++i) {
+    (void)pair.dialler->call(message::members, {}, FrameType::control, io.context.get_executor(), [](CallOutcome) {});
+    if (i % 64 == 63) std::this_thread::sleep_for(10ms);
+  }
+  ASSERT_EQ(pair.acceptor_closed.wait_for(30s), std::future_status::ready);
+  EXPECT_GT(read_back.load(), 0);
+}
+
 }  // namespace
 }  // namespace dannan::net
