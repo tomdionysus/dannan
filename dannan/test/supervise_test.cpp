@@ -13,6 +13,7 @@
 // startup stall gate; a blocking construction cancelled by the stop token.
 
 #include <gtest/gtest.h>
+#include <unistd.h>
 
 #include <filesystem>
 #include <fstream>
@@ -538,6 +539,9 @@ TEST(Supervisor, ThePluginsThatCannotRunAreJournalled) {
 }
 
 TEST(Supervisor, ADirectoryThatCannotBeListedIsWarnedOf) {
+  // Permission bits do not stop root listing a directory, so as root there is
+  // nothing this case can lock.
+  if (::geteuid() == 0) GTEST_SKIP() << "running as root, which lists a directory whatever its permissions";
   test::TempDir dir;
   const auto locked = dir.path() / "locked";
   std::filesystem::create_directories(locked);
