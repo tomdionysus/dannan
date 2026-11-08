@@ -488,7 +488,8 @@ TEST(LevelZero, AChunkLostOnTheWayToTheFarEndEndsItWithinTheBound) {
   (void)transfer.get();
   EXPECT_TRUE(eventually([&] { return data_circuits(*cluster.hub) == 0; }, 20s));
   EXPECT_TRUE(eventually([&] { return cluster.b->diagnostics().paths.ends <= ends_before; }, 20s));
-  EXPECT_GT(cluster.a->diagnostics().paths.closes_unknown + cluster.b->diagnostics().paths.closes_unknown, 0u);
+  // The way this one goes: the relay lost B's session and closed the circuit itself.
+  EXPECT_GT(cluster.hub->diagnostics().paths.relay_ends_lost, 0u);
 }
 
 namespace {
