@@ -564,6 +564,9 @@ void Node::start() {
   paths.forced_class = _config.path_class;
   paths.upgrade_every = _config.path_upgrade_every;
   paths.max_data_circuits = _config.relay_data_circuits;
+  // Chunks that have not come within the liveness window are not coming.
+  paths.finish_wait = _config.relay_finish_wait.value_or(_config.dead_after);
+  paths.drop_hook = _config.relay_drop_hook;
   _paths = std::make_unique<reach::Paths>(
       _io, paths, *_client, [this] { return _members.self(); }, [this] { return _members.active(); },
       [this](const NodeRecord& peer, net::MessageType type, net::Bytes payload, std::chrono::milliseconds deadline) {
@@ -615,11 +618,25 @@ void Node::start() {
   _loops.emplace_back([this](std::stop_token stop) { _threads.loop("cluster-maintenance", stop, [this, stop] { membership_loop(stop); }); });
   _loops.emplace_back([this](std::stop_token stop) { _threads.loop("cluster-telemetry", stop, [this, stop] { telemetry_loop(stop); }); });
   _loops.emplace_back([this](std::stop_token stop) { _threads.loop("cluster-connectivity", stop, [this, stop] { connectivity_loop(stop); }); });
+  // Law 1: an io thread learns of a peer and goes on; the disk is this thread's.
+  _members.defer_observed_writes([this] {
+    _roster_wanted.store(true);
+    // As wake_loops: under the wait's mutex, so the wake is never lost.
+    {
+      std::lock_guard pass(_roster_mutex);
+    }
+    _roster_wake.notify_all();
+  });
+  _loops.emplace_back([this](std::stop_token stop) { _threads.loop("cluster-roster", stop, [this, stop] { roster_loop(stop); }); });
 }
 
 void Node::cancel_outbound_calls() {
   if (!_started || _calls_cancelled.exchange(true)) return;
   if (_client) _client->stop();
+}
+
+void Node::close_route(const identity::NodeId& peer, net::Lane lane, const std::string& why) {
+  if (_client) _client->close_route(peer, lane, why);
 }
 
 void Node::request_stop() {
@@ -645,6 +662,13 @@ void Node::stop() {
   }
   for (auto& loop : loops)
     if (loop.joinable()) loop.join();
+  // A clean stop leaves the last state on disk, and any later observation writes for itself.
+  _members.defer_observed_writes({});
+  try {
+    _members.flush();
+  } catch (const std::exception& error) {
+    status::ScopedLogger(_config.log, "node").warn(std::string("known-node roster not written at stop: ") + error.what());
+  }
   std::deque<ConnectivityRefresh> unserved;
   {
     contract::Lock lock(_refresh_mutex);
@@ -662,13 +686,23 @@ void Node::refresh_public_connectivity(bool probe, bool force_probe, asio::any_i
                                        std::function<void(std::optional<reach::PublicConnectivityStatus>)> done) {
   {
     contract::Lock lock(_refresh_mutex);
-    if (_refreshes_open) {
-      _refreshes.push_back({probe, force_probe, std::move(executor), std::move(done)});
-      _wake.notify_all();
+    if (!_refreshes_open) {
+      asio::post(executor, [done = std::move(done)] { done(std::nullopt); });
       return;
     }
+    _refreshes.push_back({probe, force_probe, std::move(executor), std::move(done)});
   }
-  asio::post(executor, [done = std::move(done)] { done(std::nullopt); });
+  wake_loops();
+}
+
+void Node::wake_loops() {
+  // A waiter tests its condition under _wait_mutex and then blocks; taking it
+  // here means the change is seen either by that test or by the wake, never
+  // lost between them.
+  {
+    std::lock_guard pass(_wait_mutex);
+  }
+  _wake.notify_all();
 }
 
 void Node::advertise(const reach::PublicConnectivityStatus& status) {
@@ -722,7 +756,7 @@ status::TrafficTotals Node::traffic() const {
 
 void Node::signal_telemetry() {
   _telemetry_demand.fetch_add(1, std::memory_order_release);
-  _wake.notify_all();
+  wake_loops();
 }
 
 net::Handled Node::handle(const NodeRecord& peer, sched::FrameType frame, const net::Message& request) {
@@ -945,6 +979,17 @@ void Node::sleep_until(std::stop_token stop, contract::TimePoint due) {
   std::unique_lock lock(_wait_mutex);
   const auto now = _config.time->now();
   if (due > now) _wake.wait_for(lock, stop, due - now, [] { return false; });
+}
+
+void Node::roster_loop(std::stop_token stop) {
+  status::ThreadCpuReporter cpu("cluster-roster", std::chrono::seconds(5), status::ScopedLogger(_config.log, "node"));
+  while (!stop.stop_requested()) {
+    cpu.tick();
+    _members.flush();
+    std::unique_lock lock(_roster_mutex);
+    // Observations made during a write combine into the next.
+    _roster_wake.wait_for(lock, stop, std::chrono::seconds(1), [this] { return _roster_wanted.exchange(false); });
+  }
 }
 
 void Node::membership_loop(std::stop_token stop) {

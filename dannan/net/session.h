@@ -151,6 +151,10 @@ class Session : public std::enable_shared_from_this<Session> {
   void promote(uint64_t request_id, sched::FrameType frame);
   // Ends the session: every waiting call fails, the owner is told why.
   void close(const std::string& why);
+  bool is_closed() const;
+  // Runs `done` on the session's strand after whatever is already queued there: after
+  // close(), once nothing more will reach the owner's handlers.
+  void after_queued(std::function<void()> done);
   // Retires the session: no new call is admitted ("peer channel is
   // retiring"), what is in flight is answered both ways, the peer is told
   // (session_retire) once nothing of this end's is queued, and the session

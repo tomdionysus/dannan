@@ -746,6 +746,8 @@ void Client::dial(Target target, Lane lane, std::function<void(std::shared_ptr<S
                                                        auto session = Session::create(std::move(*attempt->socket), std::move(established), Role::dialler,
                                                                                       _options.routes, std::move(handlers), session_options());
                                                        attempt->socket.reset();
+                                                       // Known before its first request can be read.
+                                                       if (_options.established) _options.established(session->established());
                                                        session->start();
                                                        complete(std::move(session), "");
                                                      });
@@ -810,7 +812,6 @@ void Client::dialled(const std::string& key, const Target& target, Lane lane, st
   if (session && !stopped && route == session)
     _log.info("node connection outbound peer=" + to_string(session->peer().id).substr(0, 12) + " lane=" + lane_name(lane) +
               " endpoint=" + address_of(target.endpoint));
-  if (session && !stopped && _options.established) _options.established(session->established());
   for (auto& call : waiting) {
     if (route)
       place(route, std::move(call), target);
@@ -1001,6 +1002,8 @@ void Client::adopt(int descriptor, int family, const identity::NodeId& peer, Lan
       auto handlers = handlers_for(established.peer);
       auto session = Session::create(std::move(*attempt->socket), std::move(established), role, _options.routes, std::move(handlers), session_options());
       attempt->socket.reset();
+      // Known before its first request can be read.
+      if (_options.established) _options.established(session->established());
       session->start();
       if (role == Role::dialler)
         install_dialled(session);
@@ -1494,7 +1497,16 @@ void Client::stop() {
   });
   // Stopping twice, as a destructor after stop() does, says so once.
   if (!again) _log.debug("shutdown: RpcClient::stop begin");
-  for (auto& session : routes) session->close("client stopped");
+  for (auto& session : routes) {
+    session->close("client stopped");
+    // Waited for: a read that completed before the close may still be delivering
+    // into this client's owner.
+    {
+      contract::Lock lock(_mutex);
+      ++_operations;
+    }
+    session->after_queued([this] { end_operation(); });
+  }
   for (auto& attempt : dialling) asio::post(attempt->strand, [attempt] { attempt->abort(); });
   for (auto& [_, calls] : waiting)
     for (auto& call : calls) fail(call, "client stopped");
