@@ -621,6 +621,10 @@ void Node::start() {
   // Law 1: an io thread learns of a peer and goes on; the disk is this thread's.
   _members.defer_observed_writes([this] {
     _roster_wanted.store(true);
+    // As wake_loops: under the wait's mutex, so the wake is never lost.
+    {
+      std::lock_guard pass(_roster_mutex);
+    }
     _roster_wake.notify_all();
   });
   _loops.emplace_back([this](std::stop_token stop) { _threads.loop("cluster-roster", stop, [this, stop] { roster_loop(stop); }); });
@@ -983,7 +987,6 @@ void Node::roster_loop(std::stop_token stop) {
     cpu.tick();
     _members.flush();
     std::unique_lock lock(_roster_mutex);
-    // Bounded: a wake between the flush and this wait is met at the next pass.
     // Observations made during a write combine into the next.
     _roster_wake.wait_for(lock, stop, std::chrono::seconds(1), [this] { return _roster_wanted.exchange(false); });
   }
