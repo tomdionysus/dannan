@@ -511,7 +511,10 @@ TEST(Client, TheNoProgressDeadlineFollowsTheInjectedTime) {
   ASSERT_TRUE(call(a, b.self).reply);
   // The write's own progress is recorded when it completes, which can be after
   // b has the request: step only once a's count of it has risen. The first
-  // call's write may itself be counted late, so that is waited for first.
+  // call's write may itself be counted late, so that is waited for first. The
+  // count is a's whole control class, and nothing else of a's writes on it
+  // here: its probes follow the stepped time, which stands still until the
+  // stepper moves it, and nothing retires.
   const auto& out = a.traffic->out_bytes[static_cast<size_t>(FrameType::control)];
   ASSERT_TRUE(eventually([&] { return out.load(std::memory_order_acquire) > 0; }));
   const auto sent = out.load(std::memory_order_acquire);
