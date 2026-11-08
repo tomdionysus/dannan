@@ -217,6 +217,8 @@ struct PathStats {
   // a failure; a relay's held close let go when its last chunks never came; an end that
   // stopped waiting for chunks that never came.
   uint64_t closes_unknown = 0;
+  // A relay's circuits closed because it lost a session toward one end.
+  uint64_t relay_ends_lost = 0;
   uint64_t relay_closes_expired = 0;
   uint64_t finishes_expired = 0;
   std::vector<CircuitStats> circuits;

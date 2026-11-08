@@ -1331,6 +1331,7 @@ void Paths::lost(uint64_t circuit, bool toward_b) {
     if (found == _circuits.end()) return;
     auto& leg = toward_b ? found->second.to_b : found->second.to_a;
     auto& other = toward_b ? found->second.to_a : found->second.to_b;
+    if (!leg.lost) ++_stats.relay_ends_lost;
     leg.lost = true;
     leg.held.clear();
     leg.credit = 0;
