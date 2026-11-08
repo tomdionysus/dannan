@@ -118,8 +118,8 @@ Core (Dannan's, 1 to 511; a hosted system's from 512, registered freely):
 | 12 | punch_go | control, control | id peer, u8 lane, fixed16 token, string host, u16 port; reply 105 |
 | 13 | relay_open | control, control | section 6; reply 106 |
 | 14 | relay_offer | control, control | section 6; reply 107 |
-| 15 | relay_data | both, any, notification | u64 circuit, bytes |
-| 16 | relay_close | both, control, notification | u64 circuit, string why |
+| 15 | relay_data | both, any, notification | u64 circuit, u64 sequence, bytes |
+| 16 | relay_close | both, control, notification | u64 circuit, string why, u64 chunks |
 | 21 | relay_credit | both, control, notification | u64 circuit, u64 chunks |
 | 100 | ok | both, any | |
 | 101 | members_reply | control, control | u32 count, records |
@@ -218,7 +218,12 @@ per circuit, and waits; a full queue never closes a circuit, and only a session
 lost closes one. A DATA circuit's bytes and its close take the DATA lane at each
 hop where there is one, chosen when the circuit opens and kept, so bulk never
 waits in front of the CONTROL session's pings; credit takes CONTROL and overtakes.
-A session's pings wait behind what is on its own circuit, so the far end's bytes
+Chunks are numbered from zero in each direction, since a hop may move them between sessions as duplicate
+dials settle; the far end puts them back in order, and nothing in order is further behind than the window.
+`relay_close` carries how many chunks its sender sent, so the relay forwards it, and the far end finishes,
+only after the last; a relay that
+lost an end sends all ones, "unknown", and the far end closes at once. Each hop hands its session up to 4 of
+a circuit's chunks at a time. A session's pings wait behind what is on its own circuit, so the far end's bytes
 or credit moving count as its proof of life. The three types are handled by their arrival on the session,
 in order and ahead of every queue, so no queue can refuse a piece of a byte
 stream.
