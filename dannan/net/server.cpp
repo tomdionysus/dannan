@@ -240,12 +240,16 @@ void Server::established(const std::shared_ptr<Handshaking>& connection, std::ex
     stopped = _stopped;
     if (!stopped) _sessions.emplace(established.get(), established);
   }
+  // Known before its first request can be read: a peer that has authenticated is
+  // never refused for not being on the roster yet.
+  if (!stopped) {
+    _log.info("node connection inbound peer=" + to_string(peer.id).substr(0, 12) + " lane=" + lane_name(established->lane()) +
+              " remote=" + connection->remote.host + " advertised=" + peer.host + ":" + std::to_string(peer.port));
+    if (_admitted) _admitted(established);
+  }
   // The handshake's count passes to the session; its close handler ends it.
   established->start();
-  if (stopped) return established->close("server stopping");
-  _log.info("node connection inbound peer=" + to_string(peer.id).substr(0, 12) + " lane=" + lane_name(established->lane()) +
-            " remote=" + connection->remote.host + " advertised=" + peer.host + ":" + std::to_string(peer.port));
-  if (_admitted) _admitted(established);
+  if (stopped) established->close("server stopping");
 }
 
 void Server::stop() {
