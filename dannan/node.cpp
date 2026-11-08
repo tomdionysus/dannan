@@ -564,6 +564,8 @@ void Node::start() {
   paths.forced_class = _config.path_class;
   paths.upgrade_every = _config.path_upgrade_every;
   paths.max_data_circuits = _config.relay_data_circuits;
+  // Chunks that have not come within the liveness window are not coming.
+  paths.finish_wait = _config.dead_after;
   _paths = std::make_unique<reach::Paths>(
       _io, paths, *_client, [this] { return _members.self(); }, [this] { return _members.active(); },
       [this](const NodeRecord& peer, net::MessageType type, net::Bytes payload, std::chrono::milliseconds deadline) {
@@ -626,6 +628,10 @@ void Node::start() {
 void Node::cancel_outbound_calls() {
   if (!_started || _calls_cancelled.exchange(true)) return;
   if (_client) _client->stop();
+}
+
+void Node::close_route(const identity::NodeId& peer, net::Lane lane, const std::string& why) {
+  if (_client) _client->close_route(peer, lane, why);
 }
 
 void Node::request_stop() {
