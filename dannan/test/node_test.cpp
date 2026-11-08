@@ -1503,5 +1503,82 @@ TEST(Node, ARosterThatCannotBeWrittenIsAFaultAndTheNodeGoesOn) {
   a.stop();
 }
 
+// An authenticated peer is on the roster before its first request can be read, on a
+// session it dialled: there is no window for "not a node of this cluster".
+TEST(Node, APeersFirstRequestFindsItOnTheRoster) {
+  constexpr net::MessageType ask{4245};
+  Io io;
+  test::TempDir dir;
+  const auto key = cluster_key(dir.path());
+  std::atomic<int> refused{0};
+  std::atomic<int> allowed{0};
+  Node a(io.context, config(dir.path() / "a", key));
+  a.context().routes().add(ask, {"ask", net::Lanes::control, net::Frames::any, false},
+                           [&](const membership::NodeRecord& peer, sched::FrameType, const net::Message&) {
+                             contract::Principal principal;
+                             principal.kind = contract::Principal::Kind::node;
+                             principal.id = identity::to_string(peer.id);
+                             ++(a.context().identity().verify(principal, "anything").allowed ? allowed : refused);
+                             return net::Handled::processed({net::message::ok, {}, {}});
+                           });
+  a.start();
+  // Knows no seed, so nothing has told A of it but its own connection.
+  Node b(io.context, config(dir.path() / "b", key));
+  b.start();
+  const auto outcome = b.context().routes().call_and_wait(net::Endpoint{"127.0.0.1", a.port()}, ask, {}, sched::FrameType::control, 5s);
+  ASSERT_TRUE(outcome.reply) << outcome.failure;
+  EXPECT_EQ(allowed.load(), 1);
+  EXPECT_EQ(refused.load(), 0);
+  b.stop();
+  a.stop();
+}
+
+// A node stopped and destroyed while its io context runs on, with a peer still
+// sending: nothing read before the stop reaches it afterwards. Dagda's in-process
+// restart, under its delete stress.
+TEST(Node, ARestartOnASharedIoContextLeavesNothingBehind) {
+  constexpr net::MessageType news{4246};
+  Io io;
+  test::TempDir dir;
+  const auto key = cluster_key(dir.path());
+  Node b(io.context, config(dir.path() / "b", key));
+  b.context().routes().add(news, {"news", net::Lanes::control, net::Frames::any, true},
+                           [](const membership::NodeRecord&, sched::FrameType, const net::Message&) { return net::Handled::processed(); });
+  b.start();
+  for (int round = 0; round < 3; ++round) {
+    auto a = std::make_unique<Node>(io.context, config(dir.path() / "a", key, {{"127.0.0.1", b.port()}}));
+    a->context().routes().add(news, {"news", net::Lanes::control, net::Frames::any, true},
+                              [](const membership::NodeRecord&, sched::FrameType, const net::Message&) { return net::Handled::processed(); });
+    a->start();
+    const auto a_id = a->context().identity().id();
+    ASSERT_TRUE(eventually([&] { return knows(b, a_id); }));
+    std::atomic<bool> sending{true};
+    std::thread flood([&] {
+      std::optional<membership::NodeRecord> to;
+      for (const auto& node : b.context().nodes().active())
+        if (node.id == a_id) to = node;
+      if (!to) return;
+      std::atomic<int> outstanding{0};
+      while (sending) {
+        if (outstanding.load() > 64) {
+          std::this_thread::yield();
+          continue;
+        }
+        ++outstanding;
+        (void)b.context().routes().call(*to, news, net::Bytes(4096, 1), sched::FrameType::control, 2s, io.context.get_executor(),
+                                        [&outstanding](net::CallOutcome) { --outstanding; });
+      }
+      while (outstanding.load() > 0) std::this_thread::sleep_for(10ms);
+    });
+    std::this_thread::sleep_for(100ms);
+    a->stop();
+    a.reset();
+    std::this_thread::sleep_for(50ms);
+    sending = false;
+    flood.join();
+  }
+  b.stop();
+}
+
 }  // namespace
 }  // namespace dannan

@@ -682,5 +682,85 @@ TEST(Session, PastTheBoundOnRefusalsTheSessionCloses) {
   EXPECT_NE(pair.acceptor_closed.get().find("refusals"), std::string::npos) << pair.acceptor_closed.get();
 }
 
+// A call whose upload is moving is not idle, though no reply has come: net.cpp:1573.
+// Once the far end stops taking bytes, it is.
+TEST(Session, BytesLeavingCountAsProgressOnACall) {
+  Io io;
+  Pair pair(io, {}, {}, Lane::data, 65536, nullptr, nullptr, nullptr, true, false);
+  Bytes payload(2 * 1024 * 1024, 4);
+  const auto placed = pair.dialler->call(MessageType{1029}, Bytes(payload), FrameType::foreground, io.context.get_executor(), [](CallOutcome) {});
+  ASSERT_NE(placed.request_id, 0u) << placed.refused;
+  // The socket is full and nothing is reading: the call goes idle.
+  std::this_thread::sleep_for(300ms);
+  ASSERT_GE(*pair.dialler->idle_for(placed.request_id), 250ms);
+  // Take bytes off the far end, and fragments leave.
+  std::vector<uint8_t> drain(1024 * 1024);
+  bool moved = false;
+  for (int spin = 0; spin < 200 && !moved; ++spin) {
+    (void)::recv(pair.acceptor_end, drain.data(), drain.size(), MSG_DONTWAIT);
+    std::this_thread::sleep_for(5ms);
+    moved = *pair.dialler->idle_for(placed.request_id) < 100ms;
+  }
+  EXPECT_TRUE(moved);
+}
+
+// The descriptor is the session's too, and Asio has made it non-blocking: sends
+// until every byte is taken.
+bool send_all(int fd, const uint8_t* data, size_t size) {
+  for (int spin = 0; size > 0 && spin < 2000; ++spin) {
+    const auto sent = ::send(fd, data, size, 0);
+    if (sent > 0) {
+      data += sent;
+      size -= static_cast<size_t>(sent);
+    } else {
+      std::this_thread::sleep_for(5ms);
+    }
+  }
+  return size == 0;
+}
+
+// A reply moving across a window, frame by frame, keeps its call alive: fed by hand,
+// and held between two frames.
+TEST(Session, AReplyArrivingFragmentByFragmentCountsAsProgress) {
+  Io io;
+  Pair pair(io, {}, echo(), Lane::data, 65536, nullptr, nullptr, nullptr, false, true);
+  Bytes payload(200 * 1024, 4);
+  std::atomic<bool> answered{false};
+  const auto placed =
+      pair.dialler->call(MessageType{1029}, Bytes(payload), FrameType::foreground, io.context.get_executor(), [&](CallOutcome) { answered = true; });
+  ASSERT_NE(placed.request_id, 0u) << placed.refused;
+  // Everything the far end replies, off the wire and held.
+  std::vector<uint8_t> held;
+  std::vector<uint8_t> chunk(1024 * 1024);
+  int quiet = 0;
+  while (quiet < 40) {
+    const auto got = ::recv(pair.dialler_end, chunk.data(), chunk.size(), MSG_DONTWAIT);
+    if (got > 0) {
+      held.insert(held.end(), chunk.begin(), chunk.begin() + got);
+      quiet = 0;
+    } else {
+      ++quiet;
+      std::this_thread::sleep_for(10ms);
+    }
+  }
+  ASSERT_GT(held.size(), payload.size());
+  pair.dialler->start();
+  std::this_thread::sleep_for(300ms);
+  ASSERT_GE(*pair.dialler->idle_for(placed.request_id), 250ms);
+  // The first third: whole frames of the reply, not all of it.
+  ASSERT_TRUE(send_all(pair.acceptor_end, held.data(), held.size() / 3));
+  bool moved = false;
+  for (int spin = 0; spin < 200 && !moved; ++spin) {
+    std::this_thread::sleep_for(5ms);
+    const auto idle = pair.dialler->idle_for(placed.request_id);
+    moved = idle && *idle < 100ms;
+  }
+  EXPECT_TRUE(moved);
+  EXPECT_FALSE(answered.load());
+  ASSERT_TRUE(send_all(pair.acceptor_end, held.data() + held.size() / 3, held.size() - held.size() / 3));
+  for (int spin = 0; spin < 400 && !answered; ++spin) std::this_thread::sleep_for(5ms);
+  EXPECT_TRUE(answered.load());
+}
+
 }  // namespace
 }  // namespace dannan::net
