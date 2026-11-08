@@ -82,6 +82,8 @@ void Session::start() {
 void Session::read_header() {
   asio::async_read(_socket, asio::buffer(_header), asio::bind_executor(_strand, [self = shared_from_this()](const boost::system::error_code& error, size_t) {
                      if (error) return self->fail(error == asio::error::eof ? "peer closed" : error.message());
+                     // Read before the close landed: its owner may be gone.
+                     if (self->is_closed()) return;
                      size_t rest = 0;
                      try {
                        rest = self->_opener.header(self->_header);
@@ -106,6 +108,7 @@ void Session::read_body(size_t size) {
   asio::async_read(_socket, asio::buffer(_body),
                    asio::bind_executor(_strand, [self = shared_from_this(), size](const boost::system::error_code& error, size_t) {
                      if (error) return self->fail(error == asio::error::eof ? "peer closed" : error.message());
+                     if (self->is_closed()) return;
                      try {
                        auto fragment = self->_opener.open(self->_body);
                        if (self->_options.traffic) self->_options.traffic->note(false, fragment.frame, frame_header_size + size);
@@ -128,7 +131,7 @@ void Session::deliver(Frame frame) {
           contract::Lock lock(_mutex);
           _queue.promote_inbound(*target, *promoted);
         }
-        if (_handlers.promoted) _handlers.promoted(*target, *promoted);
+        if (const auto handler = _handlers.promoted) handler(*target, *promoted);
         kick_writer();
       }
     } else if (type == message::cancel_transfer) {
@@ -138,7 +141,7 @@ void Session::deliver(Frame frame) {
           contract::Lock lock(_mutex);
           _queue.cancel_inbound(*target);
         }
-        if (_handlers.cancelled) _handlers.cancelled(*target);
+        if (const auto handler = _handlers.cancelled) handler(*target);
       }
     } else if (type == message::session_retire) {
       {
@@ -148,10 +151,13 @@ void Session::deliver(Frame frame) {
       }
       settle();
     } else if (_handlers.request && (_routes->is_notification(type) || !_routes->find(type))) {
+      // A copy: a reply made inside may close this session and clear the handlers,
+      // which must not destroy the one running.
+      const auto handler = _handlers.request;
       // A registered notification, or a user type nobody here registered:
       // the user's to take or ignore.
       try {
-        _handlers.request(std::move(frame), Reply{});
+        handler(std::move(frame), Reply{});
       } catch (...) {
         // A notification has no one to answer; it is dropped.
       }
@@ -180,11 +186,12 @@ void Session::deliver(Frame frame) {
   const auto id = frame.request_id;
   const auto class_of = frame.frame;
   if (!_handlers.request) return queue_reply(id, class_of, error_reply(501, "not_implemented", "no handler on this session"));
+  const auto handler = _handlers.request;
   // A handler that throws answers its request; it never ends the session.
   try {
-    _handlers.request(std::move(frame), Reply([weak = weak_from_this(), id, class_of](Message message) {
-                        if (auto self = weak.lock()) self->queue_reply(id, class_of, std::move(message));
-                      }));
+    handler(std::move(frame), Reply([weak = weak_from_this(), id, class_of](Message message) {
+              if (auto self = weak.lock()) self->queue_reply(id, class_of, std::move(message));
+            }));
   } catch (const std::exception& failure) {
     queue_reply(id, class_of, error_reply(500, "internal_error", failure.what()));
   } catch (...) {
@@ -323,14 +330,21 @@ void Session::write_next() {
     return fail(error.what(), true);
   }
   const auto frame = fragment->frame;
+  const auto request_id = fragment->request_id;
   asio::async_write(_socket, asio::buffer(_wire),
-                    asio::bind_executor(_strand, [self = shared_from_this(), frame](const boost::system::error_code& error, size_t bytes) {
+                    asio::bind_executor(_strand, [self = shared_from_this(), frame, request_id](const boost::system::error_code& error, size_t bytes) {
                       if (error) return self->fail(error.message(), true);
                       if (self->_options.traffic) self->_options.traffic->note(true, frame, bytes);
                       {
                         contract::Lock lock(self->_mutex);
                         self->_writing = false;
                         self->_queue.written();
+                        // A call whose bytes are leaving is making progress, as one whose
+                        // reply is arriving is: an upload is not idle for having no answer yet.
+                        if (request_id && self->ours(request_id)) {
+                          if (const auto found = self->_pending.find(request_id); found != self->_pending.end())
+                            found->second.last_progress = self->_options.time->now();
+                        }
                       }
                       self->settle();
                     }));
@@ -373,6 +387,12 @@ void Session::shut(const std::string& why) {
     contract::Lock lock(_mutex);
     _queue.abandon();
   }
+  // Nothing it holds reaches its owner from here: the owner may be stopping, and the
+  // ledger the partial messages are charged to is the owner's.
+  _assembler.clear();
+  _handlers.request = {};
+  _handlers.promoted = {};
+  _handlers.cancelled = {};
   boost::system::error_code ignored;
   _socket.shutdown(Socket::shutdown_both, ignored);
   _socket.close(ignored);
@@ -382,6 +402,13 @@ void Session::shut(const std::string& why) {
     told(why);
   }
 }
+
+bool Session::is_closed() const {
+  contract::Lock lock(_mutex);
+  return _closed;
+}
+
+void Session::after_queued(std::function<void()> done) { asio::post(_strand, std::move(done)); }
 
 bool Session::usable() const {
   contract::Lock lock(_mutex);

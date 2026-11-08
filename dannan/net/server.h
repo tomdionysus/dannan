@@ -9,6 +9,7 @@
 
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/steady_timer.hpp>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -53,6 +54,8 @@ struct ServerOptions {
   // Connections accepted and not yet authenticated; past it a new one is
   // closed at once, so unauthenticated sockets cost bounded resources.
   size_t max_pre_auth = 8;
+  // Called as each connection is admitted; a test's way to make admitting fail.
+  std::function<void()> admit_hook;
   std::chrono::milliseconds handshake_timeout{5000};
 };
 
@@ -104,6 +107,7 @@ class Server {
   RequestScheduler _scheduler;
   Admitted _admitted;
   boost::asio::ip::tcp::acceptor _acceptor;
+  boost::asio::steady_timer _accept_pause;
   uint16_t _bound_port = 0;
 
   mutable contract::Mutex _mutex;

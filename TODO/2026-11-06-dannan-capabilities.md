@@ -11,35 +11,42 @@ port. That is not a claim that nothing is left. Today's tests found real defects
 called proven (listed below), so expect the port to find more. Fix them as Tom ruled: the port pauses and I
 fix them.
 
-## Gates, at tag 0.5.0
+## Gates, at tag 0.5.1
 
-Each gate ran once (Tom, 2026-11-06: "Test once and be done with it."), and these are the last results. The tag was cut with
-two items open, at Tom's word; see below.
+Each gate ran once (Tom, 2026-11-06: "Test once and be done with it."), and these are the last results. The final TSan runs
+waited for the host to go quiet (load average under 10 at the start), at Tom's word, after a run at load 46 failed on time limits.
+Every commit was reviewed by the Macha session.
 
 | Gate | Result |
 |---|---|
-| macOS, plain | 623 of 623, at the tag's code |
-| macOS, ASan with UBSan | 623 of 623, no reports, before the last, test-only commit |
-| macOS, TSan | **Failed one test:** the handshake timeout below. 622 passed, no warnings |
-| Debian 13, g++ 14, plain and ASan with UBSan | 625 of 625 each, no reports, before the last, test-only commit |
-| Debian 13, TSan | **Failed two tests:** the relay bulk cases below. 623 passed, no warnings |
-| Compose bed, real NATs | Relay measurement 5 of 5 (was 2 of 8), 103 to 141 MB/s, and the two other cases pass. Run before the last three commits, which change a failure text, a liveness budget and tests |
+| macOS, plain | 639 of 639, at the tag's code |
+| macOS, ASan with UBSan | 639 of 639, no reports, at the tag's code |
+| macOS, TSan | 639 of 639, no warnings, at the tag's code |
+| Debian 13, g++ 14, plain and ASan with UBSan | 641 of 641 each, no reports, before the last commit (the roster wake, 3 lines) |
+| Debian 13, TSan | 641 of 641, no warnings, at the tag's code |
+| Compose bed, real NATs | 3 of 3, relay 136 MB/s, at `8b1c46e` (before a counter, a test assertion and the wake fixes) |
 | arm64 (inverbeg) | Run after the tag, at Tom's word; results follow separately |
 
-**Open 1: relay bulk transfers under Debian TSan. Not explained, and not called slowness.**
-`LevelZero.ALargeTransferCrossesARelayIntact` ran out its 120 s deadline, and
-`LevelZero.TransfersBothWaysShareARelayAndControlStillAnswers` lost a session after about 30 s with no sign of movement,
-even with a 30 s liveness budget. TSan reported no data race. They pass plain and under ASan. The first may be extreme slowness; the
-second looks real. Untested guess: with circuits opened from both ends there can be two relayed sessions, and
-`Client::note_path_progress` credits the route, not the session the bytes are for. Relay is not on Macha's path, since Macha's
-nodes dial each other, so this does not touch a direct connection. The cases stay failing under TSan as the record of it.
+**Closed since 0.5.0: relay bulk transfers under Debian TSan.** The relay now numbers chunks (pipelined, reordered at the far
+end), paces by credit, carries DATA circuits on the DATA lane, and bounds every wait for a missing chunk; wire v1 section 6.
+All relay cases pass under Debian TSan on a quiet host. At a host load of 46 on 12 cores four of them ran out their fixed time
+limits with no sanitizer report, and all 17 passed with the same binary at load 19. That is a test's time limit under starvation,
+recorded here, not a correctness failure.
 
-**Open 2: a handshake timeout on macOS TSan. Not reproduced at will, cause not found, not called environmental.**
-`LevelZero.ANodeIsObservedFromAFixedLocalPort` has now failed in 2 of about 11 full macOS TSan runs. It passed 40 alone under TSan, 60
-plain, 119 under CPU hogs and 10,635 under parallel copies. The failure text added for this says `timed out at the handshake from
-local port 50040`: TCP connected and then no answer came, with neither end closing. The code that reads the answer was read and
-shows no fault. Whether it can happen on the nodes is unknown. Dial and accept share this handshake code, so this one is on
-Macha's path until shown otherwise.
+**Found and fixed since 0.5.0: a lost wakeup in `Node`.** A forced `refresh_public_connectivity` asked for between the
+connectivity loop's test and its wait was not seen until the next heartbeat (one hour in the test that caught it). The same race
+delayed telemetry demand by up to an interval and the roster write by up to a second. Every waker now passes through the wait's
+mutex (`Node::wake_loops`). Macha has the bounded telemetry form (`cluster.cpp:958`), recorded by the Macha session for after the
+freeze.
+
+**Open: a handshake timeout on macOS TSan. Not reproduced at will, cause not found, not called environmental.**
+`LevelZero.ANodeIsObservedFromAFixedLocalPort` has now failed in 3 of about 14 full macOS TSan runs, the third at a host load of 46.
+It passed 40 alone under TSan, 60 plain, 119 under CPU hogs and 10,635 under parallel copies. The failure text says `timed out at
+the handshake from local port N`: TCP connected and then no answer came, with neither end closing. The code that reads the answer
+was read and shows no fault. Whether it can happen on the nodes is unknown. Dial and accept share this handshake code, so this one
+is on Macha's path until shown otherwise.
+
+**Recorded, not changed:** a relay chunk must fit one negotiated frame; the smallest frame is 4 KiB.
 
 **A test-only risk:** `test::free_port` can collide across processes ("cannot bind the punch port: Address already in use", 2 in
 about 10,600 runs under parallel copies). A gate could fail this way if another session runs tests at the same moment. Left as it is.
@@ -79,6 +86,9 @@ Each was a difference from Macha, or a defect, found today:
 - A call's deadline and `Time::after` now follow injected time.
 - A relayed session's pings wait behind its own circuit, so the far end's movement counts as proof of life, and gives the whole budget again. Direct sessions are unaffected.
 - A DATA circuit's bytes take the DATA lane at each hop, as wire v1 section 6 says; they had all been on CONTROL, in front of its pings.
+- Since 0.5.0: relay chunks are numbered and credited, and every wait for a missing chunk is bounded (wire v1 section 6).
+- Since 0.5.0: a session runs a copy of its handler, so a reply that closes the session cannot destroy the running one.
+- Since 0.5.0: the node's loops are woken under their wait's mutex, so an asked-for refresh is never lost until the heartbeat.
 
 ## What the port needs from Dannan, ready to use
 
@@ -120,4 +130,6 @@ Check these on the nodes:
 
 ## Done at Tom's word, after this was written
 
-Tag 0.5.0 and the push. The arm64 rerun and the real gateway run follow; their results come separately.
+Tag 0.5.0 and the push. The real gateway run on macnessa passed: a mapping made, read back, removed and confirmed gone.
+
+Tag 0.5.1 and the push. The arm64 rerun on inverbeg follows at the tag; its results come separately.

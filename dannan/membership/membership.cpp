@@ -117,6 +117,8 @@ Membership::Encoded Membership::encode_locked() {
   const auto& bytes = writer.data();
   if (bytes.size() > max_bytes) throw std::runtime_error("known-node roster is too large");
   for (auto& [_, known] : _nodes) known.persisted_heard_unix_ms = known.last_heard_unix_ms;
+  // Whatever writes this has what deferred observations left.
+  _unwritten = false;
   return {++_sequence, std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size())};
 }
 
@@ -209,6 +211,7 @@ bool Membership::inbound_capable(const identity::NodeId& id) const {
 void Membership::observe(NodeRecord record, bool direct) {
   if (record.host.empty() || !record.port) return;
   Encoded roster;
+  std::function<void()> wake;
   {
     contract::Lock lock(_mutex);
     if (record.id == _self.id) return;
@@ -250,9 +253,37 @@ void Membership::observe(NodeRecord record, bool direct) {
       }
     }
     if (!changed) return;
+    if (_wake_writer) {
+      _unwritten = true;
+      wake = _wake_writer;
+    } else {
+      roster = encode_locked();
+    }
+  }
+  if (wake) return wake();
+  write(roster);
+}
+
+void Membership::defer_observed_writes(std::function<void()> wake) {
+  contract::Lock lock(_mutex);
+  _wake_writer = std::move(wake);
+}
+
+void Membership::flush() {
+  Encoded roster;
+  {
+    contract::Lock lock(_mutex);
+    if (!_unwritten) return;
+    _unwritten = false;
     roster = encode_locked();
   }
-  write(roster);
+  try {
+    write(roster);
+  } catch (...) {
+    contract::Lock lock(_mutex);
+    _unwritten = true;
+    throw;
+  }
 }
 
 bool Membership::apply_identity_reset(const IdentityReset& reset) {

@@ -1458,5 +1458,127 @@ TEST(Time, AfterAndACallsDeadlineFollowTheInjectedTime) {
   a.stop();
 }
 
+// Law 1 and a clean stop: a peer learnt on an io thread reaches the disk by the
+// roster thread, and a disk that refuses costs a recorded fault, not the transport.
+TEST(Node, TheRosterIsWrittenOffTheIoThreadsAndAtStop) {
+  Pair pair;
+  pair.b->start();
+  const auto b_id = pair.b->context().identity().id();
+  ASSERT_TRUE(eventually([&] { return knows(*pair.a, b_id); }));
+  const auto path = pair.dir.path() / "a" / "membership" / "known-nodes.bin";
+  EXPECT_TRUE(eventually([&] { return std::filesystem::exists(path); }));
+  const auto names = [&] {
+    std::set<std::string> out;
+    for (const auto& status : pair.a->diagnostics().threads) out.insert(status.name);
+    return out;
+  };
+  EXPECT_TRUE(eventually([&] { return names().contains("cluster-roster"); }));
+  pair.b->stop();
+  pair.a->stop();
+  membership::Membership reloaded(membership::NodeRecord{}, 2s, path);
+  const auto all = reloaded.all();
+  EXPECT_TRUE(std::any_of(all.begin(), all.end(), [&](const membership::NodeRecord& node) { return node.id == b_id; }));
+}
+
+TEST(Node, ARosterThatCannotBeWrittenIsAFaultAndTheNodeGoesOn) {
+  test::TempDir dir;
+  Io io;
+  const auto key = cluster_key(dir.path());
+  Node a(io.context, config(dir.path() / "a", key));
+  a.start();
+  const auto path = dir.path() / "a" / "membership" / "known-nodes.bin";
+  std::filesystem::remove_all(path);
+  std::filesystem::create_directories(path / "in-the-way");
+  Node b(io.context, config(dir.path() / "b", key, {{"127.0.0.1", a.port()}}));
+  b.start();
+  const auto b_id = b.context().identity().id();
+  EXPECT_TRUE(eventually([&] { return knows(a, b_id); }));
+  EXPECT_TRUE(eventually([&] {
+    for (const auto& status : a.diagnostics().threads)
+      if (status.name == "cluster-roster" && status.faults > 0) return true;
+    return false;
+  }));
+  std::filesystem::remove_all(path);
+  b.stop();
+  a.stop();
+}
+
+// An authenticated peer is on the roster before its first request can be read, on a
+// session it dialled: there is no window for "not a node of this cluster".
+TEST(Node, APeersFirstRequestFindsItOnTheRoster) {
+  constexpr net::MessageType ask{4245};
+  Io io;
+  test::TempDir dir;
+  const auto key = cluster_key(dir.path());
+  std::atomic<int> refused{0};
+  std::atomic<int> allowed{0};
+  Node a(io.context, config(dir.path() / "a", key));
+  a.context().routes().add(ask, {"ask", net::Lanes::control, net::Frames::any, false},
+                           [&](const membership::NodeRecord& peer, sched::FrameType, const net::Message&) {
+                             contract::Principal principal;
+                             principal.kind = contract::Principal::Kind::node;
+                             principal.id = identity::to_string(peer.id);
+                             ++(a.context().identity().verify(principal, "anything").allowed ? allowed : refused);
+                             return net::Handled::processed({net::message::ok, {}, {}});
+                           });
+  a.start();
+  // Knows no seed, so nothing has told A of it but its own connection.
+  Node b(io.context, config(dir.path() / "b", key));
+  b.start();
+  const auto outcome = b.context().routes().call_and_wait(net::Endpoint{"127.0.0.1", a.port()}, ask, {}, sched::FrameType::control, 5s);
+  ASSERT_TRUE(outcome.reply) << outcome.failure;
+  EXPECT_EQ(allowed.load(), 1);
+  EXPECT_EQ(refused.load(), 0);
+  b.stop();
+  a.stop();
+}
+
+// A node stopped and destroyed while its io context runs on, with a peer still
+// sending: nothing read before the stop reaches it afterwards. Dagda's in-process
+// restart, under its delete stress.
+TEST(Node, ARestartOnASharedIoContextLeavesNothingBehind) {
+  constexpr net::MessageType news{4246};
+  Io io;
+  test::TempDir dir;
+  const auto key = cluster_key(dir.path());
+  Node b(io.context, config(dir.path() / "b", key));
+  b.context().routes().add(news, {"news", net::Lanes::control, net::Frames::any, true},
+                           [](const membership::NodeRecord&, sched::FrameType, const net::Message&) { return net::Handled::processed(); });
+  b.start();
+  for (int round = 0; round < 3; ++round) {
+    auto a = std::make_unique<Node>(io.context, config(dir.path() / "a", key, {{"127.0.0.1", b.port()}}));
+    a->context().routes().add(news, {"news", net::Lanes::control, net::Frames::any, true},
+                              [](const membership::NodeRecord&, sched::FrameType, const net::Message&) { return net::Handled::processed(); });
+    a->start();
+    const auto a_id = a->context().identity().id();
+    ASSERT_TRUE(eventually([&] { return knows(b, a_id); }));
+    std::atomic<bool> sending{true};
+    std::thread flood([&] {
+      std::optional<membership::NodeRecord> to;
+      for (const auto& node : b.context().nodes().active())
+        if (node.id == a_id) to = node;
+      if (!to) return;
+      std::atomic<int> outstanding{0};
+      while (sending) {
+        if (outstanding.load() > 64) {
+          std::this_thread::yield();
+          continue;
+        }
+        ++outstanding;
+        (void)b.context().routes().call(*to, news, net::Bytes(4096, 1), sched::FrameType::control, 2s, io.context.get_executor(),
+                                        [&outstanding](net::CallOutcome) { --outstanding; });
+      }
+      while (outstanding.load() > 0) std::this_thread::sleep_for(10ms);
+    });
+    std::this_thread::sleep_for(100ms);
+    a->stop();
+    a.reset();
+    std::this_thread::sleep_for(50ms);
+    sending = false;
+    flood.join();
+  }
+  b.stop();
+}
+
 }  // namespace
 }  // namespace dannan

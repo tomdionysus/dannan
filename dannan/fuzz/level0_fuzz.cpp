@@ -50,7 +50,7 @@ const Registration level0(
                                      reach::encode(reach::PunchGo{id, net::Lane::data, token, {"h", 5}}),
                                      reach::encode(reach::PunchReply{true, "", {"h", 6}, token}),
                                      reach::encode(reach::RelayOffer{9, id, net::Lane::control, token}),
-                                     reach::encode(reach::RelayData{9, {1, 2, 3}}),
+                                     reach::encode(reach::RelayData{9, 4, {1, 2, 3}}),
                                      reach::encode_dial_back_request({"203.0.113.1", 7437})};
     });
 
