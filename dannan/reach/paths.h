@@ -76,13 +76,20 @@ struct RelayOfferReply {
   bool accepted = false;
   std::string why;
 };
+// A circuit's chunks are numbered in each direction from zero. Hops may move them
+// between sessions, so the far end puts them back in order.
 struct RelayData {
   uint64_t circuit = 0;
+  uint64_t sequence = 0;
   net::Bytes bytes;
 };
+// `chunks`: how many the closing end sent, so the far end finishes after the last;
+// unknown_chunks when a relay closes it, having lost an end.
+inline constexpr uint64_t unknown_chunks = ~uint64_t{0};
 struct RelayClose {
   uint64_t circuit = 0;
   std::string why;
+  uint64_t chunks = unknown_chunks;
 };
 // From the end that took chunks off the circuit, back along it: this many
 // more may be sent.
@@ -99,6 +106,9 @@ struct RelayCredit {
 inline constexpr size_t relay_chunk_bytes = 64 * 1024;
 inline constexpr uint64_t relay_window_chunks = 32;
 inline constexpr uint64_t relay_credit_batch = 8;
+// How many of a circuit's chunks one hop hands its session at once: enough that
+// each hop is not one chunk's write behind the last.
+inline constexpr uint64_t relay_pipeline_chunks = 4;
 
 net::Bytes encode(const PunchRequest&);
 net::Bytes encode(const PunchGo&);
@@ -250,10 +260,16 @@ class Paths {
   // bytes never hold back the other's; a close goes last, so a circuit's tail
   // arrives. Held chunks are bounded by the window.
   struct Leg {
-    std::deque<net::Bytes> held;
+    std::deque<RelayData> held;
     uint64_t credit = 0;
-    std::optional<std::string> close;
-    bool sending = false;
+    std::optional<RelayClose> close;
+    // Messages of this direction the next session has taken and not yet written.
+    uint64_t in_flight = 0;
+    // Chunks of this direction received here, so a close goes on only after the last.
+    uint64_t received = 0;
+    // One thread hands this leg to the session at a time; `again` asks it to look again.
+    bool advancing = false;
+    bool again = false;
     bool lost = false;
     net::Lane carrier = net::Lane::control;
   };
@@ -277,7 +293,9 @@ class Paths {
   // can arrive for it.
   std::shared_ptr<Pump> open_end(uint64_t circuit, const identity::NodeId& relay, const identity::NodeId& far_end, net::Lane lane, int* session_end,
                                  int* family);
-  void close_end(uint64_t circuit, const std::string& why, bool tell_relay);
+  void close_end(uint64_t circuit, const std::string& why, bool tell_relay, uint64_t chunks = unknown_chunks);
+  // A finished end leaves the table, if it is still the one there.
+  void forget_end(uint64_t circuit, const Pump* pump);
   // Sends a relay's next message for one direction of `circuit`, if it has one
   // and none is on its way.
   void advance(uint64_t circuit, bool toward_b);

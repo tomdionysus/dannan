@@ -78,8 +78,11 @@ TEST(LevelZero, ThePayloadsRoundTrip) {
   EXPECT_EQ(offer.circuit, 78u);
   EXPECT_EQ(offer.from, id(5));
   EXPECT_FALSE(decode_relay_offer_reply(encode(RelayOfferReply{false, "full"})).accepted);
-  EXPECT_EQ(decode_relay_data(encode(RelayData{79, {9, 8, 7}})).bytes, (net::Bytes{9, 8, 7}));
-  EXPECT_EQ(decode_relay_close(encode(RelayClose{80, "done"})).why, "done");
+  EXPECT_EQ(decode_relay_data(encode(RelayData{79, 5, {9, 8, 7}})).bytes, (net::Bytes{9, 8, 7}));
+  EXPECT_EQ(decode_relay_data(encode(RelayData{79, 5, {9, 8, 7}})).sequence, 5u);
+  EXPECT_EQ(decode_relay_close(encode(RelayClose{80, "done", 12})).why, "done");
+  EXPECT_EQ(decode_relay_close(encode(RelayClose{80, "done", 12})).chunks, 12u);
+  EXPECT_EQ(decode_relay_close(encode(RelayClose{80, "lost"})).chunks, unknown_chunks);
   // A path is for CONTROL or DATA; trailing bytes are refused.
   net::Writer probe_lane;
   probe_lane.fixed(id(2).bytes);
