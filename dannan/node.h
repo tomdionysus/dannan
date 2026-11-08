@@ -263,6 +263,9 @@ class Node final : public Context {
   void connectivity_loop(std::stop_token stop);
   void roster_loop(std::stop_token stop);
   void serve_refreshes();
+  // Wakes the loops' wait. Takes _wait_mutex, so never call it holding a lock
+  // the waiters' conditions take (_refresh_mutex).
+  void wake_loops();
   void advertise(const reach::PublicConnectivityStatus& status);
   void refresh_public_connectivity(bool probe, bool force_probe, boost::asio::any_io_executor executor,
                                    std::function<void(std::optional<reach::PublicConnectivityStatus>)> done);

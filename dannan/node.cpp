@@ -682,13 +682,23 @@ void Node::refresh_public_connectivity(bool probe, bool force_probe, asio::any_i
                                        std::function<void(std::optional<reach::PublicConnectivityStatus>)> done) {
   {
     contract::Lock lock(_refresh_mutex);
-    if (_refreshes_open) {
-      _refreshes.push_back({probe, force_probe, std::move(executor), std::move(done)});
-      _wake.notify_all();
+    if (!_refreshes_open) {
+      asio::post(executor, [done = std::move(done)] { done(std::nullopt); });
       return;
     }
+    _refreshes.push_back({probe, force_probe, std::move(executor), std::move(done)});
   }
-  asio::post(executor, [done = std::move(done)] { done(std::nullopt); });
+  wake_loops();
+}
+
+void Node::wake_loops() {
+  // A waiter tests its condition under _wait_mutex and then blocks; taking it
+  // here means the change is seen either by that test or by the wake, never
+  // lost between them.
+  {
+    std::lock_guard pass(_wait_mutex);
+  }
+  _wake.notify_all();
 }
 
 void Node::advertise(const reach::PublicConnectivityStatus& status) {
@@ -742,7 +752,7 @@ status::TrafficTotals Node::traffic() const {
 
 void Node::signal_telemetry() {
   _telemetry_demand.fetch_add(1, std::memory_order_release);
-  _wake.notify_all();
+  wake_loops();
 }
 
 net::Handled Node::handle(const NodeRecord& peer, sched::FrameType frame, const net::Message& request) {
