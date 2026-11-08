@@ -14,14 +14,15 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <array>
 #include <boost/asio/connect.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/write.hpp>
-#include <array>
 #include <fstream>
 #include <future>
 #include <thread>
@@ -323,6 +324,94 @@ TEST(PeerSocket, ChoosesBbrWhereOffered) {
 #else
   GTEST_SKIP() << "no choice of congestion control here";
 #endif
+}
+
+// A connection reset the moment it lands costs the listener nothing: Macha's
+// loop catches around each connection's setup, and this must too.
+TEST(Server, ConnectionsResetAsTheyLandDoNotStopTheListener) {
+  Io io;
+  const auto key = key_from("cluster");
+  Server server(io.context, "127.0.0.1", 0, options(key), members_reply());
+  server.start();
+  for (int i = 0; i < 200; ++i) {
+    const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = htons(server.bound_port());
+    ASSERT_EQ(::connect(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)), 0);
+    const linger reset{1, 0};
+    ::setsockopt(fd, SOL_SOCKET, SO_LINGER, &reset, sizeof(reset));
+    ::close(fd);
+  }
+  auto dialled = dial(io, server.bound_port(), key);
+  ASSERT_TRUE(dialled.session) << dialled.refused;
+  EXPECT_TRUE(call(io, *dialled.session, message::ping).reply);
+  dialled.session->close("done");
+  server.stop();
+}
+
+// Out of descriptors, the listener waits between attempts rather than spinning
+// an io thread, and takes connections again once they free.
+TEST(Server, OutOfDescriptorsItPausesAndRecovers) {
+  Io io;
+  const auto key = key_from("cluster");
+  Server server(io.context, "127.0.0.1", 0, options(key), members_reply());
+  server.start();
+  const int waiting = ::socket(AF_INET, SOCK_STREAM, 0);
+  ASSERT_GE(waiting, 0);
+  // Every descriptor below the limit taken, so the next accept has none.
+  rlimit before{};
+  ASSERT_EQ(::getrlimit(RLIMIT_NOFILE, &before), 0);
+  std::vector<int> held;
+  rlimit tight = before;
+  const int top = ::dup(waiting);
+  held.push_back(top);
+  tight.rlim_cur = static_cast<rlim_t>(top) + 1;
+  ASSERT_EQ(::setrlimit(RLIMIT_NOFILE, &tight), 0);
+  for (int fd = ::dup(waiting); fd >= 0; fd = ::dup(waiting)) held.push_back(fd);
+  sockaddr_in address{};
+  address.sin_family = AF_INET;
+  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  address.sin_port = htons(server.bound_port());
+  ASSERT_EQ(::connect(waiting, reinterpret_cast<sockaddr*>(&address), sizeof(address)), 0);
+  const auto cpu = [] {
+    rusage used{};
+    ::getrusage(RUSAGE_SELF, &used);
+    return used.ru_utime.tv_sec * 1000000LL + used.ru_utime.tv_usec + used.ru_stime.tv_sec * 1000000LL + used.ru_stime.tv_usec;
+  };
+  const auto start = cpu();
+  std::this_thread::sleep_for(500ms);
+  const auto spent = cpu() - start;
+  for (const int fd : held) ::close(fd);
+  ASSERT_EQ(::setrlimit(RLIMIT_NOFILE, &before), 0);
+  EXPECT_LT(spent, 250000) << "microseconds of CPU in half a second";
+  auto dialled = dial(io, server.bound_port(), key);
+  ASSERT_TRUE(dialled.session) << dialled.refused;
+  EXPECT_TRUE(call(io, *dialled.session, message::ping).reply);
+  dialled.session->close("done");
+  ::close(waiting);
+  server.stop();
+}
+
+// A throw while admitting costs that connection and nothing else: the next is
+// taken, and stop() does not wait on what the throw skipped.
+TEST(Server, AThrowInAdmittingClosesThatConnectionAndTheListenerGoesOn) {
+  Io io;
+  const auto key = key_from("cluster");
+  auto opts = options(key);
+  std::atomic<int> throws{3};
+  opts.admit_hook = [&] {
+    if (throws.fetch_sub(1) > 0) throw std::runtime_error("admitting broke");
+  };
+  Server server(io.context, "127.0.0.1", 0, opts, members_reply());
+  server.start();
+  for (int i = 0; i < 3; ++i) EXPECT_FALSE(dial(io, server.bound_port(), key).session);
+  auto dialled = dial(io, server.bound_port(), key);
+  ASSERT_TRUE(dialled.session) << dialled.refused;
+  EXPECT_TRUE(call(io, *dialled.session, message::ping).reply);
+  dialled.session->close("done");
+  server.stop();
 }
 
 }  // namespace

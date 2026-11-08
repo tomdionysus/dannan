@@ -67,4 +67,9 @@ void MessageAssembler::discard(uint64_t request_id) {
   _partial.erase(found);
 }
 
+void MessageAssembler::clear() {
+  _partial.clear();
+  _partial_bytes = 0;
+}
+
 }  // namespace dannan::net

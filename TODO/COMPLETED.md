@@ -3,6 +3,12 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
+## Handoff, 2026-11-08: 0.5.1
+
+The relay's chunks numbered, credited and pipelined, every wait for a missing chunk bounded, the exact count only after an
+orderly drain (wire v1 section 6); a session's handler run from a copy; accept faults contained; the node's loops woken under
+their wait's mutex (a forced refresh had waited a heartbeat). Each commit reviewed by the Macha session. Gates in the report.
+
 ## Handoff, 2026-11-06: toward Yes
 
 Relay flow control; the journal in Macha's words with a case per line; the inventory's partial rows; Macha's health
@@ -11,6 +17,11 @@ in 3 of 4 full runs (one unexplained handshake timeout, `LevelZero.ANodeIsObserv
 TSan 624 each at that point; later gates and the two open items are in the report and under 0.5.0. Compose relay 5 of 5. Report: `2026-11-06-dannan-capabilities.md`.
 
 ## Releases
+
+- **0.5.1** (2026-11-08, `main`, tag `0.5.1`, pushed at Tom's word): see the handoff above and
+  `2026-11-06-dannan-capabilities.md`. Gate `dannan_tests` 639 on macOS plain, ASan and TSan; 641 on Debian TSan, and on Debian
+  plain and ASan one commit earlier; no sanitizer report. The final TSan runs began at a host load under 10. One item open: the
+  macOS TSan handshake timeout.
 
 - **0.5.0** (2026-11-06, `main`, tag `0.5.0`, pushed at Tom's word): the work toward Yes; see the handoff above and
   `2026-11-06-dannan-capabilities.md`. Tagged with two items open, at Tom's word: relay bulk cases under Debian TSan, and a handshake

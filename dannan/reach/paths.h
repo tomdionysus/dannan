@@ -76,13 +76,20 @@ struct RelayOfferReply {
   bool accepted = false;
   std::string why;
 };
+// A circuit's chunks are numbered in each direction from zero. Hops may move them
+// between sessions, so the far end puts them back in order.
 struct RelayData {
   uint64_t circuit = 0;
+  uint64_t sequence = 0;
   net::Bytes bytes;
 };
+// `chunks`: how many the closing end sent, so the far end finishes after the last;
+// unknown_chunks when a relay closes it, having lost an end.
+inline constexpr uint64_t unknown_chunks = ~uint64_t{0};
 struct RelayClose {
   uint64_t circuit = 0;
   std::string why;
+  uint64_t chunks = unknown_chunks;
 };
 // From the end that took chunks off the circuit, back along it: this many
 // more may be sent.
@@ -99,6 +106,9 @@ struct RelayCredit {
 inline constexpr size_t relay_chunk_bytes = 64 * 1024;
 inline constexpr uint64_t relay_window_chunks = 32;
 inline constexpr uint64_t relay_credit_batch = 8;
+// How many of a circuit's chunks one hop hands its session at once: enough that
+// each hop is not one chunk's write behind the last.
+inline constexpr uint64_t relay_pipeline_chunks = 4;
 
 net::Bytes encode(const PunchRequest&);
 net::Bytes encode(const PunchGo&);
@@ -155,6 +165,12 @@ struct PathsConfig {
   net::Credentials credentials;
   // How long a probe, a broker's or relay's call, and a handshake may take.
   std::chrono::milliseconds connect_timeout{2500};
+  // How long a close waits, at a relay or an end, for chunks that may have died with a
+  // session before it goes on as if their count were unknown.
+  std::chrono::milliseconds finish_wait{30000};
+  // Tests only: a relay drops a DATA circuit's chunk this says to, on receipt (`forwarding`
+  // false) or as it would forward it, as a session dying with it would.
+  std::function<bool(uint64_t sequence, bool forwarding)> drop_hook;
   // How long both ends keep trying a simultaneous open.
   std::chrono::milliseconds punch_window{3000};
   // Whether this node forwards circuits for others. CONTROL circuits are
@@ -195,6 +211,16 @@ struct PathStats {
   // DATA circuits refused past the budget.
   uint64_t data_circuits_refused = 0;
   uint64_t relayed_bytes = 0;
+  // Circuits this node is an end of.
+  uint64_t ends = 0;
+  // Each bound's way out, as it happens: an end's close sent with its count unknown after
+  // a failure; a relay's held close let go when its last chunks never came; an end that
+  // stopped waiting for chunks that never came.
+  uint64_t closes_unknown = 0;
+  // A relay's circuits closed because it lost a session toward one end.
+  uint64_t relay_ends_lost = 0;
+  uint64_t relay_closes_expired = 0;
+  uint64_t finishes_expired = 0;
   std::vector<CircuitStats> circuits;
 };
 
@@ -250,10 +276,18 @@ class Paths {
   // bytes never hold back the other's; a close goes last, so a circuit's tail
   // arrives. Held chunks are bounded by the window.
   struct Leg {
-    std::deque<net::Bytes> held;
+    std::deque<RelayData> held;
     uint64_t credit = 0;
-    std::optional<std::string> close;
-    bool sending = false;
+    std::optional<RelayClose> close;
+    // Messages of this direction the next session has taken and not yet written.
+    uint64_t in_flight = 0;
+    // Chunks of this direction received here, so a close goes on only after the last.
+    uint64_t received = 0;
+    std::chrono::steady_clock::time_point close_since{};
+    std::chrono::steady_clock::time_point last_received{};
+    // One thread hands this leg to the session at a time; `again` asks it to look again.
+    bool advancing = false;
+    bool again = false;
     bool lost = false;
     net::Lane carrier = net::Lane::control;
   };
@@ -277,7 +311,9 @@ class Paths {
   // can arrive for it.
   std::shared_ptr<Pump> open_end(uint64_t circuit, const identity::NodeId& relay, const identity::NodeId& far_end, net::Lane lane, int* session_end,
                                  int* family);
-  void close_end(uint64_t circuit, const std::string& why, bool tell_relay);
+  void close_end(uint64_t circuit, const std::string& why, bool tell_relay, uint64_t chunks = unknown_chunks);
+  // A finished end leaves the table, if it is still the one there.
+  void forget_end(uint64_t circuit, const Pump* pump);
   // Sends a relay's next message for one direction of `circuit`, if it has one
   // and none is on its way.
   void advance(uint64_t circuit, bool toward_b);
@@ -295,6 +331,10 @@ class Paths {
   void await_data_lane(const identity::NodeId& peer) const;
   // Runs `f` shortly, if this object has not stopped by then.
   void shortly(std::function<void(Paths&)> f);
+  void shortly_after(std::chrono::milliseconds delay, std::function<void(Paths&)> f);
+  // Looks again at a held close each time the bound could have run out, until it goes.
+  void watch_close(uint64_t circuit, bool toward_b);
+  void count(uint64_t PathStats::* counter);
   std::optional<membership::NodeRecord> known(const identity::NodeId& id) const;
 
   // Runs `f` on this object if it has not stopped.
