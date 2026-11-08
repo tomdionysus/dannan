@@ -112,7 +112,9 @@ struct ClientOptions {
   std::function<void(const membership::NodeRecord&)> alive;
   // Told of each session this client dials or adopts, as its handshake
   // established it: the peer's record (a direct observation) and the
-  // certificate it proved, if any.
+  // certificate it proved, if any. Told before the session reads, so before
+  // the client knows whether it is stopping: it may be told of a session that
+  // closes at once as "client stopped". Must not wait.
   std::function<void(const Established&)> established;
   // Tests only: consulted before every dial; a non-empty answer is the
   // reason the dial fails, as if the network refused it.

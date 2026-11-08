@@ -35,6 +35,8 @@ class MessageAssembler {
   void promote(uint64_t request_id, sched::FrameType frame);
   // Drops an incomplete message (its sender cancelled it).
   void discard(uint64_t request_id);
+  // Drops every incomplete message and the memory it holds.
+  void clear();
 
   size_t incomplete_messages() const noexcept { return _partial.size(); }
   size_t incomplete_bytes() const noexcept { return _partial_bytes; }

@@ -9,6 +9,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -59,6 +60,15 @@ class Membership {
              const contract::WallClock* wall = &contract::system_wall_clock());
   Membership(const Membership&) = delete;
   Membership& operator=(const Membership&) = delete;
+
+  // From now on what observe() learns reaches the file by flush(), and `wake` says one
+  // is wanted: observe() may be on an io thread, which must not wait on a disk. Nothing
+  // else defers: an identity reset is durable before it returns. Empty: observe() writes
+  // again. Consecutive observations combine into one write.
+  void defer_observed_writes(std::function<void()> wake);
+  // Writes what deferred observations left unwritten, if any. Waits on the disk; throws
+  // if it cannot write, leaving it still to be written.
+  void flush();
 
   // This node's record, seen now.
   NodeRecord self() const;
@@ -142,6 +152,8 @@ class Membership {
 
   // Guards nothing but the order of writes.
   SequencedFile _file{_path};
+  std::function<void()> _wake_writer DANNAN_GUARDED_BY(_mutex);
+  bool _unwritten DANNAN_GUARDED_BY(_mutex) = false;
 };
 
 }  // namespace dannan::membership

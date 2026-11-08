@@ -104,6 +104,10 @@ struct NodeConfig {
   // Refuses a dial by naming why, for tests that fail links; see
   // net::ClientOptions::dial_hook.
   std::function<std::string(const net::Endpoint&, net::Lane)> dial_hook;
+  // reach::PathsConfig's: how long a relayed circuit waits for chunks that may have died
+  // with a session (none: dead_after), and, tests only, the chunks a relay drops.
+  std::optional<std::chrono::milliseconds> relay_finish_wait;
+  std::function<bool(uint64_t sequence, bool forwarding)> relay_drop_hook;
   std::chrono::milliseconds dial_back_min_interval{10000};
   std::chrono::milliseconds reprobe_while_capable = std::chrono::hours(1);
   std::chrono::milliseconds reprobe_while_incapable = std::chrono::minutes(10);
@@ -181,6 +185,9 @@ class Node final : public Context {
   void request_stop();
   // Stops the loops, the server and the client; pending calls fail at once.
   void stop();
+  // Closes the route to `peer` on `lane`, as a failed link would; the next call makes
+  // another. Its sessions' calls fail at once.
+  void close_route(const identity::NodeId& peer, net::Lane lane, const std::string& why);
 
   uint16_t port() const noexcept { return _bound_port.load(); }
   Context& context() noexcept { return *this; }
@@ -254,7 +261,11 @@ class Node final : public Context {
   void membership_loop(std::stop_token stop);
   void telemetry_loop(std::stop_token stop);
   void connectivity_loop(std::stop_token stop);
+  void roster_loop(std::stop_token stop);
   void serve_refreshes();
+  // Wakes the loops' wait. Takes _wait_mutex, so never call it holding a lock
+  // the waiters' conditions take (_refresh_mutex).
+  void wake_loops();
   void advertise(const reach::PublicConnectivityStatus& status);
   void refresh_public_connectivity(bool probe, bool force_probe, boost::asio::any_io_executor executor,
                                    std::function<void(std::optional<reach::PublicConnectivityStatus>)> done);
@@ -312,6 +323,9 @@ class Node final : public Context {
   mutable contract::IoSharedMutex _handlers_mutex;
   std::map<net::MessageType, net::RequestHandler> _handlers DANNAN_GUARDED_BY(_handlers_mutex);
   std::atomic<bool> _started{false};
+  std::mutex _roster_mutex;
+  std::condition_variable_any _roster_wake;
+  std::atomic<bool> _roster_wanted{false};
   std::atomic<bool> _said_stopping{false};
   std::atomic<bool> _stopping{false};
   std::atomic<bool> _calls_cancelled{false};
