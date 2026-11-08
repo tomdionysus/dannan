@@ -551,6 +551,8 @@ class Paths::Pump : public std::enable_shared_from_this<Pump> {
     timer->async_wait([timer, self = shared_from_this(), bound](const boost::system::error_code& error) {
       if (error || self->_closed) return;
       if (std::chrono::steady_clock::now() - self->_last_arrival < bound) return self->bound_finishing(bound);
+      if (self->_finish_after != unknown_chunks && self->_next_in < self->_finish_after)
+        Paths::with(self->_owner, [](Paths& paths) { paths.count(&PathStats::finishes_expired); });
       self->_finish_after = unknown_chunks;
       self->close_if_finished();
     });
@@ -623,7 +625,15 @@ class Paths::Pump : public std::enable_shared_from_this<Pump> {
   }
   void write() {
     asio::async_write(_socket, asio::buffer(_out.front()), [self = shared_from_this()](const boost::system::error_code& error, size_t) {
-      if (error) return self->ended("the session's end closed: " + error.message());
+      // The session's end has gone: nothing more reaches it, but what this end sent the
+      // relay is still known exactly, so it drains as at end-of-file.
+      if (error && self->_closed) return;
+      if (error) {
+        self->_out.clear();
+        self->_draining = true;
+        if (self->_drained_why.empty()) self->_drained_why = "the session's end closed: " + error.message();
+        return self->end_if_drained();
+      }
       self->_out.pop_front();
       ++self->_owed;
       self->pay();
@@ -660,11 +670,16 @@ class Paths::Pump : public std::enable_shared_from_this<Pump> {
   void ended(const std::string& why, bool exact = false) {
     if (_ended) return;
     _ended = true;
+    // Closed here already, by a close or a finish: no failure to count.
+    const bool failed = !exact && !_closed;
     _closed = true;
     boost::system::error_code ignored;
     _socket.close(ignored);
     const auto chunks = exact ? _taken.load() : unknown_chunks;
-    Paths::with(_owner, [&](Paths& paths) { paths.close_end(_circuit, why, true, chunks); });
+    Paths::with(_owner, [&](Paths& paths) {
+      if (failed) paths.count(&PathStats::closes_unknown);
+      paths.close_end(_circuit, why, true, chunks);
+    });
   }
 
   asio::strand<asio::any_io_executor> _strand;
@@ -887,6 +902,11 @@ std::shared_ptr<Paths::Pump> Paths::open_end(uint64_t circuit, const identity::N
                                              int* family) {
   int pair[2] = {-1, -1};
   if (::socketpair(AF_UNIX, SOCK_STREAM, 0, pair) != 0) throw std::runtime_error("socketpair failed");
+#ifdef SO_NOSIGPIPE
+  // As a session's: the session at the other end going away must never end the process.
+  const int on = 1;
+  for (const int fd : pair) ::setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof(on));
+#endif
   const auto carrier = carrier_to(relay, lane);
   auto pump = std::make_shared<Pump>(_io, _owner, circuit, relay, far_end, lane, carrier, pair[1]);
   {
@@ -931,6 +951,24 @@ void Paths::shortly_after(std::chrono::milliseconds delay, std::function<void(Pa
   timer->async_wait([timer, owner = _owner, f = std::move(f)](const boost::system::error_code& error) {
     if (!error) with(owner, f);
   });
+}
+
+void Paths::watch_close(uint64_t circuit, bool toward_b) {
+  shortly_after(_config.finish_wait, [circuit, toward_b](Paths& paths) {
+    paths.advance(circuit, toward_b);
+    bool held = false;
+    {
+      contract::Lock lock(paths._mutex);
+      if (const auto found = paths._circuits.find(circuit); found != paths._circuits.end())
+        held = (toward_b ? found->second.to_b : found->second.to_a).close.has_value();
+    }
+    if (held) paths.watch_close(circuit, toward_b);
+  });
+}
+
+void Paths::count(uint64_t PathStats::* counter) {
+  contract::Lock lock(_mutex);
+  ++(_stats.*counter);
 }
 
 void Paths::shortly(std::function<void(Paths&)> f) {
@@ -1140,9 +1178,11 @@ net::Handled Paths::relay_data(const NodeRecord& from, const net::Message& reque
         c.bytes += data.bytes.size();
         _stats.relayed_bytes += data.bytes.size();
         broke_window = leg.held.size() >= relay_window_chunks;
-        if (!broke_window && !leg.lost) {
+        const bool dropped = _config.drop_hook && c.lane == net::Lane::data && _config.drop_hook(data.sequence, false);
+        if (!broke_window && !leg.lost && !dropped) {
           leg.held.push_back(std::move(data));
           ++leg.received;
+          leg.last_received = std::chrono::steady_clock::now();
         }
       }
     }
@@ -1208,6 +1248,10 @@ void Paths::advance(uint64_t circuit, bool toward_b) {
       } else if (leg.credit) {
         credit = std::exchange(leg.credit, 0);
         message = {m::relay_credit, encode(RelayCredit{circuit, credit}), {}};
+      } else if (!leg.held.empty() && _config.drop_hook && c.lane == net::Lane::data && _config.drop_hook(leg.held.front().sequence, true)) {
+        leg.held.pop_front();
+        idle = true;
+        leg.again = true;
       } else if (!leg.held.empty()) {
         lane = leg.carrier;
         chunk = std::move(leg.held.front());
@@ -1215,9 +1259,11 @@ void Paths::advance(uint64_t circuit, bool toward_b) {
         frame = c.lane == net::Lane::data ? sched::FrameType::loader : sched::FrameType::control;
         message = {m::relay_data, encode(*chunk), {}};
       } else if (leg.close && leg.close->chunks != unknown_chunks && leg.received < leg.close->chunks &&
-                 std::chrono::steady_clock::now() - leg.close_since >= _config.finish_wait) {
-        // Its last chunks did not come within the bound: they died with a session.
+                 std::chrono::steady_clock::now() - std::max(leg.close_since, leg.last_received) >= _config.finish_wait) {
+        // Nothing of its last chunks for the bound, from the close or the last that came:
+        // they died with a session. A slow leg that is still moving is not cut.
         leg.close->chunks = unknown_chunks;
+        ++_stats.relay_closes_expired;
         idle = false;
         close = std::move(leg.close);
         leg.close.reset();
@@ -1356,10 +1402,8 @@ net::Handled Paths::relay_close(const NodeRecord& from, const net::Message& requ
   if (ours) close_end(close.circuit, close.why, false, close.chunks);
   if (toward_b) {
     advance(close.circuit, *toward_b);
-    // Looked at again when the bound runs out, in case its last chunks never come.
-    const auto circuit = close.circuit;
-    const auto direction = *toward_b;
-    shortly_after(_config.finish_wait, [circuit, direction](Paths& paths) { paths.advance(circuit, direction); });
+    // Looked at again when the bound could run out, in case its last chunks never come.
+    watch_close(close.circuit, *toward_b);
   }
   return net::Handled::processed();
 }

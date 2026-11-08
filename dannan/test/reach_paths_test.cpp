@@ -208,7 +208,7 @@ struct Cluster {
   bool forced_a, forced_b;
 
   Cluster(bool relay, std::optional<PathClass> a_class, std::optional<PathClass> b_class, std::chrono::milliseconds upgrade_every = std::chrono::minutes(1),
-          size_t relay_data_circuits = 32, std::chrono::milliseconds dead_after = 3s)
+          size_t relay_data_circuits = 32, std::chrono::milliseconds dead_after = 3s, const std::function<void(NodeConfig&)>& tune = {})
       : forced_a(a_class.has_value()), forced_b(b_class.has_value()) {
     std::ofstream(dir.path() / "k") << "level zero";
     key = identity::load_cluster_key(dir.path() / "k");
@@ -216,6 +216,7 @@ struct Cluster {
     hub_config.relay = relay;
     hub_config.relay_data_circuits = relay_data_circuits;
     hub_config.dead_after = dead_after;
+    if (tune) tune(hub_config);
     hub = std::make_unique<Node>(io.context, hub_config);
     hub->start();
     const std::vector<net::Endpoint> seed{{"127.0.0.1", hub->port()}};
@@ -227,6 +228,10 @@ struct Cluster {
     b_config.path_class = b_class;
     b_config.path_upgrade_every = upgrade_every;
     b_config.dead_after = dead_after;
+    if (tune) {
+      tune(a_config);
+      tune(b_config);
+    }
     a = std::make_unique<Node>(io.context, a_config);
     b = std::make_unique<Node>(io.context, b_config);
     for (auto* node : {a.get(), b.get()}) {
@@ -463,6 +468,8 @@ TEST(LevelZero, AChunkLostWithTheSendersSessionEndsTheCircuitWithinTheBound) {
   (void)transfer.get();
   EXPECT_TRUE(eventually([&] { return data_circuits(*cluster.hub) == 0; }, 20s));
   EXPECT_TRUE(eventually([&] { return cluster.b->diagnostics().paths.ends <= ends_before; }, 20s));
+  // The way (a) is for: A's failed send closed with its count unknown.
+  EXPECT_GT(cluster.a->diagnostics().paths.closes_unknown, 0u);
 }
 
 // The relay's chunks to the far end and its close go by different sessions, and the one
@@ -481,6 +488,76 @@ TEST(LevelZero, AChunkLostOnTheWayToTheFarEndEndsItWithinTheBound) {
   (void)transfer.get();
   EXPECT_TRUE(eventually([&] { return data_circuits(*cluster.hub) == 0; }, 20s));
   EXPECT_TRUE(eventually([&] { return cluster.b->diagnostics().paths.ends <= ends_before; }, 20s));
+  EXPECT_GT(cluster.a->diagnostics().paths.closes_unknown + cluster.b->diagnostics().paths.closes_unknown, 0u);
+}
+
+namespace {
+// A circuit A to B over the relay with one chunk lost there, `forwarding` or on receipt:
+// the first the relay sees once the test arms it, after the session is up. A's end then
+// closes in order, its count exact, and the bounds are what end it.
+std::string counters(Cluster& cluster) {
+  std::string out;
+  for (auto* node : {cluster.a.get(), cluster.hub.get(), cluster.b.get()}) {
+    const auto paths = node->diagnostics().paths;
+    out += "unknown=" + std::to_string(paths.closes_unknown) + " expired=" + std::to_string(paths.relay_closes_expired) +
+           " finishes=" + std::to_string(paths.finishes_expired) + " ends=" + std::to_string(paths.ends) + "; ";
+  }
+  return out;
+}
+
+struct LostChunk {
+  std::shared_ptr<std::atomic<bool>> armed = std::make_shared<std::atomic<bool>>(false);
+  Cluster cluster;
+  explicit LostChunk(bool forwarding)
+      : cluster(true, PathClass::relay_only, PathClass::relay_only, std::chrono::minutes(1), 32, 3s, [this, forwarding](NodeConfig& c) {
+          c.relay_finish_wait = 300ms;
+          if (c.relay) c.relay_drop_hook = [armed = armed, forwarding](uint64_t, bool at) { return at == forwarding && armed->exchange(false); };
+        }) {}
+};
+}  // namespace
+
+// The relay holds a counted close whose chunk never came, and after the bound lets it go
+// as unknown: the far end closes and the circuit is gone.
+TEST(LevelZero, ARelayLetsACountedCloseGoWhenItsChunksNeverCome) {
+  LostChunk lost(false);
+  auto& cluster = lost.cluster;
+  ASSERT_TRUE(eventually([&] { return cluster.ready(); }));
+  const auto peer = cluster.record(*cluster.b, *cluster.a);
+  ASSERT_TRUE(peer.has_value());
+  const auto ends_before = cluster.b->diagnostics().paths.ends;
+  auto transfer = std::async(std::launch::async, [&] {
+    return cluster.a->context().routes().call_and_wait(*peer, echo_data, net::Bytes(8 * 1024 * 1024, 7), sched::FrameType::foreground, 30s);
+  });
+  ASSERT_TRUE(eventually([&] { return data_circuits(*cluster.hub) > 0 && cluster.hub->diagnostics().paths.relayed_bytes > 256 * 1024; }));
+  *lost.armed = true;
+  ASSERT_TRUE(eventually([&] { return !lost.armed->load(); }));
+  // A closes its relayed session: its end drains in order and sends an exact count.
+  cluster.a->close_route(cluster.b->context().identity().id(), net::Lane::data, "closed by the test");
+  (void)transfer.get();
+  EXPECT_TRUE(eventually([&] { return cluster.hub->diagnostics().paths.relay_closes_expired == 1; }, 10s)) << counters(cluster);
+  EXPECT_TRUE(eventually([&] { return data_circuits(*cluster.hub) == 0; }, 10s));
+  EXPECT_TRUE(eventually([&] { return cluster.b->diagnostics().paths.ends <= ends_before; }, 10s));
+}
+
+// The relay forwards a counted close but a chunk toward the far end is lost: the far end
+// stops waiting for it after the bound, and leaves.
+TEST(LevelZero, AFarEndStopsWaitingForAChunkThatNeverComes) {
+  LostChunk lost(true);
+  auto& cluster = lost.cluster;
+  ASSERT_TRUE(eventually([&] { return cluster.ready(); }));
+  const auto peer = cluster.record(*cluster.b, *cluster.a);
+  ASSERT_TRUE(peer.has_value());
+  const auto ends_before = cluster.b->diagnostics().paths.ends;
+  auto transfer = std::async(std::launch::async, [&] {
+    return cluster.a->context().routes().call_and_wait(*peer, echo_data, net::Bytes(8 * 1024 * 1024, 7), sched::FrameType::foreground, 30s);
+  });
+  ASSERT_TRUE(eventually([&] { return data_circuits(*cluster.hub) > 0 && cluster.hub->diagnostics().paths.relayed_bytes > 256 * 1024; }));
+  *lost.armed = true;
+  ASSERT_TRUE(eventually([&] { return !lost.armed->load(); }));
+  cluster.a->close_route(cluster.b->context().identity().id(), net::Lane::data, "closed by the test");
+  (void)transfer.get();
+  EXPECT_TRUE(eventually([&] { return cluster.b->diagnostics().paths.finishes_expired == 1; }, 10s)) << counters(cluster);
+  EXPECT_TRUE(eventually([&] { return cluster.b->diagnostics().paths.ends <= ends_before; }, 10s));
 }
 
 }  // namespace

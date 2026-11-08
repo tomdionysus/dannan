@@ -565,7 +565,8 @@ void Node::start() {
   paths.upgrade_every = _config.path_upgrade_every;
   paths.max_data_circuits = _config.relay_data_circuits;
   // Chunks that have not come within the liveness window are not coming.
-  paths.finish_wait = _config.dead_after;
+  paths.finish_wait = _config.relay_finish_wait.value_or(_config.dead_after);
+  paths.drop_hook = _config.relay_drop_hook;
   _paths = std::make_unique<reach::Paths>(
       _io, paths, *_client, [this] { return _members.self(); }, [this] { return _members.active(); },
       [this](const NodeRecord& peer, net::MessageType type, net::Bytes payload, std::chrono::milliseconds deadline) {
