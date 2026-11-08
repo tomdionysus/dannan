@@ -165,6 +165,9 @@ struct PathsConfig {
   net::Credentials credentials;
   // How long a probe, a broker's or relay's call, and a handshake may take.
   std::chrono::milliseconds connect_timeout{2500};
+  // How long a close waits, at a relay or an end, for chunks that may have died with a
+  // session before it goes on as if their count were unknown.
+  std::chrono::milliseconds finish_wait{30000};
   // How long both ends keep trying a simultaneous open.
   std::chrono::milliseconds punch_window{3000};
   // Whether this node forwards circuits for others. CONTROL circuits are
@@ -205,6 +208,8 @@ struct PathStats {
   // DATA circuits refused past the budget.
   uint64_t data_circuits_refused = 0;
   uint64_t relayed_bytes = 0;
+  // Circuits this node is an end of.
+  uint64_t ends = 0;
   std::vector<CircuitStats> circuits;
 };
 
@@ -267,6 +272,7 @@ class Paths {
     uint64_t in_flight = 0;
     // Chunks of this direction received here, so a close goes on only after the last.
     uint64_t received = 0;
+    std::chrono::steady_clock::time_point close_since{};
     // One thread hands this leg to the session at a time; `again` asks it to look again.
     bool advancing = false;
     bool again = false;
@@ -313,6 +319,7 @@ class Paths {
   void await_data_lane(const identity::NodeId& peer) const;
   // Runs `f` shortly, if this object has not stopped by then.
   void shortly(std::function<void(Paths&)> f);
+  void shortly_after(std::chrono::milliseconds delay, std::function<void(Paths&)> f);
   std::optional<membership::NodeRecord> known(const identity::NodeId& id) const;
 
   // Runs `f` on this object if it has not stopped.

@@ -181,6 +181,9 @@ class Node final : public Context {
   void request_stop();
   // Stops the loops, the server and the client; pending calls fail at once.
   void stop();
+  // Closes the route to `peer` on `lane`, as a failed link would; the next call makes
+  // another. Its sessions' calls fail at once.
+  void close_route(const identity::NodeId& peer, net::Lane lane, const std::string& why);
 
   uint16_t port() const noexcept { return _bound_port.load(); }
   Context& context() noexcept { return *this; }

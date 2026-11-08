@@ -437,5 +437,51 @@ TEST(LevelZero, WithoutABrokerOrARelayThereIsNoPath) {
   EXPECT_NE(outcome.failure.find("relay"), std::string::npos) << outcome.failure;
 }
 
+namespace {
+size_t data_circuits(Node& relay) {
+  size_t out = 0;
+  for (const auto& circuit : relay.diagnostics().paths.circuits)
+    if (circuit.lane == net::Lane::data) ++out;
+  return out;
+}
+}  // namespace
+
+// A chunk the sender's session took and never wrote dies with that session: the count
+// on the close cannot be honoured, and nothing waits for it. The relay lets the circuit
+// go and the far end closes, within the bound (Macha's review of 7e35338).
+TEST(LevelZero, AChunkLostWithTheSendersSessionEndsTheCircuitWithinTheBound) {
+  Cluster cluster(true, PathClass::relay_only, PathClass::relay_only);
+  ASSERT_TRUE(eventually([&] { return cluster.ready(); }));
+  const auto peer = cluster.record(*cluster.b, *cluster.a);
+  ASSERT_TRUE(peer.has_value());
+  const auto ends_before = cluster.b->diagnostics().paths.ends;
+  auto transfer = std::async(std::launch::async, [&] {
+    return cluster.a->context().routes().call_and_wait(*peer, echo_data, net::Bytes(32 * 1024 * 1024, 7), sched::FrameType::foreground, 60s);
+  });
+  ASSERT_TRUE(eventually([&] { return data_circuits(*cluster.hub) > 0 && cluster.hub->diagnostics().paths.relayed_bytes > 4 * 1024 * 1024; }));
+  cluster.a->close_route(cluster.hub->context().identity().id(), net::Lane::data, "severed by the test");
+  (void)transfer.get();
+  EXPECT_TRUE(eventually([&] { return data_circuits(*cluster.hub) == 0; }, 20s));
+  EXPECT_TRUE(eventually([&] { return cluster.b->diagnostics().paths.ends <= ends_before; }, 20s));
+}
+
+// The relay's chunks to the far end and its close go by different sessions, and the one
+// with chunks dies: the far end stops waiting for them within the bound and leaves.
+TEST(LevelZero, AChunkLostOnTheWayToTheFarEndEndsItWithinTheBound) {
+  Cluster cluster(true, PathClass::relay_only, PathClass::relay_only);
+  ASSERT_TRUE(eventually([&] { return cluster.ready(); }));
+  const auto peer = cluster.record(*cluster.b, *cluster.a);
+  ASSERT_TRUE(peer.has_value());
+  const auto ends_before = cluster.b->diagnostics().paths.ends;
+  auto transfer = std::async(std::launch::async, [&] {
+    return cluster.a->context().routes().call_and_wait(*peer, echo_data, net::Bytes(32 * 1024 * 1024, 7), sched::FrameType::foreground, 60s);
+  });
+  ASSERT_TRUE(eventually([&] { return data_circuits(*cluster.hub) > 0 && cluster.hub->diagnostics().paths.relayed_bytes > 4 * 1024 * 1024; }));
+  cluster.hub->close_route(cluster.b->context().identity().id(), net::Lane::data, "severed by the test");
+  (void)transfer.get();
+  EXPECT_TRUE(eventually([&] { return data_circuits(*cluster.hub) == 0; }, 20s));
+  EXPECT_TRUE(eventually([&] { return cluster.b->diagnostics().paths.ends <= ends_before; }, 20s));
+}
+
 }  // namespace
 }  // namespace dannan::reach
