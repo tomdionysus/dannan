@@ -168,6 +168,9 @@ struct PathsConfig {
   // How long a close waits, at a relay or an end, for chunks that may have died with a
   // session before it goes on as if their count were unknown.
   std::chrono::milliseconds finish_wait{30000};
+  // Tests only: a relay drops a DATA circuit's chunk this says to, on receipt (`forwarding`
+  // false) or as it would forward it, as a session dying with it would.
+  std::function<bool(uint64_t sequence, bool forwarding)> drop_hook;
   // How long both ends keep trying a simultaneous open.
   std::chrono::milliseconds punch_window{3000};
   // Whether this node forwards circuits for others. CONTROL circuits are
@@ -210,6 +213,12 @@ struct PathStats {
   uint64_t relayed_bytes = 0;
   // Circuits this node is an end of.
   uint64_t ends = 0;
+  // Each bound's way out, as it happens: an end's close sent with its count unknown after
+  // a failure; a relay's held close let go when its last chunks never came; an end that
+  // stopped waiting for chunks that never came.
+  uint64_t closes_unknown = 0;
+  uint64_t relay_closes_expired = 0;
+  uint64_t finishes_expired = 0;
   std::vector<CircuitStats> circuits;
 };
 
@@ -273,6 +282,7 @@ class Paths {
     // Chunks of this direction received here, so a close goes on only after the last.
     uint64_t received = 0;
     std::chrono::steady_clock::time_point close_since{};
+    std::chrono::steady_clock::time_point last_received{};
     // One thread hands this leg to the session at a time; `again` asks it to look again.
     bool advancing = false;
     bool again = false;
@@ -320,6 +330,9 @@ class Paths {
   // Runs `f` shortly, if this object has not stopped by then.
   void shortly(std::function<void(Paths&)> f);
   void shortly_after(std::chrono::milliseconds delay, std::function<void(Paths&)> f);
+  // Looks again at a held close each time the bound could have run out, until it goes.
+  void watch_close(uint64_t circuit, bool toward_b);
+  void count(uint64_t PathStats::* counter);
   std::optional<membership::NodeRecord> known(const identity::NodeId& id) const;
 
   // Runs `f` on this object if it has not stopped.

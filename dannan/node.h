@@ -104,6 +104,10 @@ struct NodeConfig {
   // Refuses a dial by naming why, for tests that fail links; see
   // net::ClientOptions::dial_hook.
   std::function<std::string(const net::Endpoint&, net::Lane)> dial_hook;
+  // reach::PathsConfig's: how long a relayed circuit waits for chunks that may have died
+  // with a session (none: dead_after), and, tests only, the chunks a relay drops.
+  std::optional<std::chrono::milliseconds> relay_finish_wait;
+  std::function<bool(uint64_t sequence, bool forwarding)> relay_drop_hook;
   std::chrono::milliseconds dial_back_min_interval{10000};
   std::chrono::milliseconds reprobe_while_capable = std::chrono::hours(1);
   std::chrono::milliseconds reprobe_while_incapable = std::chrono::minutes(10);
