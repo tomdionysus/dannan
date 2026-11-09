@@ -3,6 +3,13 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
+## Handoff, 2026-11-09: 0.5.2
+
+From the arm64 run at 0.5.1: a client stop could be held up to a call's deadline by a session retired as it stopped (fixed,
+with an operation guard so a throw cannot hold stop); a test race stepping time before a write's progress was recorded; a case that
+cannot run as root. The 0.5.1 macOS plain line corrected (a stale binary). Each commit reviewed by the Macha session. Gates in the
+report, arm64 included.
+
 ## Handoff, 2026-11-08: 0.5.1
 
 The relay's chunks numbered, credited and pipelined, every wait for a missing chunk bounded, the exact count only after an
@@ -18,9 +25,13 @@ TSan 624 each at that point; later gates and the two open items are in the repor
 
 ## Releases
 
+- **0.5.2** (2026-11-09, `main`, tag `0.5.2`, pushed at Tom's word): see the handoff above. Gate `dannan_tests` 639 on macOS
+  plain, ASan and TSan; 640 on Debian plain, ASan and TSan and on arm64 plain and ASan (one case skipped as root); compose 3 of 3;
+  no sanitizer report. The port freezes on this tag.
+
 - **0.5.1** (2026-11-08, `main`, tag `0.5.1`, pushed at Tom's word): see the handoff above and
-  `2026-11-06-dannan-capabilities.md`. Gate `dannan_tests` 639 on macOS plain, ASan and TSan; 641 on Debian TSan, and on Debian
-  plain and ASan one commit earlier; no sanitizer report. The final TSan runs began at a host load under 10. One item open: the
+  `2026-11-06-dannan-capabilities.md`. Gate `dannan_tests` 639 on macOS ASan and TSan (the macOS plain 639 was a stale binary;
+  see 0.5.2); 641 on Debian TSan, and on Debian plain and ASan one commit earlier; no sanitizer report. The final TSan runs began at a host load under 10. One item open: the
   macOS TSan handshake timeout.
 
 - **0.5.0** (2026-11-06, `main`, tag `0.5.0`, pushed at Tom's word): the work toward Yes; see the handoff above and
