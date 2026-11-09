@@ -113,6 +113,8 @@ struct Node {
   // Whether the sessions peers open become this client's routes too.
   std::atomic<bool> adopt_inbound{true};
   membership::NodeRecord self;
+  // Both ends' sessions count here, the client's and the server's.
+  std::shared_ptr<TransportTraffic> traffic = std::make_shared<TransportTraffic>();
   std::unique_ptr<Server> server;
   std::unique_ptr<Client> client;
 
@@ -121,7 +123,6 @@ struct Node {
     self.host = "127.0.0.1";
     self.capabilities = capabilities;
     const auto key = cluster_key();
-    auto traffic = std::make_shared<TransportTraffic>();
     ServerOptions server_options;
     server_options.credentials = key;
     server_options.local = [this] { return self; };
@@ -508,8 +509,18 @@ TEST(Client, TheNoProgressDeadlineFollowsTheInjectedTime) {
   tuning.control_no_progress = 1h;
   Node a(io, tuning), b(io);
   ASSERT_TRUE(call(a, b.self).reply);
+  // The write's own progress is recorded when it completes, which can be after
+  // b has the request: step only once a's count of it has risen. The first
+  // call's write may itself be counted late, so that is waited for first. The
+  // count is a's whole control class, and nothing else of a's writes on it
+  // here: its probes follow the stepped time, which stands still until the
+  // stepper moves it, and nothing retires.
+  const auto& out = a.traffic->out_bytes[static_cast<size_t>(FrameType::control)];
+  ASSERT_TRUE(eventually([&] { return out.load(std::memory_order_acquire) > 0; }));
+  const auto sent = out.load(std::memory_order_acquire);
   std::thread stepper([&] {
     b.gate.wait_for_entries(1);
+    eventually([&] { return out.load(std::memory_order_acquire) > sent; });
     time.advance(1h);
   });
   const auto stalled = call(a, b.self, slow);
