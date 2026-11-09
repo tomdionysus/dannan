@@ -671,6 +671,28 @@ void Client::place(const std::shared_ptr<Session>& session, Call call, const Tar
   watchdog->arm();
 }
 
+namespace {
+
+// Ends an operation however its holder leaves, a throw included: one left open
+// would hold stop() for ever. Armed after the count is taken.
+class EndsOperation {
+ public:
+  EndsOperation() = default;
+  explicit EndsOperation(std::function<void()> end) : _end(std::move(end)) {}
+  EndsOperation(const EndsOperation&) = delete;
+  EndsOperation& operator=(const EndsOperation&) = delete;
+  ~EndsOperation() {
+    if (_end) _end();
+  }
+  void arm(std::function<void()> end) { _end = std::move(end); }
+  void release() { _end = {}; }
+
+ private:
+  std::function<void()> _end;
+};
+
+}  // namespace
+
 void Client::dial(Target target, Lane lane, std::function<void(std::shared_ptr<Session>, std::string)> finished) {
   auto attempt = std::make_shared<Dialling>(_io);
   bool stopped = false;
@@ -685,26 +707,28 @@ void Client::dial(Target target, Lane lane, std::function<void(std::shared_ptr<S
   if (stopped) return finished(nullptr, "client stopped");
   const auto address = address_of(target.endpoint);
   if (_options.dial_hook) {
+    EndsOperation held([this] { end_operation(); });
     if (const auto refused = _options.dial_hook(target.endpoint, lane); !refused.empty()) {
       {
         contract::Lock lock(_mutex);
         _dialling.erase(attempt);
       }
-      finished(nullptr, "dial to " + address + " failed: " + refused);
-      return end_operation();
+      return finished(nullptr, "dial to " + address + " failed: " + refused);
     }
+    // Going on: complete() ends it.
+    held.release();
   }
   // Called once, on the strand.
   auto complete = [this, attempt, finished = std::move(finished)](std::shared_ptr<Session> session, std::string why) {
     if (attempt->finished) return;
     attempt->finished = true;
+    const EndsOperation held([this] { end_operation(); });
     attempt->timer.cancel();
     {
       contract::Lock lock(_mutex);
       _dialling.erase(attempt);
     }
     finished(std::move(session), std::move(why));
-    end_operation();
   };
   auto failed = [attempt, complete, address](const std::string& stage, const std::string& error) {
     attempt->abort();
@@ -828,9 +852,15 @@ void Client::admit(const std::shared_ptr<Session>& session) {
   std::vector<Call> waiting;
   std::shared_ptr<asio::steady_timer> timer;
   std::shared_ptr<Session> route;
+  // Declared before the lock, so it ends the operation after the lock is let go.
+  EndsOperation held;
   {
     contract::Lock lock(_mutex);
     if (_stopped) return;
+    // Held across the table change and its retirements, so stop() waits for
+    // the losers this admission takes off the tables.
+    ++_operations;
+    held.arm([this] { end_operation(); });
     if (peer.port) _endpoint_ids[{peer.host, peer.port}] = peer.id;
     _peer_capabilities[peer.id] = peer.capabilities;
     auto& slot = _inbound[key];
@@ -866,16 +896,33 @@ void Client::admit(const std::shared_ptr<Session>& session) {
   for (auto& call : waiting) place(route, std::move(call), Target{key.first, {peer.host, peer.port}});
 }
 
+// Every caller holds an operation from its table change to here, so a stop()
+// that began between the two waits for the closes below.
 void Client::retire_sessions(Retire& retire) {
   if (retire.empty()) return;
+  bool stopped;
   {
     // Remembered until they close: a retiring session may still hold calls
-    // that stop() must fail.
+    // that stop() must fail. A loser taken off the tables before stop() and
+    // reaching here after it is in neither, so it is closed here instead, and
+    // waited for as stop() waits for its own.
     contract::Lock lock(_mutex);
-    std::erase_if(_retiring, [](const std::weak_ptr<Session>& weak) { return weak.expired(); });
-    for (const auto& session : retire) _retiring.push_back(session);
+    stopped = _stopped;
+    if (stopped) {
+      _operations += retire.size();
+    } else {
+      std::erase_if(_retiring, [](const std::weak_ptr<Session>& weak) { return weak.expired(); });
+      for (const auto& session : retire) _retiring.push_back(session);
+    }
   }
-  for (auto& loser : retire) loser->retire();
+  for (auto& loser : retire) {
+    if (stopped) {
+      loser->close("client stopped");
+      loser->after_queued([this] { end_operation(); });
+    } else {
+      loser->retire();
+    }
+  }
 }
 
 void Client::reconcile_locked(const RouteKey& key, Retire& retire) {
@@ -962,6 +1009,7 @@ void Client::adopt(int descriptor, int family, const identity::NodeId& peer, Lan
   auto finish = [this, attempt, done = std::move(done)](std::string why) {
     if (attempt->finished) return;
     attempt->finished = true;
+    const EndsOperation held([this] { end_operation(); });
     attempt->timer.cancel();
     {
       contract::Lock lock(_mutex);
@@ -969,7 +1017,6 @@ void Client::adopt(int descriptor, int family, const identity::NodeId& peer, Lan
       if (why.empty()) ++_stats.paths_adopted;
     }
     if (done) asio::post(_io, [done, why = std::move(why)] { done(why); });
-    end_operation();
   };
   asio::dispatch(attempt->strand, [this, attempt, finish, descriptor, family, peer, lane, role, purpose, token] {
     boost::system::error_code error;

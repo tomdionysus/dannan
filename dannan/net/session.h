@@ -32,14 +32,16 @@ namespace dannan::net {
 
 // The node's cluster traffic in and out by frame class: every sealed
 // fragment with its overhead, handshakes not counted. One instance per node,
-// shared by every session it has, dialled or accepted.
+// shared by every session it has, dialled or accepted. A count is released
+// after what the write did is recorded, so an acquire read that sees it rise
+// sees that too.
 struct TransportTraffic {
   static constexpr size_t classes = 6;  // indexed by the frame type's wire value
   std::array<std::atomic<uint64_t>, classes> in_bytes{};
   std::array<std::atomic<uint64_t>, classes> out_bytes{};
   void note(bool outbound, sched::FrameType frame, uint64_t bytes) noexcept {
     const auto index = static_cast<size_t>(frame);
-    if (index < classes) (outbound ? out_bytes : in_bytes)[index].fetch_add(bytes, std::memory_order_relaxed);
+    if (index < classes) (outbound ? out_bytes : in_bytes)[index].fetch_add(bytes, std::memory_order_release);
   }
 };
 

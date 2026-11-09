@@ -334,7 +334,6 @@ void Session::write_next() {
   asio::async_write(_socket, asio::buffer(_wire),
                     asio::bind_executor(_strand, [self = shared_from_this(), frame, request_id](const boost::system::error_code& error, size_t bytes) {
                       if (error) return self->fail(error.message(), true);
-                      if (self->_options.traffic) self->_options.traffic->note(true, frame, bytes);
                       {
                         contract::Lock lock(self->_mutex);
                         self->_writing = false;
@@ -346,6 +345,9 @@ void Session::write_next() {
                             found->second.last_progress = self->_options.time->now();
                         }
                       }
+                      // After the progress, released: one who sees the count rise may rely
+                      // on the write's progress already being recorded.
+                      if (self->_options.traffic) self->_options.traffic->note(true, frame, bytes);
                       self->settle();
                     }));
 }

@@ -46,10 +46,11 @@ built by the Macha session, once Dannan and Dagda have reported, with both froze
 review; the review by library agents after a clear is gone. Proving it: "We will convert macnessa and inverbeg store backends
 and install there to test, prove and iterate." Macha stays frozen at `9a08846` until the port starts. Torrent moves after all
 of the port, so its rows stay through the first cutover. Tag 0.5.0 cut and pushed at Tom's word, with two items open. Tag 0.5.1
-cut and pushed at Tom's word on 2026-11-08, with one item open, the macOS TSan handshake timeout (the report's Gates section).
+cut and pushed at Tom's word on 2026-11-08. Tag 0.5.2 cut and pushed at Tom's word on 2026-11-09, clean on every gate
+including arm64; the port freezes on it. One item open: the macOS TSan handshake timeout (the report's Gates section).
 
-**Next, for a session starting here:** the arm64 rerun on inverbeg at 0.5.1 (plain and ASan, low priority, GoogleTest in
-`~/dannan-arm64-deps/prefix`); then fix what the Macha session or the port finds.
+**Next, for a session starting here:** fix what the Macha session or the port finds. arm64 runs on inverbeg at nice 19 with
+GoogleTest in `~/dannan-arm64-deps/prefix`; the tests run there as root.
 
 
 **The goal (Tom, relayed by the Macha session, 2026-11-06, in his words: "development will continue
