@@ -11,21 +11,33 @@ port. That is not a claim that nothing is left. Today's tests found real defects
 called proven (listed below), so expect the port to find more. Fix them as Tom ruled: the port pauses and I
 fix them.
 
-## Gates, at tag 0.5.1
+## Gates, at tag 0.5.2
 
-Each gate ran once (Tom, 2026-11-06: "Test once and be done with it."), and these are the last results. The final TSan runs
-waited for the host to go quiet (load average under 10 at the start), at Tom's word, after a run at load 46 failed on time limits.
-Every commit was reviewed by the Macha session.
+Each gate ran once (Tom, 2026-11-06: "Test once and be done with it."), all at the tag's code, with the host quiet (load average
+under 10 at the start). Every commit was reviewed by the Macha session. The case that needs a non-root user skips as root, so
+Debian (a root container) and arm64 count one fewer.
 
 | Gate | Result |
 |---|---|
-| macOS, plain | 639 of 639, at the tag's code |
-| macOS, ASan with UBSan | 639 of 639, no reports, at the tag's code |
-| macOS, TSan | 639 of 639, no warnings, at the tag's code |
-| Debian 13, g++ 14, plain and ASan with UBSan | 641 of 641 each, no reports, before the last commit (the roster wake, 3 lines) |
-| Debian 13, TSan | 641 of 641, no warnings, at the tag's code |
-| Compose bed, real NATs | 3 of 3, relay 136 MB/s, at `8b1c46e` (before a counter, a test assertion and the wake fixes) |
-| arm64 (inverbeg) | Run after the tag, at Tom's word; results follow separately |
+| macOS, plain | 639 of 639 |
+| macOS, ASan with UBSan | 639 of 639, no reports |
+| macOS, TSan | 639 of 639, no warnings |
+| Debian 13, g++ 14, plain, ASan with UBSan, TSan | 640 each, no reports, one skipped as root |
+| Compose bed, real NATs | 3 of 3; 418.8, 225.4 and 151.5 MB/s |
+| arm64 (inverbeg, Pi 5, g++ 14), plain and ASan with UBSan | 640 each, no reports, one skipped as root; run at nice 19 with Macha up |
+
+**Found by arm64 at 0.5.1 and fixed in 0.5.2: a stop held by a retiring session.** When two sessions to one peer settled into
+one, the loser left the route tables under the client's lock and joined its retiring list only after the lock was let go. A
+`Client::stop` between the two found it in neither, so a call already on it waited out its deadline (30 s in
+`Node.CancellingOutboundCallsReleasesAWaitingWorker`). A loser that reaches retirement after stop is now closed, and an
+admission holds an operation across its table change, ended by a guard, so stop waits for those closes.
+
+**Also from arm64 at 0.5.1, test-side:** `Client.TheNoProgressDeadlineFollowsTheInjectedTime` stepped time before the call's
+own write was recorded as progress (a write's progress is now stamped before its bytes are counted, and the case waits on the
+count); and `Supervisor.ADirectoryThatCannotBeListedIsWarnedOf` cannot lock a directory against root, so it skips as root.
+
+**A correction to 0.5.1's record:** its macOS plain line came from a test binary not rebuilt after the last two commits. The
+tag's code passed in five fresh builds (macOS ASan and TSan, Debian plain, ASan and TSan); the macOS plain gate now builds first.
 
 **Closed since 0.5.0: relay bulk transfers under Debian TSan.** The relay now numbers chunks (pipelined, reordered at the far
 end), paces by credit, carries DATA circuits on the DATA lane, and bounds every wait for a missing chunk; wire v1 section 6.
@@ -89,6 +101,7 @@ Each was a difference from Macha, or a defect, found today:
 - Since 0.5.0: relay chunks are numbered and credited, and every wait for a missing chunk is bounded (wire v1 section 6).
 - Since 0.5.0: a session runs a copy of its handler, so a reply that closes the session cannot destroy the running one.
 - Since 0.5.0: the node's loops are woken under their wait's mutex, so an asked-for refresh is never lost until the heartbeat.
+- Since 0.5.1: a session that loses its route as the client stops is closed, and stop waits for it, so stop is never held by a call's deadline.
 
 ## What the port needs from Dannan, ready to use
 
@@ -132,4 +145,6 @@ Check these on the nodes:
 
 Tag 0.5.0 and the push. The real gateway run on macnessa passed: a mapping made, read back, removed and confirmed gone.
 
-Tag 0.5.1 and the push. The arm64 rerun on inverbeg follows at the tag; its results come separately.
+Tag 0.5.1 and the push. The arm64 rerun at 0.5.1 found the three items fixed in 0.5.2 (Gates, above).
+
+Tag 0.5.2 and the push, with arm64 among its gates.
