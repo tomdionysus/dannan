@@ -831,6 +831,9 @@ void Client::admit(const std::shared_ptr<Session>& session) {
   {
     contract::Lock lock(_mutex);
     if (_stopped) return;
+    // Held across the table change and its retirements, so stop() waits for
+    // the losers this admission takes off the tables.
+    ++_operations;
     if (peer.port) _endpoint_ids[{peer.host, peer.port}] = peer.id;
     _peer_capabilities[peer.id] = peer.capabilities;
     auto& slot = _inbound[key];
@@ -864,18 +867,36 @@ void Client::admit(const std::shared_ptr<Session>& session) {
     asio::post(_health_strand, [timer] { timer->cancel(); });
   }
   for (auto& call : waiting) place(route, std::move(call), Target{key.first, {peer.host, peer.port}});
+  end_operation();
 }
 
+// Every caller holds an operation from its table change to here, so a stop()
+// that began between the two waits for the closes below.
 void Client::retire_sessions(Retire& retire) {
   if (retire.empty()) return;
+  bool stopped;
   {
     // Remembered until they close: a retiring session may still hold calls
-    // that stop() must fail.
+    // that stop() must fail. A loser taken off the tables before stop() and
+    // reaching here after it is in neither, so it is closed here instead, and
+    // waited for as stop() waits for its own.
     contract::Lock lock(_mutex);
-    std::erase_if(_retiring, [](const std::weak_ptr<Session>& weak) { return weak.expired(); });
-    for (const auto& session : retire) _retiring.push_back(session);
+    stopped = _stopped;
+    if (stopped) {
+      _operations += retire.size();
+    } else {
+      std::erase_if(_retiring, [](const std::weak_ptr<Session>& weak) { return weak.expired(); });
+      for (const auto& session : retire) _retiring.push_back(session);
+    }
   }
-  for (auto& loser : retire) loser->retire();
+  for (auto& loser : retire) {
+    if (stopped) {
+      loser->close("client stopped");
+      loser->after_queued([this] { end_operation(); });
+    } else {
+      loser->retire();
+    }
+  }
 }
 
 void Client::reconcile_locked(const RouteKey& key, Retire& retire) {
