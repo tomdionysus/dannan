@@ -50,7 +50,7 @@ cut and pushed at Tom's word on 2026-11-08. Tag 0.5.2 cut and pushed at Tom's wo
 including arm64; the port freezes on it. One item open: the macOS TSan handshake timeout (the report's Gates section).
 2026-11-10: Dagda found 0.5.2's installed config asking for Boost 1.87 while the build accepts 1.83, so nothing could
 `find_package(dannan)` on Debian. Fixed on `feature/package-boost-floor` (`4cc62bf`), one number for both, with
-`test/linux/run.sh package`, which failed before and passes now; a 0.5.3 waits on Tom. Found the same day: Homebrew's
+`test/linux/run.sh package`, which failed before and passes now; tagged 0.5.3 at Tom's word the same day; the port freezes on it. Found the same day: Homebrew's
 `openssl@4` 4.1.0, installed 2026-11-09 13:04 as a dependency, sits in `/usr/local/include` ahead of MacPorts' OpenSSL 3,
 and `identity/certificate.cpp` does not compile against 4.1 (a deprecation under -Werror, two const `X509_NAME`); Debian
 and the Pis are on 3.5 and unaffected. Tom's ruling: point macOS at OpenSSL 3. Clang here searches `/usr/local/include`

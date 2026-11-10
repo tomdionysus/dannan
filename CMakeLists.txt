@@ -8,7 +8,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 # One number for the repository: both libraries, the tag and --version.
-project(dannan VERSION 0.5.2 LANGUAGES CXX)
+project(dannan VERSION 0.5.3 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

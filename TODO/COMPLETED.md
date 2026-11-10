@@ -3,6 +3,13 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
+## Handoff, 2026-11-10: 0.5.3
+
+Found by Dagda on inverbeg: the installed package's config asked for Boost 1.87 while the build accepts 1.83, so no consumer
+could `find_package(dannan)` on Debian. One number now feeds both, and `test/linux/run.sh package` installs the library and
+builds and runs a consumer of it (failed before, passes after). CMake only; the library's code is 0.5.2's. The macOS builds now
+reach MacPorts' OpenSSL 3 past Homebrew's openssl@4 (`ACTIVE.md`).
+
 ## Handoff, 2026-11-09: 0.5.2
 
 From the arm64 run at 0.5.1: a client stop could be held up to a call's deadline by a session retired as it stopped (fixed,
@@ -24,6 +31,10 @@ in 3 of 4 full runs (one unexplained handshake timeout, `LevelZero.ANodeIsObserv
 TSan 624 each at that point; later gates and the two open items are in the report and under 0.5.0. Compose relay 5 of 5. Report: `2026-11-06-dannan-capabilities.md`.
 
 ## Releases
+
+- **0.5.3** (2026-11-10, `main`, tag `0.5.3`, pushed at Tom's word): see the handoff above. The package test passes on Debian
+  (Boost 1.83); `dannan_tests` 639 on macOS plain. The library's code is unchanged from 0.5.2, whose gates stand. The port freezes on
+  this tag.
 
 - **0.5.2** (2026-11-09, `main`, tag `0.5.2`, pushed at Tom's word): see the handoff above. Gate `dannan_tests` 639 on macOS
   plain, ASan and TSan; 640 on Debian plain, ASan and TSan and on arm64 plain and ASan (one case skipped as root); compose 3 of 3;
