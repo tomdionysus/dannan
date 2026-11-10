@@ -52,8 +52,12 @@ including arm64; the port freezes on it. One item open: the macOS TSan handshake
 `find_package(dannan)` on Debian. Fixed on `feature/package-boost-floor` (`4cc62bf`), one number for both, with
 `test/linux/run.sh package`, which failed before and passes now; a 0.5.3 waits on Tom. Found the same day: Homebrew's
 `openssl@4` 4.1.0, installed 2026-11-09 13:04 as a dependency, sits in `/usr/local/include` ahead of MacPorts' OpenSSL 3,
-and `identity/certificate.cpp` does not compile against 4.1 (a deprecation under -Werror, two const `X509_NAME`), so the
-macOS build fails until that is settled; Debian and the Pis are on 3.5 and unaffected.
+and `identity/certificate.cpp` does not compile against 4.1 (a deprecation under -Werror, two const `X509_NAME`); Debian
+and the Pis are on 3.5 and unaffected. Tom's ruling: point macOS at OpenSSL 3. Clang here searches `/usr/local/include`
+ahead of every `-isystem` and drops an `-I` that duplicates one, so the macOS builds take
+`-DOPENSSL_ROOT_DIR=/opt/local/libexec/openssl3` and `CMAKE_CXX_FLAGS="-I<repo>/build/ssl3-include
+--system-header-prefix=openssl/"`, the directory a symlink to MacPorts' OpenSSL 3 headers (`build/scratch/sanitizers.sh`
+makes it). macOS plain on that: 639 of 639, linked to `/opt/local/libexec/openssl3`.
 
 **Next, for a session starting here:** fix what the Macha session or the port finds. arm64 runs on inverbeg at nice 19 with
 GoogleTest in `~/dannan-arm64-deps/prefix`; the tests run there as root.
