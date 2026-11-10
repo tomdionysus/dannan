@@ -48,6 +48,12 @@ and install there to test, prove and iterate." Macha stays frozen at `9a08846` u
 of the port, so its rows stay through the first cutover. Tag 0.5.0 cut and pushed at Tom's word, with two items open. Tag 0.5.1
 cut and pushed at Tom's word on 2026-11-08. Tag 0.5.2 cut and pushed at Tom's word on 2026-11-09, clean on every gate
 including arm64; the port freezes on it. One item open: the macOS TSan handshake timeout (the report's Gates section).
+2026-11-10: Dagda found 0.5.2's installed config asking for Boost 1.87 while the build accepts 1.83, so nothing could
+`find_package(dannan)` on Debian. Fixed on `feature/package-boost-floor` (`4cc62bf`), one number for both, with
+`test/linux/run.sh package`, which failed before and passes now; a 0.5.3 waits on Tom. Found the same day: Homebrew's
+`openssl@4` 4.1.0, installed 2026-11-09 13:04 as a dependency, sits in `/usr/local/include` ahead of MacPorts' OpenSSL 3,
+and `identity/certificate.cpp` does not compile against 4.1 (a deprecation under -Werror, two const `X509_NAME`), so the
+macOS build fails until that is settled; Debian and the Pis are on 3.5 and unaffected.
 
 **Next, for a session starting here:** fix what the Macha session or the port finds. arm64 runs on inverbeg at nice 19 with
 GoogleTest in `~/dannan-arm64-deps/prefix`; the tests run there as root.
