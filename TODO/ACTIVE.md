@@ -48,6 +48,16 @@ and install there to test, prove and iterate." Macha stays frozen at `9a08846` u
 of the port, so its rows stay through the first cutover. Tag 0.5.0 cut and pushed at Tom's word, with two items open. Tag 0.5.1
 cut and pushed at Tom's word on 2026-11-08. Tag 0.5.2 cut and pushed at Tom's word on 2026-11-09, clean on every gate
 including arm64; the port freezes on it. One item open: the macOS TSan handshake timeout (the report's Gates section).
+2026-11-10: Dagda found 0.5.2's installed config asking for Boost 1.87 while the build accepts 1.83, so nothing could
+`find_package(dannan)` on Debian. Fixed on `feature/package-boost-floor` (`4cc62bf`), one number for both, with
+`test/linux/run.sh package`, which failed before and passes now; tagged 0.5.3 at Tom's word the same day; the port freezes on it. Found the same day: Homebrew's
+`openssl@4` 4.1.0, installed 2026-11-09 13:04 as a dependency, sits in `/usr/local/include` ahead of MacPorts' OpenSSL 3,
+and `identity/certificate.cpp` does not compile against 4.1 (a deprecation under -Werror, two const `X509_NAME`); Debian
+and the Pis are on 3.5 and unaffected. Tom's ruling: point macOS at OpenSSL 3. Clang here searches `/usr/local/include`
+ahead of every `-isystem` and drops an `-I` that duplicates one, so the macOS builds take
+`-DOPENSSL_ROOT_DIR=/opt/local/libexec/openssl3` and `CMAKE_CXX_FLAGS="-I<repo>/build/ssl3-include
+--system-header-prefix=openssl/"`, the directory a symlink to MacPorts' OpenSSL 3 headers (`build/scratch/sanitizers.sh`
+makes it). macOS plain on that: 639 of 639, linked to `/opt/local/libexec/openssl3`.
 
 **Next, for a session starting here:** fix what the Macha session or the port finds. arm64 runs on inverbeg at nice 19 with
 GoogleTest in `~/dannan-arm64-deps/prefix`; the tests run there as root.
