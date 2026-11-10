@@ -7,9 +7,26 @@
 #
 
 # One build of the tree at /src into /out/<name> and its gate, by g++: "plain", or the
-# sanitizer named. Its tail goes to /out/<name>.txt.
+# sanitizer named. Its tail goes to /out/<name>.txt. "package" instead installs the
+# library and builds and runs a consumer of the installed package (test/package).
 set -eu
 name="$1"
+if [ "$name" = package ]; then
+  version=$(sed -n 's/^project(dannan VERSION \([0-9.]*\).*/\1/p' /src/CMakeLists.txt)
+  rm -rf /out/package
+  cmake -S /src -B /out/package/build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_INSTALL_PREFIX=/out/package/prefix
+  cmake --build /out/package/build
+  cmake --install /out/package/build
+  cmake -S /src/test/package -B /out/package/consumer -G Ninja -DCMAKE_PREFIX_PATH=/out/package/prefix -DDANNAN_EXPECTED_VERSION="$version" \
+    > /out/package.txt 2>&1 && status=0 || status=$?
+  if [ "$status" = 0 ]; then
+    { cmake --build /out/package/consumer && LD_LIBRARY_PATH=/out/package/prefix/lib:/out/package/prefix/lib64 \
+        /out/package/consumer/consumer "$version"; } >> /out/package.txt 2>&1 && status=0 || status=$?
+  fi
+  tail -8 /out/package.txt
+  echo "package exit $status"
+  exit "$status"
+fi
 case "$name" in
   plain) flags="" ;;
   asan) flags="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined" ;;
