@@ -8,7 +8,7 @@
 @PACKAGE_INIT@
 
 include(CMakeFindDependencyMacro)
-find_dependency(Boost 1.87 CONFIG COMPONENTS headers)
+find_dependency(Boost @DANNAN_BOOST_MINIMUM@ CONFIG COMPONENTS headers)
 find_dependency(OpenSSL 3 COMPONENTS Crypto SSL)
 find_dependency(Threads)
 
