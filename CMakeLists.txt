@@ -26,8 +26,10 @@ option(DANNAN_BUILD_COMPOSE_TESTS "Build dannan_compose_tests, the Docker NAT be
 option(DANNAN_BUILD_FUZZING "Build each fuzz target as its own binary (libFuzzer where the compiler has it)" OFF)
 
 # Asio is header-only; 1.87 is AthenaSIP's floor and the two must agree.
-# Debian 13 ships 1.83, and the suite passes on it (test/linux).
-find_package(Boost 1.83 CONFIG REQUIRED COMPONENTS headers)
+# Debian 13 ships 1.83, and the suite passes on it (test/linux). One number for
+# the build and the installed package's config, which a consumer meets.
+set(DANNAN_BOOST_MINIMUM 1.83)
+find_package(Boost ${DANNAN_BOOST_MINIMUM} CONFIG REQUIRED COMPONENTS headers)
 find_package(OpenSSL 3 REQUIRED COMPONENTS Crypto SSL)
 find_package(Threads REQUIRED)
 # The configuration file reader's YAML (dannan/config; Tom, 2026-11-04).
