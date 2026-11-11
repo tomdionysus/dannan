@@ -85,7 +85,7 @@ Telemetry decode_record(net::Reader& reader) {
     if (const auto width = core_width(id); width && *width != value.size())
       throw net::DecodeError("telemetry field " + std::to_string(id) + " has the wrong width");
     if (id == field::phase && value[0] > static_cast<uint8_t>(Phase::ready)) throw net::DecodeError("invalid telemetry node phase");
-    // Kept exactly as sent, a zero included.
+    // Kept exactly as sent, a zero included; an empty value is no field.
     out.set_bytes(id, value);
   }
   (void)out.traffic();  // validates the structured field
@@ -114,6 +114,10 @@ const char* phase_name(Phase phase) noexcept {
 }
 
 void Telemetry::set_bytes(uint16_t id, std::span<const uint8_t> value) {
+  if (value.empty()) {
+    std::erase_if(_fields, [&](const Field& f) { return f.first == id; });
+    return;
+  }
   const auto found = std::find_if(_fields.begin(), _fields.end(), [&](const Field& f) { return f.first == id; });
   if (found != _fields.end())
     found->second.assign(value.begin(), value.end());
