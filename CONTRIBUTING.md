@@ -54,10 +54,14 @@ target file as its own binary, `build/dannan_fuzz_<target>`: a libFuzzer
 fuzzer under a clang that has libFuzzer, otherwise a replay driver over files
 (`build/dannan_fuzz_records corpus/`).
 
-Run the test binaries rather than `ctest`. Everything runs on a developer machine
-(MacPorts for every dependency on the laptop); there is no hosted CI.
-Sanitizers run before a release, or to hunt a bug that cannot be pinned any
-other way. The compose bed proves level 0 through real NATs, once over a
+Run the test binaries rather than `ctest`. The laptop takes every dependency from
+MacPorts. Hosted CI (`.github/workflows/ci.yml`) runs each step of
+`tools/ci.sh` on Debian 13, as the nodes have it, on x86-64 and arm64: the
+header and format check, release builds with g++ and clang, ASan with UBSan,
+TSan, the installed package's consumer, and coverage to Codecov; and a build
+and test on macOS. CodeQL analyses every push. Any step runs the same in a
+`debian:trixie` container: `tools/ci.sh <step>`. Locally, sanitizers run before
+a release, or to hunt a bug that cannot be pinned any other way. The compose bed proves level 0 through real NATs, once over a
 cluster key and once over certificates alone with a revocation: configure with
 `-DDANNAN_BUILD_COMPOSE_TESTS=ON`, then run `./build/dannan_compose_tests`
 with Docker running (`DANNAN_COMPOSE_KEEP=1` leaves the bed up,
