@@ -9,8 +9,8 @@
 # container; .github/workflows/ci.yml runs each as its own job.
 #
 #   tools/ci.sh check      the header block on every source, and clang-format
-#   tools/ci.sh release    g++ release build and the tests
-#   tools/ci.sh clang      clang++, warnings as errors with -Wthread-safety
+#   tools/ci.sh release    g++ release build, warnings as errors, and the tests
+#   tools/ci.sh clang      the same with clang++ (and -Wthread-safety)
 #   tools/ci.sh asan       AddressSanitizer and UndefinedBehaviorSanitizer
 #   tools/ci.sh tsan       ThreadSanitizer, with dannan/test/tsan-suppressions.txt
 #   tools/ci.sh package    install, then build and run a consumer (test/package)
@@ -27,14 +27,10 @@ out=${DANNAN_CI_OUT:-$top/build-ci}
 jobs=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 step=${1:-}
 
-# Warnings are errors under clang, as on the laptop. g++ warns of shadowed
-# names, pedantic points and a libstdc++ false positive that the tree has not
-# yet been cleared of (TODO/ACTIVE.md), so its builds report them and go on.
-werror=OFF
 configure() {
   dir="$1"
   shift
-  cmake -S "$top" -B "$out/$dir" -G Ninja -DDANNAN_BUILD_TESTING=ON -DDANNAN_WARNINGS_AS_ERRORS="$werror" "$@"
+  cmake -S "$top" -B "$out/$dir" -G Ninja -DDANNAN_BUILD_TESTING=ON -DDANNAN_WARNINGS_AS_ERRORS=ON "$@"
   cmake --build "$out/$dir" -j "$jobs" --target dannan_tests
 }
 
@@ -56,7 +52,6 @@ case "$step" in
     "$out/release/dannan_tests"
     ;;
   clang)
-    werror=ON
     CXX=clang++ configure clang -DCMAKE_BUILD_TYPE=Release
     "$out/clang/dannan_tests"
     ;;
