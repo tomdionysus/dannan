@@ -346,20 +346,20 @@ std::pair<uint16_t, net::Endpoint> observe_from(asio::io_context& io, const net:
   const uint16_t bound = state->tcp.local_endpoint().port();
   asio::dispatch(state->strand, [state, remote, timeout, key, local, bound] {
     state->timer.expires_after(timeout);
-    state->timer.async_wait([state, bound](const boost::system::error_code& error) {
-      if (!error) state->fail(std::string("timed out at ") + (state->socket ? "the handshake" : "connect") + " from local port " + std::to_string(bound));
+    state->timer.async_wait([state, bound](const boost::system::error_code& timer_error) {
+      if (!timer_error) state->fail(std::string("timed out at ") + (state->socket ? "the handshake" : "connect") + " from local port " + std::to_string(bound));
     });
-    state->tcp.async_connect(remote, [state, key, local](const boost::system::error_code& error) {
+    state->tcp.async_connect(remote, [state, key, local](const boost::system::error_code& connect_error) {
       if (state->finished) return;
-      if (error) return state->fail("connect: " + error.message());
+      if (connect_error) return state->fail("connect: " + connect_error.message());
       const auto family = state->tcp.local_endpoint().protocol().family();
       state->socket.emplace(state->strand, net::Session::Socket::protocol_type(family, SOCK_STREAM), state->tcp.release());
       net::async_dial_handshake(*state->socket, key, local, net::min_frame_size, net::Lane::probe,
-                                [state](std::exception_ptr error, net::Established established) {
+                                [state](std::exception_ptr refusal, net::Established established) {
                                   if (state->finished) return;
-                                  if (error) {
+                                  if (refusal) {
                                     try {
-                                      std::rethrow_exception(error);
+                                      std::rethrow_exception(refusal);
                                     } catch (const std::exception& refused) {
                                       return state->fail(std::string("handshake: ") + refused.what());
                                     }
@@ -392,15 +392,15 @@ void simultaneous_open(asio::io_context& io, uint16_t port, const net::Endpoint&
     std::string last_error = "no attempt";
     bool connecting = false;
 
-    Opening(asio::io_context& io, asio::ip::tcp::endpoint remote, uint16_t port, std::chrono::milliseconds within,
-            std::function<void(int, int, std::string)> done)
+    Opening(asio::io_context& io, asio::ip::tcp::endpoint to, uint16_t local_port, std::chrono::milliseconds within,
+            std::function<void(int, int, std::string)> then)
         : strand(asio::make_strand(io.get_executor())),
           tcp(strand),
           timer(strand),
-          remote(remote),
-          port(port),
+          remote(to),
+          port(local_port),
           until(std::chrono::steady_clock::now() + within),
-          done(std::move(done)) {}
+          done(std::move(then)) {}
 
     // On the strand: one attempt at a time, each bound to the punch port.
     void attempt() {
@@ -417,27 +417,27 @@ void simultaneous_open(asio::io_context& io, uint16_t port, const net::Endpoint&
       }
       connecting = true;
       timer.expires_after(std::chrono::milliseconds(700));
-      timer.async_wait([self = shared_from_this()](const boost::system::error_code& error) {
-        if (error || !self->connecting) return;
+      timer.async_wait([self = shared_from_this()](const boost::system::error_code& timer_error) {
+        if (timer_error || !self->connecting) return;
         boost::system::error_code ignored;
         self->tcp.close(ignored);
       });
-      tcp.async_connect(remote, [self = shared_from_this()](const boost::system::error_code& error) {
+      tcp.async_connect(remote, [self = shared_from_this()](const boost::system::error_code& connect_error) {
         self->connecting = false;
         self->timer.cancel();
-        if (!error) {
+        if (!connect_error) {
           // The warning, if any, comes from the node's first ordinary socket.
           net::peer_socket_options(self->tcp.native_handle(), status::ScopedLogger(status::null_sink(), "net"));
           const int family = self->tcp.local_endpoint().protocol().family();
           return self->done(self->tcp.release(), family, "");
         }
-        self->last_error = error == asio::error::operation_aborted ? "timed out" : error.message();
+        self->last_error = connect_error == asio::error::operation_aborted ? "timed out" : connect_error.message();
         boost::system::error_code ignored;
         self->tcp.close(ignored);
         // A refusal is the far end's kernel answering before its own connect has begun:
         // on a path with nothing to drop the SYN, the two ends meet only if their
         // attempts overlap, so try again almost at once.
-        self->again(std::chrono::milliseconds(error == asio::error::connection_refused ? 5 : 100));
+        self->again(std::chrono::milliseconds(connect_error == asio::error::connection_refused ? 5 : 100));
       });
     }
     void again(std::chrono::milliseconds after) {
@@ -833,7 +833,7 @@ std::string Paths::try_punch(const NodeRecord& self, const NodeRecord& peer, net
       auto opened = std::make_shared<std::promise<std::tuple<int, int, std::string>>>();
       auto future = opened->get_future();
       simultaneous_open(_io, port, answer.at, _config.punch_window,
-                        [opened](int descriptor, int family, std::string why) { opened->set_value({descriptor, family, std::move(why)}); });
+                        [opened](int descriptor, int family, std::string reason) { opened->set_value({descriptor, family, std::move(reason)}); });
       auto [descriptor, family, failure] = future.get();
       if (descriptor < 0) {
         why = failure;
@@ -1056,9 +1056,9 @@ net::Handled Paths::punch_go(const NodeRecord& from, const net::Message& request
       adopted = true;
       paths._client.adopt(descriptor, family, peer, lane, role, net::Purpose::punched, token, [owner](std::string why) {
         if (!why.empty()) return;
-        with(owner, [](Paths& paths) {
-          contract::Lock lock(paths._mutex);
-          ++paths._stats.punches_made;
+        with(owner, [](Paths& counted) {
+          contract::Lock lock(counted._mutex);
+          ++counted._stats.punches_made;
         });
       });
     });
@@ -1471,7 +1471,7 @@ void Paths::sweep() {
       ++_stats.upgrades_tried;
       _queue.push_back([this, peer, lane] {
         if (try_punch(_self(), peer, lane).empty()) {
-          contract::Lock lock(_mutex);
+          contract::Lock counted(_mutex);
           ++_stats.upgrades_made;
         }
       });

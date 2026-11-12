@@ -22,7 +22,7 @@ using namespace std::chrono_literals;
 
 class AtLevel final : public LogSink {
  public:
-  explicit AtLevel(LogLevel level) : level(level) {}
+  explicit AtLevel(LogLevel at) : level(at) {}
   bool enabled(LogLevel at) const noexcept override { return at >= level; }
   void write(LogLevel at, std::string_view, std::string_view message) override { lines.emplace_back(at, std::string(message)); }
   size_t count(std::string_view text) const {
