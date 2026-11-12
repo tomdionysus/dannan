@@ -1,0 +1,106 @@
+#
+# Dannan - The Distributed Substrate
+#
+# Copyright (C) 2026 Tom Cully <mail@tomcully.com>
+# Licensed under the GNU GPLv3 - see <https://www.gnu.org/licenses/gpl-3.0.html>
+#
+# tools/ci.sh's steps on Debian 13, as the nodes have it: the header and format
+# check; release builds and the installed package's consumer on x86-64 and on
+# arm64, as a Pi builds them; clang with its thread-safety analysis; ASan and
+# UBSan on both, TSan; coverage to Codecov; and a build and test on macOS. The
+# Docker NAT bed (test/compose) and the runs on the nodes stay by hand.
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: ${{ matrix.step }} (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { step: check, arch: x86-64, runner: ubuntu-24.04 }
+          - { step: release, arch: x86-64, runner: ubuntu-24.04 }
+          - { step: release, arch: arm64, runner: ubuntu-24.04-arm }
+          - { step: clang, arch: x86-64, runner: ubuntu-24.04 }
+          - { step: asan, arch: x86-64, runner: ubuntu-24.04 }
+          - { step: asan, arch: arm64, runner: ubuntu-24.04-arm }
+          - { step: tsan, arch: x86-64, runner: ubuntu-24.04 }
+          - { step: package, arch: x86-64, runner: ubuntu-24.04 }
+          - { step: package, arch: arm64, runner: ubuntu-24.04-arm }
+    container:
+      image: debian:trixie
+      # LeakSanitizer needs ptrace to stop the process's threads.
+      options: --cap-add SYS_PTRACE --security-opt seccomp=unconfined
+    steps:
+      - name: Install packages
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            g++ clang clang-format cmake ninja-build git ca-certificates openssl \
+            libboost-dev libssl-dev libyaml-cpp-dev libgtest-dev libgmock-dev
+
+      - uses: actions/checkout@v4
+
+      - name: Trust the checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: ${{ matrix.step }}
+        run: tools/ci.sh ${{ matrix.step }}
+
+  coverage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: debian:trixie
+    steps:
+      - name: Install packages
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            g++ cmake ninja-build git ca-certificates openssl \
+            libboost-dev libssl-dev libyaml-cpp-dev libgtest-dev libgmock-dev lcov \
+            curl gnupg  # Codecov's uploader verifies its own signature
+
+      - uses: actions/checkout@v4
+
+      - name: Trust the checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Build and test
+        run: tools/ci.sh coverage
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v5
+        with:
+          files: build-ci/coverage.info
+          disable_search: true
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - name: Install packages
+        run: brew install boost openssl@3 yaml-cpp googletest ninja
+
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DDANNAN_BUILD_TESTING=ON -DDANNAN_WARNINGS_AS_ERRORS=ON \
+            -DCMAKE_PREFIX_PATH="$(brew --prefix)" -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)"
+          cmake --build build -j "$(sysctl -n hw.ncpu)" --target dannan_tests
+
+      - name: Test
+        run: build/dannan_tests
