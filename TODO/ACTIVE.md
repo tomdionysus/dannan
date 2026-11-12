@@ -57,12 +57,11 @@ by it; `Telemetry.EmptyBytesRemoveTheField`, macOS plain 640), and `fba9751`, th
 2026-11-12, hosted CI at Tom's word on `feature/ci` (`6631acb`, not merged or pushed): `tools/ci.sh <step>`, the workflows,
 Codecov (Tom adds the `CODECOV_TOKEN` secret), the badges; the style guide now asks the same of every project. Its first
 local runs in `debian:trixie` found, all open:
-- g++ with `DANNAN_WARNINGS_AS_ERRORS=ON` has never built: `-Wunused-parameter` (`contract/thread_safety.h:146-147`),
-  `-Wshadow` (`net/session.cpp:505`, `net/client.cpp:54`, `reach/inbound.cpp:70`, `reach/external_ip.cpp:52`,
-  `reach/paths.cpp:341`, `supervise/supervisor.cpp:142`), `-Wpedantic` (`placement/placement.cpp:23`,
-  `sched/memory_limit.cpp:28`), and a libstdc++ `-Wstringop-overflow` false positive through `net/channel.cpp`. The
-  library only; tests and tools not yet reached. The local Debian gates never set the option. CI's g++ steps build
-  without it until this is cleared, warnings only, no behaviour.
+- g++ with `DANNAN_WARNINGS_AS_ERRORS=ON` had never built (shadowed names, two annotation-only parameters, `__int128`
+  under -Wpedantic, two unbraced ifs). Fixed at Tom's word, now Macha has ported: `d7731eb` on `feature/gcc-werror`,
+  renames only, with GCC's libstdc++ `-Wstringop-overflow`/`-Warray-bounds` false positives kept as warnings. Every
+  target builds under g++ 14 -Werror; Debian g++ 641 passed (1 skipped as root), macOS 640. With the Macha session for
+  review; CI's g++ steps build with -Werror again (`70c4ebe`).
 - Linux clang 19: `LevelZero.AChunkLostWithTheSendersSessionEndsTheCircuitWithinTheBound` failed once at
   `reach_paths_test.cpp:472` (`closes_unknown` 0). Reading `reach/paths.cpp:670`, the count rises only if a chunk
   was in flight on A's session when it was severed; with none in flight the relay's close ends it, uncounted. Not proven.
