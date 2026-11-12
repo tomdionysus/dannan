@@ -59,7 +59,8 @@ Codecov (Tom adds the `CODECOV_TOKEN` secret), the badges; the style guide now a
 local runs in `debian:trixie` found, all open:
 - g++ with `DANNAN_WARNINGS_AS_ERRORS=ON` had never built (shadowed names, two annotation-only parameters, `__int128`
   under -Wpedantic, two unbraced ifs). Fixed at Tom's word, now Macha has ported: `d7731eb` on `feature/gcc-werror`,
-  renames only, with GCC's libstdc++ `-Wstringop-overflow`/`-Warray-bounds` false positives kept as warnings. Every
+  renames only; GCC's libstdc++ `-Wstringop-overflow`/`-Warray-bounds` false positives ignored by a pragma around
+  `net/codec.h`'s writer alone (scoped at the Macha session's review; approved). Every
   target builds under g++ 14 -Werror; Debian g++ 641 passed (1 skipped as root), macOS 640. With the Macha session for
   review; CI's g++ steps build with -Werror again (`70c4ebe`).
 - Linux clang 19: `LevelZero.AChunkLostWithTheSendersSessionEndsTheCircuitWithinTheBound` failed once at
