@@ -98,8 +98,8 @@ ProbeVerdict InboundResolver::observe_probe(const identity::NodeId& peer, bool r
   }
   try {
     persist(after);
-  } catch (const std::exception& error) {
-    verdict.persist_error = error.what();
+  } catch (const std::exception& failed) {
+    verdict.persist_error = failed.what();
   }
   return verdict;
 }
