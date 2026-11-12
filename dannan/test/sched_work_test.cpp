@@ -47,7 +47,9 @@ TEST(FrameType, DecodesOnlyTheFiveWireValues) {
   for (int value = 0; value < 256; ++value) {
     const auto decoded = decode_frame_type(static_cast<uint8_t>(value));
     EXPECT_EQ(decoded.has_value(), value >= 1 && value <= 5) << value;
-    if (decoded) EXPECT_EQ(static_cast<int>(*decoded), value);
+    if (decoded) {
+      EXPECT_EQ(static_cast<int>(*decoded), value);
+    }
   }
 }
 

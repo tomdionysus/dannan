@@ -27,8 +27,8 @@ using namespace std::chrono_literals;
 
 // The arbiter's admission rules, as a test's policy over ClassWaits.
 struct Arbiter {
-  explicit Arbiter(uint64_t capacity, uint64_t reserve, uint64_t ceiling = 0, const contract::TimeSource* time = &contract::steady_time_source())
-      : capacity(capacity), reserve(reserve), ceiling(ceiling), classes(time) {}
+  explicit Arbiter(uint64_t total, uint64_t held_back, uint64_t cap = 0, const contract::TimeSource* time = &contract::steady_time_source())
+      : capacity(total), reserve(held_back), ceiling(cap), classes(time) {}
   const uint64_t capacity;
   const uint64_t reserve;
   const uint64_t ceiling;
