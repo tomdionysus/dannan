@@ -118,7 +118,7 @@ struct Node {
   std::unique_ptr<Server> server;
   std::unique_ptr<Client> client;
 
-  explicit Node(Io& io, ClientOptions tuning = {}, uint32_t capabilities = membership::capabilities_default) : io(io) {
+  explicit Node(Io& on, ClientOptions tuning = {}, uint32_t capabilities = membership::capabilities_default) : io(on) {
     self.id = identity::NodeId::random();
     self.host = "127.0.0.1";
     self.capabilities = capabilities;
@@ -1641,7 +1641,9 @@ TEST(PeerSocket, TheTransportsOwnSocketsCarryTheOptions) {
     length = sizeof(name);
     ASSERT_EQ(::getsockopt(fd, IPPROTO_TCP, TCP_CONGESTION, name, &length), 0);
     // BBR where the kernel has it: a kernel without it has a warning instead.
-    if (std::string(name) != "bbr") EXPECT_NE(std::string(name), "");
+    if (std::string(name) != "bbr") {
+      EXPECT_NE(std::string(name), "");
+    }
 #endif
     ++checked;
   }

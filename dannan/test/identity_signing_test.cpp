@@ -62,7 +62,7 @@ TEST_P(Signing, RefusesWhatIsNotItsKey) {
 }
 
 INSTANTIATE_TEST_SUITE_P(Algorithms, Signing, testing::Values(SigningAlgorithm::es256, SigningAlgorithm::ed25519),
-                         [](const testing::TestParamInfo<SigningAlgorithm>& info) { return std::string(algorithm_name(info.param)); });
+                         [](const testing::TestParamInfo<SigningAlgorithm>& instance) { return std::string(algorithm_name(instance.param)); });
 
 // ES256 is deterministic in its verification only: two signatures of one
 // message differ (a fresh nonce each), both verify.
