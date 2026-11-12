@@ -54,21 +54,21 @@ struct Watchdog : std::enable_shared_from_this<Watchdog> {
   const contract::TimeSource* time;
   contract::TimePoint placed;
 
-  Watchdog(asio::io_context& io, std::weak_ptr<Session> session, uint64_t request_id, std::chrono::milliseconds deadline, std::shared_ptr<Stall> stall,
-           std::shared_ptr<std::atomic<bool>> finished, std::chrono::milliseconds notice, status::ScopedLogger log, std::string described,
-           const contract::TimeSource* time)
+  Watchdog(asio::io_context& io, std::weak_ptr<Session> watched, uint64_t call, std::chrono::milliseconds limit, std::shared_ptr<Stall> stalls,
+           std::shared_ptr<std::atomic<bool>> done, std::chrono::milliseconds every, status::ScopedLogger logger, std::string name,
+           const contract::TimeSource* clock)
       : timer(io),
-        session(std::move(session)),
-        request_id(request_id),
-        deadline(deadline),
-        stall(std::move(stall)),
-        finished(std::move(finished)),
-        notice(notice),
-        next_notice(notice),
-        log(std::move(log)),
-        described(std::move(described)),
-        time(time),
-        placed(time->now()) {}
+        session(std::move(watched)),
+        request_id(call),
+        deadline(limit),
+        stall(std::move(stalls)),
+        finished(std::move(done)),
+        notice(every),
+        next_notice(every),
+        log(std::move(logger)),
+        described(std::move(name)),
+        time(clock),
+        placed(clock->now()) {}
 
   std::string age() const { return std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(time->now() - placed).count()); }
 
@@ -745,37 +745,37 @@ void Client::dial(Target target, Lane lane, std::function<void(std::shared_ptr<S
         target.endpoint.host, std::to_string(target.endpoint.port),
         [this, attempt, target, lane, complete, failed](const boost::system::error_code& error, const asio::ip::tcp::resolver::results_type& results) {
           if (error) return failed("resolve: ", error.message());
-          asio::async_connect(attempt->tcp, results,
-                              [this, attempt, target, lane, complete, failed](const boost::system::error_code& error, const asio::ip::tcp::endpoint& to) {
-                                if (error) return failed("", error.message());
-                                peer_socket_options(attempt->tcp.native_handle(), _log);
-                                attempt->socket.emplace(attempt->strand, Session::Socket::protocol_type(to.protocol().family(), SOCK_STREAM),
-                                                        attempt->tcp.release());
-                                async_dial_handshake(*attempt->socket, _options.credentials, _options.local(), _options.max_frame, lane,
-                                                     [this, attempt, target, lane, complete, failed](std::exception_ptr error, Established established) {
-                                                       if (error) {
-                                                         try {
-                                                           std::rethrow_exception(error);
-                                                         } catch (const std::exception& refused) {
-                                                           return failed("handshake: ", refused.what());
-                                                         }
-                                                       }
-                                                       if (target.id && established.peer.id != *target.id)
-                                                         return failed("", "reached node " + to_string(established.peer.id) + ", not " + to_string(*target.id));
-                                                       if (lane == Lane::probe) {
-                                                         attempt->abort();
-                                                         return complete(nullptr, "");
-                                                       }
-                                                       auto handlers = handlers_for(established.peer);
-                                                       auto session = Session::create(std::move(*attempt->socket), std::move(established), Role::dialler,
-                                                                                      _options.routes, std::move(handlers), session_options());
-                                                       attempt->socket.reset();
-                                                       // Known before its first request can be read.
-                                                       if (_options.established) _options.established(session->established());
-                                                       session->start();
-                                                       complete(std::move(session), "");
-                                                     });
-                              });
+          asio::async_connect(
+              attempt->tcp, results,
+              [this, attempt, target, lane, complete, failed](const boost::system::error_code& connect_error, const asio::ip::tcp::endpoint& to) {
+                if (connect_error) return failed("", connect_error.message());
+                peer_socket_options(attempt->tcp.native_handle(), _log);
+                attempt->socket.emplace(attempt->strand, Session::Socket::protocol_type(to.protocol().family(), SOCK_STREAM), attempt->tcp.release());
+                async_dial_handshake(*attempt->socket, _options.credentials, _options.local(), _options.max_frame, lane,
+                                     [this, attempt, target, lane, complete, failed](std::exception_ptr refusal, Established established) {
+                                       if (refusal) {
+                                         try {
+                                           std::rethrow_exception(refusal);
+                                         } catch (const std::exception& refused) {
+                                           return failed("handshake: ", refused.what());
+                                         }
+                                       }
+                                       if (target.id && established.peer.id != *target.id)
+                                         return failed("", "reached node " + to_string(established.peer.id) + ", not " + to_string(*target.id));
+                                       if (lane == Lane::probe) {
+                                         attempt->abort();
+                                         return complete(nullptr, "");
+                                       }
+                                       auto handlers = handlers_for(established.peer);
+                                       auto session = Session::create(std::move(*attempt->socket), std::move(established), Role::dialler, _options.routes,
+                                                                      std::move(handlers), session_options());
+                                       attempt->socket.reset();
+                                       // Known before its first request can be read.
+                                       if (_options.established) _options.established(session->established());
+                                       session->start();
+                                       complete(std::move(session), "");
+                                     });
+              });
         });
   });
 }
@@ -1028,16 +1028,16 @@ void Client::adopt(int descriptor, int family, const identity::NodeId& peer, Lan
       return finish("adopt: " + error.message());
     }
     attempt->timer.expires_after(_options.connect_timeout);
-    attempt->timer.async_wait([attempt](const boost::system::error_code& error) {
-      if (error || attempt->finished) return;
+    attempt->timer.async_wait([attempt](const boost::system::error_code& timer_error) {
+      if (timer_error || attempt->finished) return;
       attempt->timed_out = true;
       attempt->abort();
     });
-    auto handshaken = [this, attempt, finish, peer, role](std::exception_ptr error, Established established) {
-      if (error) {
+    auto handshaken = [this, attempt, finish, peer, role](std::exception_ptr refusal, Established established) {
+      if (refusal) {
         attempt->abort();
         try {
-          std::rethrow_exception(error);
+          std::rethrow_exception(refusal);
         } catch (const std::exception& refused) {
           return finish(attempt->timed_out ? std::string("handshake timed out") : std::string("handshake: ") + refused.what());
         }
@@ -1297,8 +1297,8 @@ struct Client::Probe {
   std::string last_error;
   // Held by every probe of a pass, so the pass is over when the last has gone.
   std::shared_ptr<void> pass;
-  Probe(asio::strand<asio::io_context::executor_type>& strand, const std::shared_ptr<Session>& session, Lane lane, contract::TimePoint deadline)
-      : session(session), peer(session->peer()), lane(lane), deadline(deadline), timer(strand) {}
+  Probe(asio::strand<asio::io_context::executor_type>& strand, const std::shared_ptr<Session>& on, Lane via, contract::TimePoint until)
+      : session(on), peer(on->peer()), lane(via), deadline(until), timer(strand) {}
 };
 
 void Client::start() {

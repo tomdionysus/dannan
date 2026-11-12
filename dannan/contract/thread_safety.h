@@ -143,8 +143,8 @@ class DANNAN_SCOPED_CAPABILITY Lock {
 // touching what it guards there is a compile error, and held again after.
 class DANNAN_SCOPED_CAPABILITY Unlocked {
  public:
-  Unlocked(Lock& lock, Mutex& mutex) DANNAN_RELEASE(mutex) : _lock(lock) { _lock.unlock(); }
-  Unlocked(Lock& lock, IoMutex& mutex) DANNAN_RELEASE(mutex) : _lock(lock) { _lock.unlock(); }
+  Unlocked(Lock& lock, [[maybe_unused]] Mutex& mutex) DANNAN_RELEASE(mutex) : _lock(lock) { _lock.unlock(); }
+  Unlocked(Lock& lock, [[maybe_unused]] IoMutex& mutex) DANNAN_RELEASE(mutex) : _lock(lock) { _lock.unlock(); }
   ~Unlocked() DANNAN_RELEASE() { _lock.lock(); }
   Unlocked(const Unlocked&) = delete;
   Unlocked& operator=(const Unlocked&) = delete;

@@ -45,6 +45,12 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif()
 if(DANNAN_WARNINGS_AS_ERRORS)
   target_compile_options(dannan_warnings INTERFACE -Werror)
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    # g++ 12 to 14 at -O3 misread std::vector's inserts into a vector just made
+    # as writing past it, inside libstdc++ (net/codec.h's writer, inlined): said,
+    # not fatal.
+    target_compile_options(dannan_warnings INTERFACE -Wno-error=stringop-overflow -Wno-error=array-bounds)
+  endif()
 endif()
 
 configure_file(dannan/include/dannan/version.h.in ${PROJECT_BINARY_DIR}/generated/dannan/version.h @ONLY)

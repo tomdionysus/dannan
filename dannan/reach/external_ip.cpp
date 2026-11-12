@@ -51,19 +51,19 @@ std::string checkip_external_ip(std::chrono::milliseconds timeout) {
   };
   resolver.async_resolve(asio::ip::tcp::v4(), host, "443", [&](const boost::system::error_code& error, const asio::ip::tcp::resolver::results_type& found) {
     if (error) return fail("resolve", error);
-    asio::async_connect(stream.lowest_layer(), found, [&](const boost::system::error_code& error, const asio::ip::tcp::endpoint&) {
-      if (error) return fail("connect", error);
-      stream.async_handshake(asio::ssl::stream_base::client, [&](const boost::system::error_code& error) {
-        if (error) return fail("handshake", error);
-        asio::async_write(stream, asio::buffer(request), [&](const boost::system::error_code& error, size_t) {
-          if (error) return fail("request", error);
+    asio::async_connect(stream.lowest_layer(), found, [&](const boost::system::error_code& connect_error, const asio::ip::tcp::endpoint&) {
+      if (connect_error) return fail("connect", connect_error);
+      stream.async_handshake(asio::ssl::stream_base::client, [&](const boost::system::error_code& handshake_error) {
+        if (handshake_error) return fail("handshake", handshake_error);
+        asio::async_write(stream, asio::buffer(request), [&](const boost::system::error_code& write_error, size_t) {
+          if (write_error) return fail("request", write_error);
           auto buffer = std::make_shared<std::array<char, 1024>>();
           auto read = std::make_shared<std::function<void()>>();
           *read = [&, buffer, read] {
-            stream.async_read_some(asio::buffer(*buffer), [&, buffer, read](const boost::system::error_code& error, size_t size) {
+            stream.async_read_some(asio::buffer(*buffer), [&, buffer, read](const boost::system::error_code& read_error, size_t size) {
               response.append(buffer->data(), size);
               if (response.size() > 4096) return fail("read", asio::error::message_size);
-              if (!error) return (*read)();
+              if (!read_error) return (*read)();
               done = true;  // end of stream, cleanly or not: the answer is judged below
             });
           };
