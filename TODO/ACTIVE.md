@@ -53,7 +53,21 @@ including arm64; the port freezes on it. One item open: the macOS TSan handshake
 `test/linux/run.sh package`, which failed before and passes now; tagged 0.5.3 at Tom's word the same day; the port freezes on it.
 2026-11-11, on `develop` for the next release (not tagged; the port stays on 0.5.3): `cba69ea`, `Telemetry::set_bytes` with
 an empty value removes the field as the header says (it stored zero bytes; found by the Macha session in the port, reviewed
-by it; `Telemetry.EmptyBytesRemoveTheField`, macOS plain 640), and `fba9751`, the Boost floor comment. Found the same day: Homebrew's
+by it; `Telemetry.EmptyBytesRemoveTheField`, macOS plain 640), and `fba9751`, the Boost floor comment.
+2026-11-12, hosted CI at Tom's word on `feature/ci` (`6631acb`, not merged or pushed): `tools/ci.sh <step>`, the workflows,
+Codecov (Tom adds the `CODECOV_TOKEN` secret), the badges; the style guide now asks the same of every project. Its first
+local runs in `debian:trixie` found, all open:
+- g++ with `DANNAN_WARNINGS_AS_ERRORS=ON` has never built: `-Wunused-parameter` (`contract/thread_safety.h:146-147`),
+  `-Wshadow` (`net/session.cpp:505`, `net/client.cpp:54`, `reach/inbound.cpp:70`, `reach/external_ip.cpp:52`,
+  `reach/paths.cpp:341`, `supervise/supervisor.cpp:142`), `-Wpedantic` (`placement/placement.cpp:23`,
+  `sched/memory_limit.cpp:28`), and a libstdc++ `-Wstringop-overflow` false positive through `net/channel.cpp`. The
+  library only; tests and tools not yet reached. The local Debian gates never set the option. CI's g++ steps build
+  without it until this is cleared, warnings only, no behaviour.
+- Linux clang 19: `LevelZero.AChunkLostWithTheSendersSessionEndsTheCircuitWithinTheBound` failed once at
+  `reach_paths_test.cpp:472` (`closes_unknown` 0). Reading `reach/paths.cpp:670`, the count rises only if a chunk
+  was in flight on A's session when it was severed; with none in flight the relay's close ends it, uncounted. Not proven.
+- g++ release: `Journal.ATypesOwnNoticeReplacesItsLanes` failed once at `net_client_test.cpp:1607`, with the Docker VM
+  shared with two other sessions' builds (one under amd64 emulation) and the host at load 25. Not yet read. Found the same day: Homebrew's
 `openssl@4` 4.1.0, installed 2026-11-09 13:04 as a dependency, sits in `/usr/local/include` ahead of MacPorts' OpenSSL 3,
 and `identity/certificate.cpp` does not compile against 4.1 (a deprecation under -Werror, two const `X509_NAME`); Debian
 and the Pis are on 3.5 and unaffected. Tom's ruling: point macOS at OpenSSL 3. Clang here searches `/usr/local/include`
