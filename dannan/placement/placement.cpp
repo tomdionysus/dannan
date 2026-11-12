@@ -20,7 +20,8 @@ namespace dannan::placement {
 namespace {
 
 using Bytes = std::vector<uint8_t>;
-using u128 = unsigned __int128;
+// A GCC and clang extension, which -Wpedantic would otherwise refuse.
+__extension__ typedef unsigned __int128 u128;
 
 Bytes concat(std::span<const uint8_t> a, std::span<const uint8_t> b) {
   Bytes out(a.begin(), a.end());
