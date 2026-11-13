@@ -10,6 +10,7 @@
 # for its SONAME, the whole version, and debian/control names it.
 
 export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+include /usr/share/dpkg/architecture.mk
 
 LIBRARY := $(shell sed -n 's/^Package: \(libdannan[0-9].*\)/\1/p' debian/control)
 
@@ -35,6 +36,6 @@ ifeq ($(TESTS),ON)
 endif
 
 override_dh_install:
-	dh_install -p$(LIBRARY) 'usr/lib/*/libdannan.so.*'
-	dh_install -plibdannan-dev usr/include/dannan 'usr/lib/*/libdannan.so' 'usr/lib/*/cmake/dannan'
+	dh_install -p$(LIBRARY) usr/lib/$(DEB_HOST_MULTIARCH)/libdannan.so.*
+	dh_install -plibdannan-dev usr/include/dannan usr/lib/$(DEB_HOST_MULTIARCH)/libdannan.so usr/lib/$(DEB_HOST_MULTIARCH)/cmake/dannan
 	dh_install -pdannan-tools usr/bin
