@@ -78,6 +78,7 @@ and what its backlog holds before each attempt (`b9f5769`, `91f959d`; `ASimultan
 Macha session approved all of it. Recorded, not to fix (its reading): on giving up, a SYN completing between the last
 drain and the close is reset, when both ends are at their deadline anyway. Branch CI: 646 passed on Debian x86-64 and
 arm64 under every step, 645 on macOS.
+2026-11-13, Debian packages, tagged 0.5.6 at Tom's word ("Yes do that now"), for the tomcully.com apt repository: `libdannan<version>` (the SONAME is the whole version, the CMake package ExactVersion), `libdannan-dev` (depends on exactly that library), `dannan-tools` (the CA, the import, the version, with manual pages); `tools/build-deb.sh`, `docs/packaging.md`, and CI's `deb` job building, testing and linting them on native x86-64 and arm64 (646 passed each, lintian clean). Built here, arm64 runs emulated on this Intel Mac, where posix_spawn reports a missing binary as started and `ChildProcess.ReadsLinesAndReportsHowItEnded` fails; that is the emulator (a C check shows it), not Dannan.
 The earlier one-off `LevelZero.AChunkLostWithTheSendersSessionEndsTheCircuitWithinTheBound` (local clang, once) has not
 recurred in CI; still unproven. Tagged 0.5.4 at Tom's word ("If it's ready, do a release on main") once every CI job was green.
 The macOS builds here keep `-DOPENSSL_ROOT_DIR=/opt/local/libexec/openssl3` and `CMAKE_CXX_FLAGS="-I<repo>/build/ssl3-include
