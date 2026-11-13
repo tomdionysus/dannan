@@ -189,6 +189,23 @@ bool eventually(const std::function<bool()>& condition) {
   return condition();
 }
 
+// a's writes of a frame class, for a stepper. a records a write's progress when
+// the write completes, which can be after b holds the request, and releases this
+// count after the record: time steps for a held call only once the count has
+// passed what it was before the call. Taken before the call; `earlier` when a call
+// of the class came first, whose own write may be counted late.
+struct Writes {
+  const std::atomic<uint64_t>& out;
+  uint64_t before = 0;
+  Writes(Node& from, FrameType frame, bool earlier) : out(from.traffic->out_bytes[static_cast<size_t>(frame)]) {
+    if (earlier) eventually([&] { return out.load(std::memory_order_acquire) > 0; });
+    before = out.load(std::memory_order_acquire);
+  }
+  void recorded() const {
+    eventually([&] { return out.load(std::memory_order_acquire) > before; });
+  }
+};
+
 TEST(Client, DialsALaneOnDemandAndReusesIt) {
   Io io;
   Node a(io), b(io);
@@ -1106,8 +1123,10 @@ TEST(Journal, AStallIsNoticedAgainEachPeriodAndACancelSaysSo) {
   tuning.control_no_progress = 3h;
   Node a(io, tuning), b(io);
   ASSERT_TRUE(call(a, b.self).reply);
+  const Writes writes(a, FrameType::control, true);
   std::thread stepper([&] {
     b.gate.wait_for_entries(1);
+    writes.recorded();
     EXPECT_EQ(log->count(status::LogLevel::debug, "RPC stalled"), 0u);
     time.advance(1h);
     EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::debug, "RPC stalled") == 1; }));
@@ -1136,8 +1155,10 @@ TEST(Journal, AStallWithNoDeadlineLeavesTheCallToFinish) {
   tuning.control_stall_notice = 1h;
   Node a(io, tuning), b(io);
   ASSERT_TRUE(call(a, b.self).reply);
+  const Writes writes(a, FrameType::control, true);
   std::thread stepper([&] {
     b.gate.wait_for_entries(1);
+    writes.recorded();
     time.advance(1h);
     EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::debug, "request remains active while peer health is monitored") == 1; }));
     b.gate.open();
@@ -1550,8 +1571,10 @@ TEST(Journal, AStallsWordsAreMachasAndTheCallerGetsTheSame) {
   tuning.control_no_progress = 2h;
   Node a(io, tuning), b(io);
   ASSERT_TRUE(call(a, b.self).reply);
+  const Writes writes(a, FrameType::control, true);
   std::thread stepper([&] {
     b.gate.wait_for_entries(1);
+    writes.recorded();
     time.advance(1h);
     EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::debug, "RPC stalled") == 1; }));
     time.advance(1h);
@@ -1610,13 +1633,10 @@ TEST(Journal, TheDataLanesNoticeBindsOnlyDataCalls) {
   Node a(io, tuning), b(io);
   ASSERT_TRUE(call(a, b.self).reply);
   b.hold_data = true;
-  // Stepped only once a's write of the call is recorded, as in
-  // Client.TheNoProgressDeadlineFollowsTheInjectedTime: b can hold the request before it is.
-  const auto& out = a.traffic->out_bytes[static_cast<size_t>(FrameType::foreground)];
-  const auto sent = out.load(std::memory_order_acquire);
+  const Writes writes(a, FrameType::foreground, false);
   std::thread stepper([&] {
     b.gate.wait_for_entries(1);
-    eventually([&] { return out.load(std::memory_order_acquire) > sent; });
+    writes.recorded();
     time.advance(1h);
     EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::debug, "RPC stalled (foreground) peer=") >= 1; }));
     b.gate.open();
@@ -1636,13 +1656,10 @@ TEST(Journal, ATypesOwnNoticeReplacesItsLanes) {
   tuning.dead_after = 72h;
   Node a(io, tuning), b(io);
   ASSERT_TRUE(call(a, b.self).reply);
-  // As above, and the first call's own write may be counted late: waited for first.
-  const auto& out = a.traffic->out_bytes[static_cast<size_t>(FrameType::control)];
-  ASSERT_TRUE(eventually([&] { return out.load(std::memory_order_acquire) > 0; }));
-  const auto sent = out.load(std::memory_order_acquire);
+  const Writes writes(a, FrameType::control, true);
   std::thread stepper([&] {
     b.gate.wait_for_entries(1);
-    eventually([&] { return out.load(std::memory_order_acquire) > sent; });
+    writes.recorded();
     time.advance(1h);
     EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::debug, "RPC stalled (control) peer=") >= 1; }));
     EXPECT_GE(log->count(status::LogLevel::debug, " message=noticed age_ms="), 1u);
