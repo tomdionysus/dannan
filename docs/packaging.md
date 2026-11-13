@@ -30,6 +30,10 @@ Dagda tag and takes the Dannan minor that Dagda was built on.
   `libdannan0.5 (>= <the patch it was built with>)` (`dh_makeshlibs -V`).
 - An ABI change is a minor release: the next minor's first release has no base
   to compare with.
+- The check sees layout and symbols: the types reached through exported
+  functions and the public headers. A changed behaviour inside an inline or
+  template function in a header is compiled into the host, which a relink picks
+  up. abidiff cannot see that, so such a change goes in the changelog.
 
 A consumer's packaging, for example Dagda's:
 

@@ -7,6 +7,7 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <fstream>
 #include <string>
 #include <thread>
@@ -183,6 +184,24 @@ TEST(ChildProcess, AReaperStandsDownOnceTheChildIsWaitedFor) {
   ended.terminate();
   EXPECT_EQ(ended.wait(deadline), 128 + SIGTERM);
   EXPECT_EQ(ended.reaper_status(), 0);
+}
+
+// Children started on several threads at once, each with its reaper forked
+// from a threaded process: every one starts, says its line, and ends as it
+// should, with its reaper standing down.
+TEST(ChildProcess, ChildrenStartOnManyThreadsAtOnce) {
+  TempDir dir;
+  constexpr int count = 8;
+  std::atomic<int> good{0};
+  std::vector<std::thread> threads;
+  for (int i = 0; i < count; ++i)
+    threads.emplace_back([&, i] {
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+      ChildProcess child({"/bin/sh", "-c", "echo " + std::to_string(i)}, dir.path() / ("many-" + std::to_string(i) + ".log"));
+      if (child.line(deadline) == std::to_string(i) && child.wait(deadline) == 0 && child.reaper_status() == 0) ++good;
+    });
+  for (auto& thread : threads) thread.join();
+  EXPECT_EQ(good.load(), count);
 }
 
 }  // namespace

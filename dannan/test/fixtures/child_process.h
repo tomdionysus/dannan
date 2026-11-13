@@ -234,10 +234,22 @@ class ChildProcess {
   // waited for, end quietly. The pipe's end without one: the test died, so
   // SIGTERM, then SIGKILL after 10 s. It keeps the test's process group and
   // signal dispositions, so a harness ending the group ends it too.
+  //
+  // One window stays: a child that has exited but not been waited for when
+  // the test dies is reaped by init as the reaper signals its pid, which could
+  // then be another's. Closing it would need the reaper to be the child's
+  // parent; a pid is reused only after the table wraps.
   bool start_reaper() {
     int done[2];
+#if defined(__linux__)
+    if (::pipe2(done, O_CLOEXEC) != 0) return false;  // no child spawned meanwhile holds it
+    ::fcntl(done[0], F_SETFD, 0);
+#else
+    // Not atomic: a child spawned on another thread between the two calls
+    // holds the write end until its own reaper ends it.
     if (::pipe(done) != 0) return false;
-    ::fcntl(done[1], F_SETFD, FD_CLOEXEC);  // no later child holds it open
+    ::fcntl(done[1], F_SETFD, FD_CLOEXEC);
+#endif
     long limit = ::sysconf(_SC_OPEN_MAX);
     if (limit < 0 || limit > 65536) limit = 65536;
     const int highest = static_cast<int>(limit);
