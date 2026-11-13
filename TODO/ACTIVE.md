@@ -67,7 +67,7 @@ and OpenSSL 3's headers. GitHub's runners then failed tests that pass here, each
 - Tests: the lost-chunk relay tests dropped a chunk of B's answer on a fast runner (the hook now has the direction; `5615034`);
   five journal tests stepped time before the call's write was recorded (`8f13846`, `0787a0f`); the gossip cap test read its
   record after the step (`b43cd39`).
-2026-11-13, the Macha session's review of 0.5.4, on `develop` for 0.5.5 (not tagged; Macha moves after its 0.94.2):
+2026-11-13, the Macha session's review of 0.5.4, tagged 0.5.5 at Tom's word ("yes, do so"; Macha moves after its 0.94.2):
 `dialled` read `_stopped` and took the slot in two sections, so a stop() between could leave an unclosed route
 (`57eefa8`, one section now; by construction, no seam reaches the window). The simultaneous open's retry, at 0.2 to 2 ms,
 hammered a closed port (692 attempts a second; `ASimultaneousOpenToAClosedPortRetriesAtAModestRate`): now close at first,
