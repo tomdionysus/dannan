@@ -84,8 +84,22 @@ recurred in CI; still unproven. Tagged 0.5.4 at Tom's word ("If it's ready, do a
 The macOS builds here keep `-DOPENSSL_ROOT_DIR=/opt/local/libexec/openssl3` and `CMAKE_CXX_FLAGS="-I<repo>/build/ssl3-include
 --system-header-prefix=openssl/"` (Homebrew's openssl@4 4.1.0 sits in `/usr/local/include`; `build/scratch/sanitizers.sh`).
 
-**Next, for a session starting here:** fix what the Macha session or the port finds. arm64 runs on inverbeg at nice 19 with
-GoogleTest in `~/dannan-arm64-deps/prefix`; the tests run there as root.
+**Tom, 2026-11-13: Dannan and Dagda support Macha, Lugh and Lir as first-class citizens** ("This was the purpose of
+splitting out the technologies"). The hosted systems' needs, Dannan's answers and Tom's rulings are in
+[`2026-11-13-stack-needs.md`](2026-11-13-stack-needs.md). The approved work, in order, each on its own `feature/`
+branch with tests first, through hosted CI, and reviewed by the session that asked for it:
+1. P1, the ABI promise: `abidiff` in CI against the previous tag, the SONAME and package back to `libdannan.so.0.5`
+   and `libdannan0.5`, the CMake package back to `SameMinorVersion`, and `docs/packaging.md` and README to match. It
+   comes first because every hosted system pins against it.
+2. P6's seven small fixes (Macha), then the owners' test seam, the advert-change watch and non-blocking logging.
+3. P2, the partition reading on `Nodes`. Even is a minority; a join adds to the agreed roster and only a retire
+   removes.
+4. P4, the class-aware worker pool with CPU pacing, from Dagda's `store/cpu_pacing.h`. Macha's pacing cases and a
+   baseline run on the nodes are its proof.
+5. P3, the shared public listener below the protocols, to Lugh's and Lir's combined requirements.
+6. P5, small-message figures in `dannan-bench`, here first. The Pis wait for Tom's word.
+P7, Alpine in CI, is not now (Tom). Otherwise, fix what the Macha session or the port finds. arm64 runs on inverbeg at
+nice 19 with GoogleTest in `~/dannan-arm64-deps/prefix`; the tests run there as root.
 
 
 **The goal (Tom, relayed by the Macha session, 2026-11-06, in his words: "development will continue

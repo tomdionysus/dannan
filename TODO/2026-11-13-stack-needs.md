@@ -6,7 +6,22 @@ first class citizens. This was the purpose of splitting out the technologies."
 
 This is Dannan's side: what each hosted system asked of Dannan, what Dannan
 answered, and the proposals that need Tom's ruling. Nothing here is built until he
-rules. The other sides are in `../lir/TODO/2026-11-13-lir-needs.md`,
+rules.
+
+**Tom's rulings, 2026-11-13, answering each question directly:**
+- **P1:** the ABI promise. Patches keep the ABI under `abidiff` in CI; the SONAME and
+  package go back to `libdannan.so.0.5` and `libdannan0.5`, and the CMake package to
+  `SameMinorVersion`.
+- **P2:** build the partition reading. An even split is a minority. A join adds to the
+  agreed roster, and only an operator's retire removes a node.
+- **P3:** build the shared public listener in Dannan, below the protocols.
+- **P4:** move CPU pacing into a class-aware worker pool in Dannan. Macha's proof is
+  its pacing cases plus a baseline run on the nodes.
+- **P5:** benchmark here first (the compose bed and loopback). The Pis follow at his
+  later word.
+- **P6:** all of it: the seven small fixes, the owners' test seam, the advert-change
+  watch and non-blocking logging.
+- **P7:** not now; musl stays at the one local amd64 pass. The other sides are in `../lir/TODO/2026-11-13-lir-needs.md`,
 `../lugh/TODO/2026-11-13-lugh-needs-of-the-stack.md` and the Dagda session's design;
 Macha's answer is pending.
 
