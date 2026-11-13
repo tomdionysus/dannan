@@ -80,7 +80,7 @@ target_link_libraries(dannan
 set_target_properties(dannan PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR} EXPORT_NAME dannan)
 add_library(dannan::dannan ALIAS dannan)
 
-# Installed for Dagda, Lugh and Lir: find_package(dannan 0.5.7 CONFIG), the minimum patch, then
+# Installed for Dagda, Lugh and Lir: find_package(dannan 0.6.0 CONFIG), the minimum patch, then
 # link dannan::dannan. Headers keep their tree, so "dannan/<subsystem>/x.h"
 # includes the same installed as in the tree; the test fixtures are shared
 # too, the tests and fuzz targets are not.

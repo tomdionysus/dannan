@@ -161,7 +161,7 @@ patch release keeps the ABI, so any later patch of the same minor is accepted
 and loads:
 
 ```cmake
-find_package(dannan 0.5.7 CONFIG REQUIRED)
+find_package(dannan 0.6.0 CONFIG REQUIRED)
 target_link_libraries(my_system PRIVATE dannan::dannan)
 ```
 
@@ -281,7 +281,7 @@ dannan-node ... --revocations revocation.bin
 
 ## Status
 
-Version 0.5.7. The library, wire versions 1 and 2, reachability and
+Version 0.6.0. The library, wire versions 1 and 2, reachability and
 identity are complete and tested. The interfaces may still change between
 minor versions while the hosted systems are built on them. Macha and
 AthenaSIP will be ported onto Dannan and Dagda later.

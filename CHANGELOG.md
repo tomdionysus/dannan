@@ -1,15 +1,21 @@
 # Current release
 
-## 0.5.7: the ABI is kept within a minor
+## 0.6.0: the ABI is kept within a minor
 
-Compatibility: a patch release now keeps the ABI. The SONAME and the library's
-package are major.minor again (`libdannan.so.0.5`, `libdannan0.5`), and the CMake
-package accepts any later patch of the minor it was asked for, so
-`find_package(dannan 0.5.7 CONFIG)` takes 0.5.7 and every 0.5 patch after it. A host
-built against 0.5.6, whose SONAME was the whole version, is rebuilt once against
-0.5.7. CI compares every build's library with its minor's last release by abidiff and
-fails on any change but an addition; an ABI change waits for the next minor. A host's
-package depends on `libdannan0.5` at the patch it was built with or later.
+Compatibility: from 0.6.0 a patch release keeps the ABI. The SONAME and the library's
+package are major.minor (`libdannan.so.0.6`, `libdannan0.6`), and the CMake package
+accepts any later patch of the minor it was asked for, so `find_package(dannan 0.6.0
+CONFIG)` takes 0.6.0 and every 0.6 patch after it. CI compares every build's library
+with its minor's last release by abidiff and fails on any change but an addition; an
+ABI change waits for the next minor. A host's package depends on `libdannan0.6` at the
+patch it was built with or later.
+
+The promise starts at a new minor because the old SONAME cannot carry it. 0.5.0 to
+0.5.5 were all `libdannan.so.0.5`, yet 0.5.4 changed the ABI: against 0.5.3 it removed
+five functions, among them the old `reach::simultaneous_open`, and changed the type of
+`NodeConfig::relay_drop_hook`. A host built against any 0.5 release, or 0.5.6's
+`libdannan.so.0.5.6`, is rebuilt once against 0.6.0. The library's interface is
+otherwise 0.5.6's.
 
 Tests: a process started through the `ChildProcess` fixture no longer outlives a test
 process that dies without running its destructors (a crash, an abort or SIGKILL).
