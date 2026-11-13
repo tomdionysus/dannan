@@ -1,0 +1,107 @@
+.\" Dannan - The Distributed Substrate
+.\" Copyright (C) 2026 Tom Cully <mail@tomcully.com>
+.\" Licensed under the GNU GPLv3 - see <https://www.gnu.org/licenses/gpl-3.0.html>
+.TH DANNAN-CA 1 2026-11-13 Dannan "Dannan tools"
+.SH NAME
+dannan-ca \- a Dannan cluster's certificate authority
+.SH SYNOPSIS
+.B dannan-ca init
+.B \-\-dir
+.I DIR
+.B \-\-name
+.I NAME
+.I KEY
+.RB [ \-\-days
+.IR N ]
+.br
+.B dannan-ca issue
+.B \-\-dir
+.I DIR
+.I KEY
+.B \-\-node
+.I ID
+.B \-\-public-key
+.I HEX
+.RB [ \-\-serial
+.IR N ]
+.RB [ \-\-days
+.IR N ]
+.br
+.B dannan-ca revoke
+.B \-\-dir
+.I DIR
+.I KEY
+.B \-\-node
+.I ID
+.RB [ \-\-serial
+.IR N ]
+.B \-\-reason
+.I TEXT
+.B \-\-out
+.I FILE
+.br
+.B dannan-ca show
+.I FILE
+.SH DESCRIPTION
+.B dannan-ca
+is a cluster's certificate authority. It runs on an operator's machine, never
+on a node. The CA's key is held in key custody under
+.IR DIR ,
+sealed under a systemd credential or a passphrase and never on disk in clear;
+the CA's certificate is
+.IR DIR /ca.pem.
+.SH COMMANDS
+.TP
+.B init
+Makes the CA named
+.I NAME
+in
+.IR DIR .
+An existing CA is never replaced. Under a credential, prints the new root, in
+hex, for
+.BR "systemd-creds encrypt" .
+.TP
+.B issue
+Prints a node certificate (PEM) for node
+.I ID
+over its public key
+.IR HEX ,
+as
+.B dannan-node \-\-show-identity
+printed them. The serial is random unless given.
+.TP
+.B revoke
+Writes a revocation of node
+.IR ID 's
+certificate with serial
+.I N
+to
+.IR FILE ,
+for
+.B dannan-node \-\-revocations
+.I FILE
+on any node. With no serial, or serial 0, every certificate of the node is
+revoked.
+.TP
+.B show
+Says what a certificate (PEM) or a revocation file holds.
+.SH KEY
+.I KEY
+is where the CA's key is unsealed from, one of:
+.TP
+.BI \-\-passphrase-env " VAR"
+the passphrase in the environment variable
+.IR VAR .
+.TP
+.BI \-\-credential " NAME" " \fR[\fB\-\-credentials-dir \fIDIR\fR]"
+the systemd credential
+.IR NAME .
+.SH OPTIONS
+.TP
+.BI \-\-days " N"
+How long the certificate is valid, in days.
+.SH EXIT STATUS
+0 on success, 1 when the command fails, 2 for a usage error.
+.SH SEE ALSO
+.BR dannan-import-macha (1),
+.BR dannan-version (1)
