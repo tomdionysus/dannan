@@ -1,5 +1,10 @@
 # Dannan - The Distributed Substrate
 
+[![CI](https://github.com/tomdionysus/dannan/actions/workflows/ci.yml/badge.svg)](https://github.com/tomdionysus/dannan/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/tomdionysus/dannan/graph/badge.svg)](https://codecov.io/gh/tomdionysus/dannan)
+[![CodeQL](https://github.com/tomdionysus/dannan/actions/workflows/codeql.yml/badge.svg)](https://github.com/tomdionysus/dannan/actions/workflows/codeql.yml)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+
 Dannan is the network layer for a cluster of trusted machines. It is a C++20
 library that makes a set of nodes, on any mix of home hardware and rented
 cloud and behind any NAT, behave as one network that the systems hosted on
