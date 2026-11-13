@@ -266,7 +266,7 @@ dannan-node ... --revocations revocation.bin
 
 ## Status
 
-Version 0.5.3. The library, wire versions 1 and 2, reachability and
+Version 0.5.4. The library, wire versions 1 and 2, reachability and
 identity are complete and tested. The interfaces may still change between
 minor versions while the hosted systems are built on them. Macha and
 AthenaSIP will be ported onto Dannan and Dagda later.

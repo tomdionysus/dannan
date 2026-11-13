@@ -54,27 +54,23 @@ including arm64; the port freezes on it. One item open: the macOS TSan handshake
 2026-11-11, on `develop` for the next release (not tagged; the port stays on 0.5.3): `cba69ea`, `Telemetry::set_bytes` with
 an empty value removes the field as the header says (it stored zero bytes; found by the Macha session in the port, reviewed
 by it; `Telemetry.EmptyBytesRemoveTheField`, macOS plain 640), and `fba9751`, the Boost floor comment.
-2026-11-12, hosted CI at Tom's word on `feature/ci` (`6631acb`, not merged or pushed): `tools/ci.sh <step>`, the workflows,
-Codecov (Tom adds the `CODECOV_TOKEN` secret), the badges; the style guide now asks the same of every project. Its first
-local runs in `debian:trixie` found, all open:
-- g++ with `DANNAN_WARNINGS_AS_ERRORS=ON` had never built (shadowed names, two annotation-only parameters, `__int128`
-  under -Wpedantic, two unbraced ifs). Fixed at Tom's word, now Macha has ported: `d7731eb` on `feature/gcc-werror`,
-  renames only; GCC's libstdc++ `-Wstringop-overflow`/`-Warray-bounds` false positives ignored by a pragma around
-  `net/codec.h`'s writer alone (scoped at the Macha session's review; approved). Every
-  target builds under g++ 14 -Werror; Debian g++ 641 passed (1 skipped as root), macOS 640. With the Macha session for
-  review; CI's g++ steps build with -Werror again (`70c4ebe`).
-- Linux clang 19: `LevelZero.AChunkLostWithTheSendersSessionEndsTheCircuitWithinTheBound` failed once at
-  `reach_paths_test.cpp:472` (`closes_unknown` 0). Reading `reach/paths.cpp:670`, the count rises only if a chunk
-  was in flight on A's session when it was severed; with none in flight the relay's close ends it, uncounted. Not proven.
-- g++ release: `Journal.ATypesOwnNoticeReplacesItsLanes` failed once at `net_client_test.cpp:1607`, with the Docker VM
-  shared with two other sessions' builds (one under amd64 emulation) and the host at load 25. Not yet read. Found the same day: Homebrew's
-`openssl@4` 4.1.0, installed 2026-11-09 13:04 as a dependency, sits in `/usr/local/include` ahead of MacPorts' OpenSSL 3,
-and `identity/certificate.cpp` does not compile against 4.1 (a deprecation under -Werror, two const `X509_NAME`); Debian
-and the Pis are on 3.5 and unaffected. Tom's ruling: point macOS at OpenSSL 3. Clang here searches `/usr/local/include`
-ahead of every `-isystem` and drops an `-I` that duplicates one, so the macOS builds take
-`-DOPENSSL_ROOT_DIR=/opt/local/libexec/openssl3` and `CMAKE_CXX_FLAGS="-I<repo>/build/ssl3-include
---system-header-prefix=openssl/"`, the directory a symlink to MacPorts' OpenSSL 3 headers (`build/scratch/sanitizers.sh`
-makes it). macOS plain on that: 639 of 639, linked to `/opt/local/libexec/openssl3`.
+2026-11-12 and 13, hosted CI at Tom's word: `tools/ci.sh <step>`, the workflows, Codecov, the badges; the style guide now
+asks the same of every project. g++ with `DANNAN_WARNINGS_AS_ERRORS=ON` had never built: fixed (`d7731eb`, renames only; GCC's
+libstdc++ false positives ignored around `net/codec.h`'s writer alone, `58404e8`, reviewed by the Macha session). The sanitizer
+steps build without -Werror (g++ warns inside libstdc++ and Asio when instrumented); macOS CI takes the runner's newest Xcode
+and OpenSSL 3's headers. GitHub's runners then failed tests that pass here, each fixed at Tom's word ("No, fix them"):
+- A real defect: a session the peer retired was dropped from the route tables untracked, so `Client::stop()` missed a call
+  waiting on it (the Node cancel test's 30 s). Every session made a route is now held for stop (`3a530b4`,
+  `Client.StoppingFailsACallOnASessionThePeerRetired`, failed before, passes after).
+- The simultaneous open retried a refusal at a fixed 5 ms, so two ends out of step on loopback stayed so on GitHub's x86-64
+  kernel; now a random 0.2 to 2 ms (`965f2c9`, `LevelZero.ASimultaneousOpenMeetsWhenTheEndsBeginOutOfStep`).
+- Tests: the lost-chunk relay tests dropped a chunk of B's answer on a fast runner (the hook now has the direction; `5615034`);
+  five journal tests stepped time before the call's write was recorded (`8f13846`, `0787a0f`); the gossip cap test read its
+  record after the step (`b43cd39`).
+The earlier one-off `LevelZero.AChunkLostWithTheSendersSessionEndsTheCircuitWithinTheBound` (local clang, once) has not
+recurred in CI; still unproven. Tagged 0.5.4 at Tom's word ("If it's ready, do a release on main") once every CI job was green.
+The macOS builds here keep `-DOPENSSL_ROOT_DIR=/opt/local/libexec/openssl3` and `CMAKE_CXX_FLAGS="-I<repo>/build/ssl3-include
+--system-header-prefix=openssl/"` (Homebrew's openssl@4 4.1.0 sits in `/usr/local/include`; `build/scratch/sanitizers.sh`).
 
 **Next, for a session starting here:** fix what the Macha session or the port finds. arm64 runs on inverbeg at nice 19 with
 GoogleTest in `~/dannan-arm64-deps/prefix`; the tests run there as root.
