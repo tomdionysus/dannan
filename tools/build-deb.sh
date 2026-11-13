@@ -49,6 +49,12 @@ case "$version" in
         ;;
 esac
 
+# One job per CPU unless the caller says otherwise.
+case " ${DEB_BUILD_OPTIONS:-} " in
+    *" parallel="*) ;;
+    *) export DEB_BUILD_OPTIONS="${DEB_BUILD_OPTIONS:+$DEB_BUILD_OPTIONS }parallel=$(nproc)" ;;
+esac
+
 cat >debian/changelog <<END
 dannan ($version) trixie; urgency=medium
 
