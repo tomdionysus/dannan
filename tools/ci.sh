@@ -93,9 +93,11 @@ case "$step" in
   abi)
     # A patch release keeps the ABI: the library is compared with the last release
     # of its minor, both built with debug information and judged by their public
-    # headers. abidiff fails on an incompatible change (its bit 8) or its own
-    # error (bits 1 and 2); an addition (bit 4 alone) is a patch's to make. The
-    # first release of a minor has nothing to keep.
+    # headers. Any change abidiff reports fails it: a changed type sets only its
+    # "change" bit (4), never "incompatible" (8), which it keeps for removals.
+    # Added symbols are left out of the report, since an addition is a patch's to
+    # make. A virtual added to an interface changes its vtable, and is reported.
+    # The first release of a minor has nothing to keep.
     version=$(sed -n 's/^project(dannan VERSION \([0-9.]*\).*/\1/p' "$top/CMakeLists.txt")
     minor=${version%.*}
     # Between releases the tree may still say the last one's version, which is
@@ -129,10 +131,10 @@ case "$step" in
     fi
     echo "abi: $version against $base"
     set +e
-    abidiff $ignore --no-show-locs --headers-dir1 "$out/abi/base/include/dannan" --headers-dir2 "$out/abi/current/include/dannan" "$old" "$new"
+    abidiff $ignore --no-added-syms --no-show-locs --headers-dir1 "$out/abi/base/include/dannan" --headers-dir2 "$out/abi/current/include/dannan" "$old" "$new"
     rc=$?
     set -e
-    if [ $((rc & 11)) -ne 0 ]; then
+    if [ "$rc" -ne 0 ]; then
       echo "abi: $version breaks $base's ABI (abidiff $rc): a patch may not; make it a minor release" >&2
       exit 1
     fi

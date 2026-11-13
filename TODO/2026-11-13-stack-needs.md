@@ -163,6 +163,11 @@ figures. The proposal is to add to `dannan-bench`:
 - payloads from 64 B to 1 KiB, at offered rates up to 20k/s;
 - reports of msgs/s and p50, p99 and p99.9 latency.
 
+Tom's PUBACK target for Lir (2026-11-13): p99 under 50 ms at QoS 1 with k = 2. Dannan's
+share of that is the replication round: the edge's call to the shard primary, then the
+primary's message to its replicas. So the bench reports p99 for request and reply, at
+1 to 64 envelopes of 64 B to 1 KiB, as the network's part of the 50 ms.
+
 It runs on the compose bed and loopback here. Two real machines (the Pis, or the
 laptop against a Pi) wait for Tom's word. It also answers whether
 `max_pending_replies` = 512 (`net/outbound.h:27`) limits Dagda's group commit. Lir
