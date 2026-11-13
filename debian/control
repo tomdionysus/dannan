@@ -1,0 +1,64 @@
+Source: dannan
+Section: libs
+Priority: optional
+Maintainer: tomdionysus <tomdionysus@users.noreply.github.com>
+Build-Depends:
+ debhelper-compat (= 13),
+ cmake,
+ libboost-dev (>= 1.83),
+ libssl-dev,
+ libyaml-cpp-dev,
+ libgtest-dev <!nocheck>,
+ libgmock-dev <!nocheck>,
+Standards-Version: 4.7.0
+Homepage: https://github.com/tomdionysus/dannan
+Vcs-Git: https://github.com/tomdionysus/dannan.git
+Vcs-Browser: https://github.com/tomdionysus/dannan
+Rules-Requires-Root: no
+
+Package: libdannan0.5.5
+Architecture: any
+Multi-Arch: same
+Depends:
+ ${shlibs:Depends},
+ ${misc:Depends},
+Description: network layer for a cluster of trusted machines
+ Dannan makes a set of nodes, on any mix of home hardware and rented cloud
+ and behind any NAT, behave as one network that the systems hosted on them
+ can transmit over: the virtual PHY and MAC. It carries frames between nodes
+ and knows who the nodes are, and it stores nothing.
+ .
+ This package holds the shared library. Each release is its own package,
+ since no release promises another's ABI yet.
+
+Package: libdannan-dev
+Architecture: any
+Multi-Arch: same
+Section: libdevel
+Depends:
+ libdannan0.5.5 (= ${binary:Version}),
+ libboost-dev (>= 1.83),
+ libssl-dev,
+ ${misc:Depends},
+Description: network layer for a cluster of trusted machines (development files)
+ Dannan makes a set of nodes, on any mix of home hardware and rented cloud
+ and behind any NAT, behave as one network that the systems hosted on them
+ can transmit over.
+ .
+ This package holds the headers and the CMake package configuration:
+ find_package(dannan CONFIG), then link dannan::dannan.
+
+Package: dannan-tools
+Architecture: any
+Section: net
+Depends:
+ ${shlibs:Depends},
+ ${misc:Depends},
+Description: network layer for a cluster of trusted machines (operator tools)
+ Dannan makes a set of nodes, on any mix of home hardware and rented cloud
+ and behind any NAT, behave as one network that the systems hosted on them
+ can transmit over.
+ .
+ This package holds dannan-ca, the cluster's certificate authority;
+ dannan-import-macha, which turns Macha's state files into Dannan's once at
+ the first cutover; and dannan-version.
