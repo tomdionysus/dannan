@@ -35,7 +35,9 @@ arm64 and fails on any lintian error or warning.
 
 The version comes from `git describe`. The tag `0.5.6` gives `0.5.6`; a build
 three commits later gives `0.5.6+git3.gabc1234`, which sorts after `0.5.6` and
-before `0.5.7`; uncommitted changes add `.dirty`. A build of a tag must match
+before `0.5.7`. Release tags sit on `main`, so a build on `develop`, where
+none is reachable, gives the tree's version and the commit,
+`0.5.6+git.gabc1234`. Uncommitted changes add `.dirty`. A build of a tag must match
 `project(dannan VERSION ...)` in `CMakeLists.txt`, and the library's package
 named in `debian/control` must be `libdannan` and that version, or the script
 refuses it. A release's version commit changes all three. Only builds of a
