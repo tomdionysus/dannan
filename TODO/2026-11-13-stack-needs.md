@@ -198,6 +198,44 @@ bends around Dannan, with paths in `../macha`. Most are small and Dannan's to fi
 Item 12, the store cutover, needs nothing new of Dannan: Dagda registers Macha's store
 numbers itself.
 
+**Macha's function inventory, row by row against 0.5.3**
+(`../macha/build/dannan-inventory-walk.md`). Of 95 rows, 37 are served, 8 served with
+friction and 22 not served; 28 are out of scope (Macha's own, or store rows waiting
+for Dagda).
+
+Most rows not served are pieces Dannan has but Macha still runs as its own:
+- placement, supervision, activity clocks and node events;
+- the wait guard, walk budgets, retry, published snapshots, observation, durable file
+  and injected time.
+Macha retires those as its own work, some at the store cutover. The new friction:
+
+12. Call watches. Macha zeroes the node-wide watches and polls its synchronous calls
+    (`src/cluster/dannan_bridge.cpp:55-59`, `rpc_wait.cpp`). The per-call `CallWatch`
+    on `Routes::call` is meant for owners; Macha moves onto it.
+13. `connections_canonical`: the node leaves this core field unwritten, so Macha fills
+    it from client stats (`src/cluster/cluster.cpp:168-170`). Fix: the node writes it.
+14. Enum casts of `FrameType` and `WorkClass` (`dannan_bridge.hpp:50-55`): Macha's to
+    remove by using Dannan's enums.
+15. Two memory fits. Macha fits the limit itself and passes `memory_limit_bytes = 0`,
+    so `fit_memory_limit` is unused (`dannan_bridge.cpp:71-77`). One fit should go,
+    likely Macha's, once its holders are hosted owners.
+16. Two durability epochs a process (`node_identity.cpp:45`): this goes with the store
+    cutover.
+17. Key-derivation labels are repeated by hand (`"dannan/auth/1"`,
+    `"dannan/cluster-id/1"`, `dannan_bridge.cpp:81-88`), so a renamed label would
+    silently split the cluster. Fix: export the labels as constants, or a
+    `ClusterKey::from_master`.
+18. Macha's `NodeId` and `Hash256` are now aliases of Dannan's (`src/types.hpp` on the
+    cutover branch). Their layout, comparisons and `to_string` stay stable: part of
+    P1's ABI promise.
+
+Not decidable from reading, to be measured on the nodes:
+- BBR and UPnP against a real gateway;
+- whether the connectivity refresh's blocking of its caller is new. The asynchronous
+  `refresh_public_connectivity` exists (`context.h:80-85`).
+- whether the reassembly reserve, counted inside the memory total, leaves Macha's
+  holders less room.
+
 ### P7. Alpine (Lugh, for Raven)
 
 Built and passed on 2026-11-13, once, in a container here: Alpine 3.24.2 (musl), GCC
