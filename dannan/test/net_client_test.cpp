@@ -305,6 +305,36 @@ TEST(Client, StoppingFailsACallOnARetiredSession) {
   EXPECT_LT(std::chrono::steady_clock::now() - started, 3s);
 }
 
+// The same when the peer retired the session: its notice makes this end's
+// session unusable, and the next call that looks for a route drops it from
+// the table. The call still waiting on it is stop()'s to fail.
+TEST(Client, StoppingFailsACallOnASessionThePeerRetired) {
+  Io io;
+  std::atomic<bool> retire{false};
+  ClientOptions tuning;
+  tuning.place_hook = [&](Session& session) {
+    if (retire.exchange(false)) session.retire();
+  };
+  Node a(io), b(io, tuning);
+  auto done = std::make_shared<std::promise<CallOutcome>>();
+  auto pending = done->get_future();
+  a.client->call(b.self, slow, {}, FrameType::control, io.context.get_executor(), [done](CallOutcome outcome) { done->set_value(std::move(outcome)); });
+  ASSERT_TRUE(b.gate.wait_for_entries(1));
+  // b retires the session it adopted, which holds a's blocked call, by placing a call on it.
+  retire = true;
+  auto back = std::async(std::launch::async, [&] { return call(b, a.self); });
+  ASSERT_TRUE(eventually([&] { return !a.client->has_route(b.self.id, Lane::control); }));
+  // a's next call drops the retired session from its table and dials again.
+  EXPECT_TRUE(call(a, b.self).reply);
+  const auto started = std::chrono::steady_clock::now();
+  a.client->stop();
+  ASSERT_EQ(pending.wait_for(3s), std::future_status::ready) << "the call on the peer-retired session outlived stop()";
+  EXPECT_FALSE(pending.get().reply);
+  EXPECT_LT(std::chrono::steady_clock::now() - started, 3s);
+  b.gate.open();
+  (void)back.get();
+}
+
 // A call that makes no progress for the lane's deadline fails, transiently,
 // for the caller to retry; one that is slow but inside it is untouched; zero
 // means no deadline.

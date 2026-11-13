@@ -810,12 +810,14 @@ void Client::dialled(const std::string& key, const Target& target, Lane lane, st
         if (preferred(*session, *slot)) {
           retire.push_back(slot);
           slot = session;
+          hold_locked(session);
         } else {
           retire.push_back(session);
         }
         ++_stats.retired;
       } else {
         slot = session;
+        hold_locked(session);
       }
       reconcile_locked(route_key, retire);
       route = route_locked(route_key.first, lane);
@@ -870,12 +872,14 @@ void Client::admit(const std::shared_ptr<Session>& session) {
       if (preferred(*session, *slot)) {
         retire.push_back(slot);
         slot = session;
+        hold_locked(session);
       } else {
         retire.push_back(session);
       }
       ++_stats.retired;
     } else {
       slot = session;
+      hold_locked(session);
     }
     reconcile_locked(key, retire);
     // A reverse dial some calls were waiting for.
@@ -911,8 +915,7 @@ void Client::retire_sessions(Retire& retire) {
     if (stopped) {
       _operations += retire.size();
     } else {
-      std::erase_if(_retiring, [](const std::weak_ptr<Session>& weak) { return weak.expired(); });
-      for (const auto& session : retire) _retiring.push_back(session);
+      for (const auto& session : retire) hold_locked(session);
     }
   }
   for (auto& loser : retire) {
@@ -956,6 +959,14 @@ void Client::reconcile_locked(const RouteKey& key, Retire& retire) {
     _outbound.erase(outbound);
   }
   ++_stats.retired;
+}
+
+void Client::hold_locked(const std::shared_ptr<Session>& session) {
+  std::erase_if(_held, [&](const std::weak_ptr<Session>& weak) {
+    const auto held = weak.lock();
+    return !held || held == session;
+  });
+  _held.push_back(session);
 }
 
 std::shared_ptr<Session> Client::route_locked(const identity::NodeId& peer, Lane lane) {
@@ -1084,12 +1095,14 @@ void Client::install_dialled(const std::shared_ptr<Session>& session) {
         if (preferred(*session, *slot)) {
           retire.push_back(slot);
           slot = session;
+          hold_locked(session);
         } else {
           retire.push_back(session);
         }
         ++_stats.retired;
       } else {
         slot = session;
+        hold_locked(session);
       }
       reconcile_locked(key, retire);
       if (const auto found = _reverse.find(key); found != _reverse.end()) {
@@ -1530,11 +1543,11 @@ void Client::stop() {
       for (auto& [_, session] : *table) routes.push_back(session);
       table->clear();
     }
-    // And the sessions retired off the route table, which may still hold
-    // calls waiting for an answer.
-    for (const auto& weak : _retiring)
-      if (auto session = weak.lock()) routes.push_back(std::move(session));
-    _retiring.clear();
+    // And those off the tables, retired by either end, which may still hold
+    // calls waiting for an answer. Each once.
+    for (const auto& weak : _held)
+      if (auto session = weak.lock(); session && std::find(routes.begin(), routes.end(), session) == routes.end()) routes.push_back(std::move(session));
+    _held.clear();
     dialling.assign(_dialling.begin(), _dialling.end());
     waiting.swap(_dials);
   }
