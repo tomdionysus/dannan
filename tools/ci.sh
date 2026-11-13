@@ -27,6 +27,9 @@ out=${DANNAN_CI_OUT:-$top/build-ci}
 jobs=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 step=${1:-}
 
+# Warnings are errors in every build but the sanitizers': instrumented, g++ warns
+# inside libstdc++ (regex, -Wmaybe-uninitialized) and Asio (-Wtsan, its fences),
+# not in Dannan. The release and clang steps hold the warning gate.
 configure() {
   dir="$1"
   shift
@@ -57,12 +60,12 @@ case "$step" in
     ;;
   asan)
     flags="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined"
-    configure asan -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_CXX_FLAGS="$flags" -DCMAKE_EXE_LINKER_FLAGS="$flags" -DCMAKE_SHARED_LINKER_FLAGS="$flags"
+    configure asan -DCMAKE_BUILD_TYPE=RelWithDebInfo -DDANNAN_WARNINGS_AS_ERRORS=OFF -DCMAKE_CXX_FLAGS="$flags" -DCMAKE_EXE_LINKER_FLAGS="$flags" -DCMAKE_SHARED_LINKER_FLAGS="$flags"
     ASAN_OPTIONS=detect_stack_use_after_return=1 UBSAN_OPTIONS=print_stacktrace=1 "$out/asan/dannan_tests"
     ;;
   tsan)
     flags="-fsanitize=thread -fno-omit-frame-pointer"
-    configure tsan -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_CXX_FLAGS="$flags" -DCMAKE_EXE_LINKER_FLAGS="$flags" -DCMAKE_SHARED_LINKER_FLAGS="$flags"
+    configure tsan -DCMAKE_BUILD_TYPE=RelWithDebInfo -DDANNAN_WARNINGS_AS_ERRORS=OFF -DCMAKE_CXX_FLAGS="$flags" -DCMAKE_EXE_LINKER_FLAGS="$flags" -DCMAKE_SHARED_LINKER_FLAGS="$flags"
     TSAN_OPTIONS="halt_on_error=1 second_deadlock_stack=1 suppressions=$top/dannan/test/tsan-suppressions.txt" "$out/tsan/dannan_tests"
     ;;
   package)
