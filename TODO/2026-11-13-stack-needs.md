@@ -10,7 +10,8 @@ rules.
 
 **Tom's rulings, 2026-11-13, answering each question directly:**
 - **P1:** the ABI promise. Patches keep the ABI under `abidiff` in CI; the SONAME and
-  package go back to `libdannan.so.0.5` and `libdannan0.5`, and the CMake package to
+  package go back to major.minor (released as 0.6.0: `libdannan.so.0.6`, `libdannan0.6`, since 0.5.4 had
+  already broken `libdannan.so.0.5`'s ABI), and the CMake package to
   `SameMinorVersion`.
 - **P2:** build the partition reading. An even split is a minority. A join adds to the
   agreed roster, and only an operator's retire removes a node.
@@ -259,7 +260,7 @@ Not decidable from reading, to be measured on the nodes:
 - whether the reassembly reserve, counted inside the memory total, leaves Macha's
   holders less room.
 
-### P8. A deferred reply (Dagda, 2026-11-13; first in 0.6.0, Tom)
+### P8. A deferred reply (Dagda, 2026-11-13; first in 0.7.0, Tom)
 
 `RequestHandler` answers synchronously and "may block" (`net/scheduler.h:101-103`), so a
 handler waiting on a group commit's fsync holds one of its class's bounded workers.
@@ -272,7 +273,8 @@ never grouped more than 2 calls, 309,385 of 479,993 calls were refused, and p99 
 - The deferred answers count against a per-class bound and end at the caller's
   deadline.
 - A group-commit server then holds thousands of waiting calls on no workers.
-- The handler's signature changes, so it goes in 0.6.0, first.
+- The handler's signature changes, so it goes in 0.7.0, first. The synchronous
+  signature stays as an overload, so existing handlers change only to defer.
 
 ### P7. Alpine (Lugh, for Raven)
 

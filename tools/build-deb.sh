@@ -14,7 +14,7 @@
 #
 # The version comes from `git describe`: the tag 0.5.6 gives 0.5.6, and a build
 # three commits later 0.5.6+git3.gabc1234, which sorts after 0.5.6 and before
-# 0.5.7; where no tag is reachable (develop), the tree's version and the commit,
+# 0.6.0; where no tag is reachable (develop), the tree's version and the commit,
 # 0.5.6+git.gabc1234. Uncommitted changes add .dirty. DEB_BUILD_OPTIONS=nocheck skips the
 # tests. debian/control names the library's package for the CMake version's
 # major.minor, the SONAME.

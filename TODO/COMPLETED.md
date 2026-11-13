@@ -3,15 +3,18 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
-## Handoff, 2026-11-13: 0.5.7
+## Handoff, 2026-11-13: 0.6.0
 
-The ABI promise (Tom, 2026-11-13): the SONAME and package are `libdannan.so.0.5` and
-`libdannan0.5`, the CMake package `SameMinorVersion`, `dh_makeshlibs -V`, and
+The ABI promise (Tom, 2026-11-13): the SONAME and package are `libdannan.so.0.6` and
+`libdannan0.6`, the CMake package `SameMinorVersion`, `dh_makeshlibs -V`, and
 `tools/ci.sh abi` in CI on both architectures. The step was proven in a trixie
 container three ways: the tree against 0.5.6 passes, a field added to a public struct
 fails, and an added function passes. Also the `ChildProcess` reaper Lugh asked for: its
-two tests fail without it (the orphan outlived its 12 s) and pass with it, on macOS;
-647 passed on macOS with BBR skipped.
+two tests fail without it (the orphan outlived its 12 s) and pass with it, and with
+a third (eight children started on threads at once) pass on macOS plain, under ASan
+and under TSan. Macha's review then found 0.5.4 had changed `libdannan.so.0.5`'s ABI
+(the step with `DANNAN_ABI_BASE=0.5.3`: five functions removed and one changed; 0.5.5
+matches), so at Tom's word the release is 0.6.0, under a SONAME nothing used before.
 
 ## Handoff, 2026-11-13: 0.5.6
 
@@ -63,7 +66,7 @@ TSan 624 each at that point; later gates and the two open items are in the repor
 
 ## Releases
 
-- **0.5.7** (2026-11-13, `main`, tag `0.5.7`, at Tom's word given in advance: once hosted CI was green on every job
+- **0.6.0** (2026-11-13, `main`, tag `0.6.0`, at Tom's word given in advance: once hosted CI was green on every job
   and Macha and Lugh had reviewed it): see the handoff above. Gates: see the ACTIVE note.
 
 - **0.5.6** (2026-11-13, `main`, tag `0.5.6`, pushed at Tom's word): see the handoff above. Gates, hosted CI on `develop`
