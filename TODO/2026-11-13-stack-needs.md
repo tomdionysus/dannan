@@ -259,6 +259,21 @@ Not decidable from reading, to be measured on the nodes:
 - whether the reassembly reserve, counted inside the memory total, leaves Macha's
   holders less room.
 
+### P8. A deferred reply (Dagda, 2026-11-13; first in 0.6.0, Tom)
+
+`RequestHandler` answers synchronously and "may block" (`net/scheduler.h:101-103`), so a
+handler waiting on a group commit's fsync holds one of its class's bounded workers.
+Dagda's prototype measured it: one call per message at 8,000/s on loopback, a replica
+never grouped more than 2 calls, 309,385 of 479,993 calls were refused, and p99 was
+240 ms. Batching on the caller (as Lir does) passed at p99 14 to 23 ms.
+
+- A handler returns "deferred" and keeps a `Reply` (`net/session.h:69-84`), callable
+  once from any thread.
+- The deferred answers count against a per-class bound and end at the caller's
+  deadline.
+- A group-commit server then holds thousands of waiting calls on no workers.
+- The handler's signature changes, so it goes in 0.6.0, first.
+
 ### P7. Alpine (Lugh, for Raven)
 
 Built and passed on 2026-11-13, once, in a container here: Alpine 3.24.2 (musl), GCC
