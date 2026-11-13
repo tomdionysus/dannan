@@ -58,6 +58,20 @@ TEST(Telemetry, FieldsAreTaggedAndDefaultsOmitted) {
   EXPECT_EQ(t.fields().size(), 1u);
 }
 
+// Raw bytes too: an empty value is the default, so it removes the field, and
+// a cleared hosted field reads as absent, never as zero bytes to decode.
+TEST(Telemetry, EmptyBytesRemoveTheField) {
+  Telemetry t;
+  t.set_bytes(900, net::Bytes{});
+  EXPECT_TRUE(t.fields().empty());
+  t.set_bytes(900, net::Bytes{1, 2});
+  t.set_u64(field::sequence, 1);
+  t.set_bytes(900, net::Bytes{});
+  ASSERT_EQ(t.fields().size(), 1u);
+  EXPECT_EQ(t.fields()[0].first, field::sequence);
+  EXPECT_EQ(decode_telemetry(encode_telemetry(t)).fields(), t.fields());
+}
+
 // A record: u32 length, then u16 id, u16 length, value per field; a set:
 // DNNTEL01, u32 count, records.
 TEST(Telemetry, EncodesAsTel3) {

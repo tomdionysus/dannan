@@ -296,8 +296,10 @@ TEST(Node, GossipWaitsOutItsCapHoweverMuchDemandThereIs) {
   }));
   std::this_thread::sleep_for(50ms);
   EXPECT_LE(seen_at_a(), before);
-  time.advance(1s);
+  // Read before the step: what it lets out may be sampled before a later wake
+  // moves the record on, and then nothing more goes until time moves again.
   const auto after = local();
+  time.advance(1s);
   EXPECT_TRUE(eventually([&] {
     pair.b->context().telemetry().refresh();
     return seen_at_a() >= after;

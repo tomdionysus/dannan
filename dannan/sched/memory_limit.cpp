@@ -12,6 +12,9 @@
 namespace dannan::sched {
 namespace {
 
+// A GCC and clang extension, which -Wpedantic would otherwise refuse.
+__extension__ typedef unsigned __int128 u128;
+
 std::string mib(uint64_t bytes) { return std::to_string(bytes >> 20) + "M"; }
 
 }  // namespace
@@ -25,7 +28,7 @@ std::optional<std::string> fit_to_limit(uint64_t limit, MemoryPlan& plan) {
     std::string said;
     for (auto& part : parts) {
       const auto was = part.bytes;
-      part.bytes = std::max<uint64_t>(1ull << 20, static_cast<uint64_t>(static_cast<unsigned __int128>(part.bytes) * limit / total));
+      part.bytes = std::max<uint64_t>(1ull << 20, static_cast<uint64_t>(static_cast<u128>(part.bytes) * limit / total));
       said += (said.empty() ? "" : ", ") + part.name + " " + mib(was) + " to " + mib(part.bytes);
     }
     return said;
