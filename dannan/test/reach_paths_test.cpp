@@ -260,6 +260,63 @@ TEST(LevelZero, ASimultaneousOpenTakesOnlyTheFarEnd) {
   ::close(fb);
 }
 
+// One byte, without SIGPIPE if the far end reset the connection.
+ssize_t send_byte(int fd, char byte) {
+#ifdef MSG_NOSIGNAL
+  return ::send(fd, &byte, 1, MSG_NOSIGNAL);
+#else
+  const int one = 1;
+  ::setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
+  return ::send(fd, &byte, 1, 0);
+#endif
+}
+
+// The far end's connect completes in this end's backlog before this end's accept
+// runs. A retry that comes between must take it, not close the listener on it: the
+// far end already holds that connection as met (the Macha session's review).
+TEST(LevelZero, ARetryTakesTheFarEndQueuedOnItsListener) {
+  Io io;
+  const auto a = test::free_port();
+  const auto b = test::free_port();
+  // The far end, by hand, from its punch port once a's listens. Until then nothing
+  // holds that port, so a's connects are refused and it listens between them.
+  const int far = ::socket(AF_INET, SOCK_STREAM, 0);
+  std::atomic<bool> queued{false};
+  std::promise<std::pair<int, std::string>> at_a;
+  simultaneous_open(
+      io.context, a, {"127.0.0.1", b}, 3s, [&](int fd, int, std::string why) { at_a.set_value({fd, why}); },
+      [&] {
+        // On a's strand, so its accept cannot run first: the connect completes in
+        // the kernel, into the listener's backlog.
+        if (queued.exchange(true)) return;
+        const int one = 1;
+        ::setsockopt(far, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+        sockaddr_in from{};
+        from.sin_family = AF_INET;
+        from.sin_port = htons(b);
+        from.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        EXPECT_EQ(::bind(far, reinterpret_cast<sockaddr*>(&from), sizeof(from)), 0);
+        sockaddr_in to{};
+        to.sin_family = AF_INET;
+        to.sin_port = htons(a);
+        to.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        EXPECT_EQ(::connect(far, reinterpret_cast<sockaddr*>(&to), sizeof(to)), 0);
+      });
+  const auto [fa, why_a] = at_a.get_future().get();
+  ASSERT_TRUE(queued.load()) << why_a;
+  ASSERT_GE(fa, 0) << why_a;
+  ::fcntl(fa, F_SETFL, ::fcntl(fa, F_GETFL) & ~O_NONBLOCK);
+  char got = 0;
+  ASSERT_EQ(send_byte(far, 'x'), 1);
+  ASSERT_EQ(::recv(fa, &got, 1, MSG_WAITALL), 1);
+  EXPECT_EQ(got, 'x');
+  ASSERT_EQ(send_byte(fa, 'y'), 1);
+  ASSERT_EQ(::recv(far, &got, 1, MSG_WAITALL), 1);
+  EXPECT_EQ(got, 'y');
+  ::close(fa);
+  ::close(far);
+}
+
 TEST(LevelZero, ASimultaneousOpenToNobodyGivesUp) {
   Io io;
   std::promise<std::pair<int, std::string>> done;
