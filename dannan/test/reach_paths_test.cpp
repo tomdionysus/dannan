@@ -19,6 +19,7 @@
 #include <unistd.h>
 
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/steady_timer.hpp>
 #include <fstream>
 #include <future>
 #include <thread>
@@ -180,6 +181,27 @@ TEST(LevelZero, ASimultaneousOpenConnectsBothEnds) {
   EXPECT_EQ(std::string(got, 2), "hi");
   ::close(fa);
   ::close(fb);
+}
+
+// The ends' clocks and schedulers never agree exactly. Where nothing drops a SYN
+// (loopback, a LAN) the first to connect is refused at once, and if both then retry
+// in step they stay out of step: the open must still meet within the window.
+TEST(LevelZero, ASimultaneousOpenMeetsWhenTheEndsBeginOutOfStep) {
+  Io io;
+  const auto a = test::free_port();
+  const auto b = test::free_port();
+  std::promise<std::pair<int, std::string>> at_a, at_b;
+  simultaneous_open(io.context, a, {"127.0.0.1", b}, 3s, [&](int fd, int, std::string why) { at_a.set_value({fd, why}); });
+  asio::steady_timer late(io.context, std::chrono::microseconds(2500));
+  late.async_wait([&](const boost::system::error_code&) {
+    simultaneous_open(io.context, b, {"127.0.0.1", a}, 3s, [&](int fd, int, std::string why) { at_b.set_value({fd, why}); });
+  });
+  const auto [fa, why_a] = at_a.get_future().get();
+  const auto [fb, why_b] = at_b.get_future().get();
+  EXPECT_GE(fa, 0) << why_a;
+  EXPECT_GE(fb, 0) << why_b;
+  for (const int fd : {fa, fb})
+    if (fd >= 0) ::close(fd);
 }
 
 TEST(LevelZero, ASimultaneousOpenToNobodyGivesUp) {
@@ -493,15 +515,20 @@ TEST(LevelZero, AChunkLostOnTheWayToTheFarEndEndsItWithinTheBound) {
 }
 
 namespace {
-// A circuit A to B over the relay with one chunk lost there, `forwarding` or on receipt:
-// the first the relay sees once the test arms it, after the session is up. A's end then
-// closes in order, its count exact, and the bounds are what end it.
+// A circuit A to B over the relay with one chunk of A's upload lost there, `forwarding`
+// or on receipt: the first toward B from the 64th on (of 128), past the session's
+// handshake and before the upload ends, however fast it runs. A chunk of B's answer is
+// never the one: A's count would be exact without it. A's end then closes in order,
+// its count exact, and the bounds are what end it.
 std::string counters(Cluster& cluster) {
   std::string out;
   for (auto* node : {cluster.a.get(), cluster.hub.get(), cluster.b.get()}) {
     const auto paths = node->diagnostics().paths;
     out += "unknown=" + std::to_string(paths.closes_unknown) + " expired=" + std::to_string(paths.relay_closes_expired) +
-           " finishes=" + std::to_string(paths.finishes_expired) + " ends=" + std::to_string(paths.ends) + "; ";
+           " finishes=" + std::to_string(paths.finishes_expired) + " ends=" + std::to_string(paths.ends) +
+           " ends_lost=" + std::to_string(paths.relay_ends_lost) + " relays_made=" + std::to_string(paths.relays_made) +
+           " punches_made=" + std::to_string(paths.punches_made) + " upgrades=" + std::to_string(paths.upgrades_made) +
+           " relayed=" + std::to_string(paths.relayed_bytes) + " circuits=" + std::to_string(paths.circuits.size()) + "; ";
   }
   return out;
 }
@@ -512,7 +539,10 @@ struct LostChunk {
   explicit LostChunk(bool forwarding)
       : cluster(true, PathClass::relay_only, PathClass::relay_only, std::chrono::minutes(1), 32, 3s, [this, forwarding](NodeConfig& c) {
           c.relay_finish_wait = 300ms;
-          if (c.relay) c.relay_drop_hook = [armed = armed, forwarding](uint64_t, bool at) { return at == forwarding && armed->exchange(false); };
+          if (c.relay)
+            c.relay_drop_hook = [armed = armed, forwarding](uint64_t sequence, bool at, bool toward_b) {
+              return at == forwarding && toward_b && sequence >= 64 && armed->exchange(false);
+            };
         }) {}
 };
 }  // namespace
@@ -526,16 +556,15 @@ TEST(LevelZero, ARelayLetsACountedCloseGoWhenItsChunksNeverCome) {
   const auto peer = cluster.record(*cluster.b, *cluster.a);
   ASSERT_TRUE(peer.has_value());
   const auto ends_before = cluster.b->diagnostics().paths.ends;
+  *lost.armed = true;
   auto transfer = std::async(std::launch::async, [&] {
     return cluster.a->context().routes().call_and_wait(*peer, echo_data, net::Bytes(8 * 1024 * 1024, 7), sched::FrameType::foreground, 30s);
   });
-  ASSERT_TRUE(eventually([&] { return data_circuits(*cluster.hub) > 0 && cluster.hub->diagnostics().paths.relayed_bytes > 256 * 1024; }));
-  *lost.armed = true;
   ASSERT_TRUE(eventually([&] { return !lost.armed->load(); }));
   // A closes its relayed session: its end drains in order and sends an exact count.
   cluster.a->close_route(cluster.b->context().identity().id(), net::Lane::data, "closed by the test");
-  (void)transfer.get();
-  EXPECT_TRUE(eventually([&] { return cluster.hub->diagnostics().paths.relay_closes_expired == 1; }, 10s)) << counters(cluster);
+  const auto ended = transfer.get();
+  EXPECT_TRUE(eventually([&] { return cluster.hub->diagnostics().paths.relay_closes_expired == 1; }, 10s)) << counters(cluster) << ended.failure;
   EXPECT_TRUE(eventually([&] { return data_circuits(*cluster.hub) == 0; }, 10s));
   EXPECT_TRUE(eventually([&] { return cluster.b->diagnostics().paths.ends <= ends_before; }, 10s));
 }
@@ -549,15 +578,14 @@ TEST(LevelZero, AFarEndStopsWaitingForAChunkThatNeverComes) {
   const auto peer = cluster.record(*cluster.b, *cluster.a);
   ASSERT_TRUE(peer.has_value());
   const auto ends_before = cluster.b->diagnostics().paths.ends;
+  *lost.armed = true;
   auto transfer = std::async(std::launch::async, [&] {
     return cluster.a->context().routes().call_and_wait(*peer, echo_data, net::Bytes(8 * 1024 * 1024, 7), sched::FrameType::foreground, 30s);
   });
-  ASSERT_TRUE(eventually([&] { return data_circuits(*cluster.hub) > 0 && cluster.hub->diagnostics().paths.relayed_bytes > 256 * 1024; }));
-  *lost.armed = true;
   ASSERT_TRUE(eventually([&] { return !lost.armed->load(); }));
   cluster.a->close_route(cluster.b->context().identity().id(), net::Lane::data, "closed by the test");
-  (void)transfer.get();
-  EXPECT_TRUE(eventually([&] { return cluster.b->diagnostics().paths.finishes_expired == 1; }, 10s)) << counters(cluster);
+  const auto ended = transfer.get();
+  EXPECT_TRUE(eventually([&] { return cluster.b->diagnostics().paths.finishes_expired == 1; }, 10s)) << counters(cluster) << ended.failure;
   EXPECT_TRUE(eventually([&] { return cluster.b->diagnostics().paths.ends <= ends_before; }, 10s));
 }
 
