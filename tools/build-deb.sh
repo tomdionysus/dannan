@@ -14,7 +14,8 @@
 #
 # The version comes from `git describe`: the tag 0.5.6 gives 0.5.6, and a build
 # three commits later 0.5.6+git3.gabc1234, which sorts after 0.5.6 and before
-# 0.5.7. Uncommitted changes add .dirty. DEB_BUILD_OPTIONS=nocheck skips the
+# 0.5.7; where no tag is reachable (develop), the tree's version and the commit,
+# 0.5.6+git.gabc1234. Uncommitted changes add .dirty. DEB_BUILD_OPTIONS=nocheck skips the
 # tests. debian/control names the library's package for the CMake version.
 
 set -eu
@@ -22,10 +23,16 @@ set -eu
 top=$(git rev-parse --show-toplevel)
 cd "$top"
 
-describe=$(git describe --tags --match '[0-9]*.[0-9]*.[0-9]*' --dirty)
-version=$(echo "$describe" | sed -E 's/-([0-9]+)-g([0-9a-f]+)/+git\1.g\2/; s/-dirty$/.dirty/')
-
 project=$(sed -nE 's/^project\(dannan VERSION ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' CMakeLists.txt)
+
+# Release tags sit on main's release merges, which develop never merges back: a
+# build where none is reachable is the tree's version and the commit.
+if describe=$(git describe --tags --match '[0-9]*.[0-9]*.[0-9]*' --dirty 2>/dev/null); then
+    version=$(echo "$describe" | sed -E 's/-([0-9]+)-g([0-9a-f]+)/+git\1.g\2/; s/-dirty$/.dirty/')
+else
+    describe=$(git describe --always --dirty)
+    version="$project+git.g$(echo "$describe" | sed -E 's/-dirty$/.dirty/')"
+fi
 library=$(sed -n 's/^Package: \(libdannan[0-9].*\)/\1/p' debian/control)
 if [ "$library" != "libdannan$project" ]; then
     echo "build-deb.sh: debian/control names $library and CMakeLists.txt says $project" >&2
