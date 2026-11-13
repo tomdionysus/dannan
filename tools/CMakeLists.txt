@@ -35,3 +35,5 @@ target_include_directories(dannan-bench PRIVATE "${PROJECT_SOURCE_DIR}")
 # one-time import and the version. dannan-node and dannan-bench are the test
 # bed's and stay in the build tree.
 install(TARGETS dannan-ca dannan-import-macha dannan-version RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(FILES "${PROJECT_SOURCE_DIR}/docs/man/dannan-ca.1" "${PROJECT_SOURCE_DIR}/docs/man/dannan-import-macha.1"
+              "${PROJECT_SOURCE_DIR}/docs/man/dannan-version.1" DESTINATION ${CMAKE_INSTALL_MANDIR}/man1)
