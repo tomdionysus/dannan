@@ -1,0 +1,16 @@
+# The library, uploaded by .github/workflows/ci.yml (tools/ci.sh coverage).
+# Informational: coverage is reported, and does not fail a commit.
+coverage:
+  status:
+    project:
+      default:
+        informational: true
+    patch:
+      default:
+        informational: true
+
+ignore:
+  - dannan/test/
+  - dannan/fuzz/
+  - test/
+  - tools/
