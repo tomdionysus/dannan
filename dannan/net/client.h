@@ -333,6 +333,7 @@ class Client {
   // Records a dial's outcome against its address and lane: a failure backs
   // off 250 ms doubling to 4 s, a success clears it.
   void observe_dial(const std::string& key, bool success);
+  void observe_dial_locked(const std::string& key, bool success) DANNAN_REQUIRES(_mutex);
   size_t notify_routes(const Message& message, sched::FrameType frame, bool wait);
   std::vector<std::shared_ptr<Session>> control_routes_locked() const DANNAN_REQUIRES(_mutex);
   // The health loop, on its strand.
