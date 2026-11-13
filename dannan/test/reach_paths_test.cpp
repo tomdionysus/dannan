@@ -19,6 +19,7 @@
 #include <unistd.h>
 
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/steady_timer.hpp>
 #include <fstream>
 #include <future>
 #include <thread>
@@ -180,6 +181,27 @@ TEST(LevelZero, ASimultaneousOpenConnectsBothEnds) {
   EXPECT_EQ(std::string(got, 2), "hi");
   ::close(fa);
   ::close(fb);
+}
+
+// The ends' clocks and schedulers never agree exactly. Where nothing drops a SYN
+// (loopback, a LAN) the first to connect is refused at once, and if both then retry
+// in step they stay out of step: the open must still meet within the window.
+TEST(LevelZero, ASimultaneousOpenMeetsWhenTheEndsBeginOutOfStep) {
+  Io io;
+  const auto a = test::free_port();
+  const auto b = test::free_port();
+  std::promise<std::pair<int, std::string>> at_a, at_b;
+  simultaneous_open(io.context, a, {"127.0.0.1", b}, 3s, [&](int fd, int, std::string why) { at_a.set_value({fd, why}); });
+  asio::steady_timer late(io.context, std::chrono::microseconds(2500));
+  late.async_wait([&](const boost::system::error_code&) {
+    simultaneous_open(io.context, b, {"127.0.0.1", a}, 3s, [&](int fd, int, std::string why) { at_b.set_value({fd, why}); });
+  });
+  const auto [fa, why_a] = at_a.get_future().get();
+  const auto [fb, why_b] = at_b.get_future().get();
+  EXPECT_GE(fa, 0) << why_a;
+  EXPECT_GE(fb, 0) << why_b;
+  for (const int fd : {fa, fb})
+    if (fd >= 0) ::close(fd);
 }
 
 TEST(LevelZero, ASimultaneousOpenToNobodyGivesUp) {
@@ -501,7 +523,10 @@ std::string counters(Cluster& cluster) {
   for (auto* node : {cluster.a.get(), cluster.hub.get(), cluster.b.get()}) {
     const auto paths = node->diagnostics().paths;
     out += "unknown=" + std::to_string(paths.closes_unknown) + " expired=" + std::to_string(paths.relay_closes_expired) +
-           " finishes=" + std::to_string(paths.finishes_expired) + " ends=" + std::to_string(paths.ends) + "; ";
+           " finishes=" + std::to_string(paths.finishes_expired) + " ends=" + std::to_string(paths.ends) +
+           " ends_lost=" + std::to_string(paths.relay_ends_lost) + " relays_made=" + std::to_string(paths.relays_made) +
+           " punches_made=" + std::to_string(paths.punches_made) + " upgrades=" + std::to_string(paths.upgrades_made) +
+           " relayed=" + std::to_string(paths.relayed_bytes) + " circuits=" + std::to_string(paths.circuits.size()) + "; ";
   }
   return out;
 }
@@ -534,8 +559,8 @@ TEST(LevelZero, ARelayLetsACountedCloseGoWhenItsChunksNeverCome) {
   ASSERT_TRUE(eventually([&] { return !lost.armed->load(); }));
   // A closes its relayed session: its end drains in order and sends an exact count.
   cluster.a->close_route(cluster.b->context().identity().id(), net::Lane::data, "closed by the test");
-  (void)transfer.get();
-  EXPECT_TRUE(eventually([&] { return cluster.hub->diagnostics().paths.relay_closes_expired == 1; }, 10s)) << counters(cluster);
+  const auto ended = transfer.get();
+  EXPECT_TRUE(eventually([&] { return cluster.hub->diagnostics().paths.relay_closes_expired == 1; }, 10s)) << counters(cluster) << ended.failure;
   EXPECT_TRUE(eventually([&] { return data_circuits(*cluster.hub) == 0; }, 10s));
   EXPECT_TRUE(eventually([&] { return cluster.b->diagnostics().paths.ends <= ends_before; }, 10s));
 }
@@ -556,8 +581,8 @@ TEST(LevelZero, AFarEndStopsWaitingForAChunkThatNeverComes) {
   *lost.armed = true;
   ASSERT_TRUE(eventually([&] { return !lost.armed->load(); }));
   cluster.a->close_route(cluster.b->context().identity().id(), net::Lane::data, "closed by the test");
-  (void)transfer.get();
-  EXPECT_TRUE(eventually([&] { return cluster.b->diagnostics().paths.finishes_expired == 1; }, 10s)) << counters(cluster);
+  const auto ended = transfer.get();
+  EXPECT_TRUE(eventually([&] { return cluster.b->diagnostics().paths.finishes_expired == 1; }, 10s)) << counters(cluster) << ended.failure;
   EXPECT_TRUE(eventually([&] { return cluster.b->diagnostics().paths.ends <= ends_before; }, 10s));
 }
 
