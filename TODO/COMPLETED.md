@@ -3,6 +3,14 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
+## Handoff, 2026-11-13: 0.5.4
+
+Hosted CI (GitHub Actions on Debian 13 x86-64 and arm64 and on macOS, CodeQL, Dependabot, Codecov) and what its first runs
+found: g++ -Werror had never built (fixed, renames only, one scoped pragma); `Client::stop()` missed a call on a session the
+peer retired (fixed, with a test that failed before); the simultaneous open could never meet on GitHub's x86-64 loopback
+(random retry); five timing faults in tests (journal steppers, lost-chunk direction, gossip read). Also `Telemetry::set_bytes`
+with an empty value removes the field (found by the Macha session in the port). Details and commits in `ACTIVE.md`.
+
 ## Handoff, 2026-11-10: 0.5.3
 
 Found by Dagda on inverbeg: the installed package's config asked for Boost 1.87 while the build accepts 1.83, so no consumer
@@ -31,6 +39,11 @@ in 3 of 4 full runs (one unexplained handshake timeout, `LevelZero.ANodeIsObserv
 TSan 624 each at that point; later gates and the two open items are in the report and under 0.5.0. Compose relay 5 of 5. Report: `2026-11-06-dannan-capabilities.md`.
 
 ## Releases
+
+- **0.5.4** (2026-11-13, `main`, tag `0.5.4`, pushed at Tom's word): see the handoff above. Gates, all hosted CI on `develop`
+  at the release's code: `dannan_tests` 643 passed, 1 skipped (as root) on Debian 13 x86-64 g++ release, clang release, ASan
+  and UBSan, TSan and coverage, and on arm64 release and ASan; 642 passed, 1 skipped on macOS (BBR, not offered there); the package consumer on both
+  architectures; header and format check; CodeQL clean. The port moves to this tag when the Macha session bumps it.
 
 - **0.5.3** (2026-11-10, `main`, tag `0.5.3`, pushed at Tom's word): see the handoff above. The package test passes on Debian
   (Boost 1.83); `dannan_tests` 639 on macOS plain. The library's code is unchanged from 0.5.2, whose gates stand. The port freezes on
