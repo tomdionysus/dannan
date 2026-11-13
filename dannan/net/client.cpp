@@ -787,6 +787,8 @@ void Client::dialled(const std::string& key, const Target& target, Lane lane, st
   std::shared_ptr<asio::steady_timer> settled_wait;
   bool stopped = false;
   {
+    // One section from reading _stopped to taking the slot: a stop() between the two
+    // would leave this session a route after stop() emptied the tables, unclosed.
     contract::Lock lock(_mutex);
     if (const auto found = _dials.find(key); found != _dials.end()) {
       waiting = std::move(found->second);
@@ -794,10 +796,7 @@ void Client::dialled(const std::string& key, const Target& target, Lane lane, st
     }
     stopped = _stopped;
     if (!session) ++_stats.dial_failures;
-  }
-  observe_dial(address_of(target.endpoint) + "/" + lane_name(lane), session != nullptr);
-  {
-    contract::Lock lock(_mutex);
+    observe_dial_locked(address_of(target.endpoint) + "/" + lane_name(lane), session != nullptr);
     if (session && !stopped) {
       ++_stats.connections_created;
       const RouteKey route_key{session->peer().id, lane};
@@ -1222,6 +1221,10 @@ void Client::end_operation() {
 
 void Client::observe_dial(const std::string& key, bool success) {
   contract::Lock lock(_mutex);
+  observe_dial_locked(key, success);
+}
+
+void Client::observe_dial_locked(const std::string& key, bool success) {
   if (success) {
     _backoff.erase(key);
     return;

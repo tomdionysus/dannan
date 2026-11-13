@@ -13,8 +13,10 @@
 // every mapping is preserved; the compose bed proves the same through real
 // NATs.
 
+#include <arpa/inet.h>
 #include <fcntl.h>
 #include <gtest/gtest.h>
+#include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -202,6 +204,117 @@ TEST(LevelZero, ASimultaneousOpenMeetsWhenTheEndsBeginOutOfStep) {
   EXPECT_GE(fb, 0) << why_b;
   for (const int fd : {fa, fb})
     if (fd >= 0) ::close(fd);
+}
+
+// A refusal also comes from a port nobody holds: a node down or stopped. Its retries
+// come close at first and widen to one each 5 ms on average, so an outage costs the
+// io threads little (the Macha session's review of 0.5.4).
+TEST(LevelZero, ASimultaneousOpenToAClosedPortRetriesAtAModestRate) {
+  Io io;
+  std::promise<std::pair<int, std::string>> done;
+  simultaneous_open(io.context, test::free_port(), {"127.0.0.1", test::free_port()}, 1s, [&](int fd, int, std::string why) { done.set_value({fd, why}); });
+  const auto [fd, why] = done.get_future().get();
+  ASSERT_LT(fd, 0);
+  const auto at = why.find(" after ");
+  ASSERT_NE(at, std::string::npos) << why;
+  const auto attempts = std::stoull(why.substr(at + 7));
+  // About 220: 64 close ones, then the 5 ms mean; nothing near the thousands a
+  // sub-millisecond retry makes.
+  EXPECT_GE(attempts, 50u) << why;
+  EXPECT_LE(attempts, 300u) << why;
+}
+
+// Refused, an end listens on its punch port until its next attempt, and takes only
+// the far end's punch endpoint: a stranger reaching that port is closed, not handed on.
+TEST(LevelZero, ASimultaneousOpenTakesOnlyTheFarEnd) {
+  Io io;
+  const auto a = test::free_port();
+  const auto b = test::free_port();
+  std::promise<std::pair<int, std::string>> at_a, at_b;
+  simultaneous_open(io.context, a, {"127.0.0.1", b}, 3s, [&](int fd, int, std::string why) { at_a.set_value({fd, why}); });
+  // A stranger, from a port of its own, until a's listener has taken it and let it go.
+  bool shut_out = false;
+  for (int tries = 0; tries < 2000 && !shut_out; ++tries) {
+    const int stranger = ::socket(AF_INET, SOCK_STREAM, 0);
+    sockaddr_in to{};
+    to.sin_family = AF_INET;
+    to.sin_port = htons(a);
+    to.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (::connect(stranger, reinterpret_cast<sockaddr*>(&to), sizeof(to)) == 0) {
+      char byte;
+      shut_out = ::recv(stranger, &byte, 1, 0) <= 0;
+    }
+    ::close(stranger);
+  }
+  ASSERT_TRUE(shut_out);
+  simultaneous_open(io.context, b, {"127.0.0.1", a}, 3s, [&](int fd, int, std::string why) { at_b.set_value({fd, why}); });
+  const auto [fa, why_a] = at_a.get_future().get();
+  const auto [fb, why_b] = at_b.get_future().get();
+  ASSERT_GE(fa, 0) << why_a;
+  ASSERT_GE(fb, 0) << why_b;
+  sockaddr_in peer{};
+  socklen_t size = sizeof(peer);
+  ASSERT_EQ(::getpeername(fa, reinterpret_cast<sockaddr*>(&peer), &size), 0);
+  EXPECT_EQ(ntohs(peer.sin_port), b);
+  ::close(fa);
+  ::close(fb);
+}
+
+// One byte, without SIGPIPE if the far end reset the connection.
+ssize_t send_byte(int fd, char byte) {
+#ifdef MSG_NOSIGNAL
+  return ::send(fd, &byte, 1, MSG_NOSIGNAL);
+#else
+  const int one = 1;
+  ::setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
+  return ::send(fd, &byte, 1, 0);
+#endif
+}
+
+// The far end's connect completes in this end's backlog before this end's accept
+// runs. A retry that comes between must take it, not close the listener on it: the
+// far end already holds that connection as met (the Macha session's review).
+TEST(LevelZero, ARetryTakesTheFarEndQueuedOnItsListener) {
+  Io io;
+  const auto a = test::free_port();
+  const auto b = test::free_port();
+  // The far end, by hand, from its punch port once a's listens. Until then nothing
+  // holds that port, so a's connects are refused and it listens between them.
+  const int far = ::socket(AF_INET, SOCK_STREAM, 0);
+  std::atomic<bool> queued{false};
+  std::promise<std::pair<int, std::string>> at_a;
+  simultaneous_open(
+      io.context, a, {"127.0.0.1", b}, 3s, [&](int fd, int, std::string why) { at_a.set_value({fd, why}); },
+      [&] {
+        // On a's strand, so its accept cannot run first: the connect completes in
+        // the kernel, into the listener's backlog.
+        if (queued.exchange(true)) return;
+        const int one = 1;
+        ::setsockopt(far, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+        sockaddr_in from{};
+        from.sin_family = AF_INET;
+        from.sin_port = htons(b);
+        from.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        EXPECT_EQ(::bind(far, reinterpret_cast<sockaddr*>(&from), sizeof(from)), 0);
+        sockaddr_in to{};
+        to.sin_family = AF_INET;
+        to.sin_port = htons(a);
+        to.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        EXPECT_EQ(::connect(far, reinterpret_cast<sockaddr*>(&to), sizeof(to)), 0);
+      });
+  const auto [fa, why_a] = at_a.get_future().get();
+  ASSERT_TRUE(queued.load()) << why_a;
+  ASSERT_GE(fa, 0) << why_a;
+  ::fcntl(fa, F_SETFL, ::fcntl(fa, F_GETFL) & ~O_NONBLOCK);
+  char got = 0;
+  ASSERT_EQ(send_byte(far, 'x'), 1);
+  ASSERT_EQ(::recv(fa, &got, 1, MSG_WAITALL), 1);
+  EXPECT_EQ(got, 'x');
+  ASSERT_EQ(send_byte(fa, 'y'), 1);
+  ASSERT_EQ(::recv(far, &got, 1, MSG_WAITALL), 1);
+  EXPECT_EQ(got, 'y');
+  ::close(fa);
+  ::close(far);
 }
 
 TEST(LevelZero, ASimultaneousOpenToNobodyGivesUp) {

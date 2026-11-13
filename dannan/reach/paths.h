@@ -155,9 +155,10 @@ std::pair<uint16_t, net::Endpoint> observe_from(boost::asio::io_context& io, con
 
 // A TCP simultaneous open from local `port` to `to`, retried until
 // `within` has passed: `done` gets the connected descriptor and its address
-// family, or -1 and why not. Waits on nothing.
+// family, or -1 and why not. Waits on nothing. Tests only: `retrying` runs on
+// the open's strand as a retry begins while the port is listening.
 void simultaneous_open(boost::asio::io_context& io, uint16_t port, const net::Endpoint& to, std::chrono::milliseconds within,
-                       std::function<void(int descriptor, int family, std::string why)> done);
+                       std::function<void(int descriptor, int family, std::string why)> done, std::function<void()> retrying = {});
 
 struct PathsConfig {
   // Where the workers' faults are recorded; none, nowhere readable.
