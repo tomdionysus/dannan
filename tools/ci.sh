@@ -15,10 +15,11 @@
 #   tools/ci.sh tsan       ThreadSanitizer, with dannan/test/tsan-suppressions.txt
 #   tools/ci.sh package    install, then build and run a consumer (test/package)
 #   tools/ci.sh coverage   a coverage build's tests; lcov report build-ci/coverage.info
+#   tools/ci.sh abi        the library against the minor's last release, by abidiff
 #
 # Builds go under build-ci/ (DANNAN_CI_OUT to move it). Needs g++ cmake
 # ninja-build libboost-dev libssl-dev libyaml-cpp-dev libgtest-dev libgmock-dev,
-# and for its step clang, clang-format or lcov.
+# and for its step clang, clang-format, lcov, or abigail-tools (abi; the tags fetched).
 
 set -eu
 
@@ -89,8 +90,60 @@ case "$step" in
     rm "$out/all.info" "$out/library.info"
     lcov --summary "$out/coverage.info" --ignore-errors "$ignore"
     ;;
+  abi)
+    # A patch release keeps the ABI: the library is compared with the last release
+    # of its minor, both built with debug information and judged by their public
+    # headers. Any change abidiff reports fails it: a changed type sets only its
+    # "change" bit (4), never "incompatible" (8), which it keeps for removals.
+    # Added symbols are left out of the report, since an addition is a patch's to
+    # make. A virtual added to an interface changes its vtable, and is reported.
+    # The first release of a minor has nothing to keep.
+    version=$(sed -n 's/^project(dannan VERSION \([0-9.]*\).*/\1/p' "$top/CMakeLists.txt")
+    minor=${version%.*}
+    # Between releases the tree may still say the last one's version, which is
+    # then the base; a build of a release tag is compared with the one before.
+    skip=
+    if [ "$(git -C "$top" describe --exact-match --tags HEAD 2>/dev/null)" = "$version" ]; then
+      skip=$version
+    fi
+    base=$(git -C "$top" tag --list "$minor.*" --sort=-v:refname | grep -vx "${skip:-none}" | head -n 1)
+    # DANNAN_ABI_BASE names another release to compare with, such as one a live
+    # host was built on.
+    base=${DANNAN_ABI_BASE:-$base}
+    if [ -z "$base" ]; then
+      echo "abi: no earlier $minor release; $version may change the ABI"
+      exit 0
+    fi
+    rm -rf "$out/abi"
+    mkdir -p "$out/abi"
+    git -C "$top" archive --prefix=base/ "$base" | tar -x -C "$out/abi"
+    for side in base current; do
+      src="$out/abi/base"
+      [ "$side" = current ] && src="$top"
+      cmake -S "$src" -B "$out/abi/$side-build" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DDANNAN_BUILD_TESTING=OFF -DCMAKE_INSTALL_PREFIX="$out/abi/$side"
+      cmake --build "$out/abi/$side-build" -j "$jobs"
+      cmake --install "$out/abi/$side-build"
+    done
+    old=$(find "$out/abi/base" -name 'libdannan.so.*.*.*' | head -n 1)
+    new=$(find "$out/abi/current" -name 'libdannan.so.*.*.*' | head -n 1)
+    # The releases before the promise named their SONAME for the whole version;
+    # the one move from that to major.minor is the promise itself, not a break.
+    ignore=
+    if objdump -p "$old" | grep -q "SONAME *libdannan.so.$base\$"; then
+      ignore=--ignore-soname
+    fi
+    echo "abi: $version against $base"
+    set +e
+    abidiff $ignore --no-added-syms --no-show-locs --headers-dir1 "$out/abi/base/include/dannan" --headers-dir2 "$out/abi/current/include/dannan" "$old" "$new"
+    rc=$?
+    set -e
+    if [ "$rc" -ne 0 ]; then
+      echo "abi: $version breaks $base's ABI (abidiff $rc): a patch may not; make it a minor release" >&2
+      exit 1
+    fi
+    ;;
   *)
-    echo "usage: tools/ci.sh check|release|clang|asan|tsan|package|coverage" >&2
+    echo "usage: tools/ci.sh check|release|clang|asan|tsan|package|coverage|abi" >&2
     exit 2
     ;;
 esac

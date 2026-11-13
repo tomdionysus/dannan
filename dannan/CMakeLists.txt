@@ -74,12 +74,13 @@ target_link_libraries(dannan
   PUBLIC Boost::headers OpenSSL::SSL OpenSSL::Crypto Threads::Threads
   PRIVATE dannan_warnings yaml-cpp::yaml-cpp
 )
-# The SONAME is the whole version: no release promises another's ABI yet, so a
-# host built against one refuses to load another (and each has its own package).
-set_target_properties(dannan PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION ${PROJECT_VERSION} EXPORT_NAME dannan)
+# The SONAME is major.minor: a patch release keeps the ABI (tools/ci.sh abi checks
+# it against the minor's last release), so a host built against 0.5.x loads any
+# later 0.5 patch. An ABI change is a minor release, with its own SONAME and package.
+set_target_properties(dannan PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR} EXPORT_NAME dannan)
 add_library(dannan::dannan ALIAS dannan)
 
-# Installed for Dagda, Lugh and Lir: find_package(dannan 0.5.6 CONFIG), the exact version, then
+# Installed for Dagda, Lugh and Lir: find_package(dannan 0.6.0 CONFIG), the minimum patch, then
 # link dannan::dannan. Headers keep their tree, so "dannan/<subsystem>/x.h"
 # includes the same installed as in the tree; the test fixtures are shared
 # too, the tests and fuzz targets are not.
@@ -93,6 +94,6 @@ install(FILES ${PROJECT_BINARY_DIR}/generated/dannan/version.h DESTINATION ${CMA
 install(EXPORT dannanTargets NAMESPACE dannan:: DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/dannan)
 configure_package_config_file(${PROJECT_SOURCE_DIR}/cmake/dannanConfig.cmake.in ${PROJECT_BINARY_DIR}/dannanConfig.cmake
                               INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/dannan)
-# As the SONAME: only the exact version is compatible until a release promises an ABI.
-write_basic_package_version_file(${PROJECT_BINARY_DIR}/dannanConfigVersion.cmake COMPATIBILITY ExactVersion)
+# As the SONAME: any later patch of the same minor is compatible.
+write_basic_package_version_file(${PROJECT_BINARY_DIR}/dannanConfigVersion.cmake COMPATIBILITY SameMinorVersion)
 install(FILES ${PROJECT_BINARY_DIR}/dannanConfig.cmake ${PROJECT_BINARY_DIR}/dannanConfigVersion.cmake DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/dannan)
