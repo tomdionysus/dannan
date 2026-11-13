@@ -1178,7 +1178,7 @@ net::Handled Paths::relay_data(const NodeRecord& from, const net::Message& reque
         c.bytes += data.bytes.size();
         _stats.relayed_bytes += data.bytes.size();
         broke_window = leg.held.size() >= relay_window_chunks;
-        const bool dropped = _config.drop_hook && c.lane == net::Lane::data && _config.drop_hook(data.sequence, false);
+        const bool dropped = _config.drop_hook && c.lane == net::Lane::data && _config.drop_hook(data.sequence, false, *toward_b);
         if (!broke_window && !leg.lost && !dropped) {
           leg.held.push_back(std::move(data));
           ++leg.received;
@@ -1248,7 +1248,7 @@ void Paths::advance(uint64_t circuit, bool toward_b) {
       } else if (leg.credit) {
         credit = std::exchange(leg.credit, 0);
         message = {m::relay_credit, encode(RelayCredit{circuit, credit}), {}};
-      } else if (!leg.held.empty() && _config.drop_hook && c.lane == net::Lane::data && _config.drop_hook(leg.held.front().sequence, true)) {
+      } else if (!leg.held.empty() && _config.drop_hook && c.lane == net::Lane::data && _config.drop_hook(leg.held.front().sequence, true, toward_b)) {
         leg.held.pop_front();
         idle = true;
         leg.again = true;

@@ -515,9 +515,11 @@ TEST(LevelZero, AChunkLostOnTheWayToTheFarEndEndsItWithinTheBound) {
 }
 
 namespace {
-// A circuit A to B over the relay with one chunk lost there, `forwarding` or on receipt:
-// the first the relay sees once the test arms it, after the session is up. A's end then
-// closes in order, its count exact, and the bounds are what end it.
+// A circuit A to B over the relay with one chunk of A's upload lost there, `forwarding`
+// or on receipt: the first toward B from the 64th on (of 128), past the session's
+// handshake and before the upload ends, however fast it runs. A chunk of B's answer is
+// never the one: A's count would be exact without it. A's end then closes in order,
+// its count exact, and the bounds are what end it.
 std::string counters(Cluster& cluster) {
   std::string out;
   for (auto* node : {cluster.a.get(), cluster.hub.get(), cluster.b.get()}) {
@@ -537,7 +539,10 @@ struct LostChunk {
   explicit LostChunk(bool forwarding)
       : cluster(true, PathClass::relay_only, PathClass::relay_only, std::chrono::minutes(1), 32, 3s, [this, forwarding](NodeConfig& c) {
           c.relay_finish_wait = 300ms;
-          if (c.relay) c.relay_drop_hook = [armed = armed, forwarding](uint64_t, bool at) { return at == forwarding && armed->exchange(false); };
+          if (c.relay)
+            c.relay_drop_hook = [armed = armed, forwarding](uint64_t sequence, bool at, bool toward_b) {
+              return at == forwarding && toward_b && sequence >= 64 && armed->exchange(false);
+            };
         }) {}
 };
 }  // namespace
@@ -551,11 +556,10 @@ TEST(LevelZero, ARelayLetsACountedCloseGoWhenItsChunksNeverCome) {
   const auto peer = cluster.record(*cluster.b, *cluster.a);
   ASSERT_TRUE(peer.has_value());
   const auto ends_before = cluster.b->diagnostics().paths.ends;
+  *lost.armed = true;
   auto transfer = std::async(std::launch::async, [&] {
     return cluster.a->context().routes().call_and_wait(*peer, echo_data, net::Bytes(8 * 1024 * 1024, 7), sched::FrameType::foreground, 30s);
   });
-  ASSERT_TRUE(eventually([&] { return data_circuits(*cluster.hub) > 0 && cluster.hub->diagnostics().paths.relayed_bytes > 256 * 1024; }));
-  *lost.armed = true;
   ASSERT_TRUE(eventually([&] { return !lost.armed->load(); }));
   // A closes its relayed session: its end drains in order and sends an exact count.
   cluster.a->close_route(cluster.b->context().identity().id(), net::Lane::data, "closed by the test");
@@ -574,11 +578,10 @@ TEST(LevelZero, AFarEndStopsWaitingForAChunkThatNeverComes) {
   const auto peer = cluster.record(*cluster.b, *cluster.a);
   ASSERT_TRUE(peer.has_value());
   const auto ends_before = cluster.b->diagnostics().paths.ends;
+  *lost.armed = true;
   auto transfer = std::async(std::launch::async, [&] {
     return cluster.a->context().routes().call_and_wait(*peer, echo_data, net::Bytes(8 * 1024 * 1024, 7), sched::FrameType::foreground, 30s);
   });
-  ASSERT_TRUE(eventually([&] { return data_circuits(*cluster.hub) > 0 && cluster.hub->diagnostics().paths.relayed_bytes > 256 * 1024; }));
-  *lost.armed = true;
   ASSERT_TRUE(eventually([&] { return !lost.armed->load(); }));
   cluster.a->close_route(cluster.b->context().identity().id(), net::Lane::data, "closed by the test");
   const auto ended = transfer.get();
