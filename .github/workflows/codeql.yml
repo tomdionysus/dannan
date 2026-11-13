@@ -33,7 +33,7 @@ jobs:
           apt-get install -y --no-install-recommends \
             g++ cmake ninja-build git ca-certificates libboost-dev libssl-dev libyaml-cpp-dev
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Trust the checkout
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
