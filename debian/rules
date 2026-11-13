@@ -43,3 +43,4 @@ override_dh_install:
 	dh_install -plibdannan-dev usr/lib/$(DEB_HOST_MULTIARCH)/libdannan.so
 	dh_install -plibdannan-dev usr/lib/$(DEB_HOST_MULTIARCH)/cmake/dannan
 	dh_install -pdannan-tools usr/bin
+	dh_install -pdannan-tools usr/share/man/man1
