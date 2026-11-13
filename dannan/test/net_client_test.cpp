@@ -1580,8 +1580,13 @@ TEST(Journal, TheDataLanesNoticeBindsOnlyDataCalls) {
   Node a(io, tuning), b(io);
   ASSERT_TRUE(call(a, b.self).reply);
   b.hold_data = true;
+  // Stepped only once a's write of the call is recorded, as in
+  // Client.TheNoProgressDeadlineFollowsTheInjectedTime: b can hold the request before it is.
+  const auto& out = a.traffic->out_bytes[static_cast<size_t>(FrameType::foreground)];
+  const auto sent = out.load(std::memory_order_acquire);
   std::thread stepper([&] {
     b.gate.wait_for_entries(1);
+    eventually([&] { return out.load(std::memory_order_acquire) > sent; });
     time.advance(1h);
     EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::debug, "RPC stalled (foreground) peer=") >= 1; }));
     b.gate.open();
@@ -1601,8 +1606,13 @@ TEST(Journal, ATypesOwnNoticeReplacesItsLanes) {
   tuning.dead_after = 72h;
   Node a(io, tuning), b(io);
   ASSERT_TRUE(call(a, b.self).reply);
+  // As above, and the first call's own write may be counted late: waited for first.
+  const auto& out = a.traffic->out_bytes[static_cast<size_t>(FrameType::control)];
+  ASSERT_TRUE(eventually([&] { return out.load(std::memory_order_acquire) > 0; }));
+  const auto sent = out.load(std::memory_order_acquire);
   std::thread stepper([&] {
     b.gate.wait_for_entries(1);
+    eventually([&] { return out.load(std::memory_order_acquire) > sent; });
     time.advance(1h);
     EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::debug, "RPC stalled (control) peer=") >= 1; }));
     EXPECT_GE(log->count(status::LogLevel::debug, " message=noticed age_ms="), 1u);
