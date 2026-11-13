@@ -32,6 +32,8 @@ which discipline it follows.
 - The tag, the CMake `project(... VERSION ...)` and `--version` are the same
   number, and the library's package in `debian/control` is `libdannan` and that
   number: the version commit changes all three (`docs/packaging.md`).
+- The version commit also adds the release to `CHANGELOG.md`, newest first: what
+  changed for the library's users, never the gates or how it was made.
 
 ## Commits
 
