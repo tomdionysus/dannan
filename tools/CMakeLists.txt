@@ -30,3 +30,8 @@ target_include_directories(dannan-import-macha PRIVATE "${PROJECT_SOURCE_DIR}")
 add_executable(dannan-bench dannan_bench.cpp)
 target_link_libraries(dannan-bench PRIVATE dannan dannan_warnings)
 target_include_directories(dannan-bench PRIVATE "${PROJECT_SOURCE_DIR}")
+
+# Installed, as the dannan-tools package ships them: the operator's CA, the
+# one-time import and the version. dannan-node and dannan-bench are the test
+# bed's and stay in the build tree.
+install(TARGETS dannan-ca dannan-import-macha dannan-version RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
