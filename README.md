@@ -1,5 +1,6 @@
 # Dannan - The Distributed Substrate
 
+[![Release](https://img.shields.io/github/v/tag/tomdionysus/dannan?sort=semver&label=release)](https://github.com/tomdionysus/dannan/tags)
 [![CI](https://github.com/tomdionysus/dannan/actions/workflows/ci.yml/badge.svg)](https://github.com/tomdionysus/dannan/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/tomdionysus/dannan/graph/badge.svg)](https://codecov.io/gh/tomdionysus/dannan)
 [![CodeQL](https://github.com/tomdionysus/dannan/actions/workflows/codeql.yml/badge.svg)](https://github.com/tomdionysus/dannan/actions/workflows/codeql.yml)
