@@ -325,6 +325,8 @@ class Client {
   void dialled(const std::string& key, const Target& target, Lane lane, std::shared_ptr<Session> session, std::string why);
   std::shared_ptr<Session> route_locked(const identity::NodeId& peer, Lane lane) DANNAN_REQUIRES(_mutex);
   void reconcile_locked(const RouteKey& key, Retire& retire) DANNAN_REQUIRES(_mutex);
+  // Remembered in _held for stop().
+  void hold_locked(const std::shared_ptr<Session>& session) DANNAN_REQUIRES(_mutex);
   // Retires the losers, remembering them so stop() closes them too.
   void retire_sessions(Retire& retire) DANNAN_EXCLUDES(_mutex);
   void end_operation();
@@ -381,8 +383,11 @@ class Client {
   std::condition_variable _idle;
   std::map<RouteKey, std::shared_ptr<Session>> _outbound DANNAN_GUARDED_BY(_mutex);
   std::map<RouteKey, std::shared_ptr<Session>> _inbound DANNAN_GUARDED_BY(_mutex);
-  // Sessions retired off the tables but not yet closed: they may hold calls.
-  std::vector<std::weak_ptr<Session>> _retiring DANNAN_GUARDED_BY(_mutex);
+  // Every session this client made a route, and every one it retired, until it
+  // closes: stop() closes those still open, which may hold calls, however they
+  // left the tables. A peer's notice retires a session without this end being
+  // told, and the next lookup drops it from its table.
+  std::vector<std::weak_ptr<Session>> _held DANNAN_GUARDED_BY(_mutex);
   // Dials in flight by peer (or address) and lane, with the calls waiting
   // on each.
   std::map<std::string, std::vector<Call>> _dials DANNAN_GUARDED_BY(_mutex);
