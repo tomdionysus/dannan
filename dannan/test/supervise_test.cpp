@@ -65,8 +65,8 @@ struct Builtin final : Subsystem {
   std::atomic<int>* stops;
   std::function<void(FaultSink&)> on_start;
   FaultSink sink;
-  Builtin(std::string label, std::atomic<int>* stops, std::function<void(FaultSink&)> on_start)
-      : label(std::move(label)), stops(stops), on_start(std::move(on_start)) {}
+  Builtin(std::string named, std::atomic<int>* stopped, std::function<void(FaultSink&)> started)
+      : label(std::move(named)), stops(stopped), on_start(std::move(started)) {}
   std::string_view name() const noexcept override { return label; }
   void attach_fault_sink(FaultSink s) override { sink = std::move(s); }
   void start() override {
@@ -330,7 +330,7 @@ TEST(Supervisor, AFaultedInstanceGoesBeforeItsReplacement) {
     std::atomic<int>& alive;
     FaultSink sink;
     const bool fault;
-    Counted(std::atomic<int>& alive, bool fault) : alive(alive), fault(fault) { ++alive; }
+    Counted(std::atomic<int>& count, bool faults) : alive(count), fault(faults) { ++alive; }
     ~Counted() override { --alive; }
     std::string_view name() const noexcept override { return "fuse"; }
     void attach_fault_sink(FaultSink s) override { sink = std::move(s); }

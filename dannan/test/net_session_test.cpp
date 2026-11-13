@@ -88,10 +88,10 @@ struct Pair {
   int dialler_end = -1;
   int acceptor_end = -1;
 
-  Pair(Io& io, SessionHandlers dialler_handlers, SessionHandlers acceptor_handlers, Lane lane = Lane::control, size_t max_frame = 65536,
+  Pair(Io& on, SessionHandlers dialler_handlers, SessionHandlers acceptor_handlers, Lane lane = Lane::control, size_t max_frame = 65536,
        sched::RetainedMemoryLedger* memory = nullptr, std::shared_ptr<const RouteTable> dialler_routes = nullptr,
        std::shared_ptr<status::LogSink> log = nullptr, bool start_dialler = true, bool start_acceptor = true)
-      : io(io) {
+      : io(on) {
     asio::local::stream_protocol::socket a(io.context), b(io.context);
     asio::local::connect_pair(a, b);
     dialler_end = ::dup(a.native_handle());

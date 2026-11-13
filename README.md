@@ -1,5 +1,11 @@
 # Dannan - The Distributed Substrate
 
+[![Release](https://img.shields.io/github/v/tag/tomdionysus/dannan?sort=semver&label=release)](https://github.com/tomdionysus/dannan/tags)
+[![CI](https://github.com/tomdionysus/dannan/actions/workflows/ci.yml/badge.svg)](https://github.com/tomdionysus/dannan/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/tomdionysus/dannan/graph/badge.svg)](https://codecov.io/gh/tomdionysus/dannan)
+[![CodeQL](https://github.com/tomdionysus/dannan/actions/workflows/codeql.yml/badge.svg)](https://github.com/tomdionysus/dannan/actions/workflows/codeql.yml)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+
 Dannan is the network layer for a cluster of trusted machines. It is a C++20
 library that makes a set of nodes, on any mix of home hardware and rented
 cloud and behind any NAT, behave as one network that the systems hosted on
@@ -260,7 +266,7 @@ dannan-node ... --revocations revocation.bin
 
 ## Status
 
-Version 0.5.3. The library, wire versions 1 and 2, reachability and
+Version 0.5.4. The library, wire versions 1 and 2, reachability and
 identity are complete and tested. The interfaces may still change between
 minor versions while the hosted systems are built on them. Macha and
 AthenaSIP will be ported onto Dannan and Dagda later.

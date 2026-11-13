@@ -22,7 +22,7 @@ namespace {
 
 class Recording final : public LogSink {
  public:
-  explicit Recording(LogLevel floor) : floor(floor) {}
+  explicit Recording(LogLevel lowest) : floor(lowest) {}
   bool enabled(LogLevel level) const noexcept override { return static_cast<int>(level) >= static_cast<int>(floor); }
   void write(LogLevel level, std::string_view scope, std::string_view message) override {
     lines.push_back(std::string(log_level_name(level)) + " " + std::string(scope) + ": " + std::string(message));

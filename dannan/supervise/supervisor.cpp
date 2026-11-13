@@ -168,12 +168,12 @@ void Supervisor::run(Entry& entry, std::stop_token stop) {
         instance->attach_fault_sink([target = sink_target](std::string reason) {
           std::lock_guard held(target->mutex);
           if (!target->entry) return;  // that instance is gone: a sink kept past its stop is ignored
-          auto& entry = *target->entry;
-          contract::Lock lock(entry.mutex);
-          if (entry.fault_requested || entry.stopping) return;  // first reason wins
-          entry.fault_requested = true;
-          entry.pending_fault = reason.empty() ? std::string("subsystem reported a fault") : std::move(reason);
-          entry.changed.notify_all();
+          auto& reported = *target->entry;
+          contract::Lock lock(reported.mutex);
+          if (reported.fault_requested || reported.stopping) return;  // first reason wins
+          reported.fault_requested = true;
+          reported.pending_fault = reason.empty() ? std::string("subsystem reported a fault") : std::move(reason);
+          reported.changed.notify_all();
         });
         instance->start();
       } else {

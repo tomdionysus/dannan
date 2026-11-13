@@ -118,7 +118,7 @@ struct Node {
   std::unique_ptr<Server> server;
   std::unique_ptr<Client> client;
 
-  explicit Node(Io& io, ClientOptions tuning = {}, uint32_t capabilities = membership::capabilities_default) : io(io) {
+  explicit Node(Io& on, ClientOptions tuning = {}, uint32_t capabilities = membership::capabilities_default) : io(on) {
     self.id = identity::NodeId::random();
     self.host = "127.0.0.1";
     self.capabilities = capabilities;
@@ -188,6 +188,23 @@ bool eventually(const std::function<bool()>& condition) {
   }
   return condition();
 }
+
+// a's writes of a frame class, for a stepper. a records a write's progress when
+// the write completes, which can be after b holds the request, and releases this
+// count after the record: time steps for a held call only once the count has
+// passed what it was before the call. Taken before the call; `earlier` when a call
+// of the class came first, whose own write may be counted late.
+struct Writes {
+  const std::atomic<uint64_t>& out;
+  uint64_t before = 0;
+  Writes(Node& from, FrameType frame, bool earlier) : out(from.traffic->out_bytes[static_cast<size_t>(frame)]) {
+    if (earlier) eventually([&] { return out.load(std::memory_order_acquire) > 0; });
+    before = out.load(std::memory_order_acquire);
+  }
+  void recorded() const {
+    eventually([&] { return out.load(std::memory_order_acquire) > before; });
+  }
+};
 
 TEST(Client, DialsALaneOnDemandAndReusesIt) {
   Io io;
@@ -303,6 +320,36 @@ TEST(Client, StoppingFailsACallOnARetiredSession) {
   ASSERT_EQ(pending.wait_for(3s), std::future_status::ready) << "the call on the retired session outlived stop()";
   EXPECT_FALSE(pending.get().reply);
   EXPECT_LT(std::chrono::steady_clock::now() - started, 3s);
+}
+
+// The same when the peer retired the session: its notice makes this end's
+// session unusable, and the next call that looks for a route drops it from
+// the table. The call still waiting on it is stop()'s to fail.
+TEST(Client, StoppingFailsACallOnASessionThePeerRetired) {
+  Io io;
+  std::atomic<bool> retire{false};
+  ClientOptions tuning;
+  tuning.place_hook = [&](Session& session) {
+    if (retire.exchange(false)) session.retire();
+  };
+  Node a(io), b(io, tuning);
+  auto done = std::make_shared<std::promise<CallOutcome>>();
+  auto pending = done->get_future();
+  a.client->call(b.self, slow, {}, FrameType::control, io.context.get_executor(), [done](CallOutcome outcome) { done->set_value(std::move(outcome)); });
+  ASSERT_TRUE(b.gate.wait_for_entries(1));
+  // b retires the session it adopted, which holds a's blocked call, by placing a call on it.
+  retire = true;
+  auto back = std::async(std::launch::async, [&] { return call(b, a.self); });
+  ASSERT_TRUE(eventually([&] { return !a.client->has_route(b.self.id, Lane::control); }));
+  // a's next call drops the retired session from its table and dials again.
+  EXPECT_TRUE(call(a, b.self).reply);
+  const auto started = std::chrono::steady_clock::now();
+  a.client->stop();
+  ASSERT_EQ(pending.wait_for(3s), std::future_status::ready) << "the call on the peer-retired session outlived stop()";
+  EXPECT_FALSE(pending.get().reply);
+  EXPECT_LT(std::chrono::steady_clock::now() - started, 3s);
+  b.gate.open();
+  (void)back.get();
 }
 
 // A call that makes no progress for the lane's deadline fails, transiently,
@@ -1076,8 +1123,10 @@ TEST(Journal, AStallIsNoticedAgainEachPeriodAndACancelSaysSo) {
   tuning.control_no_progress = 3h;
   Node a(io, tuning), b(io);
   ASSERT_TRUE(call(a, b.self).reply);
+  const Writes writes(a, FrameType::control, true);
   std::thread stepper([&] {
     b.gate.wait_for_entries(1);
+    writes.recorded();
     EXPECT_EQ(log->count(status::LogLevel::debug, "RPC stalled"), 0u);
     time.advance(1h);
     EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::debug, "RPC stalled") == 1; }));
@@ -1106,8 +1155,10 @@ TEST(Journal, AStallWithNoDeadlineLeavesTheCallToFinish) {
   tuning.control_stall_notice = 1h;
   Node a(io, tuning), b(io);
   ASSERT_TRUE(call(a, b.self).reply);
+  const Writes writes(a, FrameType::control, true);
   std::thread stepper([&] {
     b.gate.wait_for_entries(1);
+    writes.recorded();
     time.advance(1h);
     EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::debug, "request remains active while peer health is monitored") == 1; }));
     b.gate.open();
@@ -1520,8 +1571,10 @@ TEST(Journal, AStallsWordsAreMachasAndTheCallerGetsTheSame) {
   tuning.control_no_progress = 2h;
   Node a(io, tuning), b(io);
   ASSERT_TRUE(call(a, b.self).reply);
+  const Writes writes(a, FrameType::control, true);
   std::thread stepper([&] {
     b.gate.wait_for_entries(1);
+    writes.recorded();
     time.advance(1h);
     EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::debug, "RPC stalled") == 1; }));
     time.advance(1h);
@@ -1580,8 +1633,10 @@ TEST(Journal, TheDataLanesNoticeBindsOnlyDataCalls) {
   Node a(io, tuning), b(io);
   ASSERT_TRUE(call(a, b.self).reply);
   b.hold_data = true;
+  const Writes writes(a, FrameType::foreground, false);
   std::thread stepper([&] {
     b.gate.wait_for_entries(1);
+    writes.recorded();
     time.advance(1h);
     EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::debug, "RPC stalled (foreground) peer=") >= 1; }));
     b.gate.open();
@@ -1601,8 +1656,10 @@ TEST(Journal, ATypesOwnNoticeReplacesItsLanes) {
   tuning.dead_after = 72h;
   Node a(io, tuning), b(io);
   ASSERT_TRUE(call(a, b.self).reply);
+  const Writes writes(a, FrameType::control, true);
   std::thread stepper([&] {
     b.gate.wait_for_entries(1);
+    writes.recorded();
     time.advance(1h);
     EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::debug, "RPC stalled (control) peer=") >= 1; }));
     EXPECT_GE(log->count(status::LogLevel::debug, " message=noticed age_ms="), 1u);
@@ -1641,7 +1698,9 @@ TEST(PeerSocket, TheTransportsOwnSocketsCarryTheOptions) {
     length = sizeof(name);
     ASSERT_EQ(::getsockopt(fd, IPPROTO_TCP, TCP_CONGESTION, name, &length), 0);
     // BBR where the kernel has it: a kernel without it has a warning instead.
-    if (std::string(name) != "bbr") EXPECT_NE(std::string(name), "");
+    if (std::string(name) != "bbr") {
+      EXPECT_NE(std::string(name), "");
+    }
 #endif
     ++checked;
   }

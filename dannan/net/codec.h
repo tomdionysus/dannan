@@ -32,6 +32,14 @@ class DecodeError : public std::runtime_error {
 // Writes into a growable byte buffer: Bytes for what goes on the wire, a
 // SecureBuffer (identity/secure_memory.h) for a record holding secrets, so
 // its plaintext never sits in ordinary memory before it is sealed.
+// g++ 12 to 14 at -O3 misread std::vector's inserts into a vector just made as
+// writing past it, inside libstdc++ where this writer is inlined. Said nowhere
+// for the writer; everywhere else they stay errors.
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wstringop-overflow"
+#pragma GCC diagnostic ignored "-Warray-bounds"
+#endif
 template <class Buffer>
 class BasicWriter {
  public:
@@ -66,6 +74,9 @@ class BasicWriter {
  private:
   Buffer _data;
 };
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 using Writer = BasicWriter<Bytes>;
 

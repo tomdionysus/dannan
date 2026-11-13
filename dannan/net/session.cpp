@@ -504,13 +504,13 @@ void async_dial_handshake(Session::Socket& socket, const Credentials& credential
   }
   asio::async_write(socket, asio::buffer(state->client->hello_blob()), [state](const boost::system::error_code& error, size_t) {
     if (error) return refuse(state, "handshake write: " + error.message());
-    asio::async_read(state->socket, asio::buffer(state->length), [state](const boost::system::error_code& error, size_t) {
-      if (error) return refuse(state, "handshake read: " + error.message());
+    asio::async_read(state->socket, asio::buffer(state->length), [state](const boost::system::error_code& read_error, size_t) {
+      if (read_error) return refuse(state, "handshake read: " + read_error.message());
       const auto size = blob_length(state->length);
       if (size > max_handshake_blob) return refuse(state, "blob too large");
       state->body.resize(size);
-      asio::async_read(state->socket, asio::buffer(state->body), [state](const boost::system::error_code& error, size_t) {
-        if (error) return refuse(state, "handshake read: " + error.message());
+      asio::async_read(state->socket, asio::buffer(state->body), [state](const boost::system::error_code& body_error, size_t) {
+        if (body_error) return refuse(state, "handshake read: " + body_error.message());
         Established established;
         try {
           established = state->client->finish(state->body);
@@ -532,8 +532,8 @@ void async_accept_handshake(Session::Socket& socket, const Credentials& credenti
     const auto size = blob_length(state->length);
     if (size > max_handshake_blob) return refuse(state, "blob too large");
     state->body.resize(size);
-    asio::async_read(state->socket, asio::buffer(state->body), [state](const boost::system::error_code& error, size_t) {
-      if (error) return refuse(state, "handshake read: " + error.message());
+    asio::async_read(state->socket, asio::buffer(state->body), [state](const boost::system::error_code& body_error, size_t) {
+      if (body_error) return refuse(state, "handshake read: " + body_error.message());
       try {
         auto reply =
             server_handshake(state->credentials, state->local, state->max_frame, state->body, state->remote, state->expected ? &*state->expected : nullptr);
@@ -542,8 +542,8 @@ void async_accept_handshake(Session::Socket& socket, const Credentials& credenti
       } catch (...) {
         return state->done(std::current_exception(), {});
       }
-      asio::async_write(state->socket, asio::buffer(state->reply), [state](const boost::system::error_code& error, size_t) {
-        if (error) return refuse(state, "handshake write: " + error.message());
+      asio::async_write(state->socket, asio::buffer(state->reply), [state](const boost::system::error_code& write_error, size_t) {
+        if (write_error) return refuse(state, "handshake write: " + write_error.message());
         state->done(nullptr, std::move(state->session));
       });
     });
