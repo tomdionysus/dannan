@@ -7,8 +7,9 @@
 # tools/ci.sh's steps on Debian 13, as the nodes have it: the header and format
 # check; release builds and the installed package's consumer on x86-64 and on
 # arm64, as a Pi builds them; clang with its thread-safety analysis; ASan and
-# UBSan on both, TSan; coverage to Codecov; and a build and test on macOS. The
-# Docker NAT bed (test/compose) and the runs on the nodes stay by hand.
+# UBSan on both, TSan; coverage to Codecov; the Debian packages on both, linted;
+# and a build and test on macOS. The Docker NAT bed (test/compose) and the runs
+# on the nodes stay by hand.
 name: CI
 
 on:
@@ -56,6 +57,47 @@ jobs:
 
       - name: ${{ matrix.step }}
         run: tools/ci.sh ${{ matrix.step }}
+
+  # The Debian packages, on both architectures (arm64 as a Pi builds them): the
+  # tests run inside the build, and lintian fails them on any error or warning.
+  deb:
+    name: deb (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86-64, runner: ubuntu-24.04 }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+    container:
+      image: debian:trixie
+    steps:
+      - name: Install packages
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends dpkg-dev debhelper git ca-certificates lintian
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # tags, for the package's version
+
+      - name: Trust the checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Install build dependencies
+        run: apt-get build-dep -y ./
+
+      - name: Build
+        run: tools/build-deb.sh
+
+      - name: Lint
+        run: lintian --fail-on error,warning build-deb/*.changes
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb-${{ matrix.arch }}
+          path: build-deb/*.deb
 
   coverage:
     runs-on: ubuntu-24.04
