@@ -1,0 +1,27 @@
+.\" Dannan - The Distributed Substrate
+.\" Copyright (C) 2026 Tom Cully <mail@tomcully.com>
+.\" Licensed under the GNU GPLv3 - see <https://www.gnu.org/licenses/gpl-3.0.html>
+.TH DANNAN-IMPORT-MACHA 1 2026-11-13 Dannan "Dannan tools"
+.SH NAME
+dannan-import-macha \- move a Macha node's state into Dannan's formats
+.SH SYNOPSIS
+.B dannan-import-macha
+.RB [ \-\-dry-run ]
+.I STATE
+.SH DESCRIPTION
+.B dannan-import-macha
+converts the roster, the inbound answer and the last-known telemetry in the
+Macha state directory
+.I STATE
+into Dannan's formats, once, with the node stopped. Each original is kept as
+.IR name .macha;
+restoring those is the rollback. It prints each file and what was done with it.
+.SH OPTIONS
+.TP
+.B \-\-dry-run
+Says what would be done and changes nothing.
+.SH EXIT STATUS
+0 on success, 1 when the import is refused or fails, 2 for a usage error.
+.SH SEE ALSO
+.BR dannan-ca (1),
+.BR dannan-version (1)

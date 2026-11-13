@@ -4,3 +4,14 @@ CLAUDE.local.md
 .basemind/
 .DS_Store
 /.cache/
+debian/build/
+debian/changelog
+debian/.debhelper/
+debian/debhelper-build-stamp
+debian/files
+debian/libdannan*/
+debian/dannan-tools/
+debian/tmp/
+debian/*.substvars
+debian/*.debhelper.log
+debian/*.debhelper
