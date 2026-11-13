@@ -395,8 +395,7 @@ void simultaneous_open(asio::io_context& io, uint16_t port, const net::Endpoint&
     bool connecting = false;
     // Where nothing drops a SYN, the ends meet only if their attempts overlap within
     // a round trip; retried at a fixed interval, two ends out of step stay so. A
-    // random interval puts each retry at a fresh offset; 1 to 9 ms keeps the old
-    // mean of 5, so a port nobody holds (a node down) costs no more than it did.
+    // random interval puts each retry at a fresh offset.
     std::minstd_rand jitter{std::random_device{}()};
 
     Opening(asio::io_context& io, asio::ip::tcp::endpoint to, uint16_t local_port, std::chrono::milliseconds within,
@@ -446,10 +445,19 @@ void simultaneous_open(asio::io_context& io, uint16_t port, const net::Endpoint&
         // A refusal is the far end's kernel answering before its own connect has begun:
         // on a path with nothing to drop the SYN, the two ends meet only if their
         // attempts overlap, so try again soon, at a random moment.
-        if (connect_error == asio::error::connection_refused)
-          return self->again(std::chrono::microseconds(std::uniform_int_distribution<int>(1000, 9000)(self->jitter)));
+        if (connect_error == asio::error::connection_refused) return self->again(self->after_refusal());
         self->again(std::chrono::milliseconds(100));
       });
+    }
+    // The ends begin together, so they are likeliest to overlap early: close retries
+    // first, widening with each refusal to 1 to 9 ms, the old mean of 5, for a port
+    // nobody holds (a node down) costs the io threads no more than it did.
+    uint64_t refusals = 0;
+    std::chrono::microseconds after_refusal() {
+      const auto widened = static_cast<int>(std::min<uint64_t>(++refusals, 64));
+      const int low = 200 + 800 * widened / 64;
+      const int high = 2000 + 7000 * widened / 64;
+      return std::chrono::microseconds(std::uniform_int_distribution<int>(low, high)(jitter));
     }
     void again(std::chrono::microseconds after) {
       timer.expires_after(after);
