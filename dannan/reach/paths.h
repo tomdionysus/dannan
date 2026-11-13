@@ -169,8 +169,9 @@ struct PathsConfig {
   // session before it goes on as if their count were unknown.
   std::chrono::milliseconds finish_wait{30000};
   // Tests only: a relay drops a DATA circuit's chunk this says to, on receipt (`forwarding`
-  // false) or as it would forward it, as a session dying with it would.
-  std::function<bool(uint64_t sequence, bool forwarding)> drop_hook;
+  // false) or as it would forward it, as a session dying with it would; `toward_b` is the
+  // chunk's way, to the end the circuit was opened to.
+  std::function<bool(uint64_t sequence, bool forwarding, bool toward_b)> drop_hook;
   // How long both ends keep trying a simultaneous open.
   std::chrono::milliseconds punch_window{3000};
   // Whether this node forwards circuits for others. CONTROL circuits are
