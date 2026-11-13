@@ -385,6 +385,9 @@ void simultaneous_open(asio::io_context& io, uint16_t port, const net::Endpoint&
   struct Opening : std::enable_shared_from_this<Opening> {
     asio::strand<asio::any_io_executor> strand;
     asio::ip::tcp::socket tcp;
+    // Between attempts after a refusal: the punch port listening for the far end.
+    asio::ip::tcp::acceptor listener;
+    asio::ip::tcp::socket caught;
     asio::steady_timer timer;
     asio::ip::tcp::endpoint remote;
     uint16_t port;
@@ -393,6 +396,7 @@ void simultaneous_open(asio::io_context& io, uint16_t port, const net::Endpoint&
     std::string last_error = "no attempt";
     uint64_t attempts = 0;
     bool connecting = false;
+    bool finished = false;
     // Where nothing drops a SYN, the ends meet only if their attempts overlap within
     // a round trip; retried at a fixed interval, two ends out of step stay so. A
     // random interval puts each retry at a fresh offset.
@@ -402,6 +406,8 @@ void simultaneous_open(asio::io_context& io, uint16_t port, const net::Endpoint&
             std::function<void(int, int, std::string)> then)
         : strand(asio::make_strand(io.get_executor())),
           tcp(strand),
+          listener(strand),
+          caught(strand),
           timer(strand),
           remote(to),
           port(local_port),
@@ -410,8 +416,12 @@ void simultaneous_open(asio::io_context& io, uint16_t port, const net::Endpoint&
 
     // On the strand: one attempt at a time, each bound to the punch port.
     void attempt() {
-      if (std::chrono::steady_clock::now() >= until)
+      if (finished) return;
+      stop_listening();
+      if (std::chrono::steady_clock::now() >= until) {
+        finished = true;
         return done(-1, 0, "the simultaneous open did not complete after " + std::to_string(attempts) + " attempts: " + last_error);
+      }
       boost::system::error_code error;
       tcp.open(remote.protocol(), error);
       if (!error) reuse(tcp.native_handle());
@@ -433,21 +443,58 @@ void simultaneous_open(asio::io_context& io, uint16_t port, const net::Endpoint&
       tcp.async_connect(remote, [self = shared_from_this()](const boost::system::error_code& connect_error) {
         self->connecting = false;
         self->timer.cancel();
-        if (!connect_error) {
-          // The warning, if any, comes from the node's first ordinary socket.
-          net::peer_socket_options(self->tcp.native_handle(), status::ScopedLogger(status::null_sink(), "net"));
-          const int family = self->tcp.local_endpoint().protocol().family();
-          return self->done(self->tcp.release(), family, "");
-        }
+        if (self->finished) return;
+        if (!connect_error) return self->connected(self->tcp);
         self->last_error = connect_error == asio::error::operation_aborted ? "timed out" : connect_error.message();
         boost::system::error_code ignored;
         self->tcp.close(ignored);
-        // A refusal is the far end's kernel answering before its own connect has begun:
-        // on a path with nothing to drop the SYN, the two ends meet only if their
-        // attempts overlap, so try again soon, at a random moment.
-        if (connect_error == asio::error::connection_refused) return self->again(self->after_refusal());
+        // A refusal is the far end's kernel answering before its own connect has begun,
+        // on a path with nothing to drop the SYN (loopback, a LAN): two connects meet
+        // there only if they overlap within a round trip. So until the next attempt this
+        // end listens on its punch port, and the far end's connect lands on it. Behind a
+        // NAT the SYN is dropped, not refused, and the connect simply runs on.
+        if (connect_error == asio::error::connection_refused) return self->listen_until(self->after_refusal());
         self->again(std::chrono::milliseconds(100));
       });
+    }
+    void connected(asio::ip::tcp::socket& socket) {
+      finished = true;
+      timer.cancel();
+      stop_listening();
+      // The warning, if any, comes from the node's first ordinary socket.
+      net::peer_socket_options(socket.native_handle(), status::ScopedLogger(status::null_sink(), "net"));
+      const int family = socket.local_endpoint().protocol().family();
+      done(socket.release(), family, "");
+    }
+    void listen_until(std::chrono::microseconds after) {
+      boost::system::error_code error;
+      listener.open(remote.protocol(), error);
+      if (!error) reuse(listener.native_handle());
+      if (!error) listener.bind(any_on(remote, port), error);
+      if (!error) listener.listen(1, error);
+      if (error) {
+        boost::system::error_code ignored;
+        listener.close(ignored);
+      } else {
+        accept_one();
+      }
+      again(after);
+    }
+    // Only the far end's punch endpoint is taken; anything else is closed.
+    void accept_one() {
+      listener.async_accept(caught, [self = shared_from_this()](const boost::system::error_code& accept_error) {
+        if (accept_error || self->finished) return;
+        boost::system::error_code error;
+        const auto from = self->caught.remote_endpoint(error);
+        if (!error && from.address() == self->remote.address() && from.port() == self->remote.port()) return self->connected(self->caught);
+        boost::system::error_code ignored;
+        self->caught.close(ignored);
+        if (self->listener.is_open()) self->accept_one();
+      });
+    }
+    void stop_listening() {
+      boost::system::error_code ignored;
+      listener.close(ignored);
     }
     // The ends begin together, so they are likeliest to overlap early: close retries
     // first, widening with each refusal to 1 to 9 ms, the old mean of 5, for a port
@@ -461,7 +508,10 @@ void simultaneous_open(asio::io_context& io, uint16_t port, const net::Endpoint&
     }
     void again(std::chrono::microseconds after) {
       timer.expires_after(after);
-      timer.async_wait([self = shared_from_this()](const boost::system::error_code&) { self->attempt(); });
+      timer.async_wait([self = shared_from_this()](const boost::system::error_code& timer_error) {
+        if (timer_error == asio::error::operation_aborted && self->finished) return;
+        self->attempt();
+      });
     }
   };
   asio::ip::tcp::endpoint remote;
