@@ -1,0 +1,46 @@
+#!/usr/bin/make -f
+#
+# Dannan - The Distributed Substrate
+#
+# Copyright (C) 2026 Tom Cully <mail@tomcully.com>
+# Licensed under the GNU GPLv3 - see <https://www.gnu.org/licenses/gpl-3.0.html>
+#
+# The CMake install rules say where everything goes; this splits it between the
+# library, its development files and the tools. The library's package is named
+# for its SONAME, the whole version, and debian/control names it.
+
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+include /usr/share/dpkg/architecture.mk
+
+LIBRARY := $(shell sed -n 's/^Package: \(libdannan[0-9].*\)/\1/p' debian/control)
+
+ifneq (,$(filter nocheck,$(DEB_BUILD_OPTIONS)))
+TESTS = OFF
+else
+TESTS = ON
+endif
+
+%:
+	dh $@ --buildsystem=cmake --builddirectory=debian/build
+
+override_dh_auto_configure:
+	dh_auto_configure -- \
+		-DCMAKE_BUILD_TYPE=RelWithDebInfo \
+		-DDANNAN_BUILD_TESTING=$(TESTS)
+
+# The test binary rather than ctest. Every connection the tests make is on the
+# loopback interface.
+override_dh_auto_test:
+ifeq ($(TESTS),ON)
+	debian/build/dannan_tests
+endif
+
+# One path to each call: given several, dh_install takes the last as the
+# destination. The glob is quoted for dh_install to expand under debian/tmp.
+override_dh_install:
+	dh_install -p$(LIBRARY) 'usr/lib/$(DEB_HOST_MULTIARCH)/libdannan.so.*'
+	dh_install -plibdannan-dev usr/include/dannan
+	dh_install -plibdannan-dev usr/lib/$(DEB_HOST_MULTIARCH)/libdannan.so
+	dh_install -plibdannan-dev usr/lib/$(DEB_HOST_MULTIARCH)/cmake/dannan
+	dh_install -pdannan-tools usr/bin
+	dh_install -pdannan-tools usr/share/man/man1

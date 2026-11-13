@@ -30,7 +30,8 @@ which discipline it follows.
 - Tags are exactly `x.y.z` semver: annotated, no `v` prefix, no suffix, cut from
   `main`.
 - The tag, the CMake `project(... VERSION ...)` and `--version` are the same
-  number.
+  number, and the library's package in `debian/control` is `libdannan` and that
+  number: the version commit changes all three (`docs/packaging.md`).
 
 ## Commits
 
@@ -58,8 +59,8 @@ Run the test binaries rather than `ctest`. The laptop takes every dependency fro
 MacPorts. Hosted CI (`.github/workflows/ci.yml`) runs each step of
 `tools/ci.sh` on Debian 13, as the nodes have it, on x86-64 and arm64: the
 header and format check, release builds with g++ and clang, ASan with UBSan,
-TSan, the installed package's consumer, and coverage to Codecov; and a build
-and test on macOS. CodeQL analyses every push. Any step runs the same in a
+TSan, the installed package's consumer, coverage to Codecov, and the Debian
+packages, linted; and a build and test on macOS. CodeQL analyses every push. Any step runs the same in a
 `debian:trixie` container: `tools/ci.sh <step>`. Locally, sanitizers run before
 a release, or to hunt a bug that cannot be pinned any other way. The compose bed proves level 0 through real NATs, once over a
 cluster key and once over certificates alone with a revocation: configure with
