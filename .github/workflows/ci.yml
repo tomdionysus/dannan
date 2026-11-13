@@ -7,8 +7,9 @@
 # tools/ci.sh's steps on Debian 13, as the nodes have it: the header and format
 # check; release builds and the installed package's consumer on x86-64 and on
 # arm64, as a Pi builds them; clang with its thread-safety analysis; ASan and
-# UBSan on both, TSan; coverage to Codecov; the Debian packages on both, linted;
-# and a build and test on macOS. The Docker NAT bed (test/compose) and the runs
+# UBSan on both, TSan; coverage to Codecov; the ABI against the minor's last
+# release on both; the Debian packages on both, linted; and a build and test on
+# macOS. The Docker NAT bed (test/compose) and the runs
 # on the nodes stay by hand.
 name: CI
 
@@ -57,6 +58,38 @@ jobs:
 
       - name: ${{ matrix.step }}
         run: tools/ci.sh ${{ matrix.step }}
+
+  # A patch keeps the ABI (Tom, 2026-11-13): the library against its minor's last
+  # release, on both architectures, by abidiff.
+  abi:
+    name: abi (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86-64, runner: ubuntu-24.04 }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+    container:
+      image: debian:trixie
+    steps:
+      - name: Install packages
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            g++ cmake ninja-build git ca-certificates binutils abigail-tools \
+            libboost-dev libssl-dev libyaml-cpp-dev
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # the release tags
+
+      - name: Trust the checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: abi
+        run: tools/ci.sh abi
 
   # The Debian packages, on both architectures (arm64 as a Pi builds them): the
   # tests run inside the build, and lintian fails them on any error or warning.

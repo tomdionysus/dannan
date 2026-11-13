@@ -30,8 +30,13 @@ which discipline it follows.
 - Tags are exactly `x.y.z` semver: annotated, no `v` prefix, no suffix, cut from
   `main`.
 - The tag, the CMake `project(... VERSION ...)` and `--version` are the same
-  number, and the library's package in `debian/control` is `libdannan` and that
-  number: the version commit changes all three (`docs/packaging.md`).
+  number, and the library's package in `debian/control` is `libdannan` and its
+  major.minor (`docs/packaging.md`).
+- A patch release keeps the ABI: CI's `abi` step compares the library with the
+  minor's last release and fails on an incompatible change. A change that breaks
+  it waits for the next minor release (Tom, 2026-11-13).
+- The version commit also adds the release to `CHANGELOG.md`, newest first: what
+  changed for the library's users, never the gates or how it was made.
 
 ## Commits
 
