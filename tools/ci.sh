@@ -107,6 +107,9 @@ case "$step" in
       skip=$version
     fi
     base=$(git -C "$top" tag --list "$minor.*" --sort=-v:refname | grep -vx "${skip:-none}" | head -n 1)
+    # DANNAN_ABI_BASE names another release to compare with, such as one a live
+    # host was built on.
+    base=${DANNAN_ABI_BASE:-$base}
     if [ -z "$base" ]; then
       echo "abi: no earlier $minor release; $version may change the ABI"
       exit 0
