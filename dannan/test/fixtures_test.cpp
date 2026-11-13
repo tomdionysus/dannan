@@ -7,6 +7,9 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <fstream>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -120,6 +123,85 @@ TEST(ChildProcess, TakesAnEnvironmentInputAndATerminal) {
   ChildOptions ignored;
   ignored.input = std::string(1 << 20, 'x');
   ChildProcess deaf({"/bin/sleep", "30"}, dir.path() / "deaf.log", ignored);
+}
+
+// Whether `pid` is a process still running: not gone, and on Linux not a
+// zombie nobody has reaped (a container's first process may never reap one).
+bool running(pid_t pid) {
+  if (::kill(pid, 0) != 0) return false;
+#if defined(__linux__)
+  std::ifstream stat("/proc/" + std::to_string(pid) + "/stat");
+  std::string line;
+  if (!std::getline(stat, line)) return false;
+  const auto close = line.rfind(')');
+  return close == std::string::npos || close + 2 >= line.size() || line[close + 2] != 'Z';
+#else
+  return true;
+#endif
+}
+
+// A test process that dies without running its destructors (a crash, an
+// abort, SIGKILL) leaves no child running: each child's reaper ends it.
+TEST(ChildProcess, AChildOutlivesNoTestProcessThatDies) {
+  TempDir dir;
+  int report[2];
+  ASSERT_EQ(::pipe(report), 0);
+  const pid_t test = ::fork();
+  ASSERT_GE(test, 0);
+  if (test == 0) {
+    ::close(report[0]);
+    ChildProcess child({"/bin/sleep", "30"}, dir.path() / "orphan.log");
+    const pid_t pid = child.pid();
+    if (::write(report[1], &pid, sizeof(pid)) != sizeof(pid)) ::_exit(2);
+    ::raise(SIGKILL);
+    ::_exit(3);
+  }
+  ::close(report[1]);
+  pid_t child = 0;
+  pollfd ready{report[0], POLLIN, 0};
+  ASSERT_EQ(::poll(&ready, 1, 10000), 1);
+  ASSERT_EQ(::read(report[0], &child, sizeof(child)), static_cast<ssize_t>(sizeof(child)));
+  ::close(report[0]);
+  int status = 0;
+  ASSERT_EQ(::waitpid(test, &status, 0), test);
+  ASSERT_TRUE(WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL);
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(12);
+  while (running(child) && std::chrono::steady_clock::now() < deadline) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  EXPECT_FALSE(running(child));
+  if (running(child)) ::kill(child, SIGKILL);
+}
+
+// Once the test has waited for a child, the reaper stands down without
+// signalling anything, so a pid the system has handed on is never hit; the
+// child's status is what it was.
+TEST(ChildProcess, AReaperStandsDownOnceTheChildIsWaitedFor) {
+  TempDir dir;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  ChildProcess quick({"/bin/sh", "-c", "exit 7"}, dir.path() / "quick.log");
+  EXPECT_EQ(quick.wait(deadline), 7);
+  EXPECT_EQ(quick.reaper_status(), 0);
+  ChildProcess ended({"/bin/sleep", "30"}, dir.path() / "ended.log");
+  ended.terminate();
+  EXPECT_EQ(ended.wait(deadline), 128 + SIGTERM);
+  EXPECT_EQ(ended.reaper_status(), 0);
+}
+
+// Children started on several threads at once, each with its reaper forked
+// from a threaded process: every one starts, says its line, and ends as it
+// should, with its reaper standing down.
+TEST(ChildProcess, ChildrenStartOnManyThreadsAtOnce) {
+  TempDir dir;
+  constexpr int count = 8;
+  std::atomic<int> good{0};
+  std::vector<std::thread> threads;
+  for (int i = 0; i < count; ++i)
+    threads.emplace_back([&, i] {
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+      ChildProcess child({"/bin/sh", "-c", "echo " + std::to_string(i)}, dir.path() / ("many-" + std::to_string(i) + ".log"));
+      if (child.line(deadline) == std::to_string(i) && child.wait(deadline) == 0 && child.reaper_status() == 0) ++good;
+    });
+  for (auto& thread : threads) thread.join();
+  EXPECT_EQ(good.load(), count);
 }
 
 }  // namespace

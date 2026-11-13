@@ -7,7 +7,7 @@
 #
 # The CMake install rules say where everything goes; this splits it between the
 # library, its development files and the tools. The library's package is named
-# for its SONAME, the whole version, and debian/control names it.
+# for its SONAME, major.minor, and debian/control names it.
 
 export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 include /usr/share/dpkg/architecture.mk
@@ -34,6 +34,11 @@ override_dh_auto_test:
 ifeq ($(TESTS),ON)
 	debian/build/dannan_tests
 endif
+
+# A host built against this release depends on it or a later patch: a patch may
+# add to the ABI, never change it.
+override_dh_makeshlibs:
+	dh_makeshlibs -V
 
 # One path to each call: given several, dh_install takes the last as the
 # destination. The glob is quoted for dh_install to expand under debian/tmp.
