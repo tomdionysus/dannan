@@ -391,10 +391,12 @@ void simultaneous_open(asio::io_context& io, uint16_t port, const net::Endpoint&
     std::chrono::steady_clock::time_point until;
     std::function<void(int, int, std::string)> done;
     std::string last_error = "no attempt";
+    uint64_t attempts = 0;
     bool connecting = false;
     // Where nothing drops a SYN, the ends meet only if their attempts overlap within
     // a round trip; retried at a fixed interval, two ends out of step stay so. A
-    // random interval puts each retry at a fresh offset.
+    // random interval puts each retry at a fresh offset; 1 to 9 ms keeps the old
+    // mean of 5, so a port nobody holds (a node down) costs no more than it did.
     std::minstd_rand jitter{std::random_device{}()};
 
     Opening(asio::io_context& io, asio::ip::tcp::endpoint to, uint16_t local_port, std::chrono::milliseconds within,
@@ -409,7 +411,8 @@ void simultaneous_open(asio::io_context& io, uint16_t port, const net::Endpoint&
 
     // On the strand: one attempt at a time, each bound to the punch port.
     void attempt() {
-      if (std::chrono::steady_clock::now() >= until) return done(-1, 0, "the simultaneous open did not complete: " + last_error);
+      if (std::chrono::steady_clock::now() >= until)
+        return done(-1, 0, "the simultaneous open did not complete after " + std::to_string(attempts) + " attempts: " + last_error);
       boost::system::error_code error;
       tcp.open(remote.protocol(), error);
       if (!error) reuse(tcp.native_handle());
@@ -421,6 +424,7 @@ void simultaneous_open(asio::io_context& io, uint16_t port, const net::Endpoint&
         return again(std::chrono::milliseconds(100));
       }
       connecting = true;
+      ++attempts;
       timer.expires_after(std::chrono::milliseconds(700));
       timer.async_wait([self = shared_from_this()](const boost::system::error_code& timer_error) {
         if (timer_error || !self->connecting) return;
@@ -441,9 +445,9 @@ void simultaneous_open(asio::io_context& io, uint16_t port, const net::Endpoint&
         self->tcp.close(ignored);
         // A refusal is the far end's kernel answering before its own connect has begun:
         // on a path with nothing to drop the SYN, the two ends meet only if their
-        // attempts overlap, so try again almost at once, a random moment later.
+        // attempts overlap, so try again soon, at a random moment.
         if (connect_error == asio::error::connection_refused)
-          return self->again(std::chrono::microseconds(std::uniform_int_distribution<int>(200, 2000)(self->jitter)));
+          return self->again(std::chrono::microseconds(std::uniform_int_distribution<int>(1000, 9000)(self->jitter)));
         self->again(std::chrono::milliseconds(100));
       });
     }

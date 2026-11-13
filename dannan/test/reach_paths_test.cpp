@@ -204,6 +204,23 @@ TEST(LevelZero, ASimultaneousOpenMeetsWhenTheEndsBeginOutOfStep) {
     if (fd >= 0) ::close(fd);
 }
 
+// A refusal also comes from a port nobody holds: a node down or stopped. Its retries
+// keep the rate of one each 5 ms on average, however long the window, so an outage
+// costs the io threads little (the Macha session's review of 0.5.4).
+TEST(LevelZero, ASimultaneousOpenToAClosedPortRetriesAtAModestRate) {
+  Io io;
+  std::promise<std::pair<int, std::string>> done;
+  simultaneous_open(io.context, test::free_port(), {"127.0.0.1", test::free_port()}, 1s, [&](int fd, int, std::string why) { done.set_value({fd, why}); });
+  const auto [fd, why] = done.get_future().get();
+  ASSERT_LT(fd, 0);
+  const auto at = why.find(" after ");
+  ASSERT_NE(at, std::string::npos) << why;
+  const auto attempts = std::stoull(why.substr(at + 7));
+  // About 200 at the mean; nothing near the thousands a sub-millisecond retry makes.
+  EXPECT_GE(attempts, 50u) << why;
+  EXPECT_LE(attempts, 300u) << why;
+}
+
 TEST(LevelZero, ASimultaneousOpenToNobodyGivesUp) {
   Io io;
   std::promise<std::pair<int, std::string>> done;
