@@ -231,8 +231,11 @@ Macha retires those as its own work, some at the store cutover. The new friction
 
 Not decidable from reading, to be measured on the nodes:
 - BBR and UPnP against a real gateway;
-- whether the connectivity refresh's blocking of its caller is new. The asynchronous
-  `refresh_public_connectivity` exists (`context.h:80-85`).
+- the connectivity refresh's blocking is now settled, and it is Macha's own:
+  `NodeRuntime::refresh_public_connectivity` (`src/cluster/cluster.cpp:627-645`) waits
+  on a future around Dannan's asynchronous call. It holds an HTTP handler thread for
+  the operator's check action (`src/api/status_api.cpp:1453`). Macha will answer it
+  deferred; nothing is needed of Dannan.
 - whether the reassembly reserve, counted inside the memory total, leaves Macha's
   holders less room.
 
