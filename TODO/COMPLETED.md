@@ -3,6 +3,19 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
+## Handoff, 2026-11-13: 0.6.0
+
+The ABI promise (Tom, 2026-11-13): the SONAME and package are `libdannan.so.0.6` and
+`libdannan0.6`, the CMake package `SameMinorVersion`, `dh_makeshlibs -V`, and
+`tools/ci.sh abi` in CI on both architectures. The step was proven in a trixie
+container three ways: the tree against 0.5.6 passes, a field added to a public struct
+fails, and an added function passes. Also the `ChildProcess` reaper Lugh asked for: its
+two tests fail without it (the orphan outlived its 12 s) and pass with it, and with
+a third (eight children started on threads at once) pass on macOS plain, under ASan
+and under TSan. Macha's review then found 0.5.4 had changed `libdannan.so.0.5`'s ABI
+(the step with `DANNAN_ABI_BASE=0.5.3`: five functions removed and one changed; 0.5.5
+matches), so at Tom's word the release is 0.6.0, under a SONAME nothing used before.
+
 ## Handoff, 2026-11-13: 0.5.6
 
 Debian packages for the apt repository at tomcully.com: `libdannan0.5.6`, `libdannan-dev` and `dannan-tools`, built,
@@ -52,6 +65,9 @@ in 3 of 4 full runs (one unexplained handshake timeout, `LevelZero.ANodeIsObserv
 TSan 624 each at that point; later gates and the two open items are in the report and under 0.5.0. Compose relay 5 of 5. Report: `2026-11-06-dannan-capabilities.md`.
 
 ## Releases
+
+- **0.6.0** (2026-11-13, `main`, tag `0.6.0`, at Tom's word given in advance: once hosted CI was green on every job
+  and Macha and Lugh had reviewed it): see the handoff above. Gates: see the ACTIVE note.
 
 - **0.5.6** (2026-11-13, `main`, tag `0.5.6`, pushed at Tom's word): see the handoff above. Gates, hosted CI on `develop`
   at the release's code: 646 passed, 1 skipped as root, on Debian x86-64 and arm64 under every step and in both `deb` jobs,

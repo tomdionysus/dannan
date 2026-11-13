@@ -10,7 +10,8 @@ rules.
 
 **Tom's rulings, 2026-11-13, answering each question directly:**
 - **P1:** the ABI promise. Patches keep the ABI under `abidiff` in CI; the SONAME and
-  package go back to `libdannan.so.0.5` and `libdannan0.5`, and the CMake package to
+  package go back to major.minor (released as 0.6.0: `libdannan.so.0.6`, `libdannan0.6`, since 0.5.4 had
+  already broken `libdannan.so.0.5`'s ABI), and the CMake package to
   `SameMinorVersion`.
 - **P2:** build the partition reading. An even split is a minority. A join adds to the
   agreed roster, and only an operator's retire removes a node.
@@ -163,6 +164,11 @@ figures. The proposal is to add to `dannan-bench`:
 - payloads from 64 B to 1 KiB, at offered rates up to 20k/s;
 - reports of msgs/s and p50, p99 and p99.9 latency.
 
+Tom's PUBACK target for Lir (2026-11-13): p99 under 50 ms at QoS 1 with k = 2. Dannan's
+share of that is the replication round: the edge's call to the shard primary, then the
+primary's message to its replicas. So the bench reports p99 for request and reply, at
+1 to 64 envelopes of 64 B to 1 KiB, as the network's part of the 50 ms.
+
 It runs on the compose bed and loopback here. Two real machines (the Pis, or the
 laptop against a Pi) wait for Tom's word. It also answers whether
 `max_pending_replies` = 512 (`net/outbound.h:27`) limits Dagda's group commit. Lir
@@ -253,6 +259,22 @@ Not decidable from reading, to be measured on the nodes:
   deferred; nothing is needed of Dannan.
 - whether the reassembly reserve, counted inside the memory total, leaves Macha's
   holders less room.
+
+### P8. A deferred reply (Dagda, 2026-11-13; first in 0.7.0, Tom)
+
+`RequestHandler` answers synchronously and "may block" (`net/scheduler.h:101-103`), so a
+handler waiting on a group commit's fsync holds one of its class's bounded workers.
+Dagda's prototype measured it: one call per message at 8,000/s on loopback, a replica
+never grouped more than 2 calls, 309,385 of 479,993 calls were refused, and p99 was
+240 ms. Batching on the caller (as Lir does) passed at p99 14 to 23 ms.
+
+- A handler returns "deferred" and keeps a `Reply` (`net/session.h:69-84`), callable
+  once from any thread.
+- The deferred answers count against a per-class bound and end at the caller's
+  deadline.
+- A group-commit server then holds thousands of waiting calls on no workers.
+- The handler's signature changes, so it goes in 0.7.0, first. The synchronous
+  signature stays as an overload, so existing handlers change only to defer.
 
 ### P7. Alpine (Lugh, for Raven)
 

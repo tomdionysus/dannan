@@ -89,8 +89,25 @@ splitting out the technologies"). The hosted systems' needs, Dannan's answers an
 [`2026-11-13-stack-needs.md`](2026-11-13-stack-needs.md). The approved work, in order, each on its own `feature/`
 branch with tests first, through hosted CI, and reviewed by the session that asked for it:
 1. P1, the ABI promise: `abidiff` in CI against the previous tag, the SONAME and package back to `libdannan.so.0.5`
-   and `libdannan0.5`, the CMake package back to `SameMinorVersion`, and `docs/packaging.md` and README to match. It
+   and `libdannan0.5`, the CMake package back to `SameMinorVersion` (released as 0.6.0, below), and `docs/packaging.md` and README to match. It
    comes first because every hosted system pins against it.
+   Then the `ChildProcess` reaper (asked for by Lugh at Tom's word, 2026-11-13). A test process that crashes or is
+   SIGKILLed never runs the destructor, so its children ran on for days, holding their ports. Each child gets a forked
+   reaper, which runs only async-signal-safe calls and closes every descriptor but its pipe. The pipe's EOF means the
+   test died: SIGTERM, then SIGKILL after 10 s. A "done" byte is written after `waitid(WNOWAIT)` and before the reap,
+   so a reused pid is never signalled. It goes in 0.6.0 with the promise.
+   A virtual added to a `Context` interface is an ABI change by abidiff, so P2, P6's watch and the like batch into
+   the next minor (Tom, 2026-11-13, directly); changes that touch no interface go in a patch. Tom, 2026-11-13, directly:
+   tag the ABI promise and the reaper once hosted CI is green on every job and Macha, and Lugh for the reaper, have
+   reviewed it; then push it and stage its packages in `../tomcully-apt/incoming/dannan/<version>/`. Macha's review
+   found that 0.5.4 had already changed the ABI under `libdannan.so.0.5` (against 0.5.3: five functions removed,
+   `NodeConfig::relay_drop_hook` retyped), while Macha 0.94.x is live on 0.5.3. So Tom ruled, directly, that the
+   promise starts at 0.6.0 (`libdannan.so.0.6`), not 0.5.7, and the interface work below is 0.7.0.
+   First in 0.7.0 (Tom, 2026-11-13, directly): P8, a deferred reply. A handler may answer later from any thread, through
+   the session's `Reply` (`net/session.h:69-84`), which the scheduler now hides (`net/scheduler.h:101-103`). It is
+   bounded per class and by the caller's deadline, and holds no worker while it waits. Dagda's group-commit prototype:
+   one call per message at 8,000/s, a replica blocking on fsync held the workers, and 309,385 of 479,993 calls were
+   refused, p99 240 ms.
 2. P6's seven small fixes (Macha), then the owners' test seam, the advert-change watch and non-blocking logging.
 3. P2, the partition reading on `Nodes`. Even is a minority; a join adds to the agreed roster and only a retire
    removes.
