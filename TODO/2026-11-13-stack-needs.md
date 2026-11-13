@@ -207,3 +207,5 @@ gave 646 passed and 1 skipped (as root). No source change was needed.
 - arm64 Alpine is not shown: this Intel Mac would emulate it, and the emulator
   misreports `posix_spawn`.
 - Proposal: an Alpine step in hosted CI on both architectures, so musl stays proven.
+  Raven is arm64 (a Pi 5, with Lugh's master key sealed under its OTP device key), so
+  the arm64 Alpine step is the proof Lugh waits for. Lugh supports it.
