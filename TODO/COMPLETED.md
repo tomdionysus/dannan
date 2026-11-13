@@ -3,6 +3,12 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
+## Handoff, 2026-11-13: 0.5.6
+
+Debian packages for the apt repository at tomcully.com: `libdannan0.5.6`, `libdannan-dev` and `dannan-tools`, built,
+tested and linted by CI's `deb` job on x86-64 and arm64. The SONAME and the CMake package compatibility are the exact
+version. How they are built and released: `docs/packaging.md`. No library change from 0.5.5.
+
 ## Handoff, 2026-11-13: 0.5.5
 
 The Macha session's review of 0.5.4, each change approved by it: `Client::dialled` reads stop and takes the slot in one
@@ -46,6 +52,10 @@ in 3 of 4 full runs (one unexplained handshake timeout, `LevelZero.ANodeIsObserv
 TSan 624 each at that point; later gates and the two open items are in the report and under 0.5.0. Compose relay 5 of 5. Report: `2026-11-06-dannan-capabilities.md`.
 
 ## Releases
+
+- **0.5.6** (2026-11-13, `main`, tag `0.5.6`, pushed at Tom's word): see the handoff above. Gates, hosted CI on `develop`
+  at the release's code: 646 passed, 1 skipped as root, on Debian x86-64 and arm64 under every step and in both `deb` jobs,
+  lintian clean on both; macOS green; the package consumer on both architectures; CodeQL clean.
 
 - **0.5.5** (2026-11-13, `main`, tag `0.5.5`, pushed at Tom's word): see the handoff above. Gates, hosted CI on `develop` at
   the release's code: see the ACTIVE note's counts (646 passed, 1 skipped as root, on Debian x86-64 and arm64 under every

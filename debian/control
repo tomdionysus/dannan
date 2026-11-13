@@ -16,7 +16,7 @@ Vcs-Git: https://github.com/tomdionysus/dannan.git
 Vcs-Browser: https://github.com/tomdionysus/dannan
 Rules-Requires-Root: no
 
-Package: libdannan0.5.5
+Package: libdannan0.5.6
 Architecture: any
 Multi-Arch: same
 Depends:
@@ -36,7 +36,7 @@ Architecture: any
 Multi-Arch: same
 Section: libdevel
 Depends:
- libdannan0.5.5 (= ${binary:Version}),
+ libdannan0.5.6 (= ${binary:Version}),
  libboost-dev (>= 1.83),
  libssl-dev,
  ${misc:Depends},
