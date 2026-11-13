@@ -156,11 +156,12 @@ Elsewhere, from a build:
 cmake --install build --prefix /opt/dannan
 ```
 
-Then, in a project that hosts on Dannan, naming the exact version (no release
-promises another's ABI yet, so the library's SONAME is the whole version):
+Then, in a project that hosts on Dannan, naming the oldest patch it needs. A
+patch release keeps the ABI, so any later patch of the same minor is accepted
+and loads:
 
 ```cmake
-find_package(dannan 0.5.6 CONFIG REQUIRED)
+find_package(dannan 0.5.7 CONFIG REQUIRED)
 target_link_libraries(my_system PRIVATE dannan::dannan)
 ```
 
