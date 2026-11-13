@@ -3,6 +3,13 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
+## Handoff, 2026-11-13: 0.5.5
+
+The Macha session's review of 0.5.4, each change approved by it: `Client::dialled` reads stop and takes the slot in one
+section; the simultaneous open retries close at first, widening to a 5 ms mean, and a refused end listens on its punch
+port until the open ends, taking only the far end and what its backlog holds. Three tests from the review; one fails on
+Linux without the fix. Details in `ACTIVE.md`.
+
 ## Handoff, 2026-11-13: 0.5.4
 
 Hosted CI (GitHub Actions on Debian 13 x86-64 and arm64 and on macOS, CodeQL, Dependabot, Codecov) and what its first runs
@@ -39,6 +46,10 @@ in 3 of 4 full runs (one unexplained handshake timeout, `LevelZero.ANodeIsObserv
 TSan 624 each at that point; later gates and the two open items are in the report and under 0.5.0. Compose relay 5 of 5. Report: `2026-11-06-dannan-capabilities.md`.
 
 ## Releases
+
+- **0.5.5** (2026-11-13, `main`, tag `0.5.5`, pushed at Tom's word): see the handoff above. Gates, hosted CI on `develop` at
+  the release's code: see the ACTIVE note's counts (646 passed, 1 skipped as root, on Debian x86-64 and arm64 under every
+  step; 645 on macOS, BBR skipped); the package consumer on both architectures; CodeQL clean.
 
 - **0.5.4** (2026-11-13, `main`, tag `0.5.4`, pushed at Tom's word): see the handoff above. Gates, all hosted CI on `develop`
   at the release's code: `dannan_tests` 643 passed, 1 skipped (as root) on Debian 13 x86-64 g++ release, clang release, ASan

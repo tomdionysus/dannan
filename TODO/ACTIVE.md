@@ -67,6 +67,17 @@ and OpenSSL 3's headers. GitHub's runners then failed tests that pass here, each
 - Tests: the lost-chunk relay tests dropped a chunk of B's answer on a fast runner (the hook now has the direction; `5615034`);
   five journal tests stepped time before the call's write was recorded (`8f13846`, `0787a0f`); the gossip cap test read its
   record after the step (`b43cd39`).
+2026-11-13, the Macha session's review of 0.5.4, tagged 0.5.5 at Tom's word ("yes, do so"; Macha moves after its 0.94.2):
+`dialled` read `_stopped` and took the slot in two sections, so a stop() between could leave an unclosed route
+(`57eefa8`, one section now; by construction, no seam reaches the window). The simultaneous open's retry, at 0.2 to 2 ms,
+hammered a closed port (692 attempts a second; `ASimultaneousOpenToAClosedPortRetriesAtAModestRate`): now close at first,
+widening to a 5 ms mean (`afc79f4`). Retry timing alone never met reliably on GitHub's x86-64 loopback, so a refused end
+listens on its punch port from then until the open ends, beside each attempt, taking only the far end's punch endpoint
+and what its backlog holds before each attempt (`b9f5769`, `91f959d`; `ASimultaneousOpenTakesOnlyTheFarEnd`,
+`ARetryTakesTheFarEndQueuedOnItsListener`, which fails on Linux without it, through a test-only `retrying` hook). The
+Macha session approved all of it. Recorded, not to fix (its reading): on giving up, a SYN completing between the last
+drain and the close is reset, when both ends are at their deadline anyway. Branch CI: 646 passed on Debian x86-64 and
+arm64 under every step, 645 on macOS.
 The earlier one-off `LevelZero.AChunkLostWithTheSendersSessionEndsTheCircuitWithinTheBound` (local clang, once) has not
 recurred in CI; still unproven. Tagged 0.5.4 at Tom's word ("If it's ready, do a release on main") once every CI job was green.
 The macOS builds here keep `-DOPENSSL_ROOT_DIR=/opt/local/libexec/openssl3` and `CMAKE_CXX_FLAGS="-I<repo>/build/ssl3-include
