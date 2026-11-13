@@ -13,8 +13,10 @@
 // every mapping is preserved; the compose bed proves the same through real
 // NATs.
 
+#include <arpa/inet.h>
 #include <fcntl.h>
 #include <gtest/gtest.h>
+#include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -220,6 +222,42 @@ TEST(LevelZero, ASimultaneousOpenToAClosedPortRetriesAtAModestRate) {
   // sub-millisecond retry makes.
   EXPECT_GE(attempts, 50u) << why;
   EXPECT_LE(attempts, 300u) << why;
+}
+
+// Refused, an end listens on its punch port until its next attempt, and takes only
+// the far end's punch endpoint: a stranger reaching that port is closed, not handed on.
+TEST(LevelZero, ASimultaneousOpenTakesOnlyTheFarEnd) {
+  Io io;
+  const auto a = test::free_port();
+  const auto b = test::free_port();
+  std::promise<std::pair<int, std::string>> at_a, at_b;
+  simultaneous_open(io.context, a, {"127.0.0.1", b}, 3s, [&](int fd, int, std::string why) { at_a.set_value({fd, why}); });
+  // A stranger, from a port of its own, until a's listener has taken it and let it go.
+  bool shut_out = false;
+  for (int tries = 0; tries < 2000 && !shut_out; ++tries) {
+    const int stranger = ::socket(AF_INET, SOCK_STREAM, 0);
+    sockaddr_in to{};
+    to.sin_family = AF_INET;
+    to.sin_port = htons(a);
+    to.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (::connect(stranger, reinterpret_cast<sockaddr*>(&to), sizeof(to)) == 0) {
+      char byte;
+      shut_out = ::recv(stranger, &byte, 1, 0) <= 0;
+    }
+    ::close(stranger);
+  }
+  ASSERT_TRUE(shut_out);
+  simultaneous_open(io.context, b, {"127.0.0.1", a}, 3s, [&](int fd, int, std::string why) { at_b.set_value({fd, why}); });
+  const auto [fa, why_a] = at_a.get_future().get();
+  const auto [fb, why_b] = at_b.get_future().get();
+  ASSERT_GE(fa, 0) << why_a;
+  ASSERT_GE(fb, 0) << why_b;
+  sockaddr_in peer{};
+  socklen_t size = sizeof(peer);
+  ASSERT_EQ(::getpeername(fa, reinterpret_cast<sockaddr*>(&peer), &size), 0);
+  EXPECT_EQ(ntohs(peer.sin_port), b);
+  ::close(fa);
+  ::close(fb);
 }
 
 TEST(LevelZero, ASimultaneousOpenToNobodyGivesUp) {
