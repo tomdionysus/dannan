@@ -1,5 +1,21 @@
 # Current release
 
+## 0.5.7: the ABI is kept within a minor
+
+Compatibility: a patch release now keeps the ABI. The SONAME and the library's
+package are major.minor again (`libdannan.so.0.5`, `libdannan0.5`), and the CMake
+package accepts any later patch of the minor it was asked for, so
+`find_package(dannan 0.5.7 CONFIG)` takes 0.5.7 and every 0.5 patch after it. A host
+built against 0.5.6, whose SONAME was the whole version, is rebuilt once against
+0.5.7. CI compares every build's library with its minor's last release by abidiff and
+fails on any change but an addition; an ABI change waits for the next minor. A host's
+package depends on `libdannan0.5` at the patch it was built with or later.
+
+Tests: a process started through the `ChildProcess` fixture no longer outlives a test
+process that dies without running its destructors (a crash, an abort or SIGKILL).
+Each child has a reaper that ends it when the test goes, and that never signals a
+child already waited for.
+
 ## 0.5.6: Debian packages
 
 Packaging: Dannan is packaged for Debian trixie on amd64 and arm64, for the
