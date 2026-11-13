@@ -35,7 +35,11 @@ ifeq ($(TESTS),ON)
 	debian/build/dannan_tests
 endif
 
+# One path to each call: given several, dh_install takes the last as the
+# destination. The glob is quoted for dh_install to expand under debian/tmp.
 override_dh_install:
-	dh_install -p$(LIBRARY) usr/lib/$(DEB_HOST_MULTIARCH)/libdannan.so.*
-	dh_install -plibdannan-dev usr/include/dannan usr/lib/$(DEB_HOST_MULTIARCH)/libdannan.so usr/lib/$(DEB_HOST_MULTIARCH)/cmake/dannan
+	dh_install -p$(LIBRARY) 'usr/lib/$(DEB_HOST_MULTIARCH)/libdannan.so.*'
+	dh_install -plibdannan-dev usr/include/dannan
+	dh_install -plibdannan-dev usr/lib/$(DEB_HOST_MULTIARCH)/libdannan.so
+	dh_install -plibdannan-dev usr/lib/$(DEB_HOST_MULTIARCH)/cmake/dannan
 	dh_install -pdannan-tools usr/bin
