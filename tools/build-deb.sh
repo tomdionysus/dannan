@@ -5,7 +5,7 @@
 # Copyright (C) 2026 Tom Cully <mail@tomcully.com>
 # Licensed under the GNU GPLv3 - see <https://www.gnu.org/licenses/gpl-3.0.html>
 #
-# Builds the Debian packages (libdannan<version>, libdannan-dev, dannan-tools and
+# Builds the Debian packages (libdannan<major.minor>, libdannan-dev, dannan-tools and
 # debug symbols) on Debian trixie from a git checkout, natively for the
 # machine's architecture. The packages are written to build-deb/.
 #
@@ -16,7 +16,8 @@
 # three commits later 0.5.6+git3.gabc1234, which sorts after 0.5.6 and before
 # 0.5.7; where no tag is reachable (develop), the tree's version and the commit,
 # 0.5.6+git.gabc1234. Uncommitted changes add .dirty. DEB_BUILD_OPTIONS=nocheck skips the
-# tests. debian/control names the library's package for the CMake version.
+# tests. debian/control names the library's package for the CMake version's
+# major.minor, the SONAME.
 
 set -eu
 
@@ -34,7 +35,7 @@ else
     version="$project+git.g$(echo "$describe" | sed -E 's/-dirty$/.dirty/')"
 fi
 library=$(sed -n 's/^Package: \(libdannan[0-9].*\)/\1/p' debian/control)
-if [ "$library" != "libdannan$project" ]; then
+if [ "$library" != "libdannan${project%.*}" ]; then
     echo "build-deb.sh: debian/control names $library and CMakeLists.txt says $project" >&2
     exit 1
 fi
