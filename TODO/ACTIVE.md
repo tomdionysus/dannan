@@ -32,30 +32,20 @@ live cluster is macnessa and inverbeg, both Pi 5 on Debian 13 with Boost
 contract `API_VERSION` 24. The laptop is on MacPorts for everything. Macha's
 current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluation.md`.
 
-## Resume here (2026-11-14)
+## Resume here (2026-11-14, 03:00Z)
 
-**First, finish 0.7.0** (Tom, 2026-11-14, directly: "Tag 0.7.0 with what's done").
-- `develop` at `fad81f6` ("Merge version 0.7.0") holds it: the deferred reply, P2, Macha's fixes, the cancel fix and
-  the timing fix. The version commit is done (CMake 0.7.0, `libdannan0.7`, README, CHANGELOG, COMPLETED).
-- Its CI and CodeQL were running at the clear (CI run 43542984513, CodeQL 43542984734). The later commits on
-  `develop` change only TODO files, so either that run or the latest run on `develop` will do (`gh run list --branch
-  develop`). When CI and CodeQL are green on every job:
-  1. Merge develop into main ("Release 0.7.0"), `git tag -a 0.7.0 -m "0.7.0"`, push main and the tag.
-  2. When main's CI is green, download the `deb-x86-64` and `deb-arm64` artifacts from that run into
-     `../tomcully-apt/incoming/dannan/0.7.0/`.
-  3. Check them on a Pi with `dpkg-deb`: SONAME `libdannan.so.0.7`, and shlibs `libdannan0.7 (>= 0.7.0)`.
-  4. Tell Tom to run `sh publish.sh incoming/dannan/0.7.0/*.deb` and the rsync. Both are his steps; never upload.
-- If a job is red, find the cause from the log before changing anything; a flake is a race to prove and fix.
-- After the tag, tell Dagda, Lir, Lugh and Macha Server. Dagda's slice 4 builds on the deferred reply; Lir and Lugh
-  wire in P2 (Lir: degrade or refuse QoS 1/2 on a minority side; Lugh: Status and the audit log).
+**0.7.0 is released** (`main` at `6ce0349`, tag `0.7.0`, both pushed at Tom's word). Main's CI was green on every job. The
+`.deb`s are in `../tomcully-apt/incoming/dannan/0.7.0/`; both library packages were checked: SONAME `libdannan.so.0.7`
+and shlibs `libdannan0.7 (>= 0.7.0)`. **Tom still has to run** `sh publish.sh incoming/dannan/0.7.0/*.deb` and the
+rsync; both are his steps, never upload. Dagda, Lir, Lugh and Macha Server were told. Lugh has 0.7.0 (P2 shows in its
+Status with its P8.1). Lir is repinned with P2 wired in (`--minority degrade|refuse`), waiting on a Pi for its gate.
 
-**Then 0.8.0**, the rest of the approved batch, in order, each on its own `feature/` branch, tests first, hosted CI,
-reviewed by the session that asked:
-1. P6's remaining three, for Macha:
-   - the owners' test seam: a per-call fault, stall or refusal by peer and type, and a bare peer with chosen adverts
-     and telemetry, in Dannan's fixtures;
-   - the advert-change watch: optional, on a named key, rate-limited;
-   - non-blocking logging: an asynchronous sink stage with a bounded queue that counts and reports its drops.
+**0.8.0 is open**: the tree and the library's package say 0.8 (`e839322`). The approved batch, in order, each on its own
+`feature/` branch, tests first, hosted CI, reviewed by the session that asked. Tom, 2026-11-14, to every session: no
+test run is repeated without a flake or odd behaviour to justify it, and ASan and TSan are for releases (hosted CI's
+jobs on push are the gate, not extra runs).
+1. P6's remaining three, for Macha: **done** on `feature/owner-test-seam` and merged into `develop`. Macha reviewed
+   it and every follow-up; all passed. CI run 43548808618 was green on every job. See `COMPLETED.md`.
 2. P4: a class-aware worker pool with CPU pacing, from Dagda's `store/cpu_pacing.h`. Its proof is Macha's pacing cases
    (`test_repair_is_paced_not_stopped_while_higher_classes_stay_busy`, `maintenance_trace`) and a baseline run on the
    nodes.

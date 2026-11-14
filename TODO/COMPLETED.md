@@ -3,6 +3,38 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
+## Handoff, 2026-11-14: P6's remaining three, for 0.8.0
+
+On `feature/owner-test-seam`, merged into `develop`. 0.8 is opened first (`e839322`: CMake 0.8.0, `libdannan0.8`),
+since every item changes the ABI.
+- **The owners' test seam.** `NodeConfig::call_fault` (from `net::ClientOptions::call_fault`) is asked about each call,
+  with the peer's id when known (a call by address to a peer met before has it), the address and the type. It answers
+  `net::CallFault::refuse(why)`, under which the call fails at once, or `stall()`, under which it is held unanswered.
+  Neither puts a byte on the wire. A held call is idle from when it was made and is watched as a placed one is (the
+  watchdog now takes an idle reading and a cancel, not a session). It ends by its no-progress watch, its deadline, a
+  cancel, stop, or `Node::release_stalled_calls(peer)` ("stall released"). `Node::stalled_calls()` is the count held
+  now, never cumulative (Macha counts its own where it needs one). `dannan/test/fixtures/bare_peer.h` (installed):
+  `test::BarePeer`, a node with nothing hosted, with a chosen id, failure domain, name, adverts, telemetry fields and
+  routes, and its own io threads. It destroys its node before stopping them, since a node's stop waits on work it
+  posts there; the first CI run hung for want of that. It replaces Macha's `NodeRuntime::CallFault`, `StalledCalls`
+  and `tests/stand_in_peer.hpp`.
+- **The advert watch.** `Nodes::watch_advert(key, at_most_every, executor, handler)` gives `AdvertChange{node, value}`.
+  First come the values of every active peer carrying the key, then each change, a peer's values at most once a
+  period, coalesced to the latest and told by the next heartbeat after it (`topology_changed`, which runs every
+  heartbeat). A withdrawal or a leave is never held back or coalesced away (Macha's review, `86a6fcc`). The roster
+  watch already told advert changes as `changed`, unthrottled; Macha keeps its metadata generation there.
+- **Non-blocking logging.** `status::AsyncSink(inner, capacity)`: `write()` queues and returns, and a supervised
+  `log-writer` thread writes the queue through in order. A record past the bound is dropped and counted (`dropped()`),
+  and the count is written through as a WARN line, scope `log`. `flush()` waits for what was queued. A record keeps
+  the time `write()` took it, through the new `LogSink::write_at` (default: `write`), which `ConsoleSink` and
+  `JsonSink` stamp with (Macha's review, `f27c746`). The writer is supervised because
+  `SupervisedThreads.EveryThreadIsStartedSupervised` demands it of every library thread.
+Tests: eight new (four for the fault, the advert watch, the bare peer, two for the stage). Gate: hosted CI run
+43548808618, every job green on Debian x86-64 and arm64 and macOS, ASan, UBSan and TSan, `abi` against 0.7.0 skipped
+as the minor's first; 673 tests, 672 passed and the one long-standing skip. Never built on the Mac (every Pi was
+claimed; hosted CI was the gate). Not yet measured on the Pis: the stage's effect on io under a slow journal
+(`2026-11-13-stack-needs.md` P6.7 asked for that measurement first).
+
 ## Handoff, 2026-11-14: 0.7.0
 
 The first batch of the stack's needs (`2026-11-13-stack-needs.md`):
