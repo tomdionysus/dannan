@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <ctime>
 #include <stdexcept>
+#include <utility>
 
 #include "dannan/sched/cpu_pacing.h"
 
@@ -39,19 +40,19 @@ ClassGate::ClassGate(WorkClass work, GateConfig config, const contract::TimeSour
       _share(_config.higher_weight, _config.own_weight, _config.slice) {}
 
 void ClassGate::set_contended(std::function<bool()> reading) {
-  auto held = reading ? std::make_shared<const std::function<bool()>>(std::move(reading)) : nullptr;
-  contract::Lock lock(_hosted_mutex);
-  _hosted = std::move(held);
+  std::function<bool()> old;
+  {
+    contract::WriteLock lock(_hosted_mutex);
+    old = std::exchange(_hosted, std::move(reading));
+  }
+  // The old reading's captures go here, outside the lock.
 }
 
 bool ClassGate::contended() const {
   if (_higher.load(std::memory_order_relaxed) > 0) return true;
-  std::shared_ptr<const std::function<bool()>> reading;
-  {
-    contract::Lock lock(_hosted_mutex);
-    reading = _hosted;
-  }
-  return reading && (*reading)();
+  // Held across the call: a replacement waits for it.
+  contract::ReadLock lock(_hosted_mutex);
+  return _hosted && _hosted();
 }
 
 void ClassGate::note_higher(int delta) noexcept { _higher.fetch_add(delta, std::memory_order_relaxed); }

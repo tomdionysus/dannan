@@ -165,6 +165,34 @@ TEST(ClassGate, TheHostedReadingMayChangeWhileInUse) {
   EXPECT_FALSE(gate.contended());
 }
 
+// Once a replacement returns, the old reading is never running and never called
+// again, so what it reads may go (Macha's review: its stop clears the reading, then
+// destroys the store it reads).
+TEST(ClassGate, AReplacedReadingIsNeverCalledAfterTheReplacementReturns) {
+  ClassGate gate(WorkClass::speculative);
+  std::atomic<bool> cleared{false};
+  std::atomic<bool> late{false};
+  std::atomic<int> entered{0};
+  gate.set_contended([&] {
+    ++entered;
+    std::this_thread::sleep_for(20ms);
+    if (cleared.load()) late = true;
+    return true;
+  });
+  std::atomic<bool> stop{false};
+  std::thread reader([&] {
+    while (!stop.load()) (void)gate.contended();
+  });
+  ASSERT_TRUE(eventually([&] { return entered.load() > 0; }));
+  gate.set_contended({});
+  cleared = true;
+  std::this_thread::sleep_for(60ms);
+  stop = true;
+  reader.join();
+  EXPECT_FALSE(late.load());
+  EXPECT_FALSE(gate.contended());
+}
+
 // A loop's burst while contended earns a rest by the weights; uncontended there is none.
 TEST(ClassGate, ALoopsBurstEarnsItsRest) {
   test::SteppedTime time;
