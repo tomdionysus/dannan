@@ -1266,12 +1266,14 @@ TEST(Node, AnAdvertWatchTellsOneKeysChangesAtItsRate) {
   EXPECT_EQ(count(), 3u);
   EXPECT_GE(last().at - second, 1450ms);
 
-  // A withdrawal inside the period is told at once, never held back.
+  // A withdrawal inside the period is told at once, never held back. Gossip
+  // reaches B within a heartbeat or two (100 ms); one held back would come
+  // only at the period's end, some 1400 ms from here.
   const auto withdrawn = std::chrono::steady_clock::now();
   pair.a->context().nodes().withdraw("used");
   ASSERT_TRUE(eventually([&] { return count() == 4; }));
   EXPECT_FALSE(last().value);
-  EXPECT_LT(last().at - withdrawn, 1000ms);
+  EXPECT_LT(last().at - withdrawn, 1200ms);
 
   pair.b->context().nodes().unwatch_advert(watch);
   pair.a->context().nodes().advertise("used", membership::u64_advert(5));
