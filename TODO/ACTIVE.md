@@ -108,13 +108,26 @@ branch with tests first, through hosted CI, and reviewed by the session that ask
    bounded per class and by the caller's deadline, and holds no worker while it waits. Dagda's group-commit prototype:
    one call per message at 8,000/s, a replica blocking on fsync held the workers, and 309,385 of 479,993 calls were
    refused, p99 240 ms.
+   Built on `feature/deferred-reply`. The pieces:
+   - `net::Answer`, `Handled::deferred()`, `net::DeferringHandler`, and `Routes::bind_deferred`; `bind` keeps the
+     synchronous signature, wrapped.
+   - `ServerLimits::max_deferred` (4096 per work class: running plus deferred, refused at admission), and
+     `Timing::deferred`.
+   - An Answer dropped ungiven refuses the call with 500 "abandoned".
+   - Five tests (four scheduler, one node); macOS 653 passed.
+   Found on the way, not yet fixed: a data-lane type registered only on the answering node makes the caller send it on
+   the wrong lane. The peer closes the session, and the caller learns only "peer channel closed: peer closed" after
+   about 11 s. The caller should refuse at once with the reason.
 2. P6's seven small fixes (Macha), then the owners' test seam, the advert-change watch and non-blocking logging.
 3. P2, the partition reading on `Nodes`. Even is a minority; a join adds to the agreed roster and only a retire
    removes.
 4. P4, the class-aware worker pool with CPU pacing, from Dagda's `store/cpu_pacing.h`. Macha's pacing cases and a
    baseline run on the nodes are its proof.
 5. P3, the shared public listener below the protocols, to Lugh's and Lir's combined requirements.
-6. P5, small-message figures in `dannan-bench`, here first. The Pis wait for Tom's word.
+6. P5, small-message figures in `dannan-bench`, here first. Two real machines: the shared Pi 5 build servers
+   corvus-jupiter (10.44.1.169) and corvus-saturn (10.44.1.170), which Tom gave on 2026-11-13 for native arm64 builds
+   and cluster tests. They are shared, so run at nice 19 under a directory of our own, and clean up. macnessa and
+   inverbeg, which run Macha, still wait for his word.
 P7, Alpine in CI, is not now (Tom). Otherwise, fix what the Macha session or the port finds. arm64 runs on inverbeg at
 nice 19 with GoogleTest in `~/dannan-arm64-deps/prefix`; the tests run there as root.
 

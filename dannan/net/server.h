@@ -67,6 +67,7 @@ class Server {
  public:
   using Admitted = std::function<void(const std::shared_ptr<Session>&)>;
 
+  Server(boost::asio::io_context& io, std::string listen_host, uint16_t port, ServerOptions options, DeferringHandler handler, Admitted admitted = {});
   Server(boost::asio::io_context& io, std::string listen_host, uint16_t port, ServerOptions options, RequestHandler handler, Admitted admitted = {});
   ~Server();
   Server(const Server&) = delete;
