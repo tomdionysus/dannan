@@ -7,10 +7,14 @@
 
 #pragma once
 
+#include <condition_variable>
+#include <cstdint>
+#include <deque>
 #include <iosfwd>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <thread>
 
 #include "dannan/contract/thread_safety.h"
 
@@ -67,6 +71,54 @@ class JsonSink final : public LogSink {
   const LogLevel _level;
   std::ostream* const _out;
   contract::IoMutex _mutex;
+};
+
+// A stage in front of another sink that never waits on it (P6), so an io
+// thread that logs never waits on the journal: write() queues the record and
+// returns, and one thread of the stage's own writes the queue through in order.
+// The queue holds `capacity` records; one that finds it full is dropped and
+// counted, and the count is written through as a WARN line, scope "log",
+// after the records queued before it, saying how many went. enabled() is the inner sink's.
+// The inner sink stamps a record when it writes it, so a line's time may trail
+// its record's by the queue's wait. Destruction writes what is queued and
+// joins the thread. Thread-safe.
+class AsyncSink final : public LogSink {
+ public:
+  explicit AsyncSink(std::shared_ptr<LogSink> inner, size_t capacity = 4096);
+  ~AsyncSink() override;
+  AsyncSink(const AsyncSink&) = delete;
+  AsyncSink& operator=(const AsyncSink&) = delete;
+
+  bool enabled(LogLevel level) const noexcept override { return _inner->enabled(level); }
+  // Waits on nothing but the queue's lock.
+  void write(LogLevel, std::string_view scope, std::string_view message) override;
+  // Records dropped since it was made.
+  uint64_t dropped() const;
+  // Waits until every record queued before the call is written through, its
+  // drops reported. Not from the inner sink.
+  void flush();
+
+ private:
+  struct Record {
+    LogLevel level;
+    std::string scope;
+    std::string message;
+  };
+  void run();
+
+  const std::shared_ptr<LogSink> _inner;
+  const size_t _capacity;
+  mutable contract::Mutex _mutex;
+  std::condition_variable _wake;
+  std::condition_variable _written;
+  std::deque<Record> _queue DANNAN_GUARDED_BY(_mutex);
+  uint64_t _dropped DANNAN_GUARDED_BY(_mutex) = 0;
+  uint64_t _unreported DANNAN_GUARDED_BY(_mutex) = 0;
+  // Records taken in and written through, for flush().
+  uint64_t _queued DANNAN_GUARDED_BY(_mutex) = 0;
+  uint64_t _done DANNAN_GUARDED_BY(_mutex) = 0;
+  bool _stopping DANNAN_GUARDED_BY(_mutex) = false;
+  std::thread _thread;
 };
 
 // A sink that takes nothing, for a component given none.

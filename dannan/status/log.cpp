@@ -141,6 +141,80 @@ LogFormat parse_log_format(std::string_view value) {
   throw std::invalid_argument("invalid log format: " + std::string(value) + " (expected text or json)");
 }
 
+AsyncSink::AsyncSink(std::shared_ptr<LogSink> inner, size_t capacity) : _inner(std::move(inner)), _capacity(capacity) {
+  if (!_inner) throw std::invalid_argument("AsyncSink: an inner sink is required");
+  if (_capacity == 0) throw std::invalid_argument("AsyncSink: the queue must hold at least one record");
+  _thread = std::thread([this] { run(); });
+}
+
+AsyncSink::~AsyncSink() {
+  {
+    contract::Lock lock(_mutex);
+    _stopping = true;
+  }
+  _wake.notify_all();
+  _thread.join();
+}
+
+void AsyncSink::write(LogLevel level, std::string_view scope, std::string_view message) {
+  {
+    contract::Lock lock(_mutex);
+    if (_queue.size() >= _capacity) {
+      ++_dropped;
+      ++_unreported;
+      return;
+    }
+    _queue.push_back({level, std::string(scope), std::string(message)});
+    ++_queued;
+  }
+  _wake.notify_one();
+}
+
+uint64_t AsyncSink::dropped() const {
+  contract::Lock lock(_mutex);
+  return _dropped;
+}
+
+void AsyncSink::flush() {
+  contract::Lock lock(_mutex);
+  const auto target = _queued;
+  _written.wait(lock.native(), [&]() DANNAN_REQUIRES(_mutex) { return (_done >= target && _unreported == 0) || _stopping; });
+}
+
+void AsyncSink::run() {
+  for (;;) {
+    std::deque<Record> batch;
+    uint64_t unreported = 0;
+    {
+      contract::Lock lock(_mutex);
+      _wake.wait(lock.native(), [&]() DANNAN_REQUIRES(_mutex) { return !_queue.empty() || _unreported > 0 || _stopping; });
+      if (_queue.empty() && _unreported == 0) return;  // stopping, with nothing left
+      batch.swap(_queue);
+      unreported = _unreported;
+      _unreported = 0;
+    }
+    // Outside the lock: the inner sink may wait on its device, and writers never wait on it.
+    for (const auto& record : batch) {
+      try {
+        _inner->write(record.level, record.scope, record.message);
+      } catch (...) {
+        // A record the inner sink could not take is lost, as a dropped one would be.
+      }
+    }
+    if (unreported > 0 && _inner->enabled(LogLevel::warn)) {
+      try {
+        _inner->write(LogLevel::warn, "log", "dropped " + std::to_string(unreported) + " record(s): the log queue was full");
+      } catch (...) {
+      }
+    }
+    {
+      contract::Lock lock(_mutex);
+      _done += batch.size();
+    }
+    _written.notify_all();
+  }
+}
+
 std::shared_ptr<LogSink> null_sink() {
   class Null final : public LogSink {
    public:
