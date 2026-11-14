@@ -19,6 +19,8 @@
 #include <sstream>
 #include <stdexcept>
 
+#include "dannan/supervise/supervised.h"
+
 namespace dannan::status {
 
 std::string_view log_level_name(LogLevel level) noexcept {
@@ -148,7 +150,8 @@ LogFormat parse_log_format(std::string_view value) {
 AsyncSink::AsyncSink(std::shared_ptr<LogSink> inner, size_t capacity) : _inner(std::move(inner)), _capacity(capacity) {
   if (!_inner) throw std::invalid_argument("AsyncSink: an inner sink is required");
   if (_capacity == 0) throw std::invalid_argument("AsyncSink: the queue must hold at least one record");
-  _thread = std::thread([this] { run(); });
+  // Supervised as every library thread is: a fault restarts the writer rather than ending the process.
+  _thread = std::jthread([this](std::stop_token stop) { supervise::supervised_loop(nullptr, "log-writer", stop, [this] { run(); }); });
 }
 
 AsyncSink::~AsyncSink() {

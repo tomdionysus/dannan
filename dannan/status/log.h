@@ -130,7 +130,7 @@ class AsyncSink final : public LogSink {
   uint64_t _queued DANNAN_GUARDED_BY(_mutex) = 0;
   uint64_t _done DANNAN_GUARDED_BY(_mutex) = 0;
   bool _stopping DANNAN_GUARDED_BY(_mutex) = false;
-  std::thread _thread;
+  std::jthread _thread;
 };
 
 // A sink that takes nothing, for a component given none.
