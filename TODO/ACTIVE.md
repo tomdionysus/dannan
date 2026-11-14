@@ -131,7 +131,15 @@ branch with tests first, through hosted CI, and reviewed by the session that ask
    placement it only sets a flag, and the call completes when its dial ends (up to the connect timeout; 5 s in
    `Client.ACallIsIdleFromWhenItWasMadeNotWhenItWasPlaced`). The fix is a once-only completion shared by the handle
    and the call. For the 0.7 batch.
-2. P6's seven small fixes (Macha), then the owners' test seam, the advert-change watch and non-blocking logging.
+2. P6's seven small fixes (Macha), then the owners' test seam, the advert-change watch and non-blocking logging. Five
+   fixes are on `feature/macha-fixes`:
+   - `idle_for` counts from when the call was made;
+   - a const `Node::inbound()`;
+   - `free_port` comes from 10000 to 32767;
+   - `ClusterKey::from_master` and the two labels named once;
+   - `DeferringHandler` takes the request by value, so a handler moves the payload out uncopied.
+   Macha withdrew two on review: #13, `connections_canonical`, which Dannan has written since 3418733 (Macha's own hook
+   wrote it again), and #11, first telemetry at join, inferred and never observed. macOS: 658 passed.
 3. P2, the partition reading on `Nodes`. Even is a minority; a join adds to the agreed roster and only a retire
    removes.
 4. P4, the class-aware worker pool with CPU pacing, from Dagda's `store/cpu_pacing.h`. Macha's pacing cases and a

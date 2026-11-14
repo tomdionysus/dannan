@@ -75,7 +75,7 @@ RequestScheduler::RequestScheduler(std::shared_ptr<const RouteTable> routes, Ser
                                    const contract::TimeSource* time, supervise::SupervisedThreads* threads, std::shared_ptr<status::LogSink> log)
     : RequestScheduler(
           std::move(routes), limits,
-          [handler = std::move(handler)](const membership::NodeRecord& peer, sched::FrameType frame, const Message& request, Answer&) {
+          [handler = std::move(handler)](const membership::NodeRecord& peer, sched::FrameType frame, Message request, Answer&) {
             return handler(peer, frame, request);
           },
           memory, time, threads, std::move(log)) {}
@@ -255,9 +255,10 @@ void RequestScheduler::run(Job job) {
   (*_answering)[state->work].fetch_add(1, std::memory_order_acq_rel);
   state->answering = _answering;
   Answer answer(std::move(state));
+  const auto type = job.frame.message.type;
   auto handled = Handled::failed(500, "internal_error", "request handler failed");
   try {
-    handled = _handler(job.peer, job.frame.frame, job.frame.message, answer);
+    handled = _handler(job.peer, job.frame.frame, std::move(job.frame.message), answer);
   } catch (const std::exception& failure) {
     handled = Handled::failed(500, "internal_error", failure.what());
   } catch (...) {
@@ -265,7 +266,7 @@ void RequestScheduler::run(Job job) {
   const auto finished = _time->now();
   const auto outcome = handled.outcome();
   if (outcome == Handled::Outcome::unrecognised)
-    answer(error_reply(501, "not_implemented", "message " + _routes->name(job.frame.message.type) + " is not handled here"));
+    answer(error_reply(501, "not_implemented", "message " + _routes->name(type) + " is not handled here"));
   else if (outcome != Handled::Outcome::deferred)
     answer(handled.take_reply());
   // Deferred with the Answer still here: the handler kept nothing to give,
@@ -274,7 +275,7 @@ void RequestScheduler::run(Job job) {
   {
     contract::Lock lock(_timing_mutex);
     record(_frame_timings[job.frame.frame], micros(started - job.queued), micros(finished - started));
-    auto& by_type = _message_timings[job.frame.message.type];
+    auto& by_type = _message_timings[type];
     record(by_type, micros(started - job.queued), micros(finished - started));
     if (outcome == Handled::Outcome::failed) ++by_type.failed;
     if (outcome == Handled::Outcome::unrecognised) ++by_type.unrecognised;

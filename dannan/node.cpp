@@ -152,7 +152,7 @@ class Node::RoutesNoun final : public Routes {
   }
   void bind(net::MessageType type, net::RequestHandler handler) override {
     if (!handler) return bind_deferred(type, {});
-    bind_deferred(type, [handler = std::move(handler)](const NodeRecord& peer, sched::FrameType frame, const net::Message& request, net::Answer&) {
+    bind_deferred(type, [handler = std::move(handler)](const NodeRecord& peer, sched::FrameType frame, net::Message request, net::Answer&) {
       return handler(peer, frame, request);
     });
   }
@@ -518,7 +518,9 @@ void Node::start() {
   server_options.threads = &_threads;
   _server = std::make_unique<net::Server>(
       _io, _config.listen_host, _config.port, server_options,
-      [this](const NodeRecord& peer, sched::FrameType frame, const net::Message& request, net::Answer& answer) { return handle(peer, frame, request, answer); },
+      [this](const NodeRecord& peer, sched::FrameType frame, net::Message request, net::Answer& answer) {
+        return handle(peer, frame, std::move(request), answer);
+      },
       [this](const std::shared_ptr<net::Session>& session) {
         if (_client) _client->admit(session);
         note_certificate(session->established());
@@ -765,7 +767,7 @@ void Node::signal_telemetry() {
   wake_loops();
 }
 
-net::Handled Node::handle(const NodeRecord& peer, sched::FrameType frame, const net::Message& request, net::Answer& answer) {
+net::Handled Node::handle(const NodeRecord& peer, sched::FrameType frame, net::Message request, net::Answer& answer) {
   namespace m = net::message;
   const auto type = request.type;
   _activity.note(frame, request.payload.size());
@@ -819,7 +821,7 @@ net::Handled Node::handle(const NodeRecord& peer, sched::FrameType frame, const 
   contract::ReadLock lock(_handlers_mutex);
   const auto handler = _handlers.find(type);
   if (handler == _handlers.end() || !handler->second) return net::Handled::unrecognised();
-  return handler->second(peer, frame, request, answer);
+  return handler->second(peer, frame, std::move(request), answer);
 }
 
 const char* roster_change_name(RosterChange::Kind kind) noexcept {
