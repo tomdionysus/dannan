@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -37,6 +38,13 @@ class LogSink {
   virtual bool enabled(LogLevel) const noexcept = 0;
   // May wait on the sink's device; thread-safe.
   virtual void write(LogLevel, std::string_view scope, std::string_view message) = 0;
+  // The same record, made at `at` rather than now: what a stage that holds
+  // records (AsyncSink) hands on, so a line keeps its record's time. A sink that
+  // stamps its lines stamps them `at`; the default writes it as made now.
+  virtual void write_at(std::chrono::system_clock::time_point at, LogLevel level, std::string_view scope, std::string_view message) {
+    (void)at;
+    write(level, scope, message);
+  }
 };
 
 // stderr, one line per record: "2026-11-03 18:40:01Z WARN scope: message".
@@ -47,6 +55,7 @@ class ConsoleSink final : public LogSink {
   explicit ConsoleSink(LogLevel level = LogLevel::info, std::ostream* out = nullptr) : _level(level), _out(out) {}
   bool enabled(LogLevel level) const noexcept override;
   void write(LogLevel, std::string_view scope, std::string_view message) override;
+  void write_at(std::chrono::system_clock::time_point at, LogLevel, std::string_view scope, std::string_view message) override;
 
  private:
   const LogLevel _level;
@@ -66,6 +75,7 @@ class JsonSink final : public LogSink {
   explicit JsonSink(LogLevel level = LogLevel::info, std::ostream* out = nullptr) : _level(level), _out(out) {}
   bool enabled(LogLevel level) const noexcept override;
   void write(LogLevel, std::string_view scope, std::string_view message) override;
+  void write_at(std::chrono::system_clock::time_point at, LogLevel, std::string_view scope, std::string_view message) override;
 
  private:
   const LogLevel _level;
@@ -79,9 +89,9 @@ class JsonSink final : public LogSink {
 // The queue holds `capacity` records; one that finds it full is dropped and
 // counted, and the count is written through as a WARN line, scope "log",
 // after the records queued before it, saying how many went. enabled() is the inner sink's.
-// The inner sink stamps a record when it writes it, so a line's time may trail
-// its record's by the queue's wait. Destruction writes what is queued and
-// joins the thread. Thread-safe.
+// Each record keeps the time write() took it and goes to the inner sink by
+// write_at, so a line's time is its record's, not the queue's wait after it.
+// Destruction writes what is queued and joins the thread. Thread-safe.
 class AsyncSink final : public LogSink {
  public:
   explicit AsyncSink(std::shared_ptr<LogSink> inner, size_t capacity = 4096);
@@ -92,6 +102,7 @@ class AsyncSink final : public LogSink {
   bool enabled(LogLevel level) const noexcept override { return _inner->enabled(level); }
   // Waits on nothing but the queue's lock.
   void write(LogLevel, std::string_view scope, std::string_view message) override;
+  void write_at(std::chrono::system_clock::time_point at, LogLevel, std::string_view scope, std::string_view message) override;
   // Records dropped since it was made.
   uint64_t dropped() const;
   // Waits until every record queued before the call is written through, its
@@ -100,6 +111,7 @@ class AsyncSink final : public LogSink {
 
  private:
   struct Record {
+    std::chrono::system_clock::time_point at;
     LogLevel level;
     std::string scope;
     std::string message;
