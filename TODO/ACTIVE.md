@@ -1,6 +1,6 @@
 # Dannan - Active Work
 
-Last updated: 2026-11-06. Dannan is written in this repository as its own
+Last updated: 2026-11-14 (rationalised: history to `COMPLETED.md`). Dannan is written in this repository as its own
 library, Macha's code at `00861dd` being the source of truth, and Macha is ported
 onto it.
 That reverses the morning's "in-tree first" (Tom, 2026-11-03: "I
@@ -32,250 +32,66 @@ live cluster is macnessa and inverbeg, both Pi 5 on Debian 13 with Boost
 contract `API_VERSION` 24. The laptop is on MacPorts for everything. Macha's
 current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluation.md`.
 
-## Resume here (2026-11-06)
+## Resume here (2026-11-14)
 
-**Where this stands.** Dannan's list is finished as far as I can take it without the port;
-[`2026-11-06-dannan-capabilities.md`](2026-11-06-dannan-capabilities.md) is the report to the Macha session, with
-its gates and what could not be shown. The answer to the goal below is still not Yes: only the port can show it.
+**First, finish 0.7.0** (Tom, 2026-11-14, directly: "Tag 0.7.0 with what's done").
+- `develop` at `fad81f6` ("Merge version 0.7.0") holds it: the deferred reply, P2, Macha's fixes, the cancel fix and
+  the timing fix. The version commit is done (CMake 0.7.0, `libdannan0.7`, README, CHANGELOG, COMPLETED).
+- Its CI and CodeQL were running at the clear (CI run 43542984513, CodeQL 43542984734). When both are green on every
+  job:
+  1. Merge develop into main ("Release 0.7.0"), `git tag -a 0.7.0 -m "0.7.0"`, push main and the tag.
+  2. When main's CI is green, download the `deb-x86-64` and `deb-arm64` artifacts from that run into
+     `../tomcully-apt/incoming/dannan/0.7.0/`.
+  3. Check them on a Pi with `dpkg-deb`: SONAME `libdannan.so.0.7`, and shlibs `libdannan0.7 (>= 0.7.0)`.
+  4. Tell Tom to run `sh publish.sh incoming/dannan/0.7.0/*.deb` and the rsync. Both are his steps; never upload.
+- If a job is red, find the cause from the log before changing anything; a flake is a race to prove and fix.
+- After the tag, tell Dagda, Lir, Lugh and Macha Server. Dagda's slice 4 builds on the deferred reply; Lir and Lugh
+  wire in P2 (Lir: degrade or refuse QoS 1/2 on a minority side; Lugh: Status and the audit log).
 
-**Tom's rulings, relayed by the Macha session, 2026-11-06.** The test: "Dannan and Dagda are generalisations of
-macha's cluster and storage layer ... The fidelity point is that after that, Macha should work just as well as it ever
-did." Dannan's own wire and state formats do not count against that in themselves (the Macha session's reading). The port is
-built by the Macha session, once Dannan and Dagda have reported, with both frozen while it runs. A defect found in the port:
-"The port will pause until the relevant agent has identified and fixed the fault, with testing." The Macha session is the
-review; the review by library agents after a clear is gone. Proving it: "We will convert macnessa and inverbeg store backends
-and install there to test, prove and iterate." Macha stays frozen at `9a08846` until the port starts. Torrent moves after all
-of the port, so its rows stay through the first cutover. Tag 0.5.0 cut and pushed at Tom's word, with two items open. Tag 0.5.1
-cut and pushed at Tom's word on 2026-11-08. Tag 0.5.2 cut and pushed at Tom's word on 2026-11-09, clean on every gate
-including arm64; the port freezes on it. One item open: the macOS TSan handshake timeout (the report's Gates section).
-2026-11-10: Dagda found 0.5.2's installed config asking for Boost 1.87 while the build accepts 1.83, so nothing could
-`find_package(dannan)` on Debian. Fixed on `feature/package-boost-floor` (`4cc62bf`), one number for both, with
-`test/linux/run.sh package`, which failed before and passes now; tagged 0.5.3 at Tom's word the same day; the port freezes on it.
-2026-11-11, on `develop` for the next release (not tagged; the port stays on 0.5.3): `cba69ea`, `Telemetry::set_bytes` with
-an empty value removes the field as the header says (it stored zero bytes; found by the Macha session in the port, reviewed
-by it; `Telemetry.EmptyBytesRemoveTheField`, macOS plain 640), and `fba9751`, the Boost floor comment.
-2026-11-12 and 13, hosted CI at Tom's word: `tools/ci.sh <step>`, the workflows, Codecov, the badges; the style guide now
-asks the same of every project. g++ with `DANNAN_WARNINGS_AS_ERRORS=ON` had never built: fixed (`d7731eb`, renames only; GCC's
-libstdc++ false positives ignored around `net/codec.h`'s writer alone, `58404e8`, reviewed by the Macha session). The sanitizer
-steps build without -Werror (g++ warns inside libstdc++ and Asio when instrumented); macOS CI takes the runner's newest Xcode
-and OpenSSL 3's headers. GitHub's runners then failed tests that pass here, each fixed at Tom's word ("No, fix them"):
-- A real defect: a session the peer retired was dropped from the route tables untracked, so `Client::stop()` missed a call
-  waiting on it (the Node cancel test's 30 s). Every session made a route is now held for stop (`3a530b4`,
-  `Client.StoppingFailsACallOnASessionThePeerRetired`, failed before, passes after).
-- The simultaneous open retried a refusal at a fixed 5 ms, so two ends out of step on loopback stayed so on GitHub's x86-64
-  kernel; now a random 0.2 to 2 ms (`965f2c9`, `LevelZero.ASimultaneousOpenMeetsWhenTheEndsBeginOutOfStep`).
-- Tests: the lost-chunk relay tests dropped a chunk of B's answer on a fast runner (the hook now has the direction; `5615034`);
-  five journal tests stepped time before the call's write was recorded (`8f13846`, `0787a0f`); the gossip cap test read its
-  record after the step (`b43cd39`).
-2026-11-13, the Macha session's review of 0.5.4, tagged 0.5.5 at Tom's word ("yes, do so"; Macha moves after its 0.94.2):
-`dialled` read `_stopped` and took the slot in two sections, so a stop() between could leave an unclosed route
-(`57eefa8`, one section now; by construction, no seam reaches the window). The simultaneous open's retry, at 0.2 to 2 ms,
-hammered a closed port (692 attempts a second; `ASimultaneousOpenToAClosedPortRetriesAtAModestRate`): now close at first,
-widening to a 5 ms mean (`afc79f4`). Retry timing alone never met reliably on GitHub's x86-64 loopback, so a refused end
-listens on its punch port from then until the open ends, beside each attempt, taking only the far end's punch endpoint
-and what its backlog holds before each attempt (`b9f5769`, `91f959d`; `ASimultaneousOpenTakesOnlyTheFarEnd`,
-`ARetryTakesTheFarEndQueuedOnItsListener`, which fails on Linux without it, through a test-only `retrying` hook). The
-Macha session approved all of it. Recorded, not to fix (its reading): on giving up, a SYN completing between the last
-drain and the close is reset, when both ends are at their deadline anyway. Branch CI: 646 passed on Debian x86-64 and
-arm64 under every step, 645 on macOS.
-2026-11-13, Debian packages, tagged 0.5.6 at Tom's word ("Yes do that now"), for the tomcully.com apt repository: `libdannan<version>` (the SONAME is the whole version, the CMake package ExactVersion), `libdannan-dev` (depends on exactly that library), `dannan-tools` (the CA, the import, the version, with manual pages); `tools/build-deb.sh`, `docs/packaging.md`, and CI's `deb` job building, testing and linting them on native x86-64 and arm64 (646 passed each, lintian clean). Built here, arm64 runs emulated on this Intel Mac, where posix_spawn reports a missing binary as started and `ChildProcess.ReadsLinesAndReportsHowItEnded` fails; that is the emulator (a C check shows it), not Dannan.
-The earlier one-off `LevelZero.AChunkLostWithTheSendersSessionEndsTheCircuitWithinTheBound` (local clang, once) has not
-recurred in CI; still unproven. Tagged 0.5.4 at Tom's word ("If it's ready, do a release on main") once every CI job was green.
-The macOS builds here keep `-DOPENSSL_ROOT_DIR=/opt/local/libexec/openssl3` and `CMAKE_CXX_FLAGS="-I<repo>/build/ssl3-include
---system-header-prefix=openssl/"` (Homebrew's openssl@4 4.1.0 sits in `/usr/local/include`; `build/scratch/sanitizers.sh`).
+**Then 0.8.0**, the rest of the approved batch, in order, each on its own `feature/` branch, tests first, hosted CI,
+reviewed by the session that asked:
+1. P6's remaining three, for Macha:
+   - the owners' test seam: a per-call fault, stall or refusal by peer and type, and a bare peer with chosen adverts
+     and telemetry, in Dannan's fixtures;
+   - the advert-change watch: optional, on a named key, rate-limited;
+   - non-blocking logging: an asynchronous sink stage with a bounded queue that counts and reports its drops.
+2. P4: a class-aware worker pool with CPU pacing, from Dagda's `store/cpu_pacing.h`. Its proof is Macha's pacing cases
+   (`test_repair_is_paced_not_stopped_while_higher_classes_stay_busy`, `maintenance_trace`) and a baseline run on the
+   nodes.
+3. P3: the shared public listener below the protocols, to Lugh's and Lir's combined requirements
+   (`2026-11-13-stack-needs.md`, P3).
+4. P5: small-message figures in `dannan-bench`, on the Pi cluster between two real machines. It covers notify fan-out,
+   batched calls of 1 to 64 envelopes at 64 B to 1 KiB, msgs/s and p50/p99/p99.9, and the io thread count. Its stress
+   case is the call path's ceiling, about 6,000 calls/s per peer pair, where calls are refused at
+   `max_pending_replies` = 512 (`net/outbound.h:27`). Measure, then raise the cap, make it per class, or cheapen the
+   per-call path. Dagda's bench reproduces it (`2026-11-13-stack-needs.md`, P5, has the build and the commands).
+   Lir's target: PUBACK p99 under 50 ms at QoS 1 with k = 2.
+P7, Alpine in CI: not now (Tom). The 0.6 and 0.7 work's detailed notes (each fix, each finding, each review) are in
+`COMPLETED.md`, under "ACTIVE.md's history to 2026-11-14".
 
-**0.7.0, 2026-11-14 (Tom, directly: "Tag 0.7.0 with what's done").** It holds the deferred reply, P2, Macha's fixes,
-the cancel fix and the timing fix. What remains below goes to 0.8.0: the owners' test seam, the advert-change watch,
-non-blocking logging, P4, P3 and P5.
+**Where things are built and tested** (Tom, 2026-11-14: "STOP all builds on the Mac now. Use the RPi cluster only."):
+- Never build or run tests on the Mac. Editing, git, gh and reading CI logs are fine, and so is clang-format.
+- Hosted CI (`.github/workflows/ci.yml`) is the gate: 15 jobs on Debian x86-64 and arm64 and macOS, with `abi`
+  against the minor's last tag.
+- To run CI on a feature branch, add a temporary commit putting the branch in `on.push.branches`. Drop it before the
+  merge, with `git rebase --onto X^ X`.
+- The shared Pi 5 cluster: corvus-jupiter 10.44.1.169, corvus-saturn 10.44.1.170, corvus-neptune 10.44.1.202. Debian
+  13 arm64, 16 GB, NVMe, `ssh root@<ip>`.
+  - Nobody schedules them (Tom): claim a free one first, first come, first served, then release it the moment the
+    job ends.
+  - From the next session start, Tom's claim-board plugin gives `claims_list`, `claim_take` and `claim_release`, and
+    blocks heavy ssh commands without a claim. Before it: post `stack/pis/<host>/claims/Dannan` on
+    http://10.44.1.169:8183 (`../lir/deploy/pi-cluster/README.md`).
+  - One heavy job per Pi, a modest `-j`, nice 19: the Pis brown out under two.
+  - Lir's standing cluster uses ports 7537, 1983 and 8183 there.
+  - macnessa and inverbeg, which run Macha, still need Tom's word.
 
-**Tom, 2026-11-13: Dannan and Dagda support Macha, Lugh and Lir as first-class citizens** ("This was the purpose of
-splitting out the technologies"). The hosted systems' needs, Dannan's answers and Tom's rulings are in
-[`2026-11-13-stack-needs.md`](2026-11-13-stack-needs.md). The approved work, in order, each on its own `feature/`
-branch with tests first, through hosted CI, and reviewed by the session that asked for it:
-1. P1, the ABI promise: `abidiff` in CI against the previous tag, the SONAME and package back to `libdannan.so.0.5`
-   and `libdannan0.5`, the CMake package back to `SameMinorVersion` (released as 0.6.0, below), and `docs/packaging.md` and README to match. It
-   comes first because every hosted system pins against it.
-   Then the `ChildProcess` reaper (asked for by Lugh at Tom's word, 2026-11-13). A test process that crashes or is
-   SIGKILLed never runs the destructor, so its children ran on for days, holding their ports. Each child gets a forked
-   reaper, which runs only async-signal-safe calls and closes every descriptor but its pipe. The pipe's EOF means the
-   test died: SIGTERM, then SIGKILL after 10 s. A "done" byte is written after `waitid(WNOWAIT)` and before the reap,
-   so a reused pid is never signalled. It goes in 0.6.0 with the promise.
-   A virtual added to a `Context` interface is an ABI change by abidiff, so P2, P6's watch and the like batch into
-   the next minor (Tom, 2026-11-13, directly); changes that touch no interface go in a patch. Tom, 2026-11-13, directly:
-   tag the ABI promise and the reaper once hosted CI is green on every job and Macha, and Lugh for the reaper, have
-   reviewed it; then push it and stage its packages in `../tomcully-apt/incoming/dannan/<version>/`. Macha's review
-   found that 0.5.4 had already changed the ABI under `libdannan.so.0.5` (against 0.5.3: five functions removed,
-   `NodeConfig::relay_drop_hook` retyped), while Macha 0.94.x is live on 0.5.3. So Tom ruled, directly, that the
-   promise starts at 0.6.0 (`libdannan.so.0.6`), not 0.5.7, and the interface work below is 0.7.0.
-   First in 0.7.0 (Tom, 2026-11-13, directly): P8, a deferred reply. A handler may answer later from any thread, through
-   the session's `Reply` (`net/session.h:69-84`), which the scheduler now hides (`net/scheduler.h:101-103`). It is
-   bounded per class and by the caller's deadline, and holds no worker while it waits. Dagda's group-commit prototype:
-   one call per message at 8,000/s, a replica blocking on fsync held the workers, and 309,385 of 479,993 calls were
-   refused, p99 240 ms.
-   Built on `feature/deferred-reply`. The pieces:
-   - `net::Answer`, `Handled::deferred()`, `net::DeferringHandler`, and `Routes::bind_deferred`; `bind` keeps the
-     synchronous signature, wrapped.
-   - `ServerLimits::max_deferred` (4096 per work class: running plus deferred, refused at admission), and
-     `Timing::deferred`.
-   - An Answer dropped ungiven refuses the call with 500 "abandoned".
-   - Five tests (four scheduler, one node); macOS 653 passed.
-   Found on the way, not yet fixed: when a data-lane type is registered only on the answering node, a call to it
-   never reaches the handler, synchronous or deferred, by endpoint or by record. After about 11 s the caller learns
-   only "peer channel closed: peer closed". Registered on both nodes, it works. Proven at debug level: the caller,
-   lacking the type's wire rules, sends it on the control lane. The answering node logs "message later is invalid as
-   foreground on the control lane" and closes the session, failing every call on it. The check is
-   `FrameOpener::header` (`net/channel.cpp:440`), which refuses the frame before its body is authenticated.
-   Tom, 2026-11-14, directly: document the rule only, wire unchanged (done on `Routes::add`). The two fixes weighed:
-   - At the caller: refuse a call for a type it never registered. Tried; seven node tests call types registered only
-     on the answering node, on the control lane, where that works. So it would break callers that rely on it.
-   - At the answering node: read and authenticate the frame, then answer it with a refusal naming the lane, keeping
-     the session. This changes wire v1's treatment of a lane violation, which is Tom's to rule on.
-   Meanwhile the rule stands: register every type on every node, as the hosted systems do.
-   Dagda's acceptance runs (dagda-bench on the Mac, loopback, k = 2, 8,000 messages/s, 60 s), against the deferred
-   reply:
-   - The server side works: a replica groups 511 to 512 calls per sync, against 2 before, and holds no worker.
-   - Both cases still fail. One call per message: 218,642 of 479,992 failed, p99 174 ms (not deferred: 388,496,
-     333 ms). 256 logs: about 227,000 to 250,000 failed, p99 231 to 240 ms.
-   - The limit is now the call path per connection, about 6,000 calls/s per peer pair. Calls are refused with "peer
-     pending reply limit reached" (`max_pending_replies` = 512, `net/outbound.h:27`) and "peer outbound queue full".
-   - Dagda's log needs only about 100 calls/s per replica, which already passes, so this is Dannan's stress case.
-     P5 measures it before anything changes: raise the cap, make it per class, or cheapen the per-call path.
-   Also found, a contract defect: `CallHandle::cancel()` says it "completes the call at once as cancelled", but before
-   placement it only sets a flag, and the call completes when its dial ends (up to the connect timeout; 5 s in
-   `Client.ACallIsIdleFromWhenItWasMadeNotWhenItWasPlaced`). The fix is a once-only completion shared by the handle
-   and the call. Fixed on `feature/macha-fixes`: `Client::once` makes the call's completion once-only, shared by the
-   call and its handle, and a cancel or abort before placement posts "RPC cancelled" through it at once. The idle test
-   failed at 500 ms before the change and completes in about 60 ms after it.
-   `Node.GossipWaitsOutItsCapHoweverMuchDemandThereIs` failed once on arm64 ASan in CI (run 43534279154): the gossip
-   round after its one-second step never reached A. The likely cause, unproven, is that the round is
-   `broadcast_best_effort`, which sends nothing while the route table is busy, yet counts as the round, and the test
-   froze time after the one step. The final wait now steps time on each try, as its first wait does; the frozen
-   section still shows no gossip without a step. In production that costs one interval of gossip, by design.
-2. P6's seven small fixes (Macha), then the owners' test seam, the advert-change watch and non-blocking logging. Five
-   fixes are on `feature/macha-fixes`:
-   - `idle_for` counts from when the call was made;
-   - a const `Node::inbound()`;
-   - `free_port` comes from 10000 to 32767;
-   - `ClusterKey::from_master` and the two labels named once;
-   - `DeferringHandler` takes the request by value, so a handler moves the payload out uncopied.
-   Macha withdrew two on review: #13, `connections_canonical`, which Dannan has written since 3418733 (Macha's own hook
-   wrote it again), and #11, first telemetry at join, inferred and never observed. macOS: 658 passed.
-3. P2, the partition reading on `Nodes`. Even is a minority; a join adds to the agreed roster and only a retire
-   removes. Built on `feature/partition`:
-   - `membership::AgreedRoster`, persisted (`state/membership/agreed-nodes.bin`, DNNAGR01) and seeded from the known
-     roster on first use.
-   - `Nodes::partition()`, `watch_partition` and `unwatch_partition`, `members()` and `retire()`; an identity reset
-     retires the stale id.
-   - Hosted CI green on all 15 jobs (Debian arm64 664 passed, macOS 663). Built and tested on hosted CI only: Tom
-     stopped Mac builds on 2026-11-14 and every Pi was claimed.
-   - Lir and Lugh approved. Both found that joins during a split can give both sides a majority. Tom, 2026-11-14,
-     directly: keep it as built, and document the hazard (done in `agreed_roster.h` and on `Nodes::partition`).
-     Holding joins until the roster is whole, and counting a joiner only once a majority has seen it, were weighed and
-     not taken.
-4. P4, the class-aware worker pool with CPU pacing, from Dagda's `store/cpu_pacing.h`. Macha's pacing cases and a
-   baseline run on the nodes are its proof.
-5. P3, the shared public listener below the protocols, to Lugh's and Lir's combined requirements.
-6. P5, small-message figures in `dannan-bench`, here first. Two real machines: the shared Pi 5 build servers
-   corvus-jupiter (10.44.1.169) and corvus-saturn (10.44.1.170), which Tom gave on 2026-11-13 for native arm64 builds
-   and cluster tests. They are shared, so run at nice 19 under a directory of our own, and clean up. macnessa and
-   inverbeg, which run Macha, still wait for his word.
-P7, Alpine in CI, is not now (Tom). Otherwise, fix what the Macha session or the port finds. arm64 runs on inverbeg at
-nice 19 with GoogleTest in `~/dannan-arm64-deps/prefix`; the tests run there as root.
+**Release rules unchanged:**
+- Tags need Tom's direct word.
+- The version commit changes CMake, README, CHANGELOG, COMPLETED and ACTIVE, and `debian/control`'s library package
+  when a minor starts.
+- Within a minor the ABI is kept, and `tools/ci.sh abi` enforces it. An interface change waits for the next minor.
 
-
-**The goal (Tom, relayed by the Macha session, 2026-11-06, in his words: "development will continue
-on them with macha code frozen until they can answer Yes unconditionally, the entire reason for their
-existence is this.").** Does Macha move onto Dannan with no change in data, functionality, reliability
-and performance? Yes, with nothing attached. A restated, bounded or tolerance answer is a No. Today's
-answer is No. Dannan's reason for existing is this; Lugh, Lir and AthenaSIP do not change that. Macha
-stays frozen at the live nodes' baseline, `9a08846`. What only Tom or Macha can give goes to the Macha
-session as a request, once. Sent (R1 to R6): which ruled changes count as change; a port branch in a
-clone at `../macha-port`; the Pi baselines; two machines for a timed run; a tag and push; the real IGD
-run.
-
-**Dannan's list toward Yes.** Done (`dannan_tests` 568 on macOS, not yet rerun on Debian or arm64): the
-storage key against Macha's own output; a 65,536-node roster with every kind of reset; files restored
-byte for byte; G44's cases, G45's non-std throw (custody without certificates already had
-`Node.OpensItsKeyCustody`); the importer writing `dagda/extents` as `Bytes{1}`; the supervisor clearing at
-stop as Macha's does; the relaxed atomics read (parity file). Left, each needing R1 to R6 or the Macha
-session: Macha opening a rolled-back state; widened goldens; arm64 repeats and a clang TSan attempt; a
-two-machine measurement against Macha's baselines; a timed run; every seam owned; the facade itself. Facade writes the three `dagda/*` adverts until stage one.
-
-**Last gate before the pause:** at this commit's code, Debian 13 plain, ASan with UBSan, and TSan, 562 each; macOS ASan with UBSan and TSan, 560 each with the BBR case skipped; no sanitizer reports. Compose bed: the two original cases pass; the relay measurement does not.
-
-**Resumed 2026-11-06.** The pause (Tom: "Pause until it lands.") ended when Macha's old-code
-removal landed: 0.93.4, tag on merge `9a08846`, live on both nodes. That is the baseline now. The
-diff of `808fa0f..9a08846` over the moving files was read here: nothing in the transport, membership,
-telemetry or config moves. The facade gains `startup.data_storage_degraded` and `NodeEvent::storage`
-on a disk coming back. The torrent is leaving Macha, so no more torrent parity than the mapping
-requires. Dagda's arbiter and `IoReserve` are on `sched::ClassWaits`, on its `feature/class-waits`,
-local and unmerged until a tag has it: 449 of 449 on the Mac against `415c6c4`, no case changed, not
-yet run on Linux. The goldens are re-cut at 0.93.4, in
-`../macha/build/macha-fixtures/goldens-0.93.4/`, compared with its `mask-list-with-cac5998.txt`.
-The arm64 run, inverbeg from `415c6c4` at Tom's word, read here from its outputs: plain 562 of 562,
-ASan with UBSan 562 of 562 with no reports. No TSan on arm64: g++ 14's TSan refuses this kernel's
-47-bit address space at start, so that coverage is x86_64 only. Loopback, under live replication and
-load about 2.5, so not a baseline: 282 to 347 MB/s at the default frame, 103 to 128 at 4 KiB, idle
-ping p50 under 0.2 ms, loaded p99 6 to 9 ms, peak RSS 177 to 207 MB. Macha's own baselines wait for its
-import to finish. Open: the relay defect below, the real IGD run (at Tom's word), step 11's release (at Tom's
-word).
-
-Written for a session starting from nothing. **The plan is "The first cutover"
-below, and it replaces the order in "Next".** Tom, 2026-11-05, relayed by the Macha
-session and confirmed in his own words ("Do what the macha server agent says"):
-replan on Macha's code. The source of truth is Macha's code at the baseline above, as it is, not the 2026-11-02 design and not the older baselines. Where they differ, Macha's behaviour is the plan and Dannan is reshaped to
-it. A Macha defect found on the way goes to the Macha session and is fixed in Macha
-first. `../macha` is read only from here.
-
-Dannan **0.4.1** is the last release (`main`, tag `0.4.1`, pushed at Tom's word). It
-has wire v1 and v2, level 0, channels, the roster feed, the stack's foundations,
-identity, `dannan::config`, percent-encoding and `Readiness::declare`. Work is on
-`feature/macha-parity`, off `develop`, not pushed. Gate: `dannan_tests` 560 on macOS, 562 on Debian 13;
-no sanitizer run since 0.4.1. A read-only copy of Macha is under
-`build/scratch/macha-cac5998` (`git -C ../macha archive`, untracked; recreate it if
-gone).
-
-The four documents this plan rests on:
-
-- [`2026-11-05-first-cutover.md`](2026-11-05-first-cutover.md): the file table, every
-  Status key, config key, state-file byte, journal line, hosted field and message
-  number, and findings F1 to F22.
-- [`2026-11-05-macha-test-mapping.md`](2026-11-05-macha-test-mapping.md): 152 in-scope
-  Macha cases by fate, gaps G1 to G48, seams, fixture nouns, gates by step. Proposed;
-  the Macha session confirms it.
-- [`2026-11-03-macha-function-inventory.md`](2026-11-03-macha-function-inventory.md) and
-  [`2026-11-03-macha-on-context-audit.md`](2026-11-03-macha-on-context-audit.md):
-  re-based on `00861dd`, with a note on what `cac5998` moved. Of 71 assessed rows, 44 proven, 23 partial, 1 none, 3 Macha's.
-- [`2026-11-04-macha-parity.md`](2026-11-04-macha-parity.md): the nine-item list, what is
-  built, what was disputed.
-
-Dannan is one of a stack: Dagda (`../dagda`, the store), Lugh (`../lugh`,
-the directory) and Lir (`../lir`, MQTT events) are hosted systems on it,
-each with its own session; what each owns is
-`../dagda/TODO/2026-11-03-stack.md`, and the rules for all are
-`CONTRIBUTING.md`. Ogma (`../libogma`) is just a library, not part of the stack
-(Tom, 2026-11-04). Lugh pins 0.4.1 (Lugh `65cf596`; it reads its settings through
-`dannan::config` and decodes with `dannan::encoding`, its own copies gone); Dagda is on 0.4.1 (389 tests; it
-declares its own readiness planes, every stand-in for Dannan gone,
-nothing more wanted for now);
-Lir builds on 0.4.0 (`lir-node` reads its settings through
-`dannan::config`, and its own percent decoder is gone for
-`dannan::encoding`). Tom decided (via Dagda, 2026-11-04) that
-Dagda's domain keys are wrapped to an X25519 key each node derives from
-custody (`derive_local("dagda/wrap/1")`), its public half advertised and
-signed with `Identity::sign`, not to the certificate's P-256 key: Dannan
-gives no ECDH. A peer's certificate through the Context and the X25519
-public-from-private helper shipped in 0.4.0. They send what they need from Dannan as messages;
-nothing shared is written twice (Decisions).
-
-The compose bed (`-DDANNAN_BUILD_COMPOSE_TESTS=ON`, `./build/dannan_compose_tests`,
-Docker running) proves level 0 through real NATs; it is run by hand.
-
-Read in this order: this file to the end of Standing rules;
-`2026-11-02-dannan-plan.md` whole; the inventory; the head of
-`2026-11-03-macha-extraction.md` and its file table;
-`../macha/docs/principles-and-laws.md`; then, for the step in hand, the
-Macha files the inventory names for its rows.
 
 ## The one rule
 
@@ -792,414 +608,6 @@ changes nothing it does not have to.
 - The Macha session (another Claude session on this machine, "Macha
   Server") works in `../macha` on Tom's Macha asks; tell it before a port
   session touches that tree, and it tells this one.
-
----
-
-## The first cutover
-
-One flag day: Macha on Dannan's transport and node with Macha's own store; it moves on when its tests pass.
-The Dagda disk migration is a second cutover, later. Macha's message numbers
-re-register from 512 with their payloads unchanged. The port's release is whatever
-Macha's `develop` is at then.
-
-**Test for what is on this path:** does the first cutover need it? Identity's
-certificates, channels, punches and relays stay as they are, tested and shipped, and
-get no more work for this; Macha runs on the cluster key. The AthenaSIP port and "the
-six" stay off it too.
-
-Each step is a `feature/macha-parity` milestone, gate green, committed and merged to
-`develop`. The Macha cases named are its gates: `2026-11-05-macha-test-mapping.md`,
-"Gates by step", lists them all.
-
-| Step | What | Closes | Macha gates, for example |
-|---|---|---|---|
-| 1. Call semantics, **done** (460) | No-progress deadline and stall notice per call, off unless asked, as Macha applies them only to synchronous `call`. `net::CallWatch` on `Routes::call` and `call_and_wait`; `NodeConfig`'s four settings now default to off, which also ends the old 30 s; the node's own exchanges get `exchange_budget`, 30 s. Ruling A keeps the required deadline, so nothing more here. | F1, F2, F16, G11-G13, G18, G19 | `test_rpc_cluster`'s no-progress and liveness cases |
-| 2. Lifecycle and readiness, **done** (472) | `Readiness::hold_until_marked` and `mark_complete`; first failure kept. A job on a closed session skips its handler. A failed inbound persist no longer restarts the loop. Escalation names the thread. Every thread supervised, with a guard test. `request_stop`; the layout check before the lock. | F5, F9, F12, G16, G41-G43, G45 | `test_every_subsystem_thread_is_run_supervised`, startup cases in `test_service_root` |
-| 3. Transport proofs, **done** | The end-to-end cases Dannan lacks, including the 32 MiB overtake, and forged handshakes. They found no behaviour to change except G23, now matched at Tom's word: a call on a retired dial waits for the peer's session (`place_hook` forces it in the test). `ChoosesBbrWhereOffered` runs only on Linux (step 10). | G1-G10, G14, G15, G17, G20-G23, G25-G27 | `test_rpc_cluster`'s transport cases |
-| 4. Membership proofs, **done but for G33** (503) | Resets, fences, forgetting, real dial-backs, retired numbers (`Routes::retire`), one-reading snapshot. No membership behaviour changed. G33 needs an fsync hold, Linux only as in Macha, so it moves to step 10. The empty-domain fallback is the facade's (F3). | F19, F20, G24, G28-G33 | `test_absent_nodes`, `test_rpc_cluster`'s membership cases |
-| 4a. The goldens, **taken** | The Macha session's config, Status, route and journal captures at `cac5998`, in `build/macha-fixtures/`, local only. Reached: at most 381 of 494 Status keys, 31 of 83 journal lines; the rest stay unproven. | the goldens the port gates on | none; the port compares against these |
-| 5. The journal, **written; golden check open** (517) | The 44 missing lines: subsystems, connectivity, thread faults, inbound, endpoint, reset, forgot, exchange failures, in Macha's words and levels, reworded only where Dannan lacks the field (no `hosts_extents` in the inbound line; `UPnP removal failed` names the error, not a code). `status::ThreadCpuReporter` per pool (ruling C), reaching io threads by readings posted to the pool, so an idle one reports late. Not every line has a case; the 31 lines the golden reached are compared at the port. | F13, G44, G48 | the journal golden, step 4a |
-| 6. Telemetry and Status, **Dannan's part done** (524) | The hosted-field case; the table is in the spec, adopted by Macha. Real connection counts: `ClientStats` gains created (after the identity check) and canonical; `reused` counts calls placed on a route, close to but not exactly Macha's sites. Loops renamed (ruling B); truncated records; refusal rows. Byte identity against the Status golden needs Macha's facade, so it is the port's gate, not proven here. | F14, F15, G46, G47 | the Status golden, step 4a |
-| 7. The importer, **done** (532) | `dannan-import-macha`: `MACHMEM1` to `4`, `MACHINB1`, `MACHTEL3`, both lock files, `--dry-run`, safe to rerun, keeps `*.macha` for rollback; Dannan's loader checks a roster before anything changes. Ran clean on copies of macnessa's three files and a scratch node's. The hosted table and advert name are written in the tool, from the adopted table, not read from a place Macha owns. | F6, F17 | the state directory, step 4a |
-| 8. Foundations proofs and the budget table, **done** | Ruling D: the table is in `2026-11-04-macha-parity.md`, every budget in Dannan's layer expressible. `sched::ClassWaits` is the shared mechanism, smaller than first proposed: waiters by class and the wait itself; rules, figures and leases stay the caller's. The ledger is on it. Dagda's rebuild is its own step, on a tag. Quota boundary, reassembly reserve, retry backstop, durable contents, every-mask tables, `Published`, Observation rows. | G34-G40 | `test_foundations`, `test_contract`, `test_observation` |
-| 9. Measured gate, **tool done; no comparison yet** | `dannan-bench`: 32 MiB on DATA, CONTROL round trips under load, MB/s, RSS, over the per-call strand and timer the required deadline costs; compose-bed run. Recorded, never asserted. The laptop's numbers are not comparable to the Pis'. | parity 6 | Macha's baselines at whichever release is then deployed, when Tom says |
-| 10. Linux, **done** | `test/linux`: Debian 13, g++ 14, Boost 1.83, which is now the minimum. x86_64 here, and arm64 on inverbeg without TSan (see above). It found and fixed two bugs macOS never showed: every inbound connection crashed under g++ (argument evaluation order, `net/server.cpp`), and stopping could destroy a condition variable in use (`end_operation`). It also fixed a punch failing 1 in 6 on Linux loopback, by retrying sooner after a refusal. One TSan report remains, 1 in 100 runs of level 0: Boost's `ref_count_down`, an acquire fence TSan cannot model. | parity 8, G1 | the Pis' OS and architecture; no Macha case |
-| 11. Release | A tag at Tom's word, with its sanitizer runs. The port pins it. | | Macha's mapped cases green on it |
-
-**For the hosted systems at the next tag:** `NodeConfig`'s `control_no_progress` no longer defaults to 30 s, so a call is watched only if it asks (`net::CallWatch`); `Routes::call` and `call_and_wait` gain that argument; the Context gains `wait_guard` and `refresh_public_connectivity`; `Readiness::fail` keeps the first failure; an escalated fault's text names the thread.
-
-**The facade, not Dannan's, per the cutover spec:** the advertise-host and failure-domain
-fallback (F3), building the gateway (F4), deriving Macha's events from `Nodes::watch` (F7),
-keeping Macha's activity clocks (F8), `metadata_notice`'s registration (F10), `version` as
-`kServerVersion` (F11), `memory_bytes`' meaning (F18), the replicas advert's reader (F21),
-plugins rebuilt (F22), and the call filter that replaces send and admit seams.
-
-**Seams:** none to build. Of the 10 cases using `FaultyLinks`, 7 test transport internals
-and retire; the 3 Macha-visible ones only stall a message type leaving Macha's own node.
-
-**Fixed 2026-11-06: relayed DATA had no flow control.** Circuits are now paced end to end by credit, carried on the DATA
-lane at each hop, and handled on the session; `ComposeBed.MeasuresThroughNatsAndARelay` passes 5 of 5 (was 2 of 8). Wire v1, section 6.
-
-**The rollback** is not "nothing on disk changed": 0.92.x refuses `DNNMEM01`, so the
-runbook restores the `*.macha` files, losing only what was learned since (F6).
-
-**Agreed with the Macha session, 2026-11-05.** The test mapping is confirmed, on
-conditions: a retire takes effect only in the port commit that removes its Macha subject,
-and the mapping file goes into Macha's tree with that commit; G43, G44, G45 and G48 close
-before the port (G48 after ruling C); G41 covers both readiness differences. The hosted
-ids (1024 to 1045), message numbers (512 plus the current number, with 549, 550, 560 and
-636 unregistered), advert names and memory owners (`rpc_frame` 1, Macha's ten from 256)
-are adopted as proposed. `frame_timings` keeps Macha's `read-ahead` spelling at the
-cutover. The three metadata mutation types register `ordered`. Macha's 0.92.4 fixes the defects sent to it, and is the baseline. The
-facade raises the remote metadata generation by compare-and-swap, as 0.92.4 does.
-
-**Macha's code is frozen at `cac5998` until the libraries are ready (Tom, relayed by the
-Macha session, 2026-11-05: "Macha has a working, tested codebase, this shouldn't be
-modified until they're ready."). Macha can still produce artefacts for this plan.**
-
-- **Step 4a: the goldens are the Macha session's to cut**, under
-  `../macha/build/macha-fixtures/`, because it has the working build, the two-node
-  fixture and the masking knowledge. Dannan keeps a local copy in
-  `build/macha-fixtures/`, out of the repository at Tom's word (they hold macnessa's host
-  paths), and checks them
-  against the cutover spec's 83 lines and 494 keys. A line or key the capture does not
-  reach is marked unproven, not dropped.
-- **Step 7's state directory** is there too, young and small; `membership-tombstone/`
-  adds a real identity-reset tombstone and an absent node. Macha writes only `MACHMEM4`; `MACHMEM1` to `3` have a reader
-  (`membership.cpp:12-16`) and no encoder, so Dannan builds those samples by hand from the
-  reader's layout. A copy from macnessa is better evidence and waits on Tom's word.
-
-**Settled with the Macha session, 2026-11-05.** The baseline at `cac5998` stands: the Merkle
-namespace is in it and on both nodes (tree-backed heads, SM19, re-rooted 2026-11-03), which
-is what Tom means by the merge being done. The branch `feature/tree-native-namespace`
-(`b080c38`) is a clean-up, unmerged, held by the freeze, and touches nothing moving here.
-
-The macnessa copy is at `../macha/build/macha-fixtures/state-macnessa/`, three files, with
-md5s, mtimes and the release in its README. It stays there, out of this repository, since it
-names real hosts.
-
-**The class admission generic** (`dannan::sched`, then Dagda's `DataResourceArbiter` and
-`IoReserve` on it; agreed with the Macha session, not prototyped). It fits only if it can
-express, from `cluster/data_work.hpp`:
-
-- Three levels, asymmetric: foreground may use the whole capacity and is never refused for
-  pressure; a waiting foreground closes both lower classes, a waiting loader closes only
-  speculative; lower classes are bounded by the whole capacity and by capacity less reserve.
-- An outside predicate for pressure: a loader is refused only when a foreground user is
-  present (waiting, holding bytes or recently active), speculative by pressure alone, neither
-  below `min_background` active lower leases. With no device, exactly the ungated admission.
-- A count ceiling beside the byte budget.
-- Waits: too large for its class fails at once; a context deadline wins; otherwise no-progress
-  windows that any release re-arms, with the one `DATA credit wait abandoned` warning;
-  refusals and waits counted once per waiter; cancel, expiry and stop count as cancelled.
-- Control cannot enter the arbiter: it throws. A per-request `charge()` applies first.
-
-The gate is Macha's `test_io_pressure.cpp` as moved to Dagda, with the cases the Macha session
-named (`foundations`, `rpc_cluster`, `root_parts`, `torrent_disk_io`, `filesystem_fuse`).
-`DataResourceStats`' fields keep their meanings: `/status/diagnostics` `data_resources` reads
-them by name (`status_api.cpp:1010-1037`). Not folded in: pacing (`WeightedLoaderService`,
-Dannan's `DutyShare`, where "paced, never stopped" lives), maintenance's byte credits, the
-per-walk `Budget`, `DiskServiceMonitor`. If it cannot express these, it does not ship, and
-that is reported rather than bent.
-
-**From Tom, relayed by the Macha session, 2026-11-05.** The gate for the port is an independent
-review by the Dannan and Dagda sessions themselves after their context is cleared (Tom: "by fresh
-agents I meant the library agents, after a clear"), from the code and the nodes only, concluding no
-loss of function, performance, reliability or data. Macha's order: old-code removal, then 0.92.6, then the Pi
-baselines on that, then Dannan finishes on that baseline; Macha's freeze has those exceptions,
-it says at each commit whether anything in Dannan's layer moves, and the goldens are re-cut
-once at the end. The class admission generic is required before stage one, ledger first,
-then Dagda, gated by every existing case on both sides. No soak between cutovers: a stage
-moves on when its tests pass, inverbeg first. Inverbeg is inbound capable, dialled at
-inverbeg.macha.network:7437.
-
-**Pace, Tom, 2026-11-05:** run through steps 5 to 10 without asking, stopping before step 11's release. The real IGD run happens before the cutover, at his word when these steps are done. Dagda hears about the class admission generic now and rebuilds its two once it exists at step 8.
-
-## Next
-
-**Superseded in order by "The first cutover" (2026-11-05).** The steps below keep
-their gates and their account of what was done.
-
-In order. A build step and the port step that follows it alternate, so
-the boundary is pulled on from Macha's side as early as possible. Nothing
-here waits on a device, a carrier or another repository, except the items
-under Waiting on Tom.
-
-### 0. This repository (2026-11-03)
-
-- [x] `TODO/`: the plan, the record, the port proposal, the function
-      inventory, the two design documents (the masters since 2026-11-04).
-- [x] The design questions put to Tom and answered (Decisions).
-- [x] `CLAUDE.md`, `CONTRIBUTING.md`, `.clang-format`, `basemind.toml`,
-      `.gitignore`; a "Dannan extraction" section in Macha's
-      `TODO/ACTIVE.md`.
-- [x] The first commit on `main` (`2a923f5`); `develop` branched.
-- [x] The build skeleton (2026-11-03): `CMakeLists.txt` with `project(dannan VERSION
-      0.1.0)`, two shared libraries `dannan` and `dagda`, GoogleTest
-      binaries `dannan_tests` and `dagda_tests` behind
-      `-DDANNAN_BUILD_TESTING=ON`, `-DDANNAN_WARNINGS_AS_ERRORS=ON`, Boost
-      (1.87 or later, Asio) and OpenSSL found from `/opt/local`, clang
-      `-Wthread-safety`; the directory layout of the design (`dannan/` with
-      `include/dannan/`, `reach/`, `net/`, `membership/`, `placement/`,
-      `sched/`, `supervise/`, `identity/`, `status/`, `contract/`, `test/`;
-      `dagda/` with `domain/`, `store/`, `ledger/`, `heads/`, `lease/`,
-      `contract/`, `test/`); `--version` from a tiny `dannan-version`
-      executable or a test, agreeing with the tag.
-- [x] `docs/principles-and-laws.md`: a verbatim copy of Macha's, with one
-      provenance line; cited by number from here on.
-- [x] The first test fixtures under `dannan/test/fixtures/`: the gate and
-      the free-port allocator (2026-11-03). Arriving with the steps that
-      give them something to stand on: the stepped time source (step 1,
-      with `TimeSource`), the in-process cluster of Dannan nodes (step 2,
-      with the transport), forked-process isolation where a case needs it.
-
-### 1. The vocabulary (step 1) - done 2026-11-03
-
-What the transport stands on, each small and specified: `sched/` (the
-work classes `control`, `foreground`, `read_ahead`, `loader`,
-`speculative` and `frame_for`; declared waits and the wait guard; the
-retained-memory ledger with its three reserves and the reassembly reserve
-inside one total, shrunk pro rata under a memory limit with one warning;
-budgets, cursors and pages; the retry policy), `contract/` (thread safety,
-`TimeSource` with a stepped source for tests, published snapshots), the
-codec (Writer and Reader, byte-compatible with Macha's wire encoding of
-integers, bytes, strings and the node record), the scoped logger, and
-`durable_file`. Tests: the inventory's "Work classes, waits and budgets"
-table whole and the time and durable-file rows of "Identity, time, state
-files". Gate: `dannan_tests` green, every row named.
-
-### 2. The transport on Asio (step 2)
-
-`dannan::net`, the first substantial piece, from the design's Level 1 and
-the inventory's transport table, speaking protocol 23 byte for byte:
-`SecureChannel` (the v15 handshake with the cluster key, X25519 and HKDF,
-AEAD per fragment with counters, the session id, frame size negotiated
-and bounded, the lane byte, shutdown and close under one mutex); the two
-lanes and the probe lane; the open route table (16-bit type, registered
-with lane, class, notification flag and handler; Dannan's reserved
-numbers from the extraction document's seam 4; collisions refused); the
-client (dial on demand and reuse, shared cold dials, simultaneous-dial
-reconciliation, the outbound limits with the small-message reserve, the
-pending-reply budget with the refusal's reason, stall notice and
-no-progress deadline per lane, cancel, abort and promotion on both sides,
-the health loop with per-peer backoff and the smoothed round trip from
-pings only, the three broadcasts, reverse dial and maintained peers for
-inbound-incapable nodes, the probe dial, traffic totals in one shared
-instance); the server (accept, the pre-auth bound, session reaping with a
-session count in its work stats, request classes with byte-bounded queues,
-the fast-control allow-list, the per-peer-ordered bounded executor that
-Macha's metadata mutations need, rejection counters, per-type and
-per-frame timings, 0.91.3's reply rule); the executor rule native (every
-completion posts to a caller-supplied `any_io_executor`; the blocking
-call is a wait on it with its declared waits); `RpcLinks` as the seam
-between the client and its sockets so tests inject faults. Open design
-points to settle at the start of the step, with Tom if they change the
-design: how the per-peer-ordered executor is expressed (a property of the
-registration, recommended) and which of the server's queue limits are
-Dannan's per-class budgets.
-
-Gate: the transport table, every row, as `dannan_tests` cases (the 21
-Macha cases of `c71370e` and the earlier ones are the model); the
-two-process test against the Macha binary (`build-macports/macha` at
-Macha's `develop`), both ways round: handshake, the Dannan node listed in
-Macha's Status, `ping` and `members`, telemetry received, a DATA-lane
-call; a frame capture of one session compared byte for byte with Macha's
-own. Then tag `0.1.0`.
-
-### 3. Macha on Dannan's transport (port step)
-
-In `../macha`, on `feature/dannan-port-transport`: first the port gate's
-two goldens, written afresh (the config dump, field by field with
-compile-time member counts, and the Status surface from two nodes in
-process, as the deleted `2dfbb02` and `6a797af` did; their text is in
-Macha's reflog if wanted), committed before the port so they measure it.
-Then Macha links `dannan` at `0.1.0`; `cluster/net.{hpp,cpp}`, `message_routes.hpp`,
-`frame_type.hpp` and `rpc_refusal.hpp` are replaced by Dannan's, with a
-thin adapter where `NodeRuntime` expects Macha's names; Macha registers
-its message numbers (the extraction document's seam 4 lists Dannan's,
-Dagda's and Macha's); `Config` and `NodeRuntime` are untouched beyond
-what the adapter needs. `CONTRIBUTING.md`'s line that Boost is not
-required there goes. Gate: the port gate whole; `test_rpc_cluster.cpp`
-every case; the two-process mixed-build test (0.91.2 or 0.91.3 binary
-against the ported binary); the Status golden (RPC and work stats are
-fields of it); a deploy to the live nodes. A Macha release, numbered by the Macha session.
-
-### 4. The control plane (step 4, in sessions per table)
-
-- 4a `membership/` and `placement/`: the gossiped roster with the
-  grandfathered `NodeInfo` record, direct liveness and `dead_after`,
-  forgetting at the horizon, persistence under the state path, identity
-  association resets, flags as a capability set reading the same byte,
-  `all_known_reachable`, the write-floor advertisement; rendezvous and
-  capacity-aware placement, failure domains, commit-replica ordering.
-  Tests: the inventory's "Membership" and "Placement" tables.
-- 4b `identity/` v1 (the cluster key file, the durable node id, the
-  durability epoch, the state-path lock), `reach/` v0 (`inbound_capable`
-  resolution by dial-back, persisted, re-probed by cadence; UPnP, external
-  IP and the self-probe as `PublicConnectivity`), `status/` (telemetry
-  gossip with the grandfathered record, activity clocks, node events, the
-  Status surface with `publish` and `counter`, observation windows).
-  Tests: "Public connectivity", "Telemetry and status", the rest of
-  "Identity, time, state files".
-- 4c `supervise/`: the supervisor, plugins discovered from a directory,
-  the build-identity check, decline, fault and rebuild, the registry by
-  name, startup progress and its no-progress exit, the lifecycle stop
-  token. Tests: the "Supervision" table.
-
-### 5. The node and `dannan::Context` (step 5)
-
-Dannan's node: the control plane assembled (what the extraction document's
-seam 2 lists for the first class), the control routes it binds, the
-membership, connectivity and telemetry loops, `refuse_impossible_cluster`,
-readiness, stop and cancellation; `dannan::Context` with the design's
-nouns (Nodes, Routes, Channels v1 as notify on CONTROL and bulk on DATA,
-Identity v1, Budget, Faults, Time, Status), written as a spec a second
-implementation could satisfy. Gate: a Dannan-only two-node in-process
-cluster; a Dannan node joining a running Macha cluster as a bare member
-(the two-process test grows); a hosted system that is nothing but a
-counter runs on it.
-
-### 6. Macha on Dannan's node (port step)
-
-In `../macha`: the config split (seam 1 of the extraction document, now
-`dannan::Config` read by Dannan and the rest Macha's) and the
-`NodeRuntime` split (seam 2: Dannan's node under Macha's facade, which
-keeps the advertisements, the generation announcements, `hosts_extents`
-resolution and the playback budgets); `subsystem/*`, `contract/work`,
-`retained_memory`, `time_source`, `membership`, `placement`,
-`node_identity`, `public_connectivity`, `telemetry`, `activity_clocks`,
-`node_events` replaced by Dannan's; `SubsystemRegistry` publishes by
-name; the FUSE and torrent plugins load through Dannan's supervisor. Gate:
-the port gate whole, the config golden and Status golden byte-identical,
-the plugin cases, the live nodes. A Macha release, numbered by the Macha session.
-
-### 7. Dagda (step 7, in sessions per table)
-
-From the design's store sections and the inventory's store table, byte
-compatible with layout v18 and protocol 23: `domain/` v1 (one domain,
-every node a member; the blind role specified, not yet exercised);
-`store/` (local stores, packs, pool, durability domains and tickets,
-I/O pressure, the persistent cache, retention); `ledger/` (the trie, the
-diff, the union, the held and retention ledgers, reference counts, the
-horizon builder taking a `ReferencedSets` provider, the three destructive
-gates, GC's two sweeps); `heads/` (the opaque commit DAG: commits,
-acceptance at the write floor with certificates, head sets, per-origin
-dots, compaction, the Merkle tree over keys, the reconciler calling the
-owner's merge, conflicts as durable records, `replicas: N` per space
-with CONTROL placement and forwarded reads; the grandfathered FS codec as
-a codec the FS supplies); `lease/` (the lease and the claimed collection
-templates, `TorrentRequest`'s rules as the first instantiation with
-identical bytes); `dagda::Context` (Domains, Objects, Claims, Heads,
-Leases, Tickets, Retained). Gate: `dagda_tests` from the inventory and
-`VALIDATION.md`'s gates; the three gates the extraction plan names
-(divergent heads reconcile with no lost commit; repair by diff converges
-after a partition heals; a torn volume rejoins without hand repair) in
-process; the two-process test with objects on both lanes, commits both
-ways and a divergence merged against the Macha binary.
-
-### 8. Macha on Dagda (port step, the snapshot last)
-
-In `../macha`, in the extraction document's order for seams 6 to 9: the
-reachability provider (the catalogue supplies its sets; the ledger stops
-including it), the lease template (`TorrentRequest` through it, bytes
-identical), opaque heads (`MetadataSnapshot` divided into Dagda's head
-record and the FS state blob under the grandfathered codec;
-`metadata_merge.cpp` to `filesystem/` as the FS merge; `MetadataView` as
-Macha's facade), then the FS through the two contexts alone
-(`SubsystemContext` stops handing out `filesystem`, `hydration`, `ingest`
-and `local_state`). Gate: the port gate with the mixed-build test
-(baseline binary against the ported one: a cluster, commits both ways, a
-divergence merged, the result identical from either side);
-`macha-metadata-dump` identical on a fixture state directory; the live nodes for
-the period the extraction plan names. A Macha release, numbered by the Macha session. After this
-the door exists, and the second hosted system comes through it and
-nothing else.
-
-### 9. Level 0: reachability (step 9) - done, compose bed only; the chaos cluster waits on Tom
-
-First the compose cluster (Tom: compose only): one machine, docker
-networks for NAT, a scenario runner for terminate, partition and clock
-skew, the port gate's checks runnable on it. Then `reach/` in full:
-observed-address learning from every inbound frame, confirmed only when
-another node has reached them; path classes tried in order per pair; the
-punch broker over CONTROL with TCP simultaneous open; relay by a node
-with the `relay` capability, CONTROL relay unconditional, DATA relay
-charged to the relaying node's loader class and published in Status; a
-path change as a reconnect under the same identity. Protocol 24, the
-first bump, rolling. Proven by making half the compose cluster relay-only
-and asserting the same gates; then on the chaos cluster when there is one
-(Waiting on Tom, 2).
-
-### Foundations for the stack (2026-11-03 night, under "no duplicated code")
-
-Dannan is the one home of what Dannan, Dagda and Lugh all need. Written
-here from Dannan's design (Lugh's code read for what it does, never pasted),
-each announced to the Lugh and Dagda sessions as it lands, so they delete
-their copies:
-
-1. Secure memory: key material locked in RAM, kept out of core dumps and
-   forks, wiped on release; a `Secret` that cannot be logged.
-2. Signing: EC P-256 (ES256) and Ed25519, sign and verify, PKCS#8 keys.
-   Step 10's CA uses them too.
-3. Node key custody, an early slice of step 10: the node's private key
-   and the root Dagda seals node-local keys under, loaded from a sealed
-   systemd credential or a typed passphrase, held in secure memory.
-4. Fuzz targets for every parser of untrusted bytes (`dannan/fuzz/`):
-   handshake, frame header, assembler, node record, telemetry, the level 0
-   payloads.
-
-5. Channels with named delivery contracts (plan, "Level 1"): notify
-   (CONTROL, at most once, dropped under pressure), stream (CONTROL, at
-   least once, a per-origin sequence, bounded replay from the sender),
-   bulk (DATA, backpressured, acknowledged); subscription node-local by
-   topic prefix, gossiped as an advert, so a publish goes only to nodes
-   with a subscriber. Retained is Dagda's (a notify whose last value lands
-   in a head). Lir's lir.notify, lir.seq and lir.bulk sit on these.
-6. A membership-change feed (joined, left, changed) with each node's
-   incarnation, the durability epoch carried in the node record.
-7. The node opening its custody (`NodeConfig`), its node key and derived
-   keys reachable through the Context's Identity.
-
-Lugh keeps what only Lugh needs: HMAC-SHA1, base32, base64url, JOSE.
-Argon2id moved here: custody stretches a passphrase with it too.
-
-### 10. Identity (step 10) - done 2026-11-04, released in 0.3.0
-
-Requirements from Lugh (2026-11-03 night), part of the step: a single
-node revoked and refused at once (proposed: a CA-signed, grow-only
-revocation record, gossiped and persisted like an identity reset, refused
-at every handshake and its sessions closed); and a node's private key held
-as Lugh holds its master key (a TPM-sealed systemd credential where there
-is one, locked memory, never on disk in clear), since Dagda wraps domain
-keys, Lugh's among them, to node certificates. And the scope seam:
-`contract::ScopeSource` declared here, `Identity::verify` over it, Lugh
-installing the source (the stack document).
-
-AthenaSIP's `cluster_ca.cpp` written into `identity/` in Dannan's style;
-Macha's shared cluster key becomes a one-class CA; `SecureChannel` keys
-from the certificate; the node id is the certificate's. Protocol 25, the
-second bump, rolling, and the moment the grandfathered wire records
-(`NodeInfo`, telemetry) gain their generic advertisement maps and the
-capability set leaves the flags byte. Scope looked up in the Lugh head at
-write time with a short-lived credential as the fallback.
-
-### 11. The AthenaSIP port (step 11)
-
-`Datastore` and `EventSystem` implemented as Dannan-backed drivers behind
-the existing plugin interfaces, the SIP stack untouched; heads for its
-records, notify channels for its signals, leases for trunk registration,
-presence takeover and the orphan-call sweep, per-origin counters for
-`counter_add`, retained status from gossip, `AddressDiscovery` retired
-into level 0. Redis and Mosquitto become optional, then go. Gate:
-`test/e2e/cluster.sh` with the second node behind CGNAT and no public
-address. The extraction document's "What AthenaSIP needs" has the
-mapping.
-
-### 12. The six (step 12)
-
-Event system, KV store, git forge, compute, mail, general filesystem, in
-that order. Any core change one of them needs is a step proven on Macha
-and AthenaSIP first. Not planned here.
 
 ---
 
