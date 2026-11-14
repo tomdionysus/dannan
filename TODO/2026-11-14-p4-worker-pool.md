@@ -95,6 +95,12 @@ the node's own gates and pool on the Context.
    `workers().gate(WorkClass)`), sized by `NodeConfig` (threads, reserves, per-class
    caps and queue bounds, weights, `cpu_target` default 0.5 as Macha's). A hosted
    system may set its classes' caps and bounds before start.
+   **Further pools** (Lugh's review): a hosted system may build its own `WorkerPool`
+   beside the node's, its threads under the node's supervision (`Context::threads()`,
+   counted like any other) and its background tasks through the node's gates, so a
+   second pool never adds a second pacer. Lugh will hash on a pool of its own (cap 2 on
+   a Pi 5, a small queue, foreground), since on the node's pool a sign-in storm filling
+   foreground's queue would get Dagda's writes in the same process refused too.
 
 ## Reviews (2026-11-14)
 
@@ -107,7 +113,9 @@ the node's own gates and pool on the Context.
   rule on blocking, CPU time for d, and the rule on the contention reading.
 - **Lugh**: a per-class cap and an immediate refusal meet N6; it needs no waiting
   submit. Asked for the deadline at dequeue, the refusal's reason, and its own cap and
-  bound on the node's pool.
+  bound. Then, seeing that the node's foreground queue is shared with Dagda's writes in
+  lugh-node, chose a pool of its own for hashing, which needs only that a second pool be
+  supported and supervised. Accepted 520648b.
 - **Macha**: its maintenance pass cannot be cut into tasks without a rewrite. It owns
   state across passes (three credits, the pull and push lists, the walks' cursors), its
   stages run in a fixed order, and repair yields inside a step. So the gate is the
