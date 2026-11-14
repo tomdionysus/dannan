@@ -79,11 +79,13 @@ class Stream : public std::enable_shared_from_this<Stream> {
           auto executor = boost::asio::get_associated_executor(handler, self->get_executor());
           auto allocator = boost::asio::get_associated_allocator(handler);
           auto slot = boost::asio::get_associated_cancellation_slot(handler);
+          ++self->_reads;
           auto done = boost::asio::bind_executor(
               executor,
               boost::asio::bind_allocator(allocator, boost::asio::bind_cancellation_slot(
                                                          slot, [self, handler = std::move(handler)](boost::system::error_code error, std::size_t read) mutable {
                                                            if (read > 0) self->note_read();
+                                                           self->read_ended();
                                                            std::move(handler)(error, read);
                                                          })));
           if (self->_tls)
@@ -172,6 +174,9 @@ class Stream : public std::enable_shared_from_this<Stream> {
   void write_next();
   // The clean end once nothing is queued or being written.
   void shut_down();
+  // A hosted read has completed: the TLS shutdown waiting for it may begin.
+  void read_ended();
+  void tls_shutdown();
   void finish(bool clean);
 
   Socket _socket;
@@ -196,6 +201,10 @@ class Stream : public std::enable_shared_from_this<Stream> {
   // On the stream's executor.
   bool _closing = false;
   bool _shutting_down = false;
+  // Hosted reads outstanding, and a TLS shutdown waiting for them to end: it reads
+  // the peer's close_notify itself, and cannot share the stream with another read.
+  size_t _reads = 0;
+  bool _shutdown_waiting = false;
   std::vector<contract::UniqueFunction<void()>> _finished;
 };
 
