@@ -310,6 +310,18 @@ class Identity {
   virtual identity::Bytes node_public_key() const = 0;
   virtual identity::Bytes sign(std::span<const uint8_t> message) const = 0;
   virtual identity::Secret derive_local(std::string_view label) const = 0;
+  // Node-local counters that only go up, sealed beside custody (the maintainer, 2026-11-14:
+  // node-local rollback's first layer; identity/sealed_counters.h): read (zero for
+  // a label never advanced); advance, durable before it returns; several in one
+  // durable write; and note, durable at the next flush, which the node makes within
+  // a second and at stop. A lower value throws std::invalid_argument naming the
+  // label. Each throws std::logic_error without custody. They refuse one directory
+  // restored alone, not a whole state restored together. Writes wait on the state
+  // device.
+  virtual uint64_t counter(std::string_view label) const = 0;
+  virtual void advance_counter(std::string_view label, uint64_t value) = 0;
+  virtual void advance_counters(const std::map<std::string, uint64_t>& values) = 0;
+  virtual void note_counter(std::string_view label, uint64_t value) = 0;
 
   // Certificates (wire version 2): this node's, when it has one; and a
   // revocation the cluster's CA signed, applied here at once (the revoked
