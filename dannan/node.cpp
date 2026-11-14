@@ -953,7 +953,9 @@ void Node::tell_adverts_locked() {
       const auto before = watcher.told.find(id);
       const bool same = before == watcher.told.end() ? !value : value && *value == before->second;
       if (same) continue;
-      if (const auto last = watcher.last.find(id); last != watcher.last.end() && now - last->second < watcher.every) continue;
+      // A value inside the period waits; a withdrawal or a leave never does, so
+      // no rejoin inside the period can hide it.
+      if (const auto last = watcher.last.find(id); value && last != watcher.last.end() && now - last->second < watcher.every) continue;
       if (value) {
         watcher.told[id] = *value;
         watcher.last[id] = now;
