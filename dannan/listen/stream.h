@@ -133,7 +133,8 @@ class Stream : public std::enable_shared_from_this<Stream> {
 
   // Ends the connection cleanly: what send() queued is written first, then TLS's
   // close_notify, then the socket, all within the listener's close bound (Lir's
-  // review: its DISCONNECT goes by send() and must not be lost). From any thread; once.
+  // review: its DISCONNECT goes by send() and must not be lost). A read still pending
+  // when the close begins ends as aborted. From any thread; once.
   void close();
   // Ends it at once.
   void abort();

@@ -231,7 +231,12 @@ void Stream::shut_down() {
     _socket.shutdown(Socket::shutdown_send, ignored);
     return finish(true);
   }
-  // No write is outstanding on the TLS stream: Asio's allows one operation of a kind.
+  // No write is outstanding, but the hosted system's read may be: the TLS shutdown
+  // reads the peer's close_notify itself, and with another read pending neither
+  // proceeds (found by CI: the bound expired, no close_notify sent). The read ends
+  // as aborted, as a close does.
+  boost::system::error_code ignored;
+  _socket.cancel(ignored);
   _tls->async_shutdown([self = shared_from_this()](const boost::system::error_code&) { self->finish(true); });
 }
 
