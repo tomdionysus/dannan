@@ -454,11 +454,20 @@ TEST(Session, APeersRetirementRetiresThisEndToo) {
 
 // Closing from any thread while the writer is sealing a fragment is safe:
 // the queue the fragment lives in is dropped on the session's strand, not
-// under the closer (a use-after-free the liveness close found).
+// under the closer (a use-after-free the liveness close found). The peer holds
+// each request unanswered: an echo could answer the whole transfer before the
+// close lands (macOS CI did), and the answer is not what this proves.
 TEST(Session, ClosingFromAnotherThreadMidTransferIsSafe) {
   Io io;
+  std::mutex mutex;
+  std::vector<Reply> held;
+  SessionHandlers holding;
+  holding.request = [&](Frame, Reply reply) {
+    std::lock_guard lock(mutex);
+    held.push_back(std::move(reply));
+  };
   for (int round = 0; round < 20; ++round) {
-    Pair pair(io, echo(), echo(), Lane::data, 4096);
+    Pair pair(io, echo(), holding, Lane::data, 4096);
     auto done = std::make_shared<std::promise<CallOutcome>>();
     pair.dialler->call(MessageType{1029}, Bytes(2 << 20, 9), FrameType::loader, io.context.get_executor(),
                        [done](CallOutcome outcome) { done->set_value(std::move(outcome)); });
