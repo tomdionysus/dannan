@@ -43,7 +43,10 @@ the node owns none, so a hosted system with no public face pays nothing.
    `AsyncReadStream` and `AsyncWriteStream` (`async_read_some`, `async_write_some`,
    `get_executor`), so Beast's HTTP and WebSocket run over it as over any socket, and it
    gives the TLS session (`SSL*`) and the transport's name (Lir's review). It upgrades
-   in place with `start_tls()` once the hosted system
+   in place with `start_tls(answer, done)`, which writes the hosted system's plaintext
+   answer itself, after checking that nothing has arrived past the request: checked
+   after the answer, a quick client's ClientHello would read as plaintext past it (found
+   in the build). That is once the hosted system
    has read the request, refusing any plaintext byte after it (R5), and closes either
    cleanly (bounded `close_notify`, default 2 s, as Lir's) or at once (R8).
 4. **Deadlines** per listener on injected time (R8): the handshake's; the idle one,

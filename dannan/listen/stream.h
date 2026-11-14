@@ -103,11 +103,13 @@ class Stream : public std::enable_shared_from_this<Stream> {
   size_t queued() const noexcept { return _queued.load(); }
 
   // Upgrades a plaintext connection to TLS in place (StartTLS), once the hosted system
-  // has read the request and answered it. A byte already arrived past the request is
-  // plaintext where none may be: the connection is ended and `done` told so. `done` is
+  // has read the request: checks that no byte has arrived past it (plaintext where
+  // none may be ends the connection), writes the hosted system's plaintext `answer`
+  // (LDAP's ExtendedResponse), then takes the handshake. The answer is Dannan's to
+  // send, so the check is made before a client could begin its handshake. `done` is
   // told on the stream's executor, empty when the handshake completed. Only on a
   // listener with certificates, and only once.
-  void start_tls(std::function<void(std::string)> done);
+  void start_tls(std::string answer, std::function<void(std::string)> done);
 
   // How long the connection may go without a byte read before it is closed at once;
   // zero (the default): never. Set at any time.

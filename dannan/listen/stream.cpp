@@ -107,19 +107,27 @@ void Stream::handshake(std::function<void(std::string)> done) {
   });
 }
 
-void Stream::start_tls(std::function<void(std::string)> done) {
-  asio::dispatch(get_executor(), [self = shared_from_this(), done = std::move(done)]() mutable {
+void Stream::start_tls(std::string answer, std::function<void(std::string)> done) {
+  asio::dispatch(get_executor(), [self = shared_from_this(), answer = std::move(answer), done = std::move(done)]() mutable {
     const auto refuse = [&](std::string why) { asio::post(self->get_executor(), [done = std::move(done), why = std::move(why)] { done(why); }); };
     if (!self->_shared->config.certificates) return refuse("the listener has no certificates");
     if (self->_tls_started || self->_tls) return refuse("TLS is already started");
     self->_tls_started = true;
     boost::system::error_code error;
+    // Before the answer goes, no client may yet begin its handshake: a byte here is
+    // plaintext past the request, where none may be.
     if (self->_socket.available(error) > 0 || error) {
-      // A byte past the request is plaintext where none may be.
       self->finish(false);
       return refuse("plaintext bytes arrived after the StartTLS request");
     }
-    self->handshake(std::move(done));
+    auto held = std::make_shared<std::string>(std::move(answer));
+    asio::async_write(self->_socket, asio::buffer(*held), [self, held, done = std::move(done)](const boost::system::error_code& written, std::size_t) mutable {
+      if (written) {
+        self->finish(false);
+        return done(written.message());
+      }
+      self->handshake(std::move(done));
+    });
   });
 }
 

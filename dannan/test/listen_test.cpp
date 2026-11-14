@@ -388,12 +388,11 @@ TEST(StreamListener, StartTlsUpgradesInPlaceAndRefusesBytesPastTheRequest) {
     auto request = std::make_shared<std::array<char, 9>>();
     asio::async_read(*stream, asio::buffer(*request), [&, stream, request](boost::system::error_code error, std::size_t) {
       if (error) return;
-      asio::async_write(*stream, asio::buffer("GO\n", 3), [&, stream](boost::system::error_code written, std::size_t) {
-        if (written) return;
-        stream->start_tls([&, stream](std::string why) {
-          if (++upgrades == 1) upgraded.set_value(why);
-          if (why.empty()) echo(stream);
-        });
+      // The answer goes through start_tls, so nothing can be checked after a client
+      // has begun its handshake.
+      stream->start_tls("GO\n", [&, stream](std::string why) {
+        if (++upgrades == 1) upgraded.set_value(why);
+        if (why.empty()) echo(stream);
       });
     });
   });
@@ -408,12 +407,11 @@ TEST(StreamListener, StartTlsUpgradesInPlaceAndRefusesBytesPastTheRequest) {
   EXPECT_EQ(first.get(), "");
   EXPECT_EQ(client.round_trip(*client.tls, "private"), "private");
 
-  // Plaintext sent before the server answered is past the request: the upgrade is refused.
+  // Plaintext sent before the server answered is past the request: the upgrade is
+  // refused, and the connection ended without the answer.
   Client hasty;
   hasty.connect_plain(listener.port());
   asio::write(hasty.plain, asio::buffer("STARTTLS\nEXTRA", 14));
-  char answer[3];
-  asio::read(hasty.plain, asio::buffer(answer));
   EXPECT_TRUE(eventually([&] { return upgrades.load() == 2; }));
   EXPECT_TRUE(hasty.ended(hasty.plain));
   listener.stop();
