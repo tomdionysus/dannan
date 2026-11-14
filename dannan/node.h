@@ -105,6 +105,9 @@ struct NodeConfig {
   // Refuses a dial by naming why, for tests that fail links; see
   // net::ClientOptions::dial_hook.
   std::function<std::string(const net::Endpoint&, net::Lane)> dial_hook;
+  // The owners' test seam (P6): refuses or stalls one call by peer and type,
+  // the node's own calls included; see net::CallFault. Tests only.
+  std::function<net::CallFault(const std::optional<identity::NodeId>& peer, const net::Endpoint& endpoint, net::MessageType type)> call_fault;
   // reach::PathsConfig's: how long a relayed circuit waits for chunks that may have died
   // with a session (none: dead_after), and, tests only, the chunks a relay drops.
   std::optional<std::chrono::milliseconds> relay_finish_wait;
@@ -197,6 +200,12 @@ class Node final : public Context {
   // Fails every outbound call at once and admits no more, so a worker
   // blocked in one can be joined; the rest of the node runs on until stop().
   void cancel_outbound_calls();
+
+  // Tests only, with NodeConfig::call_fault: fails the calls it stalled to
+  // `peer` (every peer when none) as "stall released"; how many. And how many
+  // it holds now.
+  size_t release_stalled_calls(const std::optional<identity::NodeId>& peer = std::nullopt);
+  size_t stalled_calls() const;
 
   // Beneath the Context, for the hosted system's facade.
   membership::Membership& membership() noexcept { return _members; }
@@ -363,6 +372,20 @@ class Node final : public Context {
   std::map<uint64_t, PartitionWatcher> _partition_watchers DANNAN_GUARDED_BY(_watch_mutex);
   std::optional<membership::Partition> _told_partition DANNAN_GUARDED_BY(_watch_mutex);
   membership::Partition partition_locked() const DANNAN_REQUIRES(_watch_mutex);
+  // The advert watchers, under the same lock: what each last told of each
+  // peer's value under its key, and when, so a change inside the rate waits.
+  struct AdvertWatcher {
+    std::string key;
+    std::chrono::milliseconds every{};
+    boost::asio::any_io_executor executor;
+    std::function<void(AdvertChange)> handler;
+    std::map<identity::NodeId, net::Bytes> told;
+    std::map<identity::NodeId, contract::TimePoint> last;
+  };
+  std::map<uint64_t, AdvertWatcher> _advert_watchers DANNAN_GUARDED_BY(_watch_mutex);
+  // Tells each advert watcher what changed in the active roster as last told,
+  // where its rate allows; topology_changed, so at least every heartbeat.
+  void tell_adverts_locked() DANNAN_REQUIRES(_watch_mutex);
   std::unique_ptr<reach::PublicConnectivity> _connectivity;
   // Refreshes the hosted system asked for, served by the connectivity loop,
   // since a refresh waits on the network. Closed once nothing will serve them.

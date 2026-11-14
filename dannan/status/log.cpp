@@ -19,6 +19,8 @@
 #include <sstream>
 #include <stdexcept>
 
+#include "dannan/supervise/supervised.h"
+
 namespace dannan::status {
 
 std::string_view log_level_name(LogLevel level) noexcept {
@@ -72,8 +74,8 @@ bool ConsoleSink::enabled(LogLevel level) const noexcept { return static_cast<in
 
 namespace {
 
-std::tm utc_now() {
-  const auto time = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+std::tm utc_at(std::chrono::system_clock::time_point at) {
+  const auto time = std::chrono::system_clock::to_time_t(at);
   std::tm tm{};
   gmtime_r(&time, &tm);
   return tm;
@@ -113,8 +115,10 @@ void json_string(std::ostream& out, std::string_view text) {
 
 }  // namespace
 
-void ConsoleSink::write(LogLevel level, std::string_view scope, std::string_view message) {
-  const auto tm = utc_now();
+void ConsoleSink::write(LogLevel level, std::string_view scope, std::string_view message) { write_at(std::chrono::system_clock::now(), level, scope, message); }
+
+void ConsoleSink::write_at(std::chrono::system_clock::time_point at, LogLevel level, std::string_view scope, std::string_view message) {
+  const auto tm = utc_at(at);
   std::ostringstream line;
   line << std::put_time(&tm, "%F %TZ") << ' ' << log_level_name(level) << ' ' << scope << ": " << message << '\n';
   emit(_mutex, _out, line.str());
@@ -122,8 +126,10 @@ void ConsoleSink::write(LogLevel level, std::string_view scope, std::string_view
 
 bool JsonSink::enabled(LogLevel level) const noexcept { return static_cast<int>(level) >= static_cast<int>(_level); }
 
-void JsonSink::write(LogLevel level, std::string_view scope, std::string_view message) {
-  const auto tm = utc_now();
+void JsonSink::write(LogLevel level, std::string_view scope, std::string_view message) { write_at(std::chrono::system_clock::now(), level, scope, message); }
+
+void JsonSink::write_at(std::chrono::system_clock::time_point at, LogLevel level, std::string_view scope, std::string_view message) {
+  const auto tm = utc_at(at);
   std::ostringstream out;
   out << "{\"time\":\"" << std::put_time(&tm, "%FT%TZ") << "\",\"level\":\"" << log_level_name(level) << "\",\"scope\":";
   json_string(out, scope);
@@ -139,6 +145,84 @@ LogFormat parse_log_format(std::string_view value) {
   if (format == "text") return LogFormat::text;
   if (format == "json") return LogFormat::json;
   throw std::invalid_argument("invalid log format: " + std::string(value) + " (expected text or json)");
+}
+
+AsyncSink::AsyncSink(std::shared_ptr<LogSink> inner, size_t capacity) : _inner(std::move(inner)), _capacity(capacity) {
+  if (!_inner) throw std::invalid_argument("AsyncSink: an inner sink is required");
+  if (_capacity == 0) throw std::invalid_argument("AsyncSink: the queue must hold at least one record");
+  // Supervised as every library thread is: a fault restarts the writer rather than ending the process.
+  _thread = std::jthread([this](std::stop_token stop) { supervise::supervised_loop(nullptr, "log-writer", stop, [this] { run(); }); });
+}
+
+AsyncSink::~AsyncSink() {
+  {
+    contract::Lock lock(_mutex);
+    _stopping = true;
+  }
+  _wake.notify_all();
+  _thread.join();
+}
+
+void AsyncSink::write(LogLevel level, std::string_view scope, std::string_view message) { write_at(std::chrono::system_clock::now(), level, scope, message); }
+
+void AsyncSink::write_at(std::chrono::system_clock::time_point at, LogLevel level, std::string_view scope, std::string_view message) {
+  {
+    contract::Lock lock(_mutex);
+    if (_queue.size() >= _capacity) {
+      ++_dropped;
+      ++_unreported;
+      return;
+    }
+    _queue.push_back({at, level, std::string(scope), std::string(message)});
+    ++_queued;
+  }
+  _wake.notify_one();
+}
+
+uint64_t AsyncSink::dropped() const {
+  contract::Lock lock(_mutex);
+  return _dropped;
+}
+
+void AsyncSink::flush() {
+  contract::Lock lock(_mutex);
+  const auto target = _queued;
+  _written.wait(lock.native(), [&]() DANNAN_REQUIRES(_mutex) { return (_done >= target && _unreported == 0) || _stopping; });
+}
+
+void AsyncSink::run() {
+  for (;;) {
+    std::deque<Record> batch;
+    uint64_t unreported = 0;
+    {
+      contract::Lock lock(_mutex);
+      _wake.wait(lock.native(), [&]() DANNAN_REQUIRES(_mutex) { return !_queue.empty() || _unreported > 0 || _stopping; });
+      if (_queue.empty() && _unreported == 0) return;  // stopping, with nothing left
+      batch.swap(_queue);
+      unreported = _unreported;
+      _unreported = 0;
+    }
+    // Outside the lock: the inner sink may wait on its device, and writers never wait on it.
+    for (const auto& record : batch) {
+      try {
+        _inner->write_at(record.at, record.level, record.scope, record.message);
+      } catch (...) {
+        // A record the inner sink could not take is lost, as a dropped one would be.
+      }
+    }
+    if (unreported > 0 && _inner->enabled(LogLevel::warn)) {
+      try {
+        _inner->write_at(std::chrono::system_clock::now(), LogLevel::warn, "log",
+                         "dropped " + std::to_string(unreported) + " record(s): the log queue was full");
+      } catch (...) {
+      }
+    }
+    {
+      contract::Lock lock(_mutex);
+      _done += batch.size();
+    }
+    _written.notify_all();
+  }
 }
 
 std::shared_ptr<LogSink> null_sink() {
