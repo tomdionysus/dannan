@@ -345,7 +345,9 @@ TEST(StreamListener, ARequiredClientCertificateMustVerify) {
   const Issued self_signed{pki.stranger.certificate().pem(), key_pem(pki.stranger.key()), std::string(stranger_der.begin(), stranger_der.end())};
   Client refused;
   // TLS 1.3 tells the client of a refused certificate after its own handshake ends.
-  if (!refused.connect_tls(listener.port(), TLS1_3_VERSION, &self_signed)) EXPECT_TRUE(refused.ended(*refused.tls));
+  if (!refused.connect_tls(listener.port(), TLS1_3_VERSION, &self_signed)) {
+    EXPECT_TRUE(refused.ended(*refused.tls));
+  }
   EXPECT_TRUE(eventually([&] { return listener.counters().handshakes_failed >= 1; }));
   const auto vouched = pki.issue(8);
   Client accepted;
