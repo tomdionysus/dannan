@@ -151,6 +151,12 @@ class Routes {
   virtual void retire(net::MessageType type) = 0;
   // Binds the handler for a registered type; replaces one bound.
   virtual void bind(net::MessageType type, net::RequestHandler handler) = 0;
+  // Binds one that may answer later (P8): it moves the request's Answer out
+  // and returns Handled::deferred(), and gives the Answer from any thread,
+  // holding no worker meanwhile. Bounded per class by the node's
+  // ServerLimits::max_deferred; past it the class's requests are refused to
+  // try later. Replaces one bound.
+  virtual void bind_deferred(net::MessageType type, net::DeferringHandler handler) = 0;
   // Unbinds it. Waits for the handler's calls in flight to return.
   virtual void unbind(net::MessageType type) = 0;
   // Calls `peer`, dialling if need be; `done` is posted to `executor` once:

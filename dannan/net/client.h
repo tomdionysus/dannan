@@ -46,25 +46,41 @@ struct InboundHandlers {
 class CallHandle {
  public:
   // Completes the call at once as cancelled and tells the peer; before the
-  // dial finished, the call is never placed.
+  // dial finished, the call is never placed. Best effort: "cancelled" means
+  // the caller stopped waiting, not that the peer never acted. A cancel that
+  // lands as the request is admitted still lets it go out and be cancelled
+  // only after it is sent, so a mutation the peer may still apply should be
+  // idempotent.
   void cancel();
   // Cancels and ends the session it is on: the peer's job may finish, its
   // reply is dropped.
   void abort();
   void promote(sched::FrameType frame);
-  // How long the call has gone without a byte of its reply; max() while it
-  // is not placed, and once it is done.
+  // Made with the clock its idleness is read on.
+  explicit CallHandle(const contract::TimeSource* time = &contract::steady_time_source());
+
+  // How long the call has gone without a byte of its reply, from when it was
+  // made: its dial and its wait to be placed count; max() once it is done.
   std::chrono::milliseconds idle_for() const;
 
  private:
   friend class Client;
   void placed(const std::shared_ptr<Session>& session, uint64_t request_id);
+  void finished();
+  // How a cancel completes the call before it is placed: the call's own
+  // completion, run once whichever comes first.
+  void on_cancel_before_placement(std::function<void()> complete);
   // True if cancelled before placement, so the caller fails the call.
   bool cancelled_before_placement() const;
 
+  const contract::TimeSource* const _time;
+  const contract::TimePoint _made;
   mutable contract::Mutex _mutex;
   std::weak_ptr<Session> _session DANNAN_GUARDED_BY(_mutex);
   uint64_t _id DANNAN_GUARDED_BY(_mutex) = 0;
+  contract::TimePoint _placed DANNAN_GUARDED_BY(_mutex);
+  bool _done DANNAN_GUARDED_BY(_mutex) = false;
+  std::function<void()> _complete_cancelled DANNAN_GUARDED_BY(_mutex);
   bool _cancelled DANNAN_GUARDED_BY(_mutex) = false;
   bool _aborted DANNAN_GUARDED_BY(_mutex) = false;
   std::optional<sched::FrameType> _promoted DANNAN_GUARDED_BY(_mutex);
@@ -315,6 +331,8 @@ class Client {
   using Retire = std::vector<std::shared_ptr<Session>>;
 
   void call(Target target, Call call);
+  // A call's completion, run once: by its end, or by a cancel before it is placed.
+  static Done once(CallHandle& handle, const boost::asio::any_io_executor& executor, Done done);
   // Places `call` on `session`; one refused because the session retired or
   // closed under it is routed again (a simultaneous dial's loser), at most
   // a few times. `target` is where it is going.

@@ -298,9 +298,11 @@ TEST(Node, GossipWaitsOutItsCapHoweverMuchDemandThereIs) {
   EXPECT_LE(seen_at_a(), before);
   // Read before the step: what it lets out may be sampled before a later wake
   // moves the record on, and then nothing more goes until time moves again.
+  // Each try steps again: the round a step allows is best effort, and sends
+  // nothing while the route table is busy, so one round may go nowhere.
   const auto after = local();
-  time.advance(1s);
   EXPECT_TRUE(eventually([&] {
+    time.advance(1s);
     pair.b->context().telemetry().refresh();
     return seen_at_a() >= after;
   }));
@@ -346,6 +348,66 @@ TEST(Node, ACallIsWatchedOnlyIfItAsks) {
   const auto unwatched = pair.b->context().routes().call_and_wait(at, held, {}, sched::FrameType::control, 10s);
   opener.join();
   EXPECT_TRUE(unwatched.reply) << unwatched.failure;
+}
+
+// A hosted system's handler may answer later (P8): bound with
+// bind_deferred, it keeps the request's Answer and gives it from another
+// thread; the caller on the other node gets that reply, and a request it
+// drops is refused rather than left to the caller's deadline.
+TEST(Node, AHostedHandlerAnswersLaterFromAnotherThread) {
+  constexpr net::MessageType later{1302};
+  std::mutex mutex;
+  std::vector<net::Answer> kept;
+  Pair pair({}, [&](Node& a) {
+    a.context().routes().add(later, {"later", net::Lanes::data, net::Frames::not_control, false});
+    a.context().routes().bind_deferred(later, [&](const membership::NodeRecord&, sched::FrameType, const net::Message& request, net::Answer& answer) {
+      if (request.payload == net::Bytes{0}) return net::Handled::deferred();  // dropped: answer stays in the call
+      std::lock_guard lock(mutex);
+      kept.push_back(std::move(answer));
+      return net::Handled::deferred();
+    });
+  });
+  // Both ends know the type: its lane is the caller's to choose.
+  pair.b->context().routes().add(later, {"later", net::Lanes::data, net::Frames::not_control, false});
+  pair.b->start();
+  const auto a = pair.a->context().identity().id();
+  ASSERT_TRUE(eventually([&] { return knows(*pair.b, a); }));
+  const net::Endpoint at{"127.0.0.1", pair.a->port()};
+  std::thread committer([&] {
+    for (int spin = 0; spin < 2000; ++spin) {
+      {
+        std::lock_guard lock(mutex);
+        if (!kept.empty()) {
+          kept.front()(net::Message{net::message::ok, net::Bytes{7}, {}});
+          kept.clear();
+          return;
+        }
+      }
+      std::this_thread::sleep_for(5ms);
+    }
+  });
+  const auto answered = pair.b->context().routes().call_and_wait(at, later, net::Bytes{1}, sched::FrameType::foreground, 10s);
+  committer.join();
+  {
+    std::lock_guard lock(mutex);
+    EXPECT_TRUE(kept.empty()) << kept.size() << " kept but never answered";
+  }
+  ASSERT_TRUE(answered.reply) << answered.failure;
+  EXPECT_EQ(answered.reply->payload, net::Bytes{7});
+  const auto dropped = pair.b->context().routes().call_and_wait(at, later, net::Bytes{0}, sched::FrameType::foreground, 10s);
+  ASSERT_TRUE(dropped.reply) << dropped.failure;
+  const auto refusal = net::refusal_of(*dropped.reply);
+  ASSERT_TRUE(refusal);
+  EXPECT_EQ(refusal->code, "abandoned");
+}
+
+// The node's inbound answer is read through a const node, as a host's Status
+// page holds it.
+TEST(Node, TheInboundAnswerReadsThroughAConstNode) {
+  Pair pair;
+  const Node& a = *pair.a;
+  EXPECT_EQ(a.inbound().capable(), pair.a->inbound().capable());
+  EXPECT_EQ(a.inbound().state().source, pair.a->inbound().state().source);
 }
 
 // Asking the loops to stop returns at once; stop() afterwards still finishes it.
