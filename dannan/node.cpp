@@ -943,7 +943,7 @@ void Node::topology_changed(bool quiet) {
 void Node::tell_adverts_locked() {
   if (_advert_watchers.empty()) return;
   const auto now = _config.time->now();
-  for (auto& [_, watcher] : _advert_watchers) {
+  for (auto& [watch_id, watcher] : _advert_watchers) {
     // Every peer with a value now or one told before.
     std::map<identity::NodeId, std::optional<net::Bytes>> current;
     for (const auto& [id, node] : _told)
