@@ -157,7 +157,13 @@ branch with tests first, through hosted CI, and reviewed by the session that ask
    Macha withdrew two on review: #13, `connections_canonical`, which Dannan has written since 3418733 (Macha's own hook
    wrote it again), and #11, first telemetry at join, inferred and never observed. macOS: 658 passed.
 3. P2, the partition reading on `Nodes`. Even is a minority; a join adds to the agreed roster and only a retire
-   removes.
+   removes. Built on `feature/partition`:
+   - `membership::AgreedRoster`, persisted (`state/membership/agreed-nodes.bin`, DNNAGR01) and seeded from the known
+     roster on first use.
+   - `Nodes::partition()`, `watch_partition` and `unwatch_partition`, `members()` and `retire()`; an identity reset
+     retires the stale id.
+   - Hosted CI green on all 15 jobs (Debian arm64 664 passed, macOS 663), with Lir and Lugh reviewing. Built and tested
+     on hosted CI only: Tom stopped Mac builds on 2026-11-14 and every Pi was claimed.
 4. P4, the class-aware worker pool with CPU pacing, from Dagda's `store/cpu_pacing.h`. Macha's pacing cases and a
    baseline run on the nodes are its proof.
 5. P3, the shared public listener below the protocols, to Lugh's and Lir's combined requirements.
