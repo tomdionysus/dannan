@@ -46,8 +46,14 @@ jobs on push are the gate, not extra runs).
 1. P6's remaining three, for Macha: **done** on `feature/owner-test-seam` and merged into `develop`. Macha reviewed
    it and every follow-up; all passed. CI run 43548808618 was green on every job. See `COMPLETED.md`.
 2. P4: a class-aware worker pool with CPU pacing, from Dagda's `store/cpu_pacing.h`. The proposed shape, with three
-   questions for the maintainer and sent to Dagda, Lugh and Macha for review, is `2026-11-14-p4-worker-pool.md`; nothing is built
-   until the maintainer answers. Its proof is Macha's pacing cases
+   questions for the maintainer and reviewed by Dagda, Lugh and Macha, is `2026-11-14-p4-worker-pool.md`. the maintainer, 2026-11-14:
+   "work autonomously until you need me", so it was built on the note's recommendations (all four pieces in 0.8, the
+   CPU rest by task CPU time, the node baseline after Macha moves onto the gate). Any of them can still be overruled
+   before the merge. Built on `feature/worker-pool` (`f531ce5`, local): `sched/cpu_pacing.h` (Dagda's),
+   `sched/class_gate.h` (`ClassGate`, `ClassGates`), `sched/worker_pool.h`, and `Context::gates()` and `workers()`.
+   Gate on node-a (g++ Release, one pass): 692 tests, 691 passed, the one long-standing skip; 19 new. Waiting
+   on: the three reviews of the code, and the maintainer's word to push the branch for hosted CI (clang's thread-safety analysis,
+   ASan, UBSan, TSan, macOS, x86-64), before the merge into `develop`. Its proof is Macha's pacing cases
    (`test_repair_is_paced_not_stopped_while_higher_classes_stay_busy`, `maintenance_trace`) and a baseline run on the
    nodes.
 3. P3: the shared public listener below the protocols, to Lugh's and Lir's combined requirements
