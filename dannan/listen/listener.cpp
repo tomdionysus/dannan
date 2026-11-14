@@ -72,7 +72,8 @@ void StreamListener::start(asio::any_io_executor executor, Accepted accepted) {
 }
 
 void StreamListener::accept(const std::shared_ptr<ListenerShared>& shared) {
-  shared->acceptor.async_accept(asio::make_strand(shared->executor), [shared](const boost::system::error_code& error, tcp::socket socket) {
+  const auto executor = shared->config.strand_per_stream ? asio::any_io_executor(asio::make_strand(shared->executor)) : shared->executor;
+  shared->acceptor.async_accept(executor, [shared](const boost::system::error_code& error, tcp::socket socket) {
     if (!shared->acceptor.is_open()) return;
     if (!error) served(shared, std::move(socket));
     // A failed accept (a descriptor short, say) is that connection's alone.
@@ -155,13 +156,28 @@ void StreamListener::stop_accepting() {
   done.wait();
 }
 
-void StreamListener::close_all() {
+void StreamListener::close_all() { close_all({}, {}); }
+
+void StreamListener::close_all(asio::any_io_executor executor, std::function<void()> done) {
   std::vector<std::shared_ptr<Stream>> open;
   {
     contract::Lock lock(_shared->mutex);
     for (const auto& each : _shared->open)
       if (auto stream = each.lock()) open.push_back(std::move(stream));
     _shared->open.clear();
+  }
+  if (done) {
+    if (open.empty()) {
+      asio::post(executor, std::move(done));
+    } else {
+      // Told once, when the last of them has finished.
+      auto left = std::make_shared<std::atomic<size_t>>(open.size());
+      auto once = std::make_shared<std::function<void()>>(std::move(done));
+      for (auto& stream : open)
+        stream->when_finished([left, once, executor] {
+          if (--*left == 0) asio::post(executor, *once);
+        });
+    }
   }
   for (auto& stream : open) stream->close();
 }

@@ -10,8 +10,12 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdlib>
+#include <iterator>
+#include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 namespace dannan::listen {
@@ -61,7 +65,79 @@ bool Bucket::has(contract::TimePoint now, double cost) {
   return _tokens >= cost;
 }
 
-Limits::Limits(LimitsConfig config, const contract::TimeSource* time) : _config(std::move(config)), _time(time) {}
+bool Bucket::full(contract::TimePoint now) {
+  refill(now);
+  return _tokens >= _rate.burst;
+}
+
+Prefix Prefix::parse(std::string_view text) {
+  const auto slash = text.find('/');
+  boost::system::error_code error;
+  Prefix out;
+  out.address = boost::asio::ip::make_address(std::string(trimmed(text.substr(0, slash))), error);
+  if (error) throw std::invalid_argument("not an address or prefix: " + std::string(text));
+  const unsigned bits = out.address.is_v4() ? 32 : 128;
+  if (slash == std::string_view::npos) {
+    out.length = static_cast<uint8_t>(bits);
+    return out;
+  }
+  const auto length = std::string(trimmed(text.substr(slash + 1)));
+  char* end = nullptr;
+  const unsigned long parsed = std::strtoul(length.c_str(), &end, 10);
+  if (length.empty() || *end != '\0' || parsed > bits) throw std::invalid_argument("not an address or prefix: " + std::string(text));
+  out.length = static_cast<uint8_t>(parsed);
+  return out;
+}
+
+bool Prefix::contains(const boost::asio::ip::address& candidate) const noexcept {
+  // An IPv4 peer met on an IPv6 socket is the same address.
+  auto peer = candidate;
+  if (peer.is_v6() && peer.to_v6().is_v4_mapped()) peer = boost::asio::ip::make_address_v4(boost::asio::ip::v4_mapped, peer.to_v6());
+  if (peer.is_v4() != address.is_v4()) return false;
+  const auto bytes_of = [](const boost::asio::ip::address& a) {
+    std::array<uint8_t, 16> out{};
+    if (a.is_v4()) {
+      const auto v4 = a.to_v4().to_bytes();
+      std::copy(v4.begin(), v4.end(), out.begin());
+    } else {
+      const auto v6 = a.to_v6().to_bytes();
+      std::copy(v6.begin(), v6.end(), out.begin());
+    }
+    return out;
+  };
+  const auto ours = bytes_of(address);
+  const auto theirs = bytes_of(peer);
+  const unsigned whole = length / 8;
+  for (unsigned i = 0; i < whole; ++i)
+    if (ours[i] != theirs[i]) return false;
+  if (const unsigned rest = length % 8; rest) {
+    const auto mask = static_cast<uint8_t>(0xffu << (8 - rest));
+    if ((ours[whole] & mask) != (theirs[whole] & mask)) return false;
+  }
+  return true;
+}
+
+bool within(const std::vector<Prefix>& prefixes, const boost::asio::ip::address& address) noexcept {
+  return std::any_of(prefixes.begin(), prefixes.end(), [&](const Prefix& prefix) { return prefix.contains(address); });
+}
+
+Limits::Limits(LimitsConfig config, const contract::TimeSource* time) : _config(std::move(config)), _time(time) {
+  if (_config.max_tracked == 0) throw std::invalid_argument("listen limits keep at least one entry (max_tracked)");
+}
+
+template <typename Map>
+void Limits::bound(Map& map, contract::TimePoint now) {
+  if (map.size() <= _config.max_tracked) return;
+  // First what forgetting loses nothing of: buckets refilled to their burst.
+  if constexpr (std::is_same_v<typename Map::mapped_type, Bucket>) {
+    for (auto it = map.begin(); it != map.end();) it = it->second.full(now) ? map.erase(it) : std::next(it);
+  }
+  // Then the rest, from the front, counted: a debt forgotten.
+  while (map.size() > _config.max_tracked) {
+    map.erase(map.begin());
+    ++_evicted;
+  }
+}
 
 Limits::Verdict Limits::admit(const boost::asio::ip::address& peer) {
   const auto now = _time->now();
@@ -72,10 +148,11 @@ Limits::Verdict Limits::admit(const boost::asio::ip::address& peer) {
       if (bucket != _callers.end() && !bucket->second.has(now)) return Verdict::caller;
     }
   }
-  if (_config.per_address && !_config.trusted_proxies.contains(peer)) {
+  if (_config.per_address && !within(_config.trusted_proxies, peer)) {
     auto [bucket, fresh] = _addresses.try_emplace(peer, *_config.per_address, now);
-    (void)fresh;
-    if (!bucket->second.take(now)) return Verdict::address;
+    const bool admitted = bucket->second.take(now);
+    if (fresh) bound(_addresses, now);
+    if (!admitted) return Verdict::address;
   }
   return Verdict::admitted;
 }
@@ -84,6 +161,17 @@ void Limits::tie(const boost::asio::ip::address& peer, const std::string& caller
   if (!_config.per_caller) return;
   contract::Lock lock(_mutex);
   _ties[peer] = caller;
+  bound(_ties, _time->now());
+}
+
+size_t Limits::tracked() const {
+  contract::Lock lock(_mutex);
+  return _addresses.size() + _callers.size() + _ties.size();
+}
+
+uint64_t Limits::evicted() const {
+  contract::Lock lock(_mutex);
+  return _evicted;
 }
 
 void Limits::untie(const boost::asio::ip::address& peer) {
@@ -96,14 +184,14 @@ bool Limits::charge(const std::string& caller, double cost) {
   const auto now = _time->now();
   contract::Lock lock(_mutex);
   auto [bucket, fresh] = _callers.try_emplace(caller, *_config.per_caller, now);
-  (void)fresh;
-  return bucket->second.take(now, cost);
+  const bool taken = bucket->second.take(now, cost);
+  if (fresh) bound(_callers, now);
+  return taken;
 }
 
-boost::asio::ip::address forwarded_for(std::string_view x_forwarded_for, const std::set<boost::asio::ip::address>& trusted_proxies,
-                                       const boost::asio::ip::address& peer) {
+boost::asio::ip::address forwarded_for(std::string_view x_forwarded_for, const std::vector<Prefix>& trusted_proxies, const boost::asio::ip::address& peer) {
   // Only a trusted proxy's word is taken: from anyone else the header is forged.
-  if (!trusted_proxies.contains(peer)) return peer;
+  if (!within(trusted_proxies, peer)) return peer;
   std::vector<std::string_view> entries;
   for (std::string_view rest = x_forwarded_for; !rest.empty();) {
     const auto comma = rest.find(',');
@@ -116,7 +204,7 @@ boost::asio::ip::address forwarded_for(std::string_view x_forwarded_for, const s
     const auto address = address_of(*entry);
     if (!address) return nearest;
     nearest = *address;
-    if (!trusted_proxies.contains(nearest)) return nearest;
+    if (!within(trusted_proxies, nearest)) return nearest;
   }
   return nearest;
 }

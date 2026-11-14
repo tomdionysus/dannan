@@ -27,6 +27,9 @@
 #include <boost/asio/ssl.hpp>
 #include <boost/asio/strand.hpp>
 #include <boost/asio/write.hpp>
+#include <boost/beast/core.hpp>
+#include <boost/beast/http.hpp>
+#include <boost/beast/websocket.hpp>
 #include <chrono>
 #include <fstream>
 #include <future>
@@ -37,6 +40,7 @@
 
 #include "dannan/identity/certificate.h"
 #include "dannan/identity/signing.h"
+#include "dannan/listen/beast.h"
 #include "dannan/listen/certificates.h"
 #include "dannan/listen/limits.h"
 #include "dannan/listen/listener.h"
@@ -606,12 +610,14 @@ TEST(Limits, PerAddressExemptsTrustedProxiesAndPerCallerRefusesASpentCaller) {
   const auto proxy = asio::ip::make_address("198.51.100.1");
   LimitsConfig config;
   config.per_address = Rate{1.0, 1.0};
-  config.trusted_proxies = {proxy};
+  // By prefix (Lugh: a load balancer's subnet): any address in it is exempt.
+  config.trusted_proxies = {Prefix::parse("198.51.100.0/24")};
   config.per_caller = Rate{1.0, 2.0};
   Limits limits(config, &time);
   EXPECT_EQ(limits.admit(client), Limits::Verdict::admitted);
   EXPECT_EQ(limits.admit(client), Limits::Verdict::address);
   for (int i = 0; i < 10; ++i) EXPECT_EQ(limits.admit(proxy), Limits::Verdict::admitted);
+  for (int i = 0; i < 10; ++i) EXPECT_EQ(limits.admit(asio::ip::make_address("198.51.100.200")), Limits::Verdict::admitted);
   time.advance(1s);
   EXPECT_EQ(limits.admit(client), Limits::Verdict::admitted);
 
@@ -627,6 +633,48 @@ TEST(Limits, PerAddressExemptsTrustedProxiesAndPerCallerRefusesASpentCaller) {
   Limits open;
   for (int i = 0; i < 10; ++i) EXPECT_EQ(open.admit(client), Limits::Verdict::admitted);
   EXPECT_TRUE(open.charge("anyone", 1e9));
+}
+
+// No unbounded cache (Lugh's review): a scan from many addresses keeps the map at its
+// bound. Buckets refilled to their burst go first and are not counted; a debt
+// forgotten is.
+TEST(Limits, KeepNoMoreThanTheirBoundHoweverManyAddressesCome) {
+  test::SteppedTime time;
+  LimitsConfig config;
+  config.per_address = Rate{1.0, 1.0};
+  config.max_tracked = 100;
+  Limits limits(config, &time);
+  const auto address = [](int i) { return asio::ip::make_address_v4(static_cast<asio::ip::address_v4::uint_type>(0xC0000200u + static_cast<unsigned>(i))); };
+  for (int i = 0; i < 1000; ++i) (void)limits.admit(address(i));
+  EXPECT_LE(limits.tracked(), 100u);
+  EXPECT_GT(limits.evicted(), 0u);
+  // Once every bucket has refilled, the next newcomer clears them without counting.
+  const auto before = limits.evicted();
+  time.advance(10s);
+  (void)limits.admit(address(5000));
+  EXPECT_LE(limits.tracked(), 100u);
+  EXPECT_EQ(limits.evicted(), before);
+  LimitsConfig none;
+  none.max_tracked = 0;
+  EXPECT_THROW((void)Limits(none), std::invalid_argument);
+}
+
+TEST(Prefix, MatchesByLeadingBits) {
+  EXPECT_TRUE(Prefix::parse("10.0.0.0/8").contains(asio::ip::make_address("10.200.3.4")));
+  EXPECT_FALSE(Prefix::parse("10.0.0.0/8").contains(asio::ip::make_address("11.0.0.1")));
+  EXPECT_TRUE(Prefix::parse("192.0.2.128/25").contains(asio::ip::make_address("192.0.2.200")));
+  EXPECT_FALSE(Prefix::parse("192.0.2.128/25").contains(asio::ip::make_address("192.0.2.100")));
+  EXPECT_TRUE(Prefix::parse("2001:db8::/64").contains(asio::ip::make_address("2001:db8::abcd")));
+  EXPECT_FALSE(Prefix::parse("2001:db8::/64").contains(asio::ip::make_address("2001:db8:0:1::1")));
+  EXPECT_TRUE(Prefix::parse("203.0.113.9").contains(asio::ip::make_address("203.0.113.9")));
+  EXPECT_FALSE(Prefix::parse("203.0.113.9").contains(asio::ip::make_address("203.0.113.10")));
+  // An IPv4 peer met on an IPv6 socket.
+  EXPECT_TRUE(Prefix::parse("10.0.0.0/8").contains(asio::ip::make_address("::ffff:10.1.2.3")));
+  EXPECT_FALSE(Prefix::parse("10.0.0.0/8").contains(asio::ip::make_address("2001:db8::1")));
+  EXPECT_TRUE(Prefix::parse("0.0.0.0/0").contains(asio::ip::make_address("8.8.8.8")));
+  EXPECT_THROW(Prefix::parse("10.0.0.0/33"), std::invalid_argument);
+  EXPECT_THROW(Prefix::parse("not/8"), std::invalid_argument);
+  EXPECT_THROW(Prefix::parse("10.0.0.0/"), std::invalid_argument);
 }
 
 // A listener refuses at accept what its limits refuse, counted by reason.
@@ -651,7 +699,7 @@ TEST(ForwardedFor, FindsTheClientBehindTrustedProxies) {
   const auto proxy = asio::ip::make_address("10.0.0.1");
   const auto inner = asio::ip::make_address("10.0.0.2");
   const auto direct = asio::ip::make_address("192.0.2.1");
-  const std::set<asio::ip::address> trusted{proxy, inner};
+  const std::vector<Prefix> trusted{Prefix::parse("10.0.0.1"), Prefix::parse("10.0.0.2/32")};
   // Not from a trusted proxy: the header is the client's to forge, and is ignored.
   EXPECT_EQ(forwarded_for("203.0.113.5", trusted, direct), direct);
   EXPECT_EQ(forwarded_for("203.0.113.5", trusted, proxy), asio::ip::make_address("203.0.113.5"));
@@ -660,6 +708,166 @@ TEST(ForwardedFor, FindsTheClientBehindTrustedProxies) {
   EXPECT_EQ(forwarded_for("10.0.0.2", trusted, proxy), inner);
   EXPECT_EQ(forwarded_for("", trusted, proxy), proxy);
   EXPECT_EQ(forwarded_for("not-an-address, 10.0.0.2", trusted, proxy), inner);
+}
+
+// --- Closing what send() queued, and Beast over a Stream ------------------------------
+
+// A close sends what send() queued first, plaintext and TLS alike (Lir: its
+// DISCONNECT goes by send() and then close()).
+TEST(StreamListener, ACloseSendsWhatWasQueuedFirst) {
+  Io io;
+  Pki pki;
+  for (const bool tls : {false, true}) {
+    auto config = tls ? tls_config(std::make_shared<Certificates>(pki.server())) : plain_config();
+    StreamListener listener(io.context, config);
+    listener.start(io.context.get_executor(), [](std::shared_ptr<Stream> stream) {
+      asio::post(stream->get_executor(), [stream] {
+        stream->send(std::string(256 * 1024, 'q'));
+        stream->send("bye");
+        stream->close();
+      });
+    });
+    Client client;
+    std::string got;
+    boost::system::error_code error;
+    if (tls) {
+      ASSERT_FALSE(client.connect_tls(listener.port()));
+      asio::read(*client.tls, asio::dynamic_buffer(got), error);
+    } else {
+      client.connect_plain(listener.port());
+      asio::read(client.plain, asio::dynamic_buffer(got), error);
+    }
+    EXPECT_EQ(error, asio::error::eof) << error.message();
+    ASSERT_EQ(got.size(), 256u * 1024 + 3) << (tls ? "tls" : "tcp");
+    EXPECT_EQ(got.substr(got.size() - 3), "bye");
+    EXPECT_TRUE(eventually([&] { return listener.counters().closed_clean == 1; }));
+    listener.stop();
+  }
+}
+
+// close_all() with a completion: told once every stream has finished.
+TEST(StreamListener, CloseAllTellsWhenEveryStreamHasFinished) {
+  Io io;
+  Served served;
+  StreamListener listener(io.context, plain_config());
+  listener.start(io.context.get_executor(), served.handler());
+  Client a, b;
+  a.connect_plain(listener.port());
+  b.connect_plain(listener.port());
+  ASSERT_TRUE(eventually([&] { return served.count() == 2; }));
+  std::promise<void> finished;
+  listener.close_all(io.context.get_executor(), [&] { finished.set_value(); });
+  auto all = finished.get_future();
+  ASSERT_EQ(all.wait_for(10s), std::future_status::ready);
+  EXPECT_FALSE(served.at(0)->is_open());
+  EXPECT_FALSE(served.at(1)->is_open());
+  std::promise<void> none;
+  listener.close_all(io.context.get_executor(), [&] { none.set_value(); });
+  EXPECT_EQ(none.get_future().wait_for(10s), std::future_status::ready);
+  listener.stop();
+}
+
+// Streams on the executor given, as it is (Lir: one strand for broker and connections).
+TEST(StreamListener, HandsStreamsUpOnTheExecutorGivenWhenAsked) {
+  Io io;
+  auto strand = asio::make_strand(io.context);
+  auto config = plain_config();
+  config.strand_per_stream = false;
+  Served served;
+  StreamListener listener(io.context, config);
+  listener.start(strand, served.handler());
+  Client client;
+  client.connect_plain(listener.port());
+  ASSERT_TRUE(eventually([&] { return served.count() == 1; }));
+  EXPECT_TRUE(served.at(0)->get_executor() == Stream::executor_type(strand));
+  listener.stop();
+}
+
+// StartTLS is refused while bytes send() queued are not yet written: they would follow
+// the answer in plaintext (Lugh's review).
+TEST(StreamListener, StartTlsIsRefusedWhileSendStillHoldsBytes) {
+  Io io;
+  Pki pki;
+  auto config = tls_config(std::make_shared<Certificates>(pki.server()), "ldap");
+  config.start_tls = true;
+  config.outbound_bound = 0;
+  std::promise<std::string> refused;
+  StreamListener listener(io.context, config);
+  listener.start(io.context.get_executor(), [&](std::shared_ptr<Stream> stream) {
+    asio::post(stream->get_executor(), [&, stream] {
+      // More than the socket takes at once, to a client that is not reading.
+      for (int i = 0; i < 128; ++i) stream->send(std::string(64 * 1024, 'x'));
+      stream->start_tls("GO\n", [&](std::string why) { refused.set_value(why); });
+    });
+  });
+  Client client;
+  client.connect_plain(listener.port());
+  auto why = refused.get_future();
+  ASSERT_EQ(why.wait_for(10s), std::future_status::ready);
+  EXPECT_NE(why.get().find("not yet written"), std::string::npos);
+  listener.stop();
+}
+
+// Beast runs over a Stream: an HTTP request read, then a WebSocket upgrade, a message
+// each way and the closing handshake through the stream's own clean close (Lir).
+TEST(StreamListener, BeastsHttpAndWebSocketRunOverAStream) {
+  namespace beast = boost::beast;
+  namespace http = beast::http;
+  namespace websocket = beast::websocket;
+  Io io;
+  std::promise<std::string> target;
+  std::promise<std::string> message;
+  std::promise<beast::error_code> closed;
+  StreamListener listener(io.context, plain_config("ws"));
+  listener.start(io.context.get_executor(), [&](std::shared_ptr<Stream> stream) {
+    struct Session {
+      std::shared_ptr<Stream> stream;
+      beast::flat_buffer buffer;
+      http::request<http::string_body> request;
+      std::unique_ptr<websocket::stream<Stream&>> socket;
+    };
+    auto session = std::make_shared<Session>();
+    session->stream = stream;
+    http::async_read(*stream, session->buffer, session->request, [&, session](beast::error_code error, std::size_t) {
+      if (error) return target.set_value("error: " + error.message());
+      target.set_value(std::string(session->request.target()));
+      session->socket = std::make_unique<websocket::stream<Stream&>>(*session->stream);
+      session->socket->binary(true);
+      session->socket->async_accept(session->request, [&, session](beast::error_code accepted) {
+        if (accepted) return message.set_value("accept: " + accepted.message());
+        session->buffer.consume(session->buffer.size());
+        session->socket->async_read(session->buffer, [&, session](beast::error_code read, std::size_t) {
+          if (read) return message.set_value("read: " + read.message());
+          message.set_value(beast::buffers_to_string(session->buffer.data()));
+          session->socket->async_write(asio::buffer(std::string("pong")), [&, session](beast::error_code written, std::size_t) {
+            if (written) return closed.set_value(written);
+            session->buffer.consume(session->buffer.size());
+            // The client's close frame ends this read; Beast tears down by our close.
+            session->socket->async_read(session->buffer, [&, session](beast::error_code ending, std::size_t) { closed.set_value(ending); });
+          });
+        });
+      });
+    });
+  });
+  asio::io_context client_io;
+  websocket::stream<tcp::socket> client(client_io);
+  client.next_layer().connect({asio::ip::make_address("127.0.0.1"), listener.port()});
+  client.binary(true);
+  client.handshake("127.0.0.1", "/mqtt");
+  client.write(asio::buffer(std::string("ping")));
+  beast::flat_buffer reply;
+  client.read(reply);
+  EXPECT_EQ(beast::buffers_to_string(reply.data()), "pong");
+  client.close(websocket::close_code::normal);
+  auto path = target.get_future();
+  auto heard = message.get_future();
+  auto end = closed.get_future();
+  ASSERT_EQ(end.wait_for(10s), std::future_status::ready);
+  EXPECT_EQ(path.get(), "/mqtt");
+  EXPECT_EQ(heard.get(), "ping");
+  EXPECT_EQ(end.get(), websocket::error::closed);
+  EXPECT_TRUE(eventually([&] { return listener.counters().closed_clean == 1; }));
+  listener.stop();
 }
 
 // --- Binding and stop -------------------------------------------------------------

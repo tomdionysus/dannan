@@ -112,6 +112,8 @@ void Stream::start_tls(std::string answer, std::function<void(std::string)> done
     const auto refuse = [&](std::string why) { asio::post(self->get_executor(), [done = std::move(done), why = std::move(why)] { done(why); }); };
     if (!self->_shared->config.certificates) return refuse("the listener has no certificates");
     if (self->_tls_started || self->_tls) return refuse("TLS is already started");
+    // Bytes send() queued would go after the answer, in plaintext, past it.
+    if (self->_writing || !self->_outbound.empty()) return refuse("bytes queued by send() are not yet written");
     self->_tls_started = true;
     boost::system::error_code error;
     // Before the answer goes, no client may yet begin its handshake: a byte here is
@@ -170,8 +172,13 @@ void Stream::send(std::string bytes) {
     abort();
     return;
   }
-  asio::post(get_executor(), [self = shared_from_this(), bytes = std::move(bytes)]() mutable {
-    if (self->_closed.load()) return;
+  // Dispatched: on the stream's executor it is queued before this returns, so a
+  // close() after it sends it first; from elsewhere, in order with what follows.
+  asio::dispatch(get_executor(), [self = shared_from_this(), bytes = std::move(bytes)]() mutable {
+    if (self->_closed.load() || self->_closing) {
+      self->_queued -= bytes.size();
+      return;
+    }
     self->_outbound.push_back(std::move(bytes));
     if (!self->_writing) self->write_next();
   });
@@ -180,6 +187,7 @@ void Stream::send(std::string bytes) {
 void Stream::write_next() {
   if (_outbound.empty() || _closed.load()) {
     _writing = false;
+    if (_closing && !_closed.load()) shut_down();
     return;
   }
   _writing = true;
@@ -200,26 +208,43 @@ void Stream::close() {
   asio::dispatch(get_executor(), [self = shared_from_this()] {
     if (self->_closed.load() || self->_closing) return;
     self->_closing = true;
-    if (!self->_tls) {
-      boost::system::error_code ignored;
-      self->_socket.shutdown(Socket::shutdown_send, ignored);
-      return self->finish(true);
-    }
-    // close_notify, bounded: a peer that never answers does not hold the socket.
+    // The bound covers the drain and the close_notify both: a peer that never reads
+    // or never answers does not hold the socket.
     auto timer = std::make_shared<asio::steady_timer>(self->get_executor());
     std::weak_ptr<Stream> weak = self;
     detail::when_time_reaches(timer, *self->_shared->time, self->_shared->time->now() + self->_shared->config.close_bound, [weak] {
       if (auto stream = weak.lock()) stream->finish(true);
     });
-    self->_tls->async_shutdown([self, timer](const boost::system::error_code&) {
-      timer->cancel();
-      self->finish(true);
-    });
+    self->when_finished([timer] { timer->cancel(); });
+    // What send() queued goes first; write_next() ends the stream once it is empty.
+    if (!self->_writing) self->shut_down();
   });
+}
+
+void Stream::shut_down() {
+  if (_shutting_down || _closed.load()) return;
+  _shutting_down = true;
+  if (!_tls) {
+    boost::system::error_code ignored;
+    _socket.shutdown(Socket::shutdown_send, ignored);
+    return finish(true);
+  }
+  // No write is outstanding on the TLS stream: Asio's allows one operation of a kind.
+  _tls->async_shutdown([self = shared_from_this()](const boost::system::error_code&) { self->finish(true); });
 }
 
 void Stream::abort() {
   asio::dispatch(get_executor(), [self = shared_from_this()] { self->finish(false); });
+}
+
+void Stream::when_finished(contract::UniqueFunction<void()> done) {
+  asio::dispatch(get_executor(), [self = shared_from_this(), done = std::move(done)]() mutable {
+    if (self->_closed.load()) {
+      asio::post(self->get_executor(), std::move(done));
+      return;
+    }
+    self->_finished.push_back(std::move(done));
+  });
 }
 
 void Stream::finish(bool clean) {
@@ -227,9 +252,15 @@ void Stream::finish(bool clean) {
   boost::system::error_code ignored;
   _idle_timer.cancel();
   _socket.close(ignored);
-  contract::Lock lock(_shared->mutex);
-  ++(clean ? _shared->counters.closed_clean : _shared->counters.closed_abrupt);
-  if (_shared->counters.open) --_shared->counters.open;
+  {
+    contract::Lock lock(_shared->mutex);
+    ++(clean ? _shared->counters.closed_clean : _shared->counters.closed_abrupt);
+    if (_shared->counters.open) --_shared->counters.open;
+  }
+  // On the stream's executor, posted: a waiter never runs inside the close it waits on.
+  auto waiting = std::move(_finished);
+  _finished.clear();
+  for (auto& done : waiting) asio::post(get_executor(), std::move(done));
 }
 
 }  // namespace dannan::listen

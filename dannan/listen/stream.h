@@ -10,8 +10,12 @@
 #include <array>
 #include <atomic>
 #include <boost/asio/any_io_executor.hpp>
+#include <boost/asio/associated_allocator.hpp>
+#include <boost/asio/associated_cancellation_slot.hpp>
 #include <boost/asio/associated_executor.hpp>
 #include <boost/asio/async_result.hpp>
+#include <boost/asio/bind_allocator.hpp>
+#include <boost/asio/bind_cancellation_slot.hpp>
 #include <boost/asio/bind_executor.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/ssl.hpp>
@@ -23,8 +27,10 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "dannan/contract/time_source.h"
+#include "dannan/contract/unique_function.h"
 
 namespace dannan::listen {
 
@@ -64,15 +70,22 @@ class Stream : public std::enable_shared_from_this<Stream> {
   executor_type get_executor() noexcept { return _socket.get_executor(); }
 
   // Reads what has arrived, as a socket's async_read_some; plaintext or TLS alike.
+  // The handler's executor, allocator and cancellation slot reach the read, so a
+  // composed operation's per-operation cancel (Beast's) cancels it (Lir's review).
   template <typename MutableBuffers, typename Token>
   auto async_read_some(const MutableBuffers& buffers, Token&& token) {
     return boost::asio::async_initiate<Token, void(boost::system::error_code, std::size_t)>(
         [self = shared_from_this()](auto handler, const MutableBuffers& to) {
           auto executor = boost::asio::get_associated_executor(handler, self->get_executor());
-          auto done = boost::asio::bind_executor(executor, [self, handler = std::move(handler)](boost::system::error_code error, std::size_t read) mutable {
-            if (read > 0) self->note_read();
-            std::move(handler)(error, read);
-          });
+          auto allocator = boost::asio::get_associated_allocator(handler);
+          auto slot = boost::asio::get_associated_cancellation_slot(handler);
+          auto done = boost::asio::bind_executor(
+              executor,
+              boost::asio::bind_allocator(allocator, boost::asio::bind_cancellation_slot(
+                                                         slot, [self, handler = std::move(handler)](boost::system::error_code error, std::size_t read) mutable {
+                                                           if (read > 0) self->note_read();
+                                                           std::move(handler)(error, read);
+                                                         })));
           if (self->_tls)
             self->_tls->async_read_some(to, std::move(done));
           else
@@ -97,7 +110,9 @@ class Stream : public std::enable_shared_from_this<Stream> {
   // Queues `bytes` to go after what is queued, never waiting: a sender may send one
   // write per packet without waiting for the last. Once more than the listener's
   // outbound bound is queued, the reader is too slow: the stream is closed at once.
-  // Not with async_write_some on one stream. From any thread.
+  // Not with async_write_some on one stream. From any thread; on the stream's
+  // executor it is queued before it returns, so a close() after it sends it first.
+  // After close() it is dropped.
   void send(std::string bytes);
   // Bytes queued by send() and not yet written.
   size_t queued() const noexcept { return _queued.load(); }
@@ -108,18 +123,23 @@ class Stream : public std::enable_shared_from_this<Stream> {
   // (LDAP's ExtendedResponse), then takes the handshake. The answer is Dannan's to
   // send, so the check is made before a client could begin its handshake. `done` is
   // told on the stream's executor, empty when the handshake completed. Only on a
-  // listener with certificates, and only once.
+  // listener with certificates, and only once. Refused while bytes queued by send()
+  // are not yet written (Lugh's review): they would go out after the answer.
   void start_tls(std::string answer, std::function<void(std::string)> done);
 
   // How long the connection may go without a byte read before it is closed at once;
   // zero (the default): never. Set at any time.
   void set_idle(std::chrono::milliseconds idle);
 
-  // Ends the connection cleanly: TLS's close_notify, bounded by the listener's close
-  // bound, then the socket. From any thread; once.
+  // Ends the connection cleanly: what send() queued is written first, then TLS's
+  // close_notify, then the socket, all within the listener's close bound (Lir's
+  // review: its DISCONNECT goes by send() and must not be lost). From any thread; once.
   void close();
   // Ends it at once.
   void abort();
+  // `done` is called on the stream's executor once it has finished, closed either
+  // way; at once (posted) if it already has.
+  void when_finished(contract::UniqueFunction<void()> done);
 
   bool is_open() const noexcept { return !_closed.load(); }
   bool is_tls() const noexcept { return _tls != nullptr; }
@@ -149,6 +169,8 @@ class Stream : public std::enable_shared_from_this<Stream> {
   void note_read();
   void arm_idle();
   void write_next();
+  // The clean end once nothing is queued or being written.
+  void shut_down();
   void finish(bool clean);
 
   Socket _socket;
@@ -170,7 +192,10 @@ class Stream : public std::enable_shared_from_this<Stream> {
   std::chrono::milliseconds _idle{0};
   std::atomic<contract::Clock::rep> _last_read{0};
   std::atomic<bool> _closed{false};
+  // On the stream's executor.
   bool _closing = false;
+  bool _shutting_down = false;
+  std::vector<contract::UniqueFunction<void()>> _finished;
 };
 
 }  // namespace dannan::listen

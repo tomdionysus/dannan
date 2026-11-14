@@ -52,6 +52,10 @@ struct ListenerConfig {
   // Shared with the hosted system's other listeners; none: no per-address or
   // per-caller limit.
   std::shared_ptr<Limits> limits;
+  // True: each stream on its own strand of start()'s executor. False: on that
+  // executor as it is given, for a hosted system that confines its connections to one
+  // strand of its own (Lir's review); the executor must then serialise them itself.
+  bool strand_per_stream = true;
 };
 
 struct ListenerCounters {
@@ -91,6 +95,9 @@ class StreamListener {
   void stop_accepting();
   // Closes every connection it handed up, cleanly within the close bound.
   void close_all();
+  // The same, and `done` posted to `executor` once every one of them has finished
+  // (Lir's review: its stop waits for every client to go, bounded by the close bound).
+  void close_all(boost::asio::any_io_executor executor, std::function<void()> done);
   // Both, with no window between: for a hosted system that tells its clients nothing.
   void stop();
 
