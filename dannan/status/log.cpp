@@ -72,8 +72,8 @@ bool ConsoleSink::enabled(LogLevel level) const noexcept { return static_cast<in
 
 namespace {
 
-std::tm utc_now() {
-  const auto time = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+std::tm utc_at(std::chrono::system_clock::time_point at) {
+  const auto time = std::chrono::system_clock::to_time_t(at);
   std::tm tm{};
   gmtime_r(&time, &tm);
   return tm;
@@ -113,8 +113,10 @@ void json_string(std::ostream& out, std::string_view text) {
 
 }  // namespace
 
-void ConsoleSink::write(LogLevel level, std::string_view scope, std::string_view message) {
-  const auto tm = utc_now();
+void ConsoleSink::write(LogLevel level, std::string_view scope, std::string_view message) { write_at(std::chrono::system_clock::now(), level, scope, message); }
+
+void ConsoleSink::write_at(std::chrono::system_clock::time_point at, LogLevel level, std::string_view scope, std::string_view message) {
+  const auto tm = utc_at(at);
   std::ostringstream line;
   line << std::put_time(&tm, "%F %TZ") << ' ' << log_level_name(level) << ' ' << scope << ": " << message << '\n';
   emit(_mutex, _out, line.str());
@@ -122,8 +124,10 @@ void ConsoleSink::write(LogLevel level, std::string_view scope, std::string_view
 
 bool JsonSink::enabled(LogLevel level) const noexcept { return static_cast<int>(level) >= static_cast<int>(_level); }
 
-void JsonSink::write(LogLevel level, std::string_view scope, std::string_view message) {
-  const auto tm = utc_now();
+void JsonSink::write(LogLevel level, std::string_view scope, std::string_view message) { write_at(std::chrono::system_clock::now(), level, scope, message); }
+
+void JsonSink::write_at(std::chrono::system_clock::time_point at, LogLevel level, std::string_view scope, std::string_view message) {
+  const auto tm = utc_at(at);
   std::ostringstream out;
   out << "{\"time\":\"" << std::put_time(&tm, "%FT%TZ") << "\",\"level\":\"" << log_level_name(level) << "\",\"scope\":";
   json_string(out, scope);
@@ -156,7 +160,9 @@ AsyncSink::~AsyncSink() {
   _thread.join();
 }
 
-void AsyncSink::write(LogLevel level, std::string_view scope, std::string_view message) {
+void AsyncSink::write(LogLevel level, std::string_view scope, std::string_view message) { write_at(std::chrono::system_clock::now(), level, scope, message); }
+
+void AsyncSink::write_at(std::chrono::system_clock::time_point at, LogLevel level, std::string_view scope, std::string_view message) {
   {
     contract::Lock lock(_mutex);
     if (_queue.size() >= _capacity) {
@@ -164,7 +170,7 @@ void AsyncSink::write(LogLevel level, std::string_view scope, std::string_view m
       ++_unreported;
       return;
     }
-    _queue.push_back({level, std::string(scope), std::string(message)});
+    _queue.push_back({at, level, std::string(scope), std::string(message)});
     ++_queued;
   }
   _wake.notify_one();
@@ -196,14 +202,15 @@ void AsyncSink::run() {
     // Outside the lock: the inner sink may wait on its device, and writers never wait on it.
     for (const auto& record : batch) {
       try {
-        _inner->write(record.level, record.scope, record.message);
+        _inner->write_at(record.at, record.level, record.scope, record.message);
       } catch (...) {
         // A record the inner sink could not take is lost, as a dropped one would be.
       }
     }
     if (unreported > 0 && _inner->enabled(LogLevel::warn)) {
       try {
-        _inner->write(LogLevel::warn, "log", "dropped " + std::to_string(unreported) + " record(s): the log queue was full");
+        _inner->write_at(std::chrono::system_clock::now(), LogLevel::warn, "log",
+                         "dropped " + std::to_string(unreported) + " record(s): the log queue was full");
       } catch (...) {
       }
     }
