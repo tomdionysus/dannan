@@ -131,6 +131,26 @@ class Node::NodesNoun final : public Nodes {
     contract::Lock lock(_node._watch_mutex);
     _node._watchers.erase(id);
   }
+  uint64_t watch_advert(const std::string& key, std::chrono::milliseconds at_most_every, asio::any_io_executor executor,
+                        std::function<void(AdvertChange)> handler) override {
+    contract::Lock lock(_node._watch_mutex);
+    const auto id = _node._next_watcher++;
+    AdvertWatcher watcher{key, at_most_every, std::move(executor), std::move(handler), {}, {}};
+    // The values now, from the roster as the others were last told of it; the
+    // first change after is not held back by them.
+    for (const auto& [node_id, node] : _node._told)
+      if (const auto value = node.advert(key)) {
+        net::Bytes bytes(value->begin(), value->end());
+        watcher.told[node_id] = bytes;
+        asio::post(watcher.executor, [handler = watcher.handler, change = AdvertChange{node_id, std::move(bytes)}] { handler(change); });
+      }
+    _node._advert_watchers.emplace(id, std::move(watcher));
+    return id;
+  }
+  void unwatch_advert(uint64_t id) override {
+    contract::Lock lock(_node._watch_mutex);
+    _node._advert_watchers.erase(id);
+  }
   void withdraw(const std::string& key) override { _node._members.clear_advert(key); }
   membership::Partition partition() const override {
     contract::Lock lock(_node._watch_mutex);
@@ -572,6 +592,7 @@ void Node::start() {
   client_options.data_stall_notice = _config.data_stall_notice;
   client_options.log = _config.log;
   client_options.dial_hook = _config.dial_hook;
+  client_options.call_fault = _config.call_fault;
   client_options.heartbeat = _config.heartbeat;
   client_options.dead_after = _config.dead_after;
   client_options.alive = [this](const NodeRecord& peer) { observe_direct(peer); };
@@ -672,6 +693,10 @@ void Node::cancel_outbound_calls() {
   if (!_started || _calls_cancelled.exchange(true)) return;
   if (_client) _client->stop();
 }
+
+size_t Node::release_stalled_calls(const std::optional<identity::NodeId>& peer) { return _client ? _client->release_stalled(peer) : 0; }
+
+size_t Node::stalled_calls() const { return _client ? _client->stalled() : 0; }
 
 void Node::close_route(const identity::NodeId& peer, net::Lane lane, const std::string& why) {
   if (_client) _client->close_route(peer, lane, why);
@@ -893,6 +918,7 @@ void Node::topology_changed(bool quiet) {
     for (const auto& change : changes)
       if (change.kind == RosterChange::Kind::joined) joined.push_back(change.node.id);
     _told = std::move(now);
+    tell_adverts_locked();
     for (const auto& [_, watcher] : _watchers)
       for (const auto& change : changes) asio::post(watcher.executor, [handler = watcher.handler, change] { handler(change); });
     // A join adds to the agreed roster in memory; the roster loop writes it.
@@ -912,6 +938,34 @@ void Node::topology_changed(bool quiet) {
   }
   if (!quiet || !changes.empty()) _events.notify(status::NodeEvents::topology);
   if (membership) _events.notify(status::NodeEvents::membership);
+}
+
+void Node::tell_adverts_locked() {
+  if (_advert_watchers.empty()) return;
+  const auto now = _config.time->now();
+  for (auto& [watch_id, watcher] : _advert_watchers) {
+    // Every peer with a value now or one told before.
+    std::map<identity::NodeId, std::optional<net::Bytes>> current;
+    for (const auto& [id, node] : _told)
+      if (const auto value = node.advert(watcher.key)) current[id] = net::Bytes(value->begin(), value->end());
+    for (const auto& [id, _] : watcher.told) current.try_emplace(id, std::nullopt);
+    for (auto& [id, value] : current) {
+      const auto before = watcher.told.find(id);
+      const bool same = before == watcher.told.end() ? !value : value && *value == before->second;
+      if (same) continue;
+      // A value inside the period waits; a withdrawal or a leave never does, so
+      // no rejoin inside the period can hide it.
+      if (const auto last = watcher.last.find(id); value && last != watcher.last.end() && now - last->second < watcher.every) continue;
+      if (value) {
+        watcher.told[id] = *value;
+        watcher.last[id] = now;
+      } else {
+        watcher.told.erase(id);
+        watcher.last.erase(id);
+      }
+      asio::post(watcher.executor, [handler = watcher.handler, change = AdvertChange{id, std::move(value)}] { handler(change); });
+    }
+  }
 }
 
 membership::Partition Node::partition_locked() const {
