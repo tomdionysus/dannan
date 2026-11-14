@@ -164,6 +164,7 @@ class Stream : public std::enable_shared_from_this<Stream> {
   std::deque<std::string> _outbound;
   bool _writing = false;
   std::atomic<size_t> _queued{0};
+  std::atomic<bool> _slow{false};
 
   boost::asio::steady_timer _idle_timer;
   std::chrono::milliseconds _idle{0};

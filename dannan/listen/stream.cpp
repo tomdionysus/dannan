@@ -162,7 +162,8 @@ void Stream::send(std::string bytes) {
   const auto total = _queued.fetch_add(size) + size;
   const auto bound = _shared->config.outbound_bound;
   if (bound && total > bound) {
-    {
+    // Counted once: sends that race the abort to the executor are the same reader.
+    if (!_slow.exchange(true)) {
       contract::Lock lock(_shared->mutex);
       ++_shared->counters.slow_readers;
     }
