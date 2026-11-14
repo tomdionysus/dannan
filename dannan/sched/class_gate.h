@@ -64,7 +64,8 @@ class ClassGate {
   // hold. May be set, replaced or cleared (empty) at any time, the node running
   // (Macha's review: its reading exists only once its store recovers). It waits for
   // a call of the old reading in flight, so once it returns the old reading is never
-  // called again, and what it reads may go. None: only the pools'.
+  // called again, and what it reads may go. Never from inside a reading: it would
+  // wait for itself. None: only the pools'.
   void set_contended(std::function<bool()> reading);
   bool contended() const;
   // A pool's word that work above this class was queued (+1) or has ended (-1).
