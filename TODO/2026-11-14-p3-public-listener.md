@@ -21,16 +21,23 @@ the node owns none, so a hosted system with no public face pays nothing.
 
 1. **`listen::Certificates`**: a listener's PEM chain and key (R2), loaded into an
    OpenSSL context. `reload()` builds a new context and swaps it for the next
-   handshake; connections already open keep theirs. A reload that fails keeps the old
-   context and says why. Reload is called by the hosted system (on SIGHUP, say);
-   Dannan does not watch files.
+   handshake; connections already open keep theirs. A reload covers the client-CA
+   bundle too. A reload that fails keeps the old context and names the path that failed,
+   never a value read from it (Lugh's review). Reload is called by the hosted system (on
+   SIGHUP, from the host's renewal hook); Dannan does not watch files.
 2. **`listen::TlsPolicy`**: per listener (R3, R4): the minimum version (1.2 or 1.3),
    client certificates `never`, `optional` or `required` with the PEM bundle that
-   verifies them, and ALPN. A browser-facing listener sets `never`.
+   verifies them, and ALPN (Lugh's HTTPS: `http/1.1` only). A browser-facing listener
+   sets `never`. Under `optional` every connection is asked for a certificate, and the
+   chain check never ends the handshake: its verdict is kept on the connection for the
+   hosted system to judge (Lugh's review: RFC 8705's certificate-bound tokens bind to
+   any certificate, self-signed included). Under `required` a chain that does not
+   verify ends the handshake.
 3. **`listen::StreamListener`**: TCP, optionally TLS, optionally StartTLS-capable.
    Each accepted connection is handed up as a `listen::Stream` on the caller's
-   executor or strand (R1), with the peer's address and, for a verified client
-   certificate, its subject and SHA-256 thumbprint (RFC 8705). `Stream` reads and
+   executor or strand (R1), with the peer's address and, for any client certificate
+   presented, its SHA-256 thumbprint (RFC 8705), its subject, and whether its chain
+   verified against the bundle, with the reason when it did not. `Stream` reads and
    writes asynchronously, upgrades in place with `start_tls()` once the hosted system
    has read the request, refusing any plaintext byte after it (R5), and closes either
    cleanly (bounded `close_notify`, default 2 s, as Lir's) or at once (R8).
@@ -38,9 +45,15 @@ the node owns none, so a hosted system with no public face pays nothing.
    and an outbound byte bound past which a slow reader is closed.
 5. **`listen::Limits`**, shared across a hosted system's listeners (R7):
    - an accept rate and a connection cap per listener;
-   - a per-address bucket consulted before any credential;
-   - a per-caller limit the hosted system charges once it knows who is calling, and
-     which the listener consults at accept for an address it has tied to a caller.
+   - a per-address bucket consulted before any credential. Trusted proxy peers are
+     exempt, and a listener may turn the bucket off (Lugh's review: behind a reverse
+     proxy the TCP peer is the proxy, so the bucket would limit every client as one;
+     the hosted system limits forwarded_for()'s answer per request instead);
+   - optionally, a per-caller limit the hosted system charges once it knows who is
+     calling, consulted at accept for an address it has tied to a caller. For a
+     protocol with one identity per connection (Lir's MQTT); a protocol that learns
+     the caller per request (Lugh's HTTP, over keep-alive and NAT) leaves it out and
+     limits per request itself. No callback into the hosted system at accept.
    A refusal is counted by reason and closes at once.
 6. **`listen::forwarded_for()`** (R6): the client address from `X-Forwarded-For`
    given the trusted proxies and the peer, a helper the HTTP code applies. Dannan does
@@ -64,6 +77,17 @@ The stream side (pieces 1 to 8) is the larger share of Lugh's and Lir's use and 
 well trodden in Asio. DTLS (piece 9) is not in Asio, and it is a protocol state machine
 of its own. Proposal: the stream side in 0.8.0, DTLS in 0.9.0, so Lir keeps its own
 DTLS server until then.
+
+## Reviews (2026-11-14)
+
+- **Lugh**: the line holds (Beast HTTP, LDAP's BER, routing and request limits stay
+  Lugh's); a reload it calls on SIGHUP is enough. Asked for the client-CA bundle in the
+  reload and paths, not values, in its failure; any presented certificate's thumbprint,
+  subject and chain verdict under `optional`, the handshake never ended by the chain;
+  no per-caller callback at accept; trusted proxies exempt from the per-address bucket.
+  TLS 1.2 stays allowed on its LDAP for old clients, so the minimum is per listener.
+  Lugh moves its HTTPS, mTLS and LDAP listeners onto this after 0.8.0, in its own step.
+- **Lir**: awaited.
 
 ## Questions
 
