@@ -231,11 +231,12 @@ void Stream::shut_down() {
     _socket.shutdown(Socket::shutdown_send, ignored);
     return finish(true);
   }
-  // No write is outstanding, but the hosted system's read may be: the TLS shutdown
-  // reads the peer's close_notify itself, and with another read in flight neither
-  // proceeds (found by CI: the bound expired, no close_notify sent). The read is
-  // cancelled, ends as aborted as a close does, and the shutdown begins once it has.
-  if (_reads > 0) {
+  // No send() is outstanding, but the hosted system's reads and writes may be: the
+  // TLS shutdown reads and writes the stream itself, and with another operation in
+  // flight neither proceeds (found by CI: the bound expired, no close_notify sent).
+  // They are cancelled and end as aborted, as a close does; the shutdown begins once
+  // the last has, and any begun after this point is refused (tracked()).
+  if (_ops > 0) {
     _shutdown_waiting = true;
     boost::system::error_code ignored;
     _socket.cancel(ignored);
@@ -244,9 +245,9 @@ void Stream::shut_down() {
   tls_shutdown();
 }
 
-void Stream::read_ended() {
-  if (_reads) --_reads;
-  if (_shutdown_waiting && _reads == 0 && !_closed.load()) {
+void Stream::op_ended() {
+  if (_ops) --_ops;
+  if (_shutdown_waiting && _ops == 0 && !_closed.load()) {
     _shutdown_waiting = false;
     tls_shutdown();
   }
