@@ -213,7 +213,9 @@ void Stream::close() {
     auto timer = std::make_shared<asio::steady_timer>(self->get_executor());
     std::weak_ptr<Stream> weak = self;
     detail::when_time_reaches(timer, *self->_shared->time, self->_shared->time->now() + self->_shared->config.close_bound, [weak] {
-      if (auto stream = weak.lock()) stream->finish(true);
+      // Clean only if the drain was done and the close_notify all that was cut
+      // short; queued bytes dropped make it abrupt (Lir's review).
+      if (auto stream = weak.lock()) stream->finish(stream->_outbound.empty() && !stream->_writing);
     });
     self->when_finished([timer] { timer->cancel(); });
     // What send() queued goes first; write_next() ends the stream once it is empty.
