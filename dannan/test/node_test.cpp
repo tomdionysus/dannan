@@ -1241,7 +1241,11 @@ TEST(Node, AnAdvertWatchTellsOneKeysChangesAtItsRate) {
   }));
   const auto watch = pair.b->context().nodes().watch_advert("used", 600ms, asio::make_strand(pair.io.context), [&](AdvertChange change) {
     std::optional<uint64_t> value;
-    if (change.value) value = membership::NodeRecord{.adverts = {{"used", *change.value}}}.advert_u64("used");
+    if (change.value) {
+      membership::NodeRecord carrier;
+      carrier.adverts["used"] = *change.value;
+      value = carrier.advert_u64("used");
+    }
     std::lock_guard lock(mutex);
     told.push_back({change.node, value, std::chrono::steady_clock::now()});
   });
