@@ -7,6 +7,8 @@
 
 #pragma once
 
+#include <array>
+#include <atomic>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -47,6 +49,9 @@ struct ServerLimits {
   size_t data_pending_bytes = 64ull * 1024 * 1024;
   // Jobs per queue, beside the byte bounds.
   size_t max_queued_jobs = max_pending_replies;
+  // Requests of one work class running or answered later (Handled::deferred)
+  // at once; past it the class's next request is refused to try later.
+  size_t max_deferred = 4096;
 };
 
 struct Timing {
@@ -58,6 +63,8 @@ struct Timing {
   uint64_t queue_wait_us_max = 0;
   uint64_t handler_us_total = 0;
   uint64_t handler_us_max = 0;
+  // Of the requests, those whose handler answers later.
+  uint64_t deferred = 0;
 };
 
 struct WorkStats {
@@ -78,14 +85,17 @@ struct WorkStats {
 
 // What a handler did with a message. Processed: the reply (ignored for a
 // notification). Failed: the refusal Dannan sends. Unrecognised: not this
-// handler's type; Dannan answers 501 itself. Each is counted per type.
+// handler's type; Dannan answers 501 itself. Deferred: the handler took the
+// request's Answer and gives it later. Each is counted per type.
 class Handled {
  public:
-  enum class Outcome : uint8_t { processed, failed, unrecognised };
+  enum class Outcome : uint8_t { processed, failed, unrecognised, deferred };
 
   static Handled processed(Message reply = {message::ok, {}, {}}) { return Handled(Outcome::processed, std::move(reply)); }
   static Handled failed(uint16_t status, std::string_view code, std::string_view why) { return Handled(Outcome::failed, error_reply(status, code, why)); }
   static Handled unrecognised() { return Handled(Outcome::unrecognised, {}); }
+  // The handler moved the Answer out of the call and gives it later.
+  static Handled deferred() { return Handled(Outcome::deferred, {}); }
 
   Outcome outcome() const noexcept { return _outcome; }
   // The message to send back: the reply, or the refusal.
@@ -98,15 +108,51 @@ class Handled {
   Message _reply;
 };
 
+// The way to answer one request, later and from any thread (P8: a group
+// commit answers from its committer, holding no worker while it waits). A
+// handler that returns Handled::deferred() has moved it out of the call.
+// Given once; later calls do nothing. Dropped ungiven, it refuses the call
+// (500 "abandoned"), so the caller never waits out its deadline for it. Until
+// given it counts against its class's ServerLimits::max_deferred and keeps
+// the request's bytes charged. For a notification giving it sends nothing.
+// After the session closes it goes nowhere. Thread-safe to give; one owner.
+class Answer {
+ public:
+  Answer() noexcept;
+  Answer(Answer&& other) noexcept;
+  Answer& operator=(Answer&& other) noexcept;
+  ~Answer();
+  // True until given, dropped or moved from.
+  explicit operator bool() const noexcept { return static_cast<bool>(_state); }
+  void operator()(Message reply);
+  void fail(uint16_t status, std::string_view code, std::string_view why);
+
+ private:
+  friend class RequestScheduler;
+  struct State;
+  explicit Answer(std::unique_ptr<State> state) noexcept;
+  void abandon() noexcept;
+  std::unique_ptr<State> _state;
+};
+
 // Handles a request or notification on a worker and says what it did. May
 // block; an exception is a failure, answered 500.
 using RequestHandler = std::function<Handled(const membership::NodeRecord& peer, sched::FrameType frame, const Message& request)>;
+// The same, owning the request (it may move the payload out, never copied)
+// and given its Answer: it may answer now by returning, or move the Answer
+// out, return Handled::deferred() and answer later. A lambda taking
+// `const Message&` fits too.
+using DeferringHandler = std::function<Handled(const membership::NodeRecord& peer, sched::FrameType frame, Message request, Answer& answer)>;
 
 // Queues peers' requests by class and runs them on bounded per-class
 // workers. A request that cannot be queued is answered at once with a 503
 // to try later and counted. All public members are thread-safe.
 class RequestScheduler {
  public:
+  RequestScheduler(std::shared_ptr<const RouteTable> routes, ServerLimits limits, DeferringHandler handler, sched::RetainedMemoryLedger* memory = nullptr,
+                   const contract::TimeSource* time = &contract::steady_time_source(), supervise::SupervisedThreads* threads = nullptr,
+                   std::shared_ptr<status::LogSink> log = nullptr);
+  // A handler that always answers by returning.
   RequestScheduler(std::shared_ptr<const RouteTable> routes, ServerLimits limits, RequestHandler handler, sched::RetainedMemoryLedger* memory = nullptr,
                    const contract::TimeSource* time = &contract::steady_time_source(), supervise::SupervisedThreads* threads = nullptr,
                    std::shared_ptr<status::LogSink> log = nullptr);
@@ -151,8 +197,10 @@ class RequestScheduler {
 
   const std::shared_ptr<const RouteTable> _routes;
   const ServerLimits _limits;
-  const RequestHandler _handler;
+  const DeferringHandler _handler;
   sched::RetainedMemoryLedger* const _memory;
+  // Requests running or deferred, by work class; each Answer gives its back.
+  const std::shared_ptr<std::array<std::atomic<size_t>, 4>> _answering = std::make_shared<std::array<std::atomic<size_t>, 4>>();
   const contract::TimeSource* const _time;
   const status::ScopedLogger _log;
 

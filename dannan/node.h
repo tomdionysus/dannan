@@ -24,6 +24,7 @@
 
 #include "dannan/context.h"
 #include "dannan/identity/node_identity.h"
+#include "dannan/membership/agreed_roster.h"
 #include "dannan/membership/membership.h"
 #include "dannan/net/client.h"
 #include "dannan/net/server.h"
@@ -201,6 +202,7 @@ class Node final : public Context {
   membership::Membership& membership() noexcept { return _members; }
   status::TelemetryStore& telemetry_store() noexcept { return _telemetry; }
   reach::InboundResolver& inbound() noexcept { return _inbound; }
+  const reach::InboundResolver& inbound() const noexcept { return _inbound; }
   std::optional<reach::PublicConnectivityStatus> connectivity() const;
   std::optional<net::ClientStats> client_stats() const;
   std::optional<net::WorkStats> work_stats() const;
@@ -248,7 +250,7 @@ class Node final : public Context {
   class TelemetryNoun;
   friend class RoutesNoun;
 
-  net::Handled handle(const membership::NodeRecord& peer, sched::FrameType frame, const net::Message& request);
+  net::Handled handle(const membership::NodeRecord& peer, sched::FrameType frame, net::Message request, net::Answer& answer);
   void observe_direct(const membership::NodeRecord& peer);
   void merge(std::span<const uint8_t> payload);
   std::shared_ptr<net::CallHandle> place_call(std::optional<membership::NodeRecord> peer, const net::Endpoint& endpoint, net::MessageType type,
@@ -304,6 +306,8 @@ class Node final : public Context {
   std::map<identity::NodeId, identity::Certificate> _peer_certificates DANNAN_GUARDED_BY(_certificates_mutex);
   reach::InboundResolver _inbound;
   membership::Membership _members;
+  // The roster as last agreed, which the partition reading counts (P2).
+  membership::AgreedRoster _agreed;
   status::TelemetryStore _telemetry;
   status::NodeEvents _events;
   status::Surface _surface;
@@ -321,7 +325,7 @@ class Node final : public Context {
   net::RouteTable _table = net::RouteTable::with_dannan_types();
   std::shared_ptr<const net::RouteTable> _frozen;
   mutable contract::IoSharedMutex _handlers_mutex;
-  std::map<net::MessageType, net::RequestHandler> _handlers DANNAN_GUARDED_BY(_handlers_mutex);
+  std::map<net::MessageType, net::DeferringHandler> _handlers DANNAN_GUARDED_BY(_handlers_mutex);
   std::atomic<bool> _started{false};
   std::mutex _roster_mutex;
   std::condition_variable_any _roster_wake;
@@ -350,6 +354,15 @@ class Node final : public Context {
   std::map<uint64_t, Watcher> _watchers DANNAN_GUARDED_BY(_watch_mutex);
   std::map<identity::NodeId, membership::NodeRecord> _told DANNAN_GUARDED_BY(_watch_mutex);
   uint64_t _next_watcher DANNAN_GUARDED_BY(_watch_mutex) = 1;
+  // The partition watchers and the reading they were last told of; under the
+  // same lock, the agreed roster's own taken inside it.
+  struct PartitionWatcher {
+    boost::asio::any_io_executor executor;
+    std::function<void(membership::Partition)> handler;
+  };
+  std::map<uint64_t, PartitionWatcher> _partition_watchers DANNAN_GUARDED_BY(_watch_mutex);
+  std::optional<membership::Partition> _told_partition DANNAN_GUARDED_BY(_watch_mutex);
+  membership::Partition partition_locked() const DANNAN_REQUIRES(_watch_mutex);
   std::unique_ptr<reach::PublicConnectivity> _connectivity;
   // Refreshes the hosted system asked for, served by the connectivity loop,
   // since a refresh waits on the network. Closed once nothing will serve them.

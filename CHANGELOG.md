@@ -1,5 +1,35 @@
 # Current release
 
+## 0.7.0: an answer may come later, and a node knows its side of a split
+
+Transport: a request handler may answer later, from any thread, holding no worker
+while it waits. `Routes::bind_deferred` binds a handler that is given the request by
+value and its `net::Answer`: it moves the Answer out, returns `Handled::deferred()`,
+and gives it once, from a group commit's thread for example. An Answer dropped
+ungiven refuses the call (500, "abandoned"), and deferred requests are bounded per
+work class (`ServerLimits::max_deferred`, 4096) and keep their bytes charged until
+answered. A handler bound the old way is unchanged. A deferring handler owns the
+request, so it takes the payload without a copy.
+
+Membership: `Nodes::partition()` says which side of a split this node is on, read
+against the roster as last agreed: a majority only with more than half of it
+reachable, so an even split is a minority. A node joins the agreed roster when it is
+seen to join, and only `Nodes::retire()` (an operator's word) or an identity reset
+takes it out, never absence. It is persisted beside the roster. `watch_partition`
+reports each change. Nodes joined during a split can give both sides a majority: join
+nodes to a whole cluster.
+
+Fixes: a call cancelled before it is placed now completes at once, as its handle
+says, rather than when its dial ends; "cancelled" means the caller stopped waiting,
+not that the peer never acted. A call's `idle_for()` counts from when it was made,
+its dial included. A request's timing is counted before its answer goes.
+
+For hosted systems: `ClusterKey::from_master()` and the two cluster key labels, named
+once; a const `Node::inbound()`; test ports from below every kernel's ephemeral
+range; and a type is to be registered on every node that calls or answers it (said
+on `Routes::add`). The ABI changes, so the library is `libdannan.so.0.7`
+(`libdannan0.7`); a host is rebuilt once against 0.7.0.
+
 ## 0.6.0: the ABI is kept within a minor
 
 Compatibility: from 0.6.0 a patch release keeps the ABI. The SONAME and the library's
