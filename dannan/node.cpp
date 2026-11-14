@@ -301,11 +301,19 @@ class Node::IdentityNoun final : public Identity {
   identity::Bytes node_public_key() const override { return _node._custody ? _node._custody->node_key().public_key() : identity::Bytes{}; }
   identity::Bytes sign(std::span<const uint8_t> message) const override { return custody().node_key().sign(message); }
   identity::Secret derive_local(std::string_view label) const override { return custody().derive(label); }
+  uint64_t counter(std::string_view label) const override { return counters().read(label); }
+  void advance_counter(std::string_view label, uint64_t value) override { counters().advance(label, value); }
+  void advance_counters(const std::map<std::string, uint64_t>& values) override { counters().advance(values); }
+  void note_counter(std::string_view label, uint64_t value) override { counters().note(label, value); }
 
  private:
   const identity::KeyCustody& custody() const {
     if (!_node._custody) throw std::logic_error("this node has no key custody (NodeConfig::custody)");
     return *_node._custody;
+  }
+  identity::SealedCounters& counters() const {
+    if (!_node._counters) throw std::logic_error("this node has no key custody (NodeConfig::custody), so no sealed counters");
+    return *_node._counters;
   }
 
  public:
@@ -463,6 +471,7 @@ Node::Node(asio::io_context& io, NodeConfig config)
       _lock(_config.state_path),
       _identity(_config.state_path, _config.key),
       _custody(_config.custody ? std::optional<identity::KeyCustody>(identity::KeyCustody::open(_config.state_path, *_config.custody)) : std::nullopt),
+      _counters(_custody ? std::optional<identity::SealedCounters>(std::in_place, _config.state_path, _custody->derive("dannan/counter/1")) : std::nullopt),
       _inbound(_config.inbound, _config.state_path, _config.wall, _config.reprobe_while_capable, _config.reprobe_while_incapable, _config.heartbeat),
       _members(initial_self(_config, _identity.id, _identity.durability_epoch, _inbound.capable()), _config.dead_after,
                _config.state_path / "membership" / "known-nodes.bin", _config.forget_after, _config.time, _config.wall),
@@ -731,6 +740,7 @@ void Node::stop() {
   for (auto& loop : loops)
     if (loop.joinable()) loop.join();
   // A clean stop leaves the last state on disk, and any later observation writes for itself.
+  flush_counters();
   _members.defer_observed_writes({});
   try {
     _members.flush();
@@ -1101,12 +1111,23 @@ void Node::sleep_until(std::stop_token stop, contract::TimePoint due) {
   if (due > now) _wake.wait_for(lock, stop, due - now, [] { return false; });
 }
 
+void Node::flush_counters() {
+  if (!_counters) return;
+  try {
+    _counters->flush();
+  } catch (const std::exception& error) {
+    // Noted advances stay noted, and the next pass tries again.
+    status::ScopedLogger(_config.log, "node").warn(std::string("node-local counters not written: ") + error.what());
+  }
+}
+
 void Node::roster_loop(std::stop_token stop) {
   status::ThreadCpuReporter cpu("cluster-roster", std::chrono::seconds(5), status::ScopedLogger(_config.log, "node"));
   while (!stop.stop_requested()) {
     cpu.tick();
     _members.flush();
     _agreed.flush();
+    flush_counters();
     std::unique_lock lock(_roster_mutex);
     // Observations made during a write combine into the next.
     _roster_wake.wait_for(lock, stop, std::chrono::seconds(1), [this] { return _roster_wanted.exchange(false); });

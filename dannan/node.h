@@ -24,6 +24,7 @@
 
 #include "dannan/context.h"
 #include "dannan/identity/node_identity.h"
+#include "dannan/identity/sealed_counters.h"
 #include "dannan/membership/agreed_roster.h"
 #include "dannan/membership/membership.h"
 #include "dannan/net/client.h"
@@ -285,6 +286,8 @@ class Node final : public Context {
   void telemetry_loop(std::stop_token stop);
   void connectivity_loop(std::stop_token stop);
   void roster_loop(std::stop_token stop);
+  // Writes the counters' noted advances; a failure is said and tried again.
+  void flush_counters();
   void serve_refreshes();
   // Wakes the loops' wait. Takes _wait_mutex, so never call it holding a lock
   // the waiters' conditions take (_refresh_mutex).
@@ -315,6 +318,8 @@ class Node final : public Context {
   identity::StateLock _lock;
   identity::NodeIdentity _identity;
   std::optional<identity::KeyCustody> _custody;
+  // Beside custody, under a key derived from its seal root; none without custody.
+  std::optional<identity::SealedCounters> _counters;
   // What this node proves itself with, and the CA's revocations it holds.
   net::Credentials _credentials;
   // Scope: the source the directory installs; read under the lock.

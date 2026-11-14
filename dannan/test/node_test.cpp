@@ -1025,6 +1025,49 @@ TEST(Node, OpensItsKeyCustody) {
   EXPECT_THROW(Node(io.context, missing), std::runtime_error);
 }
 
+// Node-local counters beside custody (the maintainer, 2026-11-14): through the Context, an
+// advance durable at once and a note durable within the node's next flush; a node
+// without custody has none.
+TEST(Node, KeepsNodeLocalCountersBesideCustody) {
+  Io io;
+  test::TempDir dir;
+  const auto key = cluster_key(dir.path());
+  const auto source = identity::KeySource::typed_passphrase(
+      [] {
+        const std::string p = "node passphrase";
+        return identity::Secret(std::span(reinterpret_cast<const uint8_t*>(p.data()), p.size()));
+      },
+      identity::Argon2Costs{1024, 1, 1});
+  (void)identity::KeyCustody::create(dir.path() / "a", source);
+  auto with = config(dir.path() / "a", key);
+  with.custody = source;
+  {
+    Node a(io.context, with);
+    a.start();
+    auto& identity = a.context().identity();
+    EXPECT_EQ(identity.counter("dagda/heads/01/1"), 0u);
+    identity.advance_counter("dagda/heads/01/1", 4);
+    identity.advance_counters({{"dagda/heads/02/1", 1}, {"lugh/grants/1", 9}});
+    EXPECT_THROW(identity.advance_counter("dagda/heads/01/1", 3), std::invalid_argument);
+    identity.note_counter("dagda/heads/01/1", 6);
+    EXPECT_EQ(identity.counter("dagda/heads/01/1"), 6u);
+    // The roster loop's pass, within a second, makes the note durable.
+    const auto file = dir.path() / "a" / "identity" / "counters";
+    const auto written = std::filesystem::last_write_time(file);
+    EXPECT_TRUE(eventually([&] { return std::filesystem::last_write_time(file) != written; }, 5s));
+    a.stop();
+  }
+  // What a restart reads: the note, durable.
+  identity::KeyCustody custody = identity::KeyCustody::open(dir.path() / "a", source);
+  identity::SealedCounters again(dir.path() / "a", custody.derive("dannan/counter/1"));
+  EXPECT_EQ(again.read("dagda/heads/01/1"), 6u);
+  EXPECT_EQ(again.read("lugh/grants/1"), 9u);
+
+  Node b(io.context, config(dir.path() / "b", key));
+  EXPECT_THROW((void)b.context().identity().counter("x"), std::logic_error);
+  EXPECT_THROW(b.context().identity().note_counter("x", 1), std::logic_error);
+}
+
 // A node configured with a certificate: custody made, its id and key
 // certified by the cluster's CA.
 NodeConfig certified(const std::filesystem::path& state, const identity::CertificateAuthority& ca, std::vector<net::Endpoint> bootstrap,

@@ -20,6 +20,7 @@ add_library(dannan SHARED
   identity/key_custody.cpp
   identity/node_id.cpp
   identity/node_identity.cpp
+  identity/sealed_counters.cpp
   identity/revocations.cpp
   identity/secure_memory.cpp
   identity/signing.cpp
