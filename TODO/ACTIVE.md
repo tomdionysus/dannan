@@ -115,9 +115,11 @@ branch with tests first, through hosted CI, and reviewed by the session that ask
      `Timing::deferred`.
    - An Answer dropped ungiven refuses the call with 500 "abandoned".
    - Five tests (four scheduler, one node); macOS 653 passed.
-   Found on the way, not yet fixed: a data-lane type registered only on the answering node makes the caller send it on
-   the wrong lane. The peer closes the session, and the caller learns only "peer channel closed: peer closed" after
-   about 11 s. The caller should refuse at once with the reason.
+   Found on the way, not yet fixed: when a data-lane type is registered only on the answering node, a call to it
+   never reaches the handler, synchronous or deferred, by endpoint or by record. After about 11 s the caller learns
+   only "peer channel closed: peer closed". Registered on both nodes, it works. Unproven: why the session closes.
+   No lane check in `net/session.cpp` closes a session, so "sent on the wrong lane" is a guess. The close reason
+   should be read at debug level before any fix. The caller should refuse at once with the reason.
    Dagda's acceptance runs (dagda-bench on the Mac, loopback, k = 2, 8,000 messages/s, 60 s), against the deferred
    reply:
    - The server side works: a replica groups 511 to 512 calls per sync, against 2 before, and holds no worker.
