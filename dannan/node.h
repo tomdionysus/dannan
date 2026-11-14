@@ -201,6 +201,7 @@ class Node final : public Context {
   membership::Membership& membership() noexcept { return _members; }
   status::TelemetryStore& telemetry_store() noexcept { return _telemetry; }
   reach::InboundResolver& inbound() noexcept { return _inbound; }
+  const reach::InboundResolver& inbound() const noexcept { return _inbound; }
   std::optional<reach::PublicConnectivityStatus> connectivity() const;
   std::optional<net::ClientStats> client_stats() const;
   std::optional<net::WorkStats> work_stats() const;
