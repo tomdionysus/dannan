@@ -1041,6 +1041,9 @@ TEST(Node, KeepsNodeLocalCountersBesideCustody) {
   (void)identity::KeyCustody::create(dir.path() / "a", source);
   auto with = config(dir.path() / "a", key);
   with.custody = source;
+  // What is on disk, read as a restart would: from another handle on the file.
+  identity::KeyCustody custody = identity::KeyCustody::open(dir.path() / "a", source);
+  const auto on_disk = [&](std::string_view label) { return identity::SealedCounters(dir.path() / "a", custody.derive("dannan/counter/1")).read(label); };
   {
     Node a(io.context, with);
     a.start();
@@ -1049,19 +1052,17 @@ TEST(Node, KeepsNodeLocalCountersBesideCustody) {
     identity.advance_counter("dagda/heads/01/1", 4);
     identity.advance_counters({{"dagda/heads/02/1", 1}, {"lugh/grants/1", 9}});
     EXPECT_THROW(identity.advance_counter("dagda/heads/01/1", 3), std::invalid_argument);
+    EXPECT_EQ(on_disk("dagda/heads/01/1"), 4u);
     identity.note_counter("dagda/heads/01/1", 6);
     EXPECT_EQ(identity.counter("dagda/heads/01/1"), 6u);
-    // The roster loop's pass, within a second, makes the note durable.
-    const auto file = dir.path() / "a" / "identity" / "counters";
-    const auto written = std::filesystem::last_write_time(file);
-    EXPECT_TRUE(eventually([&] { return std::filesystem::last_write_time(file) != written; }, 5s));
+    // The roster loop's pass, within a second and with the node running, makes the
+    // note durable: whether it came before this line or after, the file says so.
+    EXPECT_TRUE(eventually([&] { return on_disk("dagda/heads/01/1") == 6u; }, 5s));
     a.stop();
   }
-  // What a restart reads: the note, durable.
-  identity::KeyCustody custody = identity::KeyCustody::open(dir.path() / "a", source);
-  identity::SealedCounters again(dir.path() / "a", custody.derive("dannan/counter/1"));
-  EXPECT_EQ(again.read("dagda/heads/01/1"), 6u);
-  EXPECT_EQ(again.read("lugh/grants/1"), 9u);
+  // What a restart reads.
+  EXPECT_EQ(on_disk("dagda/heads/01/1"), 6u);
+  EXPECT_EQ(on_disk("lugh/grants/1"), 9u);
 
   Node b(io.context, config(dir.path() / "b", key));
   EXPECT_THROW((void)b.context().identity().counter("x"), std::logic_error);
