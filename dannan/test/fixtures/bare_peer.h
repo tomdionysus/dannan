@@ -86,6 +86,9 @@ class BarePeer {
 
   ~BarePeer() {
     stop();
+    // Destroyed while its io threads still run: a node's stop waits on work it
+    // posts to them.
+    _node.reset();
     _work.reset();
     _io.stop();
     for (auto& thread : _threads) thread.join();
