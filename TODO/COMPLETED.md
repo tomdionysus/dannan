@@ -3,6 +3,31 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
+## Handoff, 2026-11-14: P3's stream side, dannan::listen, for 0.8.0
+
+The shared public listener below the protocols (`2026-11-14-p3-public-listener.md`; the maintainer: `dannan::listen`, the
+stream side in 0.8.0 and DTLS in 0.9.0), on `feature/public-listener`:
+- `Certificates`: the operator's PEM chain, key and client bundle, reloaded when the hosted system says. One serves
+  several listeners. A failure keeps the old and names the path, never a value.
+- `TlsPolicy`: the minimum version, client certificates (never, optional, required) and ALPN, per listener. Under
+  `optional` any presented certificate's thumbprint, subject and chain verdict are kept (Lugh, RFC 8705).
+- `StreamListener` and `Stream`. A stream is Asio's AsyncReadStream and AsyncWriteStream, so Beast runs over it, with
+  `listen/beast.h` for the WebSocket's teardown (Lir); its handler's associators reach the read. It has
+  `start_tls(answer, done)`, which writes the answer itself after checking nothing arrived past the request, and is
+  refused while `send()` holds bytes. `send()` queues under an outbound bound. Deadlines are on injected time
+  (handshake, and idle per stream, off by default). `close()` drains `send()`, then close_notify, within one bound;
+  a close the bound cut short is abrupt. Stop comes in two steps, and `close_all(done)`. Streams are on their own
+  strands or on the executor given, and systemd's inherited sockets are taken.
+- `Limits`: per listener cap and accept rate, per address and per caller, all optional and off by default, bounded
+  (`max_tracked`, evictions counted), trusted proxies by `Prefix` (exempt); and `forwarded_for()`.
+Reviewed in design and code by Lugh and Lir, every point applied; both move their listeners onto it after the
+release. Found on the way:
+- StartTLS's plaintext check had to come before the answer, or a quick ClientHello read as plaintext past it.
+- A slow reader was counted once per racing send.
+- TLS's shutdown cannot share the stream with a hosted read: it now waits for a cancelled read to end, found by the
+  deb job's run, where close_notify never went out.
+Gate: node-b, g++ Release with warnings as errors; hosted CI run 43617250782 green on every job.
+
 ## Handoff, 2026-11-14: P4, the worker pool, and DANNAN_BUILD_TOOLS, for 0.8.0
 
 P4 (`2026-11-14-p4-worker-pool.md`; the maintainer confirmed the note's recommendations), on `feature/worker-pool`:

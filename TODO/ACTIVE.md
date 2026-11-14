@@ -49,9 +49,8 @@ jobs on push are the gate, not extra runs).
    come, Macha's: its maintenance moves onto the node's gate, proved by its pacing cases
    (`test_repair_is_paced_not_stopped_while_higher_classes_stay_busy`, `maintenance_trace`), then the baseline run
    on the nodes. Also merged: Lugh's `DANNAN_BUILD_TOOLS` (`feature/tools-option`, CI green on every job).
-3. P3, the shared public listener (`2026-11-14-p3-public-listener.md`): the stream side is built on
-   `feature/public-listener` (`dannan::listen`), reviewed in design by Lugh and Lir; its first gate pass on a Pi and
-   hosted CI are next. DTLS is 0.9.0.
+3. P3, the shared public listener (`2026-11-14-p3-public-listener.md`): the stream side, `dannan::listen`, is
+   **done**, merged into `develop` (see `COMPLETED.md`). DTLS and plain UDP associations are 0.9.0.
 4. P5: small-message figures in `dannan-bench`, on the Pi cluster between two real machines. It covers notify fan-out,
    batched calls of 1 to 64 envelopes at 64 B to 1 KiB, msgs/s and p50/p99/p99.9, and the io thread count. Its stress
    case is the call path's ceiling, about 6,000 calls/s per peer pair, where calls are refused at
