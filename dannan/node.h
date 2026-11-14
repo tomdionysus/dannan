@@ -24,6 +24,7 @@
 
 #include "dannan/context.h"
 #include "dannan/identity/node_identity.h"
+#include "dannan/membership/agreed_roster.h"
 #include "dannan/membership/membership.h"
 #include "dannan/net/client.h"
 #include "dannan/net/server.h"
@@ -305,6 +306,8 @@ class Node final : public Context {
   std::map<identity::NodeId, identity::Certificate> _peer_certificates DANNAN_GUARDED_BY(_certificates_mutex);
   reach::InboundResolver _inbound;
   membership::Membership _members;
+  // The roster as last agreed, which the partition reading counts (P2).
+  membership::AgreedRoster _agreed;
   status::TelemetryStore _telemetry;
   status::NodeEvents _events;
   status::Surface _surface;
@@ -351,6 +354,15 @@ class Node final : public Context {
   std::map<uint64_t, Watcher> _watchers DANNAN_GUARDED_BY(_watch_mutex);
   std::map<identity::NodeId, membership::NodeRecord> _told DANNAN_GUARDED_BY(_watch_mutex);
   uint64_t _next_watcher DANNAN_GUARDED_BY(_watch_mutex) = 1;
+  // The partition watchers and the reading they were last told of; under the
+  // same lock, the agreed roster's own taken inside it.
+  struct PartitionWatcher {
+    boost::asio::any_io_executor executor;
+    std::function<void(membership::Partition)> handler;
+  };
+  std::map<uint64_t, PartitionWatcher> _partition_watchers DANNAN_GUARDED_BY(_watch_mutex);
+  std::optional<membership::Partition> _told_partition DANNAN_GUARDED_BY(_watch_mutex);
+  membership::Partition partition_locked() const DANNAN_REQUIRES(_watch_mutex);
   std::unique_ptr<reach::PublicConnectivity> _connectivity;
   // Refreshes the hosted system asked for, served by the connectivity loop,
   // since a refresh waits on the network. Closed once nothing will serve them.

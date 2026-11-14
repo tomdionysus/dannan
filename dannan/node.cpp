@@ -132,6 +132,27 @@ class Node::NodesNoun final : public Nodes {
     _node._watchers.erase(id);
   }
   void withdraw(const std::string& key) override { _node._members.clear_advert(key); }
+  membership::Partition partition() const override {
+    contract::Lock lock(_node._watch_mutex);
+    return _node.partition_locked();
+  }
+  uint64_t watch_partition(asio::any_io_executor executor, std::function<void(membership::Partition)> handler) override {
+    contract::Lock lock(_node._watch_mutex);
+    const auto id = _node._next_watcher++;
+    asio::post(executor, [handler, now = _node.partition_locked()] { handler(now); });
+    _node._partition_watchers.emplace(id, PartitionWatcher{std::move(executor), std::move(handler)});
+    return id;
+  }
+  void unwatch_partition(uint64_t id) override {
+    contract::Lock lock(_node._watch_mutex);
+    _node._partition_watchers.erase(id);
+  }
+  std::set<identity::NodeId> members() const override { return _node._agreed.members(); }
+  bool retire(const identity::NodeId& node) override {
+    const bool retired = _node._agreed.retire(node);
+    if (retired) _node.topology_changed(true);
+    return retired;
+  }
 
  private:
   Node& _node;
@@ -425,6 +446,7 @@ Node::Node(asio::io_context& io, NodeConfig config)
       _inbound(_config.inbound, _config.state_path, _config.wall, _config.reprobe_while_capable, _config.reprobe_while_incapable, _config.heartbeat),
       _members(initial_self(_config, _identity.id, _identity.durability_epoch, _inbound.capable()), _config.dead_after,
                _config.state_path / "membership" / "known-nodes.bin", _config.forget_after, _config.time, _config.wall),
+      _agreed(_identity.id, _config.state_path / "membership" / "agreed-nodes.bin"),
       _telemetry(_identity.id, _config.state_path / "telemetry" / "last-known.bin", _config.time, _config.wall, _config.telemetry_layout),
       _readiness(_config.planes, _config.wall),
       _activity(_config.time),
@@ -443,6 +465,14 @@ Node::Node(asio::io_context& io, NodeConfig config)
   if (_config.memory_warning) status::ScopedLogger(_config.log, "node").warn(*_config.memory_warning);
   if (!_inbound.load_error().empty()) status::ScopedLogger(_config.log, "node").warn("inbound resolution ignored: " + _inbound.load_error());
   if (!_telemetry.load_error().empty()) status::ScopedLogger(_config.log, "node").warn("persisted telemetry ignored: " + _telemetry.load_error());
+  // A node that has never held an agreed roster starts it from the nodes it
+  // knows, so its first partition reading counts them all.
+  if (!_agreed.found()) {
+    std::vector<identity::NodeId> known;
+    for (const auto& node : _members.all()) known.push_back(node.id);
+    (void)_agreed.join(known);
+    _agreed.flush();
+  }
   // How this node proves itself: a certificate (version 2), the cluster key
   // (version 1), or both while a cluster moves.
   if (_config.certificate) {
@@ -859,12 +889,35 @@ void Node::topology_changed(bool quiet) {
         changes.push_back({RosterChange::Kind::left, node});
         membership = true;
       }
+    std::vector<identity::NodeId> joined;
+    for (const auto& change : changes)
+      if (change.kind == RosterChange::Kind::joined) joined.push_back(change.node.id);
     _told = std::move(now);
     for (const auto& [_, watcher] : _watchers)
       for (const auto& change : changes) asio::post(watcher.executor, [handler = watcher.handler, change] { handler(change); });
+    // A join adds to the agreed roster in memory; the roster loop writes it.
+    if (_agreed.join(joined)) {
+      _roster_wanted.store(true);
+      _roster_wake.notify_all();
+    }
+    auto side = partition_locked();
+    side.unix_ms = 0;
+    auto told = _told_partition;
+    if (told) told->unix_ms = 0;
+    if (!told || *told != side) {
+      const auto now_side = partition_locked();
+      _told_partition = now_side;
+      for (const auto& [_, watcher] : _partition_watchers) asio::post(watcher.executor, [handler = watcher.handler, now_side] { handler(now_side); });
+    }
   }
   if (!quiet || !changes.empty()) _events.notify(status::NodeEvents::topology);
   if (membership) _events.notify(status::NodeEvents::membership);
+}
+
+membership::Partition Node::partition_locked() const {
+  std::set<identity::NodeId> active{_identity.id};
+  for (const auto& [id, _] : _told) active.insert(id);
+  return membership::read_partition(_agreed.members(), active, _config.wall->unix_ms());
 }
 
 void Node::note_certificate(const net::Established& session) {
@@ -994,6 +1047,7 @@ void Node::roster_loop(std::stop_token stop) {
   while (!stop.stop_requested()) {
     cpu.tick();
     _members.flush();
+    _agreed.flush();
     std::unique_lock lock(_roster_mutex);
     // Observations made during a write combine into the next.
     _roster_wake.wait_for(lock, stop, std::chrono::seconds(1), [this] { return _roster_wanted.exchange(false); });
@@ -1209,6 +1263,8 @@ bool Node::apply_identity_reset(const membership::IdentityReset& reset) {
               " stale_node_id=" + (reset.stale_node_id == identity::NodeId{} ? std::string("<any>") : identity::to_string(reset.stale_node_id)) +
               " epoch=" + std::to_string(reset.epoch) + " reset_by=" + identity::to_string(reset.reset_by) +
               (reset.reason.empty() ? std::string{} : " reason=" + reset.reason));
+    // The reset's stale id leaves the agreed roster too: it was another node.
+    if (reset.stale_node_id != identity::NodeId{} && reset.stale_node_id != _identity.id) (void)_agreed.retire(reset.stale_node_id);
     topology_changed();
   }
   return changed;

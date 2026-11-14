@@ -14,6 +14,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <vector>
@@ -22,6 +23,7 @@
 #include "dannan/contract/time_source.h"
 #include "dannan/identity/key_custody.h"
 #include "dannan/identity/revocations.h"
+#include "dannan/membership/agreed_roster.h"
 #include "dannan/membership/node_record.h"
 #include "dannan/net/client.h"
 #include "dannan/net/fanout.h"
@@ -133,6 +135,27 @@ class Nodes {
   // an empty key or one over 256 bytes, a value over 1 KiB, or a 65th.
   virtual void advertise(const std::string& key, net::Bytes value) = 0;
   virtual void withdraw(const std::string& key) = 0;
+
+  // Which side of a split this node is on (P2; Tom, 2026-11-13), read against
+  // the roster as last agreed: a majority only with more than half of it
+  // reachable, this node counted, so an even split is a minority. One rule for
+  // every hosted system. Waits on nothing.
+  virtual membership::Partition partition() const = 0;
+  // Its changes, posted to `executor` in order when it is a strand: first the
+  // reading now, then each change of side, count or who is unreachable. An id
+  // for unwatch_partition. Waits on nothing.
+  virtual uint64_t watch_partition(boost::asio::any_io_executor executor, std::function<void(membership::Partition)> handler) = 0;
+  virtual void unwatch_partition(uint64_t id) = 0;
+  // The roster as last agreed, this node included. A node joins it when it is
+  // seen to join; nothing but retire (or an identity reset of its id) takes it
+  // out, never absence.
+  virtual std::set<identity::NodeId> members() const = 0;
+  // An operator's word that `node` has left the cluster for good: out of the
+  // agreed roster, durably, so the partition reading no longer counts it. A
+  // node retired while still active is a member again when it is next seen to
+  // join, a restart included. False if it was not a member. Throws
+  // std::invalid_argument for this node. Waits on the state device.
+  virtual bool retire(const identity::NodeId& node) = 0;
 };
 
 // Message types and calls. A hosted system registers its types (their wire
