@@ -84,6 +84,10 @@ recurred in CI; still unproven. Tagged 0.5.4 at Tom's word ("If it's ready, do a
 The macOS builds here keep `-DOPENSSL_ROOT_DIR=/opt/local/libexec/openssl3` and `CMAKE_CXX_FLAGS="-I<repo>/build/ssl3-include
 --system-header-prefix=openssl/"` (Homebrew's openssl@4 4.1.0 sits in `/usr/local/include`; `build/scratch/sanitizers.sh`).
 
+**0.7.0, 2026-11-14 (Tom, directly: "Tag 0.7.0 with what's done").** It holds the deferred reply, P2, Macha's fixes,
+the cancel fix and the timing fix. What remains below goes to 0.8.0: the owners' test seam, the advert-change watch,
+non-blocking logging, P4, P3 and P5.
+
 **Tom, 2026-11-13: Dannan and Dagda support Macha, Lugh and Lir as first-class citizens** ("This was the purpose of
 splitting out the technologies"). The hosted systems' needs, Dannan's answers and Tom's rulings are in
 [`2026-11-13-stack-needs.md`](2026-11-13-stack-needs.md). The approved work, in order, each on its own `feature/`
