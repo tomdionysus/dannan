@@ -15,7 +15,7 @@ name: CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, develop, feature/owner-test-seam]
   pull_request:
 
 permissions:
