@@ -265,13 +265,8 @@ void RequestScheduler::run(Job job) {
   }
   const auto finished = _time->now();
   const auto outcome = handled.outcome();
-  if (outcome == Handled::Outcome::unrecognised)
-    answer(error_reply(501, "not_implemented", "message " + _routes->name(type) + " is not handled here"));
-  else if (outcome != Handled::Outcome::deferred)
-    answer(handled.take_reply());
-  // Deferred with the Answer still here: the handler kept nothing to give,
-  // and dropping it refuses the call.
-  answer = Answer();
+  // Counted before the answer goes: a caller that reads the timings once it
+  // has its reply finds its request among them.
   {
     contract::Lock lock(_timing_mutex);
     record(_frame_timings[job.frame.frame], micros(started - job.queued), micros(finished - started));
@@ -284,6 +279,13 @@ void RequestScheduler::run(Job job) {
       ++_frame_timings[job.frame.frame].deferred;
     }
   }
+  if (outcome == Handled::Outcome::unrecognised)
+    answer(error_reply(501, "not_implemented", "message " + _routes->name(type) + " is not handled here"));
+  else if (outcome != Handled::Outcome::deferred)
+    answer(handled.take_reply());
+  // Deferred with the Answer still here: the handler kept nothing to give,
+  // and dropping it refuses the call.
+  answer = Answer();
 }
 
 void RequestScheduler::fast_loop(std::stop_token) {
