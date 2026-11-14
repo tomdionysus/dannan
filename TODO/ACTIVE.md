@@ -32,7 +32,12 @@ live cluster is live-a and live-b, both Pi 5 on Debian 13 with Boost
 contract `API_VERSION` 24. The laptop is on MacPorts for everything. Macha's
 current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluation.md`.
 
-## Resume here (2026-11-14, 03:00Z)
+## Resume here (2026-11-14, evening)
+
+**0.8.0 is prepared on `develop`**: the batch below is all merged, and the version commit is made. Waiting on the maintainer:
+the tag `0.8.0` and the push of `main`. Then: build and check the `.deb`s (SONAME `libdannan.so.0.8`) for the maintainer to
+publish, and tell Dagda, Lir, Lugh and Macha, who all asked. Next, 0.9.0: DTLS and plain UDP for `dannan::listen`,
+and the peer-witnessed high-water mark (its wire addition designed and reviewed first).
 
 **0.7.0 is released** (`main` at `6ce0349`, tag `0.7.0`, both pushed at the maintainer's word). Main's CI was green on every job. The
 `.deb`s are in `../tomcully-apt/incoming/dannan/0.7.0/`; both library packages were checked: SONAME `libdannan.so.0.7`
@@ -58,7 +63,8 @@ jobs on push are the gate, not extra runs).
    per-call path. Dagda's bench reproduces it (`2026-11-13-stack-needs.md`, P5, has the build and the commands).
    Lir's target: PUBACK p99 under 50 ms at QoS 1 with k = 2.
    the maintainer, 2026-11-14: run it on the build cluster (node-a, node-b, node-c, node-d), claimed on the board; and
-   0.8.0 waits for P5.
+   0.8.0 waits for P5. **Done**, merged (see `COMPLETED.md`, `2026-11-14-p5-figures.md`): measured, the ceiling is
+   CPU near 14,800 calls/s on one Pi, not the cap, which stays at 512. the maintainer: enough, cut 0.8.0.
 5. Node-local rollback (the maintainer, 2026-11-14, ruled in Dagda's session on Dannan's proposal), for Dagda's and Lugh's
    node-local state:
    - 0.8.0, **done** and merged (see `COMPLETED.md`): the sealed per-label counter beside custody, on the Context's

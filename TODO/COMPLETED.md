@@ -3,6 +3,31 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
+## Handoff, 2026-11-14: 0.8.0 prepared
+
+The approved batch is in: P6's three, P4, P3's stream side, `DANNAN_BUILD_TOOLS`, the sealed counters, and P5's
+figures. the maintainer, 2026-11-14, directly: P5 is enough, cut 0.8.0. The version commit on `develop` changes CHANGELOG, README,
+ACTIVE and this file; CMake and `debian/control` (`libdannan0.8`) said 0.8 from the minor's opening (`e839322`). The
+tag and the push of `main` wait on the maintainer's word. Built and tested on hosted CI only: the gate is `dannan_tests` 720,
+718 passed, the one long-standing skip (`Supervisor.ADirectoryThatCannotBeListedIsWarnedOf`), as the deb jobs ran
+them.
+
+## Handoff, 2026-11-14: P5's figures, and the TLS close made safe
+
+On `feature/bench-small`: `dannan-bench calls` (an open loop at `--rate`, in `--batch`es of `--size`, for
+`--seconds`, on a `--lane`, with `--io-threads`) and `dannan-bench serve`. The figures are in
+`2026-11-14-p5-figures.md`. On one Pi 5 over loopback the call path runs clean to 12,000 calls/s at p99 under 1 ms and
+tops out near 14,800 calls/s on CPU. `max_pending_replies` = 512 only bounds latency at saturation (about 35 ms). It
+stays at 512. Batches of 64 carry 128,000 msgs/s. Two io threads are enough. Between Pis the Wi-Fi carries about
+0.5 MB/s and a few hundred calls/s, so cross-Pi figures measure the link.
+
+The branch's CI met `StreamListener.StopsInTwoStepsAndClosesCleanly` failing in both deb jobs ("stream truncated":
+no close_notify, the 2 s bound expired). The fix that waited for hosted reads before the TLS shutdown had left two
+holes. A hosted write whose completion had not yet run could share the stream with the shutdown. So could a read
+issued after the pending one was cancelled. `Stream` now counts hosted reads and writes alike (`tracked()` in
+`listen/stream.h`), cancels them, starts the shutdown when the last ends, and refuses any begun after it as aborted.
+CI run 43626309311 was green on every job. The branch is merged into `develop` (`be879e0`) and pushed.
+
 ## Handoff, 2026-11-14: node-local counters, rollback's first layer, for 0.8.0
 
 the maintainer's ruling (in Dagda's session, on Dannan's proposal): node-local rollback in two layers, the sealed counter now and

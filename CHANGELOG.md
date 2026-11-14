@@ -1,5 +1,46 @@
 # Current release
 
+## 0.8.0: work by class, a public listener, and counters that only go up
+
+Scheduling: `sched::WorkerPool` runs tasks on supervised threads by work class
+(control, foreground, loader, speculative). Each class has a bounded queue that
+refuses at once with its reason, a cap on how many run, and workers held back for
+the classes above. A queued task whose deadline passes, or that is cancelled, is
+dropped and its caller told; tasks may own what cannot be copied. Loader and
+speculative work is paced by `sched::ClassGate`, one per class per node, which a
+long-running loop holds and every pool runs through, so a class never takes more
+than its share. A background task rests by the CPU time it used while the rest of
+the process is busy (`sched/cpu_pacing.h`, as Dagda's). The node owns the gates and
+one pool (`Context::gates()`, `workers()`); a hosted system may run its own pool
+beside it.
+
+Public side: `dannan::listen`, the layer below a hosted system's protocols. It
+accepts plaintext, TLS and StartTLS connections, and hands each up as a `Stream`
+that Asio and Beast treat as any socket (`listen/beast.h` for the WebSocket). A
+stream carries the peer, any client certificate with its chain verdict, and ALPN.
+The listener adds:
+- certificates that reload when the hosted system says, shared by its listeners;
+- limits by listener, address and caller, all optional and bounded, with trusted
+  proxies exempt by prefix;
+- deadlines on injected time;
+- a close that sends what was queued first;
+- a stop in two steps, and systemd's sockets.
+DTLS follows in 0.9.0.
+
+Identity: counters that only go up, sealed beside custody (`Identity::counter`,
+`advance_counter`, `advance_counters`, `note_counter`), for node-local state to refuse
+a copy of itself restored from before. They refuse one directory restored alone, not
+a whole state; the peers' witness follows in 0.9.0.
+
+For hosted systems: a call refused or stalled by peer and type, and a bare peer, for
+owners' tests (`NodeConfig::call_fault`, `test/fixtures/bare_peer.h`). A watch on one
+advert's changes, rate-limited (`Nodes::watch_advert`). An asynchronous log stage that
+never waits on its sink and counts what it drops (`status::AsyncSink`). Statics that
+outlive a thread no longer leave it a destroyed clock. `DANNAN_BUILD_TOOLS=OFF` builds
+the library alone. `dannan-bench calls` measures small messages: on one Pi 5 the call
+path holds 12,000 calls/s at p99 under 1 ms. The ABI changes, so the library is
+`libdannan.so.0.8` (`libdannan0.8`); a host is rebuilt once against 0.8.0.
+
 ## 0.7.0: an answer may come later, and a node knows its side of a split
 
 Transport: a request handler may answer later, from any thread, holding no worker
