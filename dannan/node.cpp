@@ -471,7 +471,7 @@ Node::Node(asio::io_context& io, NodeConfig config)
       _readiness(_config.planes, _config.wall),
       _activity(_config.time),
       _threads(std::chrono::seconds(1), std::chrono::seconds(60), _config.wall, _config.time, _config.log),
-      _gates(_config.loader_gate, _config.speculative_gate, _config.time),
+      _gates(_config.loader_gate, _config.speculative_gate, _config.gate_time ? _config.gate_time : _config.time, _config.gate_process_cpu),
       _workers(_config.workers, _gates, &_threads, _config.time),
       _wait_guard(status::ScopedLogger(_config.log, "wait")),
       _memory(_config.memory_bytes, _config.control_reserve_bytes, _config.foreground_reserve_bytes, _config.loader_reserve_bytes,

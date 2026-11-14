@@ -14,6 +14,7 @@
 #include <exception>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 #include "dannan/supervise/supervised.h"
@@ -30,7 +31,11 @@ WorkerPoolConfig checked(WorkerPoolConfig config) {
   if (config.threads == 0) throw std::invalid_argument("a worker pool has at least one thread");
   size_t reserved = 0;
   for (const auto each : config.reserve) reserved += each;
-  if (reserved >= config.threads) throw std::invalid_argument("a worker pool's reserves leave no worker for the lowest class");
+  if (reserved >= config.threads)
+    throw std::invalid_argument("worker pool '" + config.name + "': its reserves (control " + std::to_string(config.reserve[0]) + ", foreground " +
+                                std::to_string(config.reserve[1]) + ", loader " + std::to_string(config.reserve[2]) + ", speculative " +
+                                std::to_string(config.reserve[3]) + ") hold back " + std::to_string(reserved) + " of its " + std::to_string(config.threads) +
+                                " threads, leaving none for the lowest class; set fewer reserves or more threads");
   return config;
 }
 
@@ -122,7 +127,7 @@ void WorkerPool::stop() {
   _workers.clear();
 }
 
-WorkerPool::Submitted WorkerPool::submit(const WorkContext& context, Task task, boost::asio::any_io_executor executor, std::function<void(Ended)> done) {
+WorkerPool::Submitted WorkerPool::submit(const WorkContext& context, Task task, boost::asio::any_io_executor executor, Done done) {
   if (done && !executor) throw std::invalid_argument("a worker pool's completion needs an executor to be posted to");
   const auto index = index_of(context.work());
   {
@@ -152,7 +157,7 @@ WorkerPool::ClassStats WorkerPool::stats(WorkClass work) const {
 
 void WorkerPool::tell(Pending& pending, End how, std::string fault) {
   if (!pending.done) return;
-  boost::asio::post(pending.executor, [done = std::move(pending.done), how, fault = std::move(fault)] { done(Ended{how, fault}); });
+  boost::asio::post(pending.executor, [done = std::move(pending.done), how, fault = std::move(fault)]() mutable { done(Ended{how, std::move(fault)}); });
 }
 
 void WorkerPool::gone(size_t index) { _gates.note(class_at(index), -1); }

@@ -20,6 +20,7 @@
 
 #include "dannan/contract/thread_safety.h"
 #include "dannan/contract/time_source.h"
+#include "dannan/contract/unique_function.h"
 #include "dannan/sched/class_gate.h"
 #include "dannan/sched/work.h"
 
@@ -92,7 +93,9 @@ class WorkerPool {
     ClassGate* const _gate;
     const contract::TimeSource* const _time;
   };
-  using Task = std::function<void(Turn&)>;
+  // Move-only, so a task may own what cannot be copied (a password's Secret).
+  using Task = contract::UniqueFunction<void(Turn&)>;
+  using Done = contract::UniqueFunction<void(Ended)>;
 
   struct ClassStats {
     uint64_t queued = 0;
@@ -122,9 +125,11 @@ class WorkerPool {
 
   // Queues `task` under `context`'s class. Never waits. `done`, if given, is posted
   // to `executor` once it has ended: run, faulted, or dropped unrun because its
-  // deadline passed or it was cancelled while queued, or the pool stopped. Throws
-  // std::invalid_argument for a `done` without an executor.
-  Submitted submit(const WorkContext& context, Task task, boost::asio::any_io_executor executor = {}, std::function<void(Ended)> done = {});
+  // deadline passed or it was cancelled while queued, or the pool stopped. Work past
+  // its deadline is dropped at the next turn of a worker, so it is told at most one
+  // running task late (Lugh's review). Throws std::invalid_argument for a `done`
+  // without an executor.
+  Submitted submit(const WorkContext& context, Task task, boost::asio::any_io_executor executor = {}, Done done = {});
 
   ClassStats stats(WorkClass work) const;
   const WorkerPoolConfig& config() const noexcept { return _config; }
@@ -134,7 +139,7 @@ class WorkerPool {
     WorkContext context;
     Task task;
     boost::asio::any_io_executor executor;
-    std::function<void(Ended)> done;
+    Done done;
   };
   struct Picked {
     bool found = false;

@@ -123,6 +123,11 @@ struct NodeConfig {
   sched::WorkerPoolConfig workers;
   sched::GateConfig loader_gate;
   sched::GateConfig speculative_gate;
+  // The gates' own time and process CPU, apart from the node's, so a hosted
+  // system's pacing tests step them while the node runs on real time (Macha's
+  // review). Null: `time` below, and the process's real CPU.
+  const contract::TimeSource* gate_time = nullptr;
+  sched::ProcessCpu gate_process_cpu;
   // The node's retained-memory budget and its reserves.
   uint64_t memory_bytes = 768ull << 20;
   uint64_t control_reserve_bytes = 64ull << 20;

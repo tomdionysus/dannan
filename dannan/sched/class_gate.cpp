@@ -38,9 +38,21 @@ ClassGate::ClassGate(WorkClass work, GateConfig config, const contract::TimeSour
       _process_cpu(process_cpu ? std::move(process_cpu) : ProcessCpu(process_cpu_seconds)),
       _share(_config.higher_weight, _config.own_weight, _config.slice) {}
 
-void ClassGate::set_contended(std::function<bool()> reading) { _hosted = std::move(reading); }
+void ClassGate::set_contended(std::function<bool()> reading) {
+  auto held = reading ? std::make_shared<const std::function<bool()>>(std::move(reading)) : nullptr;
+  contract::Lock lock(_hosted_mutex);
+  _hosted = std::move(held);
+}
 
-bool ClassGate::contended() const { return _higher.load(std::memory_order_relaxed) > 0 || (_hosted && _hosted()); }
+bool ClassGate::contended() const {
+  if (_higher.load(std::memory_order_relaxed) > 0) return true;
+  std::shared_ptr<const std::function<bool()>> reading;
+  {
+    contract::Lock lock(_hosted_mutex);
+    reading = _hosted;
+  }
+  return reading && (*reading)();
+}
 
 void ClassGate::note_higher(int delta) noexcept { _higher.fetch_add(delta, std::memory_order_relaxed); }
 

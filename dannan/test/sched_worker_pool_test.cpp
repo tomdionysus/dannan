@@ -16,6 +16,7 @@
 #include <boost/asio/executor_work_guard.hpp>
 #include <boost/asio/io_context.hpp>
 #include <future>
+#include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -135,6 +136,33 @@ TEST(ClassGate, ContendsWhileWorkAboveIsPresentOrTheHostSays) {
   EXPECT_TRUE(speculative.contended());
   viewers = false;
   EXPECT_FALSE(speculative.contended());
+}
+
+// The hosted reading may be set, replaced and cleared while the gate is read on
+// other threads (Macha's review: its reading exists only after its store recovers).
+TEST(ClassGate, TheHostedReadingMayChangeWhileInUse) {
+  ClassGate gate(WorkClass::speculative);
+  std::atomic<bool> stop{false};
+  std::atomic<uint64_t> reads{0};
+  std::thread reader([&] {
+    while (!stop.load()) {
+      (void)gate.contended();
+      ++reads;
+    }
+  });
+  for (int i = 0; i < 200; ++i) {
+    gate.set_contended([] { return true; });
+    gate.set_contended([] { return false; });
+    gate.set_contended({});
+  }
+  EXPECT_TRUE(eventually([&] { return reads.load() > 0; }));
+  stop = true;
+  reader.join();
+  EXPECT_FALSE(gate.contended());
+  gate.set_contended([] { return true; });
+  EXPECT_TRUE(gate.contended());
+  gate.set_contended({});
+  EXPECT_FALSE(gate.contended());
 }
 
 // A loop's burst while contended earns a rest by the weights; uncontended there is none.
@@ -451,6 +479,29 @@ TEST(WorkerPool, ABackgroundTaskIsAskedToYieldAtItsSlicesEnd) {
   const auto [early, late] = answer.get();
   EXPECT_FALSE(early);
   EXPECT_TRUE(late);
+}
+
+// A task and its completion may own what cannot be copied, as a password's Secret
+// is (Lugh's review).
+TEST(WorkerPool, ATaskAndItsCompletionMayOwnWhatCannotBeCopied) {
+  ClassGates gates;
+  WorkerPool pool(one_thread(), gates);
+  pool.start();
+  Executor executor;
+  auto secret = std::make_unique<int>(7);
+  auto witness = std::make_unique<int>(9);
+  std::promise<int> seen;
+  std::promise<int> told;
+  ASSERT_TRUE(pool.submit(
+                      of(FrameType::foreground), [owned = std::move(secret), &seen](WorkerPool::Turn&) { seen.set_value(*owned); }, executor.io.get_executor(),
+                      [owned = std::move(witness), &told](WorkerPool::Ended ended) { told.set_value(ended.how == WorkerPool::End::ran ? *owned : -1); })
+                  .accepted);
+  auto ran = seen.get_future();
+  auto ended = told.get_future();
+  ASSERT_EQ(ran.wait_for(10s), std::future_status::ready);
+  ASSERT_EQ(ended.wait_for(10s), std::future_status::ready);
+  EXPECT_EQ(ran.get(), 7);
+  EXPECT_EQ(ended.get(), 9);
 }
 
 // A task that throws is told as faulted, and the pool goes on.

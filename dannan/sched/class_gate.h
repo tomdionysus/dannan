@@ -61,7 +61,9 @@ class ClassGate {
   // The hosted system's reading of whether the work above contends, or'd with the
   // pools' own. Called on whichever thread asks (a pool thread at each pick, a loop
   // at each boundary): it must not block, nor take a lock a task or the loop can
-  // hold. Before the gate is in use.
+  // hold. May be set, replaced or cleared (empty) at any time, the node running
+  // (Macha's review: its reading exists only once its store recovers). Until
+  // set_contended returns, the old reading may still be called. None: only the pools'.
   void set_contended(std::function<bool()> reading);
   bool contended() const;
   // A pool's word that work above this class was queued (+1) or has ended (-1).
@@ -94,7 +96,9 @@ class ClassGate {
   const contract::TimeSource* const _time;
   const ProcessCpu _process_cpu;
   DutyShare _share;
-  std::function<bool()> _hosted;
+  // Copied out under its lock and called outside it.
+  mutable contract::Mutex _hosted_mutex;
+  std::shared_ptr<const std::function<bool()>> _hosted DANNAN_GUARDED_BY(_hosted_mutex);
   std::atomic<int64_t> _higher{0};
 
   contract::Mutex _mutex;
