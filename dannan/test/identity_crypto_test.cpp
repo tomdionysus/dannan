@@ -141,6 +141,21 @@ TEST(ClusterKey, DerivesFromTheFileWithoutItsLineEnds) {
   EXPECT_TRUE(std::equal(ka.cluster_id.begin(), ka.cluster_id.end(), id.begin()));
 }
 
+// A hosted system that holds the master another way (Macha's own key file)
+// takes the same keys from Dannan, not by repeating its labels: the labels
+// are Dannan's, named once, and the derivation from master is the file's.
+TEST(ClusterKey, IsDerivedFromItsMasterUnderDannansOwnLabels) {
+  EXPECT_EQ(cluster_auth_label, "dannan/auth/1");
+  EXPECT_EQ(cluster_id_label, "dannan/cluster-id/1");
+  test::TempDir dir;
+  std::ofstream(dir.path() / "a.key") << "shared secret\n";
+  const auto loaded = load_cluster_key(dir.path() / "a.key");
+  const auto derived = ClusterKey::from_master(loaded.master);
+  EXPECT_EQ(derived.master, loaded.master);
+  EXPECT_EQ(derived.auth, loaded.auth);
+  EXPECT_EQ(derived.cluster_id, loaded.cluster_id);
+}
+
 TEST(ClusterKey, AnotherSecretIsAnotherCluster) {
   test::TempDir dir;
   std::ofstream(dir.path() / "a.key") << "one";
