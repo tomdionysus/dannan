@@ -11,7 +11,6 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
-#include <memory>
 
 #include "dannan/contract/thread_safety.h"
 #include "dannan/contract/time_source.h"
