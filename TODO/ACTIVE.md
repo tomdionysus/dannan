@@ -117,9 +117,16 @@ branch with tests first, through hosted CI, and reviewed by the session that ask
    - Five tests (four scheduler, one node); macOS 653 passed.
    Found on the way, not yet fixed: when a data-lane type is registered only on the answering node, a call to it
    never reaches the handler, synchronous or deferred, by endpoint or by record. After about 11 s the caller learns
-   only "peer channel closed: peer closed". Registered on both nodes, it works. Unproven: why the session closes.
-   No lane check in `net/session.cpp` closes a session, so "sent on the wrong lane" is a guess. The close reason
-   should be read at debug level before any fix. The caller should refuse at once with the reason.
+   only "peer channel closed: peer closed". Registered on both nodes, it works. Proven at debug level: the caller,
+   lacking the type's wire rules, sends it on the control lane. The answering node logs "message later is invalid as
+   foreground on the control lane" and closes the session, failing every call on it. The check is
+   `FrameOpener::header` (`net/channel.cpp:440`), which refuses the frame before its body is authenticated.
+   Two fixes were weighed; neither is made, and it goes to Tom:
+   - At the caller: refuse a call for a type it never registered. Tried; seven node tests call types registered only
+     on the answering node, on the control lane, where that works. So it would break callers that rely on it.
+   - At the answering node: read and authenticate the frame, then answer it with a refusal naming the lane, keeping
+     the session. This changes wire v1's treatment of a lane violation, which is Tom's to rule on.
+   Meanwhile the rule stands: register every type on every node, as the hosted systems do.
    Dagda's acceptance runs (dagda-bench on the Mac, loopback, k = 2, 8,000 messages/s, 60 s), against the deferred
    reply:
    - The server side works: a replica groups 511 to 512 calls per sync, against 2 before, and holds no worker.
