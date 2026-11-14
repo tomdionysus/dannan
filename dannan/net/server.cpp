@@ -84,6 +84,14 @@ struct Server::Handshaking {
 };
 
 Server::Server(asio::io_context& io, std::string listen_host, uint16_t port, ServerOptions options, RequestHandler handler, Admitted admitted)
+    : Server(
+          io, std::move(listen_host), port, std::move(options),
+          [handler = std::move(handler)](const membership::NodeRecord& peer, sched::FrameType frame, Message request, Answer&) {
+            return handler(peer, frame, request);
+          },
+          std::move(admitted)) {}
+
+Server::Server(asio::io_context& io, std::string listen_host, uint16_t port, ServerOptions options, DeferringHandler handler, Admitted admitted)
     : _io(io),
       _host(std::move(listen_host)),
       _port(port),
@@ -91,9 +99,9 @@ Server::Server(asio::io_context& io, std::string listen_host, uint16_t port, Ser
       _log(_options.log ? _options.log : status::null_sink(), "net"),
       _scheduler(
           _options.routes, _options.limits,
-          [this, handler = std::move(handler)](const membership::NodeRecord& peer, sched::FrameType frame, const Message& request) {
+          [this, handler = std::move(handler)](const membership::NodeRecord& peer, sched::FrameType frame, Message request, Answer& answer) {
             try {
-              return handler(peer, frame, request);
+              return handler(peer, frame, std::move(request), answer);
             } catch (const std::exception& failure) {
               _log.debug(std::string("RPC handler: ") + failure.what());
               throw;

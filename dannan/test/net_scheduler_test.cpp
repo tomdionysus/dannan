@@ -16,6 +16,7 @@
 
 #include <atomic>
 #include <future>
+#include <map>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -61,6 +62,164 @@ std::future<Message> ask(RequestScheduler& scheduler, const membership::NodeReco
 }
 
 bool answered_within(std::future<Message>& future, std::chrono::milliseconds bound) { return future.wait_for(bound) == std::future_status::ready; }
+
+// Answers a handler kept to give later, from another thread.
+struct Kept {
+  std::mutex mutex;
+  std::vector<Answer> answers;
+  size_t size() {
+    std::lock_guard lock(mutex);
+    return answers.size();
+  }
+  std::vector<Answer> take() {
+    std::lock_guard lock(mutex);
+    return std::exchange(answers, {});
+  }
+};
+
+bool waits_for(const std::function<bool()>& done, std::chrono::milliseconds bound) {
+  const auto until = std::chrono::steady_clock::now() + bound;
+  while (!done() && std::chrono::steady_clock::now() < until) std::this_thread::sleep_for(2ms);
+  return done();
+}
+
+// A handler may answer later from any thread: a deferred request holds no
+// worker, so many more wait than there are workers, the class's other work
+// still runs, and every answer arrives (P8: a group commit answers from its
+// committer).
+TEST(Scheduler, ADeferredRequestHoldsNoWorker) {
+  ServerLimits limits;
+  limits.data_workers = 2;
+  limits.foreground_data_reserve = 1;
+  Kept kept;
+  RequestScheduler scheduler(routes(), limits, [&](const membership::NodeRecord&, FrameType, const Message& request, Answer& answer) {
+    if (request.type != put_object) return Handled::processed({message::ok, {}, {}});
+    std::lock_guard lock(kept.mutex);
+    kept.answers.push_back(std::move(answer));
+    return Handled::deferred();
+  });
+  std::vector<std::future<Message>> waiting;
+  for (uint64_t i = 0; i < 50; ++i) waiting.push_back(ask(scheduler, peer(1), 2 * i + 1, put_object, FrameType::loader, Bytes{static_cast<uint8_t>(i)}));
+  ASSERT_TRUE(waits_for([&] { return kept.size() == 50; }, 2s)) << kept.size() << " of 50 reached the handler";
+  auto other = ask(scheduler, peer(2), 1001, get_object, FrameType::loader);
+  EXPECT_TRUE(answered_within(other, 1s));
+  for (auto& future : waiting) EXPECT_FALSE(answered_within(future, 0ms));
+  std::thread committer([answers = kept.take()]() mutable {
+    for (auto& answer : answers) answer(Message{message::ok, {}, {}});
+  });
+  committer.join();
+  for (auto& future : waiting) {
+    ASSERT_TRUE(answered_within(future, 2s));
+    EXPECT_EQ(future.get().type, message::ok);
+  }
+  EXPECT_EQ(scheduler.stats().message_timings[put_object].deferred, 50u);
+}
+
+// Deferred work is bounded per class: past the bound a request of that class
+// is refused at once, as a full queue's is, while another class goes on; an
+// answer given makes room again.
+TEST(Scheduler, DeferredWorkIsBoundedPerClass) {
+  ServerLimits limits;
+  limits.max_deferred = 4;
+  // Each kept answer by its request's tag (the payload's one byte): workers
+  // run side by side, so the order they are kept in is any order.
+  std::mutex mutex;
+  std::map<uint8_t, Answer> kept;
+  const auto count = [&] {
+    std::lock_guard lock(mutex);
+    return kept.size();
+  };
+  const auto give = [&](uint8_t tag) {
+    Answer answer;
+    {
+      std::lock_guard lock(mutex);
+      answer = std::move(kept.at(tag));
+      kept.erase(tag);
+    }
+    answer(Message{message::ok, {}, {}});
+  };
+  RequestScheduler scheduler(routes(), limits, [&](const membership::NodeRecord&, FrameType, const Message& request, Answer& answer) {
+    std::lock_guard lock(mutex);
+    kept.emplace(request.payload.at(0), std::move(answer));
+    return Handled::deferred();
+  });
+  std::vector<std::future<Message>> held;
+  for (uint8_t i = 0; i < 4; ++i) held.push_back(ask(scheduler, peer(1), 2 * i + 1, put_object, FrameType::loader, Bytes{i}));
+  ASSERT_TRUE(waits_for([&] { return count() == 4; }, 2s));
+  auto refused = ask(scheduler, peer(1), 101, put_object, FrameType::loader, Bytes{50});
+  ASSERT_TRUE(answered_within(refused, 1s));
+  EXPECT_EQ(refused.get().type, message::error);
+  EXPECT_EQ(scheduler.stats().rejected, 1u);
+  auto foreground = ask(scheduler, peer(2), 201, get_object, FrameType::foreground, Bytes{60});
+  ASSERT_TRUE(waits_for([&] { return count() == 5; }, 2s)) << "another class is not held by the loader's bound";
+  give(0);
+  ASSERT_TRUE(answered_within(held[0], 2s));
+  auto next = ask(scheduler, peer(1), 103, put_object, FrameType::loader, Bytes{70});
+  EXPECT_TRUE(waits_for([&] { return count() == 5; }, 2s)) << "an answer makes room";
+  for (const uint8_t tag : std::initializer_list<uint8_t>{1, 2, 3, 60, 70}) give(tag);
+  for (size_t i = 1; i < held.size(); ++i) EXPECT_TRUE(answered_within(held[i], 2s));
+  EXPECT_TRUE(answered_within(foreground, 2s));
+  EXPECT_TRUE(answered_within(next, 2s));
+}
+
+// An answer dropped without being given refuses the call, so a caller never
+// waits out its deadline on a handler that lost it, and it frees its place.
+TEST(Scheduler, AnAnswerDroppedUnansweredRefusesTheCall) {
+  ServerLimits limits;
+  limits.max_deferred = 1;
+  RequestScheduler scheduler(routes(), limits, [&](const membership::NodeRecord&, FrameType, const Message&, Answer& answer) {
+    std::thread([dropped = std::move(answer)]() mutable { (void)dropped; }).join();
+    return Handled::deferred();
+  });
+  auto first = ask(scheduler, peer(1), 1, put_object, FrameType::loader);
+  ASSERT_TRUE(answered_within(first, 2s));
+  const auto refusal = first.get();
+  EXPECT_EQ(refusal.type, message::error);
+  ASSERT_TRUE(refusal_of(refusal));
+  EXPECT_EQ(refusal_of(refusal)->code, "abandoned");
+  auto second = ask(scheduler, peer(1), 3, put_object, FrameType::loader);
+  ASSERT_TRUE(answered_within(second, 2s));
+  EXPECT_EQ(refusal_of(second.get()).value_or(Refusal{}).code, "abandoned") << "the dropped answer freed its place: the second ran rather than being refused";
+}
+
+// A deferred request's bytes stay charged until it is answered, not until its
+// handler returns.
+TEST(Scheduler, ADeferredRequestIsChargedUntilAnswered) {
+  sched::RetainedMemoryLedger memory(1 << 20, 64 << 10, 256 << 10, 64 << 10, 64 << 10);
+  Kept kept;
+  RequestScheduler scheduler(
+      routes(), ServerLimits{},
+      [&](const membership::NodeRecord&, FrameType, const Message&, Answer& answer) {
+        std::lock_guard lock(kept.mutex);
+        kept.answers.push_back(std::move(answer));
+        return Handled::deferred();
+      },
+      &memory);
+  auto answer = ask(scheduler, peer(1), 1, put_object, FrameType::loader, Bytes(64 << 10, 1));
+  ASSERT_TRUE(waits_for([&] { return kept.size() == 1; }, 2s));
+  std::this_thread::sleep_for(20ms);
+  EXPECT_GE(memory.stats().used_bytes, 64u << 10);
+  for (auto& given : kept.take()) given(Message{message::ok, {}, {}});
+  ASSERT_TRUE(answered_within(answer, 2s));
+  EXPECT_EQ(memory.stats().used_bytes, 0u);
+}
+
+// A handler given the request by value owns it: it takes the payload the
+// peer sent without copying it (Macha copied every request into its own
+// type).
+TEST(Scheduler, AHandlerTakesTheRequestWithoutACopy) {
+  std::promise<const uint8_t*> taken;
+  RequestScheduler scheduler(routes(), ServerLimits{}, [&](const membership::NodeRecord&, FrameType, Message request, Answer&) {
+    const Bytes payload = std::move(request.payload);
+    taken.set_value(payload.data());
+    return Handled::processed({message::ok, {}, {}});
+  });
+  Bytes payload(4096, 7);
+  const auto* sent = payload.data();
+  auto answer = ask(scheduler, peer(1), 1, put_object, FrameType::loader, std::move(payload));
+  ASSERT_TRUE(answered_within(answer, 2s));
+  EXPECT_EQ(taken.get_future().get(), sent);
+}
 
 // Every class keeps answering while another class's workers are all held.
 TEST(Scheduler, HeldWorkersOfOneClassNeverDelayAnother) {

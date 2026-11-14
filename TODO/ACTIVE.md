@@ -108,13 +108,63 @@ branch with tests first, through hosted CI, and reviewed by the session that ask
    bounded per class and by the caller's deadline, and holds no worker while it waits. Dagda's group-commit prototype:
    one call per message at 8,000/s, a replica blocking on fsync held the workers, and 309,385 of 479,993 calls were
    refused, p99 240 ms.
-2. P6's seven small fixes (Macha), then the owners' test seam, the advert-change watch and non-blocking logging.
+   Built on `feature/deferred-reply`. The pieces:
+   - `net::Answer`, `Handled::deferred()`, `net::DeferringHandler`, and `Routes::bind_deferred`; `bind` keeps the
+     synchronous signature, wrapped.
+   - `ServerLimits::max_deferred` (4096 per work class: running plus deferred, refused at admission), and
+     `Timing::deferred`.
+   - An Answer dropped ungiven refuses the call with 500 "abandoned".
+   - Five tests (four scheduler, one node); macOS 653 passed.
+   Found on the way, not yet fixed: when a data-lane type is registered only on the answering node, a call to it
+   never reaches the handler, synchronous or deferred, by endpoint or by record. After about 11 s the caller learns
+   only "peer channel closed: peer closed". Registered on both nodes, it works. Proven at debug level: the caller,
+   lacking the type's wire rules, sends it on the control lane. The answering node logs "message later is invalid as
+   foreground on the control lane" and closes the session, failing every call on it. The check is
+   `FrameOpener::header` (`net/channel.cpp:440`), which refuses the frame before its body is authenticated.
+   Two fixes were weighed; neither is made, and it goes to Tom:
+   - At the caller: refuse a call for a type it never registered. Tried; seven node tests call types registered only
+     on the answering node, on the control lane, where that works. So it would break callers that rely on it.
+   - At the answering node: read and authenticate the frame, then answer it with a refusal naming the lane, keeping
+     the session. This changes wire v1's treatment of a lane violation, which is Tom's to rule on.
+   Meanwhile the rule stands: register every type on every node, as the hosted systems do.
+   Dagda's acceptance runs (dagda-bench on the Mac, loopback, k = 2, 8,000 messages/s, 60 s), against the deferred
+   reply:
+   - The server side works: a replica groups 511 to 512 calls per sync, against 2 before, and holds no worker.
+   - Both cases still fail. One call per message: 218,642 of 479,992 failed, p99 174 ms (not deferred: 388,496,
+     333 ms). 256 logs: about 227,000 to 250,000 failed, p99 231 to 240 ms.
+   - The limit is now the call path per connection, about 6,000 calls/s per peer pair. Calls are refused with "peer
+     pending reply limit reached" (`max_pending_replies` = 512, `net/outbound.h:27`) and "peer outbound queue full".
+   - Dagda's log needs only about 100 calls/s per replica, which already passes, so this is Dannan's stress case.
+     P5 measures it before anything changes: raise the cap, make it per class, or cheapen the per-call path.
+   Also found, a contract defect: `CallHandle::cancel()` says it "completes the call at once as cancelled", but before
+   placement it only sets a flag, and the call completes when its dial ends (up to the connect timeout; 5 s in
+   `Client.ACallIsIdleFromWhenItWasMadeNotWhenItWasPlaced`). The fix is a once-only completion shared by the handle
+   and the call. Fixed on `feature/macha-fixes`: `Client::once` makes the call's completion once-only, shared by the
+   call and its handle, and a cancel or abort before placement posts "RPC cancelled" through it at once. The idle test
+   failed at 500 ms before the change and completes in about 60 ms after it.
+   `Node.GossipWaitsOutItsCapHoweverMuchDemandThereIs` failed once on arm64 ASan in CI (run 43534279154): the gossip
+   round after its one-second step never reached A. The likely cause, unproven, is that the round is
+   `broadcast_best_effort`, which sends nothing while the route table is busy, yet counts as the round, and the test
+   froze time after the one step. The final wait now steps time on each try, as its first wait does; the frozen
+   section still shows no gossip without a step. In production that costs one interval of gossip, by design.
+2. P6's seven small fixes (Macha), then the owners' test seam, the advert-change watch and non-blocking logging. Five
+   fixes are on `feature/macha-fixes`:
+   - `idle_for` counts from when the call was made;
+   - a const `Node::inbound()`;
+   - `free_port` comes from 10000 to 32767;
+   - `ClusterKey::from_master` and the two labels named once;
+   - `DeferringHandler` takes the request by value, so a handler moves the payload out uncopied.
+   Macha withdrew two on review: #13, `connections_canonical`, which Dannan has written since 3418733 (Macha's own hook
+   wrote it again), and #11, first telemetry at join, inferred and never observed. macOS: 658 passed.
 3. P2, the partition reading on `Nodes`. Even is a minority; a join adds to the agreed roster and only a retire
    removes.
 4. P4, the class-aware worker pool with CPU pacing, from Dagda's `store/cpu_pacing.h`. Macha's pacing cases and a
    baseline run on the nodes are its proof.
 5. P3, the shared public listener below the protocols, to Lugh's and Lir's combined requirements.
-6. P5, small-message figures in `dannan-bench`, here first. The Pis wait for Tom's word.
+6. P5, small-message figures in `dannan-bench`, here first. Two real machines: the shared Pi 5 build servers
+   corvus-jupiter (10.44.1.169) and corvus-saturn (10.44.1.170), which Tom gave on 2026-11-13 for native arm64 builds
+   and cluster tests. They are shared, so run at nice 19 under a directory of our own, and clean up. macnessa and
+   inverbeg, which run Macha, still wait for his word.
 P7, Alpine in CI, is not now (Tom). Otherwise, fix what the Macha session or the port finds. arm64 runs on inverbeg at
 nice 19 with GoogleTest in `~/dannan-arm64-deps/prefix`; the tests run there as root.
 

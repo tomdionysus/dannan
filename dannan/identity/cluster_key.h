@@ -23,12 +23,19 @@ namespace dannan::identity {
 //               "dannan/cluster-id/1")
 //
 // A hosted system derives its own keys from master under its own labels;
-// Dannan names none of them.
+// Dannan names none of them. Its own two labels are named here, once: a host
+// that holds master another way takes the keys from from_master() rather than
+// repeating them, so a change of label cannot split a cluster.
+inline constexpr std::string_view cluster_auth_label = "dannan/auth/1";
+inline constexpr std::string_view cluster_id_label = "dannan/cluster-id/1";
+
 struct ClusterKey {
   std::array<uint8_t, 32> master{};
   std::array<uint8_t, 32> auth{};
   std::array<uint8_t, 16> cluster_id{};
 
+  // Auth and the cluster id, derived from `master` as the file's are.
+  static ClusterKey from_master(const std::array<uint8_t, 32>& master);
   std::array<uint8_t, 32> derive(std::string_view label) const;
 };
 

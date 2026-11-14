@@ -169,6 +169,33 @@ share of that is the replication round: the edge's call to the shard primary, th
 primary's message to its replicas. So the bench reports p99 for request and reply, at
 1 to 64 envelopes of 64 B to 1 KiB, as the network's part of the 50 ms.
 
+Dagda's acceptance bench reproduces the per-connection call ceiling (ACTIVE, 0.7). It is
+Dagda's `tools/dagda_bench.cpp` on `feature/bench` (c7386d5); it needs only Dannan and
+prints why calls fail. To build it standalone:
+
+```cmake
+cmake_minimum_required(VERSION 3.24)
+project(dagda_bench_070 LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 20)
+find_package(dannan 0.7.0 CONFIG REQUIRED)
+add_executable(dagda-bench /path/to/dagda/tools/dagda_bench.cpp)
+target_compile_definitions(dagda-bench PRIVATE DAGDA_BENCH_DEFERRED)
+target_link_libraries(dagda-bench PRIVATE dannan::dannan)
+```
+
+Case 1: two deferred replicas and one appender on loopback, at 8,000/s for 60 s.
+
+```sh
+B=./dagda-bench; K=cluster.key; head -c 64 /dev/urandom > $K
+$B log-replica --key $K --state r1 --port 17501 --deferred yes &
+$B log-replica --key $K --state r2 --port 17502 --deferred yes --bootstrap 127.0.0.1:17501 &
+sleep 2
+$B log-appender --key $K --state a --port 17503 --bootstrap 127.0.0.1:17501 --rate 8000 --tick-ms 0 --edges 2 --logs 1 --seconds 60
+kill -TERM %1 %2
+```
+
+Case 2 is the same with `--tick-ms 10` (or 20) `--logs 256 --group log`.
+
 It runs on the compose bed and loopback here. Two real machines (the Pis, or the
 laptop against a Pi) wait for Tom's word. It also answers whether
 `max_pending_replies` = 512 (`net/outbound.h:27`) limits Dagda's group commit. Lir
