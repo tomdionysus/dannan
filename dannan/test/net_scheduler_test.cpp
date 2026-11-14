@@ -16,6 +16,7 @@
 
 #include <atomic>
 #include <future>
+#include <map>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -120,29 +121,43 @@ TEST(Scheduler, ADeferredRequestHoldsNoWorker) {
 TEST(Scheduler, DeferredWorkIsBoundedPerClass) {
   ServerLimits limits;
   limits.max_deferred = 4;
-  Kept kept;
-  RequestScheduler scheduler(routes(), limits, [&](const membership::NodeRecord&, FrameType, const Message&, Answer& answer) {
-    std::lock_guard lock(kept.mutex);
-    kept.answers.push_back(std::move(answer));
+  // Each kept answer by its request's tag (the payload's one byte): workers
+  // run side by side, so the order they are kept in is any order.
+  std::mutex mutex;
+  std::map<uint8_t, Answer> kept;
+  const auto count = [&] {
+    std::lock_guard lock(mutex);
+    return kept.size();
+  };
+  const auto give = [&](uint8_t tag) {
+    Answer answer;
+    {
+      std::lock_guard lock(mutex);
+      answer = std::move(kept.at(tag));
+      kept.erase(tag);
+    }
+    answer(Message{message::ok, {}, {}});
+  };
+  RequestScheduler scheduler(routes(), limits, [&](const membership::NodeRecord&, FrameType, const Message& request, Answer& answer) {
+    std::lock_guard lock(mutex);
+    kept.emplace(request.payload.at(0), std::move(answer));
     return Handled::deferred();
   });
   std::vector<std::future<Message>> held;
-  for (uint64_t i = 0; i < 4; ++i) held.push_back(ask(scheduler, peer(1), 2 * i + 1, put_object, FrameType::loader));
-  ASSERT_TRUE(waits_for([&] { return kept.size() == 4; }, 2s));
-  auto refused = ask(scheduler, peer(1), 101, put_object, FrameType::loader);
+  for (uint8_t i = 0; i < 4; ++i) held.push_back(ask(scheduler, peer(1), 2 * i + 1, put_object, FrameType::loader, Bytes{i}));
+  ASSERT_TRUE(waits_for([&] { return count() == 4; }, 2s));
+  auto refused = ask(scheduler, peer(1), 101, put_object, FrameType::loader, Bytes{50});
   ASSERT_TRUE(answered_within(refused, 1s));
-  const auto refusal = refused.get();
-  EXPECT_EQ(refusal.type, message::error);
+  EXPECT_EQ(refused.get().type, message::error);
   EXPECT_EQ(scheduler.stats().rejected, 1u);
-  auto foreground = ask(scheduler, peer(2), 201, get_object, FrameType::foreground);
-  ASSERT_TRUE(waits_for([&] { return kept.size() == 5; }, 2s)) << "another class is not held by the loader's bound";
-  auto answers = kept.take();
-  answers.front()(Message{message::ok, {}, {}});
-  ASSERT_TRUE(answered_within(held.front(), 2s));
-  auto next = ask(scheduler, peer(1), 103, put_object, FrameType::loader);
-  EXPECT_TRUE(waits_for([&] { return kept.size() == 1; }, 2s)) << "an answer makes room";
-  for (size_t i = 1; i < answers.size(); ++i) answers[i](Message{message::ok, {}, {}});
-  for (auto& answer : kept.take()) answer(Message{message::ok, {}, {}});
+  auto foreground = ask(scheduler, peer(2), 201, get_object, FrameType::foreground, Bytes{60});
+  ASSERT_TRUE(waits_for([&] { return count() == 5; }, 2s)) << "another class is not held by the loader's bound";
+  give(0);
+  ASSERT_TRUE(answered_within(held[0], 2s));
+  auto next = ask(scheduler, peer(1), 103, put_object, FrameType::loader, Bytes{70});
+  EXPECT_TRUE(waits_for([&] { return count() == 5; }, 2s)) << "an answer makes room";
+  for (const uint8_t tag : std::initializer_list<uint8_t>{1, 2, 3, 60, 70}) give(tag);
+  for (size_t i = 1; i < held.size(); ++i) EXPECT_TRUE(answered_within(held[i], 2s));
   EXPECT_TRUE(answered_within(foreground, 2s));
   EXPECT_TRUE(answered_within(next, 2s));
 }
