@@ -118,6 +118,11 @@ struct NodeConfig {
   size_t max_frame = 256 * 1024;
   net::ServerLimits limits;
   reach::ConnectivityConfig connectivity;
+  // The node's worker pool and the gates its loader and speculative work run
+  // through (P4); a hosted system sets its classes' caps and bounds here.
+  sched::WorkerPoolConfig workers;
+  sched::GateConfig loader_gate;
+  sched::GateConfig speculative_gate;
   // The node's retained-memory budget and its reserves.
   uint64_t memory_bytes = 768ull << 20;
   uint64_t control_reserve_bytes = 64ull << 20;
@@ -246,6 +251,8 @@ class Node final : public Context {
   status::Observations& observations() override { return _observations; }
   sched::WaitGuard& wait_guard() override { return _wait_guard; }
   supervise::SupervisedThreads& threads() override { return _threads; }
+  sched::ClassGates& gates() override { return _gates; }
+  sched::WorkerPool& workers() override { return _workers; }
   Diagnostics diagnostics() const override;
 
  private:
@@ -324,6 +331,9 @@ class Node final : public Context {
   status::ActivityClocks _activity;
   status::Observations _observations;
   supervise::SupervisedThreads _threads;
+  // The gates before the pool that runs through them, both after the threads.
+  sched::ClassGates _gates;
+  sched::WorkerPool _workers;
   sched::WaitGuard _wait_guard;
   sched::RetainedMemoryLedger _memory;
   const std::shared_ptr<net::TransportTraffic> _traffic = std::make_shared<net::TransportTraffic>();

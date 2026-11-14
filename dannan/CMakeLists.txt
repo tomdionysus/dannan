@@ -45,10 +45,13 @@ add_library(dannan SHARED
   reach/inbound.cpp
   reach/paths.cpp
   reach/upnp.cpp
+  sched/class_gate.cpp
+  sched/cpu_pacing.cpp
   sched/duty_share.cpp
   sched/memory_limit.cpp
   sched/retained_memory.cpp
   sched/work.cpp
+  sched/worker_pool.cpp
   status/log.cpp
   status/activity.cpp
   status/events.cpp

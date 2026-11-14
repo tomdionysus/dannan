@@ -725,6 +725,31 @@ TEST(Node, ACorruptPersistedFileIsSaidAndSurvived) {
 }
 
 // Status reads Macha's names for the three loops; ruling B, 2026-11-05.
+// P4: the node's worker pool runs with the node, and a hosted system's own pool
+// runs beside it on the node's gates, its threads under the node's supervision.
+TEST(Node, TheNodesPoolRunsWithItAndAHostedPoolBesideIt) {
+  Pair pair;
+  std::atomic<int> ran{0};
+  ASSERT_TRUE(pair.a->context().workers().submit(sched::WorkContext(FrameType::foreground), [&](sched::WorkerPool::Turn&) { ++ran; }).accepted);
+  sched::WorkerPoolConfig own;
+  own.threads = 1;
+  own.name = "hash";
+  own.reserve = {0, 0, 0, 0};
+  sched::WorkerPool hashing(own, pair.a->context().gates(), &pair.a->context().threads());
+  hashing.start();
+  ASSERT_TRUE(hashing.submit(sched::WorkContext(FrameType::foreground), [&](sched::WorkerPool::Turn&) { ++ran; }).accepted);
+  EXPECT_TRUE(eventually([&] { return ran.load() == 2; }));
+  std::set<std::string> names;
+  for (const auto& thread : pair.a->context().threads().statuses()) names.insert(thread.name);
+  EXPECT_TRUE(names.contains("work-0"));
+  EXPECT_TRUE(names.contains("hash-0"));
+  EXPECT_EQ(&pair.a->context().gates().gate(sched::WorkClass::speculative), &pair.a->gates().gate(sched::WorkClass::speculative));
+  hashing.stop();
+  pair.a->stop();
+  EXPECT_EQ(pair.a->context().workers().submit(sched::WorkContext(FrameType::foreground), [](sched::WorkerPool::Turn&) {}).why,
+            sched::WorkerPool::Refused::stopped);
+}
+
 TEST(Node, TheLoopsCarryTheirNames) {
   Pair pair;
   std::set<std::string> names;

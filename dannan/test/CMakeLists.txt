@@ -47,6 +47,7 @@ add_executable(dannan_tests
   sched_memory_test.cpp
   sched_walk_retry_test.cpp
   sched_work_test.cpp
+  sched_worker_pool_test.cpp
   status_log_test.cpp
   status_observation_test.cpp
   status_process_test.cpp
