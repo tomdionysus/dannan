@@ -45,9 +45,11 @@ class SteadyTimeSource final : public TimeSource {
 };
 
 // One stateless instance serves every component for the life of the process.
+// Never destroyed, so a thread still running at exit (one owned by a static)
+// never reads a clock already gone.
 inline const TimeSource& steady_time_source() noexcept {
-  static const SteadyTimeSource source;
-  return source;
+  static const SteadyTimeSource* const source = new SteadyTimeSource();
+  return *source;
 }
 
 // Wall-clock milliseconds since the Unix epoch, for what is recorded or
@@ -68,9 +70,10 @@ class SystemWallClock final : public WallClock {
   }
 };
 
+// Never destroyed, as steady_time_source().
 inline const WallClock& system_wall_clock() noexcept {
-  static const SystemWallClock clock;
-  return clock;
+  static const SystemWallClock* const clock = new SystemWallClock();
+  return *clock;
 }
 
 }  // namespace dannan::contract
