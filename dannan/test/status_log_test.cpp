@@ -10,11 +10,13 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <memory>
 #include <mutex>
 #include <regex>
 #include <sstream>
 #include <stdexcept>
+#include <thread>
 #include <vector>
 
 #include "dannan/status/log.h"
@@ -104,18 +106,25 @@ TEST(JsonSink, WritesOneObjectPerLineEscaped) {
 class Held final : public LogSink {
  public:
   bool enabled(LogLevel level) const noexcept override { return level >= LogLevel::info; }
-  void write(LogLevel level, std::string_view scope, std::string_view message) override {
+  void write(LogLevel level, std::string_view scope, std::string_view message) override { write_at(std::chrono::system_clock::now(), level, scope, message); }
+  void write_at(std::chrono::system_clock::time_point at, LogLevel level, std::string_view scope, std::string_view message) override {
     gate.enter_and_wait();
     std::lock_guard lock(mutex);
     lines.push_back(std::string(log_level_name(level)) + " " + std::string(scope) + ": " + std::string(message));
+    times.push_back(at);
   }
   std::vector<std::string> taken() {
     std::lock_guard lock(mutex);
     return lines;
   }
+  std::vector<std::chrono::system_clock::time_point> stamped() {
+    std::lock_guard lock(mutex);
+    return times;
+  }
   test::Gate gate;
   std::mutex mutex;
   std::vector<std::string> lines;
+  std::vector<std::chrono::system_clock::time_point> times;
 };
 
 // The asynchronous stage (P6): a writer never waits on the inner sink's
@@ -136,8 +145,14 @@ TEST(AsyncSink, NeverWaitsOnItsSinkAndReportsWhatItDropped) {
   // Every write above returned with the device still shut.
   EXPECT_TRUE(inner->taken().empty());
   EXPECT_EQ(sink.dropped(), 3u);
+  // Each record keeps the time it was written, not the time it went through.
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  const auto opened = std::chrono::system_clock::now();
   inner->gate.open();
   sink.flush();
+  const auto times = inner->stamped();
+  ASSERT_EQ(times.size(), 6u);
+  for (size_t i = 0; i < 5; ++i) EXPECT_LT(times[i], opened) << i;
   const std::vector<std::string> expected{"INFO net: record 0", "INFO net: record 1", "INFO net: record 2",
                                           "INFO net: record 3", "INFO net: record 4", "WARN log: dropped 3 record(s): the log queue was full"};
   EXPECT_EQ(inner->taken(), expected);
