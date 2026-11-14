@@ -72,39 +72,33 @@ class Stream : public std::enable_shared_from_this<Stream> {
   // Reads what has arrived, as a socket's async_read_some; plaintext or TLS alike.
   // The handler's executor, allocator and cancellation slot reach the read, so a
   // composed operation's per-operation cancel (Beast's) cancels it (Lir's review).
+  // Once the stream's close has begun it ends at once as aborted.
   template <typename MutableBuffers, typename Token>
   auto async_read_some(const MutableBuffers& buffers, Token&& token) {
     return boost::asio::async_initiate<Token, void(boost::system::error_code, std::size_t)>(
         [self = shared_from_this()](auto handler, const MutableBuffers& to) {
-          auto executor = boost::asio::get_associated_executor(handler, self->get_executor());
-          auto allocator = boost::asio::get_associated_allocator(handler);
-          auto slot = boost::asio::get_associated_cancellation_slot(handler);
-          ++self->_reads;
-          auto done = boost::asio::bind_executor(
-              executor,
-              boost::asio::bind_allocator(allocator, boost::asio::bind_cancellation_slot(
-                                                         slot, [self, handler = std::move(handler)](boost::system::error_code error, std::size_t read) mutable {
-                                                           if (read > 0) self->note_read();
-                                                           self->read_ended();
-                                                           std::move(handler)(error, read);
-                                                         })));
+          auto done = self->tracked(std::move(handler), true);
+          if (!done) return;
           if (self->_tls)
-            self->_tls->async_read_some(to, std::move(done));
+            self->_tls->async_read_some(to, std::move(*done));
           else
-            self->_socket.async_read_some(to, std::move(done));
+            self->_socket.async_read_some(to, std::move(*done));
         },
         token, buffers);
   }
 
   // Writes what it can, as a socket's async_write_some. Not with send() on one stream.
+  // Once the stream's close has begun it ends at once as aborted.
   template <typename ConstBuffers, typename Token>
   auto async_write_some(const ConstBuffers& buffers, Token&& token) {
     return boost::asio::async_initiate<Token, void(boost::system::error_code, std::size_t)>(
         [self = shared_from_this()](auto handler, const ConstBuffers& from) {
+          auto done = self->tracked(std::move(handler), false);
+          if (!done) return;
           if (self->_tls)
-            self->_tls->async_write_some(from, std::move(handler));
+            self->_tls->async_write_some(from, std::move(*done));
           else
-            self->_socket.async_write_some(from, std::move(handler));
+            self->_socket.async_write_some(from, std::move(*done));
         },
         token, buffers);
   }
@@ -172,10 +166,41 @@ class Stream : public std::enable_shared_from_this<Stream> {
   void note_read();
   void arm_idle();
   void write_next();
+  // A hosted operation's completion, counted while it is outstanding, so the TLS
+  // shutdown, which reads and writes the stream itself, never shares it with one.
+  // None once the close has begun: the handler is then told aborted, posted.
+  template <typename Handler>
+  auto tracked(Handler handler, bool reading) {
+    auto executor = boost::asio::get_associated_executor(handler, get_executor());
+    auto allocator = boost::asio::get_associated_allocator(handler);
+    auto slot = boost::asio::get_associated_cancellation_slot(handler);
+    using Done = decltype(boost::asio::bind_executor(
+        executor, boost::asio::bind_allocator(allocator, boost::asio::bind_cancellation_slot(slot, Completion<Handler>{nullptr, std::move(handler), false}))));
+    if (_shutting_down) {
+      boost::asio::post(executor, [handler = std::move(handler)]() mutable { std::move(handler)(boost::asio::error::operation_aborted, std::size_t{0}); });
+      return std::optional<Done>{};
+    }
+    ++_ops;
+    return std::optional<Done>(boost::asio::bind_executor(
+        executor, boost::asio::bind_allocator(
+                      allocator, boost::asio::bind_cancellation_slot(slot, Completion<Handler>{shared_from_this(), std::move(handler), reading}))));
+  }
+  template <typename Handler>
+  struct Completion {
+    std::shared_ptr<Stream> self;
+    Handler handler;
+    bool reading;
+    void operator()(boost::system::error_code error, std::size_t bytes) {
+      if (reading && bytes > 0) self->note_read();
+      self->op_ended();
+      std::move(handler)(error, bytes);
+    }
+  };
+
   // The clean end once nothing is queued or being written.
   void shut_down();
-  // A hosted read has completed: the TLS shutdown waiting for it may begin.
-  void read_ended();
+  // A hosted operation has completed: the TLS shutdown waiting for it may begin.
+  void op_ended();
   void tls_shutdown();
   void finish(bool clean);
 
@@ -201,9 +226,9 @@ class Stream : public std::enable_shared_from_this<Stream> {
   // On the stream's executor.
   bool _closing = false;
   bool _shutting_down = false;
-  // Hosted reads outstanding, and a TLS shutdown waiting for them to end: it reads
-  // the peer's close_notify itself, and cannot share the stream with another read.
-  size_t _reads = 0;
+  // Hosted reads and writes outstanding, and a TLS shutdown waiting for them to end:
+  // it reads and writes the stream itself, and cannot share it with another operation.
+  size_t _ops = 0;
   bool _shutdown_waiting = false;
   std::vector<contract::UniqueFunction<void()>> _finished;
 };
