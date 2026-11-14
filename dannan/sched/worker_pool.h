@@ -127,8 +127,9 @@ class WorkerPool {
   // to `executor` once it has ended: run, faulted, or dropped unrun because its
   // deadline passed or it was cancelled while queued, or the pool stopped. Work past
   // its deadline is dropped at the next turn of a worker, so it is told at most one
-  // running task late (Lugh's review). Throws std::invalid_argument for a `done`
-  // without an executor.
+  // running task late (Lugh's review). The executor must outlive the pool: a worker
+  // may still be returning from posting to it after `done` has run. Throws
+  // std::invalid_argument for a `done` without an executor.
   Submitted submit(const WorkContext& context, Task task, boost::asio::any_io_executor executor = {}, Done done = {});
 
   ClassStats stats(WorkClass work) const;

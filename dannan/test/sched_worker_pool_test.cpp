@@ -363,11 +363,12 @@ TEST(WorkerPool, AReserveKeepsAWorkerForTheClassAbove) {
 // A task whose deadline passes, or which is cancelled, while it waits is dropped
 // unrun, and its caller is told so on its executor.
 TEST(WorkerPool, QueuedWorkPastItsDeadlineOrCancelledIsDroppedAndTold) {
+  // Before the pool: the executor must outlive the pool that posts to it.
+  Executor executor;
   test::SteppedTime time;
   ClassGates gates({}, {}, &time);
   WorkerPool pool(one_thread(), gates, nullptr, &time);
   pool.start();
-  Executor executor;
   test::Gate held;
   test::GateOpener opener(held);
   ASSERT_TRUE(pool.submit(of(FrameType::foreground), [&](WorkerPool::Turn&) { held.enter_and_wait(); }).accepted);
@@ -512,10 +513,10 @@ TEST(WorkerPool, ABackgroundTaskIsAskedToYieldAtItsSlicesEnd) {
 // A task and its completion may own what cannot be copied, as a password's Secret
 // is (Lugh's review).
 TEST(WorkerPool, ATaskAndItsCompletionMayOwnWhatCannotBeCopied) {
+  Executor executor;
   ClassGates gates;
   WorkerPool pool(one_thread(), gates);
   pool.start();
-  Executor executor;
   auto secret = std::make_unique<int>(7);
   auto witness = std::make_unique<int>(9);
   std::promise<int> seen;
@@ -534,10 +535,10 @@ TEST(WorkerPool, ATaskAndItsCompletionMayOwnWhatCannotBeCopied) {
 
 // A task that throws is told as faulted, and the pool goes on.
 TEST(WorkerPool, AThrowingTaskIsToldAndThePoolGoesOn) {
+  Executor executor;
   ClassGates gates;
   WorkerPool pool(one_thread(), gates);
   pool.start();
-  Executor executor;
   std::promise<WorkerPool::Ended> ended;
   ASSERT_TRUE(pool.submit(
                       of(FrameType::foreground), [](WorkerPool::Turn&) { throw std::runtime_error("broke"); }, executor.io.get_executor(),
@@ -556,10 +557,10 @@ TEST(WorkerPool, AThrowingTaskIsToldAndThePoolGoesOn) {
 
 // Stopping ends what is queued as stopped, told on each caller's executor.
 TEST(WorkerPool, StoppingEndsQueuedTasksAsStopped) {
+  Executor executor;
   ClassGates gates;
   WorkerPool pool(one_thread(), gates);
   pool.start();
-  Executor executor;
   test::Gate held;
   test::GateOpener opener(held);
   ASSERT_TRUE(pool.submit(of(FrameType::foreground), [&](WorkerPool::Turn&) { held.enter_and_wait(); }).accepted);
