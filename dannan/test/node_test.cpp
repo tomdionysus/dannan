@@ -399,6 +399,15 @@ TEST(Node, AHostedHandlerAnswersLaterFromAnotherThread) {
   EXPECT_EQ(refusal->code, "abandoned");
 }
 
+// The node's inbound answer is read through a const node, as a host's Status
+// page holds it.
+TEST(Node, TheInboundAnswerReadsThroughAConstNode) {
+  Pair pair;
+  const Node& a = *pair.a;
+  EXPECT_EQ(a.inbound().capable(), pair.a->inbound().capable());
+  EXPECT_EQ(a.inbound().state().source, pair.a->inbound().state().source);
+}
+
 // Asking the loops to stop returns at once; stop() afterwards still finishes it.
 TEST(Node, RequestStopAsksAndStopFinishes) {
   Pair pair;
