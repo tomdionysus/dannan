@@ -206,6 +206,12 @@ void CallHandle::placed(const std::shared_ptr<Session>& session, uint64_t reques
 void CallHandle::finished() {
   contract::Lock lock(_mutex);
   _done = true;
+  _complete_cancelled = {};
+}
+
+void CallHandle::on_cancel_before_placement(std::function<void()> complete) {
+  contract::Lock lock(_mutex);
+  _complete_cancelled = std::move(complete);
 }
 
 bool CallHandle::cancelled_before_placement() const {
@@ -216,25 +222,39 @@ bool CallHandle::cancelled_before_placement() const {
 void CallHandle::cancel() {
   std::shared_ptr<Session> session;
   uint64_t id;
+  std::function<void()> complete;
   {
     contract::Lock lock(_mutex);
     _cancelled = true;
     session = _session.lock();
     id = _id;
+    // Not placed yet: complete it now rather than when its dial ends. The
+    // call stays queued for its route and finds itself done when it gets there.
+    if (!id && !_done) {
+      complete = std::move(_complete_cancelled);
+      _done = true;
+    }
   }
+  if (complete) complete();
   if (session && id) session->cancel(id);
 }
 
 void CallHandle::abort() {
   std::shared_ptr<Session> session;
   uint64_t id;
+  std::function<void()> complete;
   {
     contract::Lock lock(_mutex);
     _cancelled = true;
     _aborted = true;
     session = _session.lock();
     id = _id;
+    if (!id && !_done) {
+      complete = std::move(_complete_cancelled);
+      _done = true;
+    }
   }
+  if (complete) complete();
   if (!session || !id) return;
   session->cancel(id);
   session->close("call aborted");
@@ -279,15 +299,32 @@ std::shared_ptr<CallHandle> Client::call(const membership::NodeRecord& peer, Mes
                                          asio::any_io_executor executor, Done done, CallWatch watch) {
   note_peer(peer);
   auto handle = std::shared_ptr<CallHandle>(new CallHandle(_options.time));
-  call(Target{peer.id, {peer.host, peer.port}}, Call{type, std::move(payload), frame, std::move(executor), std::move(done), 0, handle, watch});
+  auto completion = once(*handle, executor, std::move(done));
+  call(Target{peer.id, {peer.host, peer.port}}, Call{type, std::move(payload), frame, std::move(executor), std::move(completion), 0, handle, watch});
   return handle;
 }
 
 std::shared_ptr<CallHandle> Client::call(const Endpoint& endpoint, MessageType type, Bytes payload, sched::FrameType frame, asio::any_io_executor executor,
                                          Done done, CallWatch watch) {
   auto handle = std::shared_ptr<CallHandle>(new CallHandle(_options.time));
-  call(Target{std::nullopt, endpoint}, Call{type, std::move(payload), frame, std::move(executor), std::move(done), 0, handle, watch});
+  auto completion = once(*handle, executor, std::move(done));
+  call(Target{std::nullopt, endpoint}, Call{type, std::move(payload), frame, std::move(executor), std::move(completion), 0, handle, watch});
   return handle;
+}
+
+Client::Done Client::once(CallHandle& handle, const asio::any_io_executor& executor, Done done) {
+  // Completed once, by whichever comes first: the call's own end, or a cancel
+  // of it before it is placed. Each runs on the call's executor.
+  auto fired = std::make_shared<std::atomic<bool>>(false);
+  auto shared = std::make_shared<Done>(std::move(done));
+  handle.on_cancel_before_placement([fired, shared, executor] {
+    asio::post(executor, [fired, shared] {
+      if (!fired->exchange(true)) (*shared)(CallOutcome{std::nullopt, "RPC cancelled", {}});
+    });
+  });
+  return [fired, shared](CallOutcome outcome) {
+    if (!fired->exchange(true)) (*shared)(std::move(outcome));
+  };
 }
 
 void Client::call(Target target, Call call) {

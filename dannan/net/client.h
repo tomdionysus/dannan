@@ -63,6 +63,9 @@ class CallHandle {
   friend class Client;
   void placed(const std::shared_ptr<Session>& session, uint64_t request_id);
   void finished();
+  // How a cancel completes the call before it is placed: the call's own
+  // completion, run once whichever comes first.
+  void on_cancel_before_placement(std::function<void()> complete);
   // True if cancelled before placement, so the caller fails the call.
   bool cancelled_before_placement() const;
 
@@ -73,6 +76,7 @@ class CallHandle {
   uint64_t _id DANNAN_GUARDED_BY(_mutex) = 0;
   contract::TimePoint _placed DANNAN_GUARDED_BY(_mutex);
   bool _done DANNAN_GUARDED_BY(_mutex) = false;
+  std::function<void()> _complete_cancelled DANNAN_GUARDED_BY(_mutex);
   bool _cancelled DANNAN_GUARDED_BY(_mutex) = false;
   bool _aborted DANNAN_GUARDED_BY(_mutex) = false;
   std::optional<sched::FrameType> _promoted DANNAN_GUARDED_BY(_mutex);
@@ -323,6 +327,8 @@ class Client {
   using Retire = std::vector<std::shared_ptr<Session>>;
 
   void call(Target target, Call call);
+  // A call's completion, run once: by its end, or by a cancel before it is placed.
+  static Done once(CallHandle& handle, const boost::asio::any_io_executor& executor, Done done);
   // Places `call` on `session`; one refused because the session retired or
   // closed under it is routed again (a simultaneous dial's loser), at most
   // a few times. `target` is where it is going.

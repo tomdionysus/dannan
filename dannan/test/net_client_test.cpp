@@ -1438,8 +1438,12 @@ TEST(Client, ACallIsIdleFromWhenItWasMadeNotWhenItWasPlaced) {
   const auto idle = handle->idle_for();
   EXPECT_GE(idle, 50ms);
   EXPECT_LT(idle, 10s);
+  // Cancelled while still dialling, it completes at once as cancelled, as the
+  // handle promises; it is not left to the dial's timeout.
   handle->cancel();
-  ASSERT_EQ(done->get_future().wait_for(5s), std::future_status::ready);
+  auto outcome = done->get_future();
+  ASSERT_EQ(outcome.wait_for(500ms), std::future_status::ready);
+  EXPECT_NE(outcome.get().failure.find("cancelled"), std::string::npos);
   EXPECT_EQ(handle->idle_for(), std::chrono::milliseconds::max());
 }
 

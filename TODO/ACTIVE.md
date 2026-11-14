@@ -130,7 +130,9 @@ branch with tests first, through hosted CI, and reviewed by the session that ask
    Also found, a contract defect: `CallHandle::cancel()` says it "completes the call at once as cancelled", but before
    placement it only sets a flag, and the call completes when its dial ends (up to the connect timeout; 5 s in
    `Client.ACallIsIdleFromWhenItWasMadeNotWhenItWasPlaced`). The fix is a once-only completion shared by the handle
-   and the call. For the 0.7 batch.
+   and the call. Fixed on `feature/macha-fixes`: `Client::once` makes the call's completion once-only, shared by the
+   call and its handle, and a cancel or abort before placement posts "RPC cancelled" through it at once. The idle test
+   failed at 500 ms before the change and completes in about 60 ms after it.
 2. P6's seven small fixes (Macha), then the owners' test seam, the advert-change watch and non-blocking logging. Five
    fixes are on `feature/macha-fixes`:
    - `idle_for` counts from when the call was made;
