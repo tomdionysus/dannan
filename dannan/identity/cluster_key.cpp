@@ -16,6 +16,15 @@
 
 namespace dannan::identity {
 
+ClusterKey ClusterKey::from_master(const std::array<uint8_t, 32>& master) {
+  ClusterKey key;
+  key.master = master;
+  key.auth = key.derive(cluster_auth_label);
+  const auto id = key.derive(cluster_id_label);
+  std::copy_n(id.begin(), key.cluster_id.size(), key.cluster_id.begin());
+  return key;
+}
+
 std::array<uint8_t, 32> ClusterKey::derive(std::string_view label) const {
   return hkdf_sha256(master, {}, std::span(reinterpret_cast<const uint8_t*>(label.data()), label.size()));
 }
@@ -28,13 +37,9 @@ ClusterKey load_cluster_key(const std::filesystem::path& path) {
   if (secret.empty()) {
     throw std::runtime_error("cluster key file " + path.string() + " is empty");
   }
-  ClusterKey key;
-  key.master = sha256(secret).bytes;
+  const auto master = sha256(secret).bytes;
   cleanse(secret);
-  key.auth = key.derive("dannan/auth/1");
-  const auto id = key.derive("dannan/cluster-id/1");
-  std::copy_n(id.begin(), key.cluster_id.size(), key.cluster_id.begin());
-  return key;
+  return ClusterKey::from_master(master);
 }
 
 }  // namespace dannan::identity
