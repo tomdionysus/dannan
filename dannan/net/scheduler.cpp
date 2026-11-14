@@ -31,7 +31,56 @@ uint64_t micros(contract::Clock::duration duration) {
 
 }  // namespace
 
+struct Answer::State {
+  Reply reply;
+  sched::RetainedMemoryLedger::Lease memory;
+  std::shared_ptr<std::array<std::atomic<size_t>, 4>> answering;
+  size_t work = 0;
+  ~State() {
+    if (answering) (*answering)[work].fetch_sub(1, std::memory_order_acq_rel);
+  }
+};
+
+Answer::Answer() noexcept = default;
+Answer::Answer(std::unique_ptr<State> state) noexcept : _state(std::move(state)) {}
+Answer::Answer(Answer&& other) noexcept = default;
+Answer& Answer::operator=(Answer&& other) noexcept {
+  if (this != &other) {
+    abandon();
+    _state = std::move(other._state);
+  }
+  return *this;
+}
+Answer::~Answer() { abandon(); }
+
+void Answer::operator()(Message reply) {
+  // Taken first, so a later call finds nothing; the bound and the bytes are
+  // given back once the reply is sent.
+  auto state = std::move(_state);
+  if (state && state->reply) state->reply(std::move(reply));
+}
+
+void Answer::fail(uint16_t status, std::string_view code, std::string_view why) { (*this)(error_reply(status, code, why)); }
+
+void Answer::abandon() noexcept {
+  if (!_state) return;
+  try {
+    (*this)(error_reply(500, "abandoned", "the request's handler dropped its answer"));
+  } catch (...) {
+    _state.reset();
+  }
+}
+
 RequestScheduler::RequestScheduler(std::shared_ptr<const RouteTable> routes, ServerLimits limits, RequestHandler handler, sched::RetainedMemoryLedger* memory,
+                                   const contract::TimeSource* time, supervise::SupervisedThreads* threads, std::shared_ptr<status::LogSink> log)
+    : RequestScheduler(
+          std::move(routes), limits,
+          [handler = std::move(handler)](const membership::NodeRecord& peer, sched::FrameType frame, const Message& request, Answer&) {
+            return handler(peer, frame, request);
+          },
+          memory, time, threads, std::move(log)) {}
+
+RequestScheduler::RequestScheduler(std::shared_ptr<const RouteTable> routes, ServerLimits limits, DeferringHandler handler, sched::RetainedMemoryLedger* memory,
                                    const contract::TimeSource* time, supervise::SupervisedThreads* threads, std::shared_ptr<status::LogSink> log)
     : _routes(std::move(routes)),
       _limits(limits),
@@ -145,6 +194,10 @@ void RequestScheduler::submit(membership::NodeRecord peer, Frame frame, Reply re
     auto& jobs = queue(which);
     auto* held = bytes_for(which);
     if (!refused) refused = jobs.size() >= job_limit || bytes > byte_limit || *held > byte_limit - bytes;
+    // A class's requests running or answered later are bounded too: a handler
+    // that defers holds no worker, so the workers no longer bound them.
+    const auto work = static_cast<size_t>(sched::work_class(frame.frame));
+    if (!refused) refused = (*_answering)[work].load(std::memory_order_acquire) >= _limits.max_deferred;
     if (refused) {
       ++(which == Queue::ordered ? _ordered_rejected : _rejected);
     } else {
@@ -195,21 +248,29 @@ void RequestScheduler::cancel(const identity::NodeId& peer, uint64_t request_id)
 void RequestScheduler::run(Job job) {
   if (job.frame.session_closed && job.frame.session_closed->load()) return;
   const auto started = _time->now();
+  auto state = std::make_unique<Answer::State>();
+  state->reply = std::move(job.reply);
+  state->memory = std::move(job.memory);
+  state->work = static_cast<size_t>(sched::work_class(job.frame.frame));
+  (*_answering)[state->work].fetch_add(1, std::memory_order_acq_rel);
+  state->answering = _answering;
+  Answer answer(std::move(state));
   auto handled = Handled::failed(500, "internal_error", "request handler failed");
   try {
-    handled = _handler(job.peer, job.frame.frame, job.frame.message);
+    handled = _handler(job.peer, job.frame.frame, job.frame.message, answer);
   } catch (const std::exception& failure) {
     handled = Handled::failed(500, "internal_error", failure.what());
   } catch (...) {
   }
   const auto finished = _time->now();
   const auto outcome = handled.outcome();
-  if (job.reply) {
-    if (outcome == Handled::Outcome::unrecognised)
-      job.reply(error_reply(501, "not_implemented", "message " + _routes->name(job.frame.message.type) + " is not handled here"));
-    else
-      job.reply(handled.take_reply());
-  }
+  if (outcome == Handled::Outcome::unrecognised)
+    answer(error_reply(501, "not_implemented", "message " + _routes->name(job.frame.message.type) + " is not handled here"));
+  else if (outcome != Handled::Outcome::deferred)
+    answer(handled.take_reply());
+  // Deferred with the Answer still here: the handler kept nothing to give,
+  // and dropping it refuses the call.
+  answer = Answer();
   {
     contract::Lock lock(_timing_mutex);
     record(_frame_timings[job.frame.frame], micros(started - job.queued), micros(finished - started));
@@ -217,6 +278,10 @@ void RequestScheduler::run(Job job) {
     record(by_type, micros(started - job.queued), micros(finished - started));
     if (outcome == Handled::Outcome::failed) ++by_type.failed;
     if (outcome == Handled::Outcome::unrecognised) ++by_type.unrecognised;
+    if (outcome == Handled::Outcome::deferred) {
+      ++by_type.deferred;
+      ++_frame_timings[job.frame.frame].deferred;
+    }
   }
 }
 

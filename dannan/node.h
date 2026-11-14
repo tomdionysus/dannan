@@ -248,7 +248,7 @@ class Node final : public Context {
   class TelemetryNoun;
   friend class RoutesNoun;
 
-  net::Handled handle(const membership::NodeRecord& peer, sched::FrameType frame, const net::Message& request);
+  net::Handled handle(const membership::NodeRecord& peer, sched::FrameType frame, const net::Message& request, net::Answer& answer);
   void observe_direct(const membership::NodeRecord& peer);
   void merge(std::span<const uint8_t> payload);
   std::shared_ptr<net::CallHandle> place_call(std::optional<membership::NodeRecord> peer, const net::Endpoint& endpoint, net::MessageType type,
@@ -321,7 +321,7 @@ class Node final : public Context {
   net::RouteTable _table = net::RouteTable::with_dannan_types();
   std::shared_ptr<const net::RouteTable> _frozen;
   mutable contract::IoSharedMutex _handlers_mutex;
-  std::map<net::MessageType, net::RequestHandler> _handlers DANNAN_GUARDED_BY(_handlers_mutex);
+  std::map<net::MessageType, net::DeferringHandler> _handlers DANNAN_GUARDED_BY(_handlers_mutex);
   std::atomic<bool> _started{false};
   std::mutex _roster_mutex;
   std::condition_variable_any _roster_wake;
