@@ -24,7 +24,9 @@ the node owns none, so a hosted system with no public face pays nothing.
    handshake; connections already open keep theirs. A reload covers the client-CA
    bundle too. A reload that fails keeps the old context and names the path that failed,
    never a value read from it (Lugh's review). Reload is called by the hosted system (on
-   SIGHUP, from the host's renewal hook); Dannan does not watch files.
+   SIGHUP, from the host's renewal hook); Dannan does not watch files. One
+   `Certificates` may serve several listeners, and one reload swaps all of them (Lir's
+   review: its MQTT TLS, WSS and HTTPS share a certificate).
 2. **`listen::TlsPolicy`**: per listener (R3, R4): the minimum version (1.2 or 1.3),
    client certificates `never`, `optional` or `required` with the PEM bundle that
    verifies them, and ALPN (Lugh's HTTPS: `http/1.1` only). A browser-facing listener
@@ -37,13 +39,23 @@ the node owns none, so a hosted system with no public face pays nothing.
    Each accepted connection is handed up as a `listen::Stream` on the caller's
    executor or strand (R1), with the peer's address and, for any client certificate
    presented, its SHA-256 thumbprint (RFC 8705), its subject, and whether its chain
-   verified against the bundle, with the reason when it did not. `Stream` reads and
-   writes asynchronously, upgrades in place with `start_tls()` once the hosted system
+   verified against the bundle, with the reason when it did not. `Stream` models Asio's
+   `AsyncReadStream` and `AsyncWriteStream` (`async_read_some`, `async_write_some`,
+   `get_executor`), so Beast's HTTP and WebSocket run over it as over any socket, and it
+   gives the TLS session (`SSL*`) and the transport's name (Lir's review). It upgrades
+   in place with `start_tls()` once the hosted system
    has read the request, refusing any plaintext byte after it (R5), and closes either
    cleanly (bounded `close_notify`, default 2 s, as Lir's) or at once (R8).
-4. **Deadlines** per listener on injected time (R8): the handshake's, the idle one,
-   and an outbound byte bound past which a slow reader is closed.
-5. **`listen::Limits`**, shared across a hosted system's listeners (R7):
+4. **Deadlines** per listener on injected time (R8): the handshake's; the idle one,
+   off by default and settable on each Stream after accept (Lir's review: MQTT keep
+   alive is per client, and SSE streams are long-lived with nothing inbound); and an
+   outbound byte bound, settable per listener (Lir's is 4 MiB), on writes the Stream
+   queues itself, so a hosted system may send one write per packet without waiting and
+   a slow reader is closed once its queued bytes pass the bound.
+5. **`listen::Limits`**, shared across a hosted system's listeners (R7). Every limit
+   is optional and off by default (Lir's review: past its own cap Lir answers CONNACK
+   0x89 so a client is told why, and a socket closed at accept makes clients redial at
+   once; Lir sets Dannan's cap only as a backstop above its own):
    - an accept rate and a connection cap per listener;
    - a per-address bucket consulted before any credential. Trusted proxy peers are
      exempt, and a listener may turn the bucket off (Lugh's review: behind a reverse
@@ -61,10 +73,14 @@ the node owns none, so a hosted system with no public face pays nothing.
 7. **Binding** (R10): `listen::inherited(name)` takes a socket-activation fd by name
    (`LISTEN_FDS`, `LISTEN_FDNAMES`); without one, the listener binds itself, which on
    a privileged port needs `CAP_NET_BIND_SERVICE`.
-8. **Stop** (R9): a listener's `stop()` closes its acceptor and every connection it
-   handed up, cleanly within the close bound, then at once.
+8. **Stop** (R9), in two steps (Lir's review): `stop_accepting()` closes the acceptor;
+   then, after a window the hosted system chooses (in which Lir sends MQTT 5's DISCONNECT
+   0x8B to its clients), `close_all()` closes every connection it handed up, cleanly
+   within the close bound, then at once. `stop()` is the two with no window.
 9. **`listen::DatagramListener`**: UDP, optionally DTLS (R1), handing up an
-   `Association` per peer, with DTLS cookies against address spoofing. Lir has a
+   `Association` per peer, plain UDP as well as DTLS (MQTT-SN runs over both), with DTLS
+   cookies against address spoofing, the client certificate on DTLS, and a broadcast
+   send from the same socket (the MQTT-SN gateway's ADVERTISE). Lir has a
    hand-written DTLS server today (`lir/sn/gateway.cpp`); Dannan's is written from
    this design and Lir's behaviour, read for what it does.
 
@@ -87,7 +103,13 @@ DTLS server until then.
   no per-caller callback at accept; trusted proxies exempt from the per-address bucket.
   TLS 1.2 stays allowed on its LDAP for old clients, so the minimum is per listener.
   Lugh moves its HTTPS, mTLS and LDAP listeners onto this after 0.8.0, in its own step.
-- **Lir**: awaited.
+- **Lir**: the shape suits it, the line holds, a reload it calls is enough, and the
+  phasing suits (it keeps `lir/sn/gateway.cpp` until 0.9.0). Asked for: `Stream` as an
+  Asio stream with the `SSL*`, for Beast's WebSocket and HTTP; one `Certificates` for
+  several listeners; every limit optional and off by default; the idle deadline off by
+  default and set per Stream; a per-listener outbound bound on queued writes; a stop in
+  two steps; and on the datagram side, plain UDP, DTLS cookies, client certificates and
+  broadcast. Lir does not use StartTLS.
 
 ## Questions
 
