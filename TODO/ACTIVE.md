@@ -51,7 +51,8 @@ jobs on push are the gate, not extra runs).
    (`test_repair_is_paced_not_stopped_while_higher_classes_stay_busy`, `maintenance_trace`) and a baseline run on the
    nodes.
 3. P3: the shared public listener below the protocols, to Lugh's and Lir's combined requirements
-   (`2026-11-13-stack-needs.md`, P3).
+   (`2026-11-13-stack-needs.md`, P3). The proposed shape, with questions for Lugh, Lir and the maintainer, is
+   `2026-11-14-p3-public-listener.md` (`dannan::listen`; the stream side in 0.8.0, DTLS in 0.9.0); nothing is built.
 4. P5: small-message figures in `dannan-bench`, on the Pi cluster between two real machines. It covers notify fan-out,
    batched calls of 1 to 64 envelopes at 64 B to 1 KiB, msgs/s and p50/p99/p99.9, and the io thread count. Its stress
    case is the call path's ceiling, about 6,000 calls/s per peer pair, where calls are refused at
