@@ -52,19 +52,27 @@ class CallHandle {
   // reply is dropped.
   void abort();
   void promote(sched::FrameType frame);
-  // How long the call has gone without a byte of its reply; max() while it
-  // is not placed, and once it is done.
+  // Made with the clock its idleness is read on.
+  explicit CallHandle(const contract::TimeSource* time = &contract::steady_time_source());
+
+  // How long the call has gone without a byte of its reply, from when it was
+  // made: its dial and its wait to be placed count; max() once it is done.
   std::chrono::milliseconds idle_for() const;
 
  private:
   friend class Client;
   void placed(const std::shared_ptr<Session>& session, uint64_t request_id);
+  void finished();
   // True if cancelled before placement, so the caller fails the call.
   bool cancelled_before_placement() const;
 
+  const contract::TimeSource* const _time;
+  const contract::TimePoint _made;
   mutable contract::Mutex _mutex;
   std::weak_ptr<Session> _session DANNAN_GUARDED_BY(_mutex);
   uint64_t _id DANNAN_GUARDED_BY(_mutex) = 0;
+  contract::TimePoint _placed DANNAN_GUARDED_BY(_mutex);
+  bool _done DANNAN_GUARDED_BY(_mutex) = false;
   bool _cancelled DANNAN_GUARDED_BY(_mutex) = false;
   bool _aborted DANNAN_GUARDED_BY(_mutex) = false;
   std::optional<sched::FrameType> _promoted DANNAN_GUARDED_BY(_mutex);
