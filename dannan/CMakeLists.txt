@@ -25,6 +25,7 @@ add_library(dannan SHARED
   identity/signing.cpp
   membership/node_record.cpp
   membership/identity_reset.cpp
+  membership/agreed_roster.cpp
   membership/membership.cpp
   net/assembler.cpp
   net/channel.cpp
