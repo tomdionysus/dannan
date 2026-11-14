@@ -272,7 +272,11 @@ void WorkerPool::work(std::stop_token stop) {
       stats.rested += rested;
       gone(index);
     }
-    // A class's end can free a worker, a cap or a burst for any waiting class.
+    // A class's end can free a worker, a cap or a burst for any waiting class. A
+    // background class skipped because this worker held its burst (rest zero, so no
+    // wake time) does not hang on this: this worker picks again before it sleeps, and
+    // either takes it or sets the wake for the rest its burst earned. The rest of the
+    // waiters may be anywhere, so all are woken.
     _wake.notify_all();
     tell(*job, faulted ? End::faulted : End::ran, std::move(fault));
   }

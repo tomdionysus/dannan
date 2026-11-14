@@ -44,7 +44,9 @@ struct WorkerPoolConfig {
   std::string name = "work";
   // How many of a class's tasks run at once (zero: as many as there are threads).
   PerClass<size_t> max_running{0, 0, 0, 0};
-  // How many of a class's tasks may wait; one more is refused.
+  // How many of a class's tasks may wait; one more is refused. Each wake walks
+  // every queue for work past its deadline under the pool's lock, so keep these to
+  // thousands, not tens of thousands (Dagda's review).
   PerClass<size_t> queue_bound{1024, 1024, 1024, 1024};
   // Workers held back for each class, so work below it, however much is blocked,
   // never takes the last of them. Fewer in all than the threads.
