@@ -121,7 +121,7 @@ branch with tests first, through hosted CI, and reviewed by the session that ask
    lacking the type's wire rules, sends it on the control lane. The answering node logs "message later is invalid as
    foreground on the control lane" and closes the session, failing every call on it. The check is
    `FrameOpener::header` (`net/channel.cpp:440`), which refuses the frame before its body is authenticated.
-   Two fixes were weighed; neither is made, and it goes to Tom:
+   Tom, 2026-11-14, directly: document the rule only, wire unchanged (done on `Routes::add`). The two fixes weighed:
    - At the caller: refuse a call for a type it never registered. Tried; seven node tests call types registered only
      on the answering node, on the control lane, where that works. So it would break callers that rely on it.
    - At the answering node: read and authenticate the frame, then answer it with a refusal naming the lane, keeping

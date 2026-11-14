@@ -170,7 +170,11 @@ class Routes {
   virtual ~Routes() = default;
   // Registers a type's wire rules and, if given, its handler. Throws
   // std::logic_error after start or for a core type, std::invalid_argument
-  // for a number taken or retired.
+  // for a number taken or retired. Register a type on every node that calls
+  // or answers it, not only where it is handled: a caller without its rules
+  // sends it on the control lane, and a peer whose rules put it on the data
+  // lane refuses the frame by ending the session, failing every call on it
+  // (Tom, 2026-11-14: the rule is documented, the wire unchanged).
   virtual void add(net::MessageType type, net::Registration registration, net::RequestHandler handler = {}) = 0;
   // Marks a number as no longer used; add() refuses it from then on. Before start.
   virtual void retire(net::MessageType type) = 0;
