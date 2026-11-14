@@ -1419,6 +1419,34 @@ TEST(Client, AnIdentityResetClosesTheRoutesItCovers) {
   EXPECT_EQ(a.client->stats().dials, 2u);
 }
 
+// A call is idle from when it was made, not from when it was placed: while
+// its route is still being dialled it has had nothing back, and an owner's
+// stall budget counts the dial too.
+TEST(Client, ACallIsIdleFromWhenItWasMadeNotWhenItWasPlaced) {
+  Io io;
+  Node a(io);
+  // A peer that takes the connection and never answers the handshake.
+  asio::ip::tcp::acceptor silent(io.context, asio::ip::tcp::endpoint(asio::ip::make_address("127.0.0.1"), 0));
+  membership::NodeRecord peer;
+  peer.id.bytes[0] = 0x7e;
+  peer.host = "127.0.0.1";
+  peer.port = silent.local_endpoint().port();
+  auto done = std::make_shared<std::promise<CallOutcome>>();
+  auto handle =
+      a.client->call(peer, message::ping, {}, FrameType::control, io.context.get_executor(), [done](CallOutcome o) { done->set_value(std::move(o)); });
+  std::this_thread::sleep_for(60ms);
+  const auto idle = handle->idle_for();
+  EXPECT_GE(idle, 50ms);
+  EXPECT_LT(idle, 10s);
+  // Cancelled while still dialling, it completes at once as cancelled, as the
+  // handle promises; it is not left to the dial's timeout.
+  handle->cancel();
+  auto outcome = done->get_future();
+  ASSERT_EQ(outcome.wait_for(500ms), std::future_status::ready);
+  EXPECT_NE(outcome.get().failure.find("cancelled"), std::string::npos);
+  EXPECT_EQ(handle->idle_for(), std::chrono::milliseconds::max());
+}
+
 // A call's handle: cancelled before or after admission it completes at
 // once as cancelled; promoted it travels at the new class; idle_for says how
 // long the reply has been coming; aborted, the route goes with it.
