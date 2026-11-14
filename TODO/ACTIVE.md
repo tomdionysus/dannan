@@ -36,8 +36,7 @@ current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluat
 
 **0.7.0 is released** (`main` at `6ce0349`, tag `0.7.0`, both pushed at the maintainer's word). Main's CI was green on every job. The
 `.deb`s are in `../tomcully-apt/incoming/dannan/0.7.0/`; both library packages were checked: SONAME `libdannan.so.0.7`
-and shlibs `libdannan0.7 (>= 0.7.0)`. **the maintainer still has to run** `sh publish.sh incoming/dannan/0.7.0/*.deb` and the
-rsync; both are his steps, never upload. Dagda, Lir, Lugh and Macha Server were told. Lugh has 0.7.0 (P2 shows in its
+and shlibs `libdannan0.7 (>= 0.7.0)`. the maintainer published them to the apt repository (2026-11-14). Dagda, Lir, Lugh and Macha Server were told. Lugh has 0.7.0 (P2 shows in its
 Status with its P8.1). Lir is repinned with P2 wired in (`--minority degrade|refuse`), waiting on a Pi for its gate.
 
 **0.8.0 is open**: the tree and the library's package say 0.8 (`e839322`). The approved batch, in order, each on its own
@@ -46,7 +45,9 @@ test run is repeated without a flake or odd behaviour to justify it, and ASan an
 jobs on push are the gate, not extra runs).
 1. P6's remaining three, for Macha: **done** on `feature/owner-test-seam` and merged into `develop`. Macha reviewed
    it and every follow-up; all passed. CI run 43548808618 was green on every job. See `COMPLETED.md`.
-2. P4: a class-aware worker pool with CPU pacing, from Dagda's `store/cpu_pacing.h`. Its proof is Macha's pacing cases
+2. P4: a class-aware worker pool with CPU pacing, from Dagda's `store/cpu_pacing.h`. The proposed shape, with three
+   questions for the maintainer and sent to Dagda, Lugh and Macha for review, is `2026-11-14-p4-worker-pool.md`; nothing is built
+   until the maintainer answers. Its proof is Macha's pacing cases
    (`test_repair_is_paced_not_stopped_while_higher_classes_stay_busy`, `maintenance_trace`) and a baseline run on the
    nodes.
 3. P3: the shared public listener below the protocols, to Lugh's and Lir's combined requirements
