@@ -94,6 +94,20 @@ struct CallWatch {
   std::optional<std::chrono::milliseconds> stall_notice = std::nullopt;
 };
 
+// What a test makes of one call before it is placed (ClientOptions::call_fault).
+// A refused call fails at once with `why`, as if the network had refused it. A
+// stalled call is held unanswered, as one to a peer whose link has died: its
+// idleness grows from when it was made, and it ends as any unanswered call
+// does, by its no-progress watch, its deadline, a cancel or stop, or when the
+// test releases the stall. Neither puts a byte on the wire.
+struct CallFault {
+  enum class Kind { none, refuse, stall };
+  Kind kind = Kind::none;
+  std::string why;
+  static CallFault refuse(std::string why) { return {Kind::refuse, std::move(why)}; }
+  static CallFault stall() { return {Kind::stall, {}}; }
+};
+
 struct ClientOptions {
   // How this node proves itself and checks its peers.
   Credentials credentials;
@@ -135,6 +149,10 @@ struct ClientOptions {
   // Tests only: consulted before every dial; a non-empty answer is the
   // reason the dial fails, as if the network refused it.
   std::function<std::string(const Endpoint&, Lane)> dial_hook;
+  // Tests only (the owners' seam, P6): consulted as each call is made, with the
+  // peer's id when it is known (a call by address to a peer met before has it),
+  // the address and the type; see CallFault. Must not call into the client.
+  std::function<CallFault(const std::optional<identity::NodeId>& peer, const Endpoint& endpoint, MessageType type)> call_fault;
   // Called with the session just before a call is placed on it, for a test that
   // retires it there.
   std::function<void(Session&)> place_hook;
@@ -294,6 +312,13 @@ class Client {
   // io context's only thread.
   void stop();
 
+  // Tests only: ends the stall on the calls a fault holds to `peer` (every
+  // peer when none), failing each as "stall released", as a link that timed
+  // out; how many it failed. Calls made after it are asked of the fault again.
+  size_t release_stalled(const std::optional<identity::NodeId>& peer = std::nullopt);
+  // The calls a fault holds now, not yet ended.
+  size_t stalled() const;
+
  private:
   struct Call {
     MessageType type{};
@@ -330,7 +355,20 @@ class Client {
   using RouteKey = std::pair<identity::NodeId, Lane>;
   using Retire = std::vector<std::shared_ptr<Session>>;
 
+  // A call a fault holds; the call is taken out once, by whatever ends it.
+  struct Stalled {
+    std::optional<identity::NodeId> peer;
+    mutable contract::Mutex mutex;
+    std::optional<Call> call DANNAN_GUARDED_BY(mutex);
+    bool pending() const;
+    std::optional<Call> take();
+  };
+
   void call(Target target, Call call);
+  // Holds a call the fault stalled, watched as it would be once placed.
+  void stall(Target target, Call call);
+  // The no-progress deadline and the stall notice that watch `call` on `lane`.
+  std::pair<std::chrono::milliseconds, std::chrono::milliseconds> watch_of(const Call& call, Lane lane) const;
   // A call's completion, run once: by its end, or by a cancel before it is placed.
   static Done once(CallHandle& handle, const boost::asio::any_io_executor& executor, Done done);
   // Places `call` on `session`; one refused because the session retired or
@@ -410,6 +448,10 @@ class Client {
   // Dials in flight by peer (or address) and lane, with the calls waiting
   // on each.
   std::map<std::string, std::vector<Call>> _dials DANNAN_GUARDED_BY(_mutex);
+  // Calls a fault holds (ClientOptions::call_fault), by the order they came; one
+  // that ended (its watch, a cancel) stays listed until released or stopped.
+  std::map<uint64_t, std::shared_ptr<Stalled>> _stalled DANNAN_GUARDED_BY(_mutex);
+  uint64_t _next_stalled DANNAN_GUARDED_BY(_mutex) = 1;
   std::map<Endpoint, identity::NodeId> _endpoint_ids DANNAN_GUARDED_BY(_mutex);
   std::set<std::shared_ptr<Dialling>> _dialling DANNAN_GUARDED_BY(_mutex);
   std::map<std::string, Backoff> _backoff DANNAN_GUARDED_BY(_mutex);

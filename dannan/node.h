@@ -105,6 +105,9 @@ struct NodeConfig {
   // Refuses a dial by naming why, for tests that fail links; see
   // net::ClientOptions::dial_hook.
   std::function<std::string(const net::Endpoint&, net::Lane)> dial_hook;
+  // The owners' test seam (P6): refuses or stalls one call by peer and type,
+  // the node's own calls included; see net::CallFault. Tests only.
+  std::function<net::CallFault(const std::optional<identity::NodeId>& peer, const net::Endpoint& endpoint, net::MessageType type)> call_fault;
   // reach::PathsConfig's: how long a relayed circuit waits for chunks that may have died
   // with a session (none: dead_after), and, tests only, the chunks a relay drops.
   std::optional<std::chrono::milliseconds> relay_finish_wait;
@@ -197,6 +200,12 @@ class Node final : public Context {
   // Fails every outbound call at once and admits no more, so a worker
   // blocked in one can be joined; the rest of the node runs on until stop().
   void cancel_outbound_calls();
+
+  // Tests only, with NodeConfig::call_fault: fails the calls it stalled to
+  // `peer` (every peer when none) as "stall released"; how many. And how many
+  // it holds now.
+  size_t release_stalled_calls(const std::optional<identity::NodeId>& peer = std::nullopt);
+  size_t stalled_calls() const;
 
   // Beneath the Context, for the hosted system's facade.
   membership::Membership& membership() noexcept { return _members; }
