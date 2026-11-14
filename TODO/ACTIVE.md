@@ -133,6 +133,11 @@ branch with tests first, through hosted CI, and reviewed by the session that ask
    and the call. Fixed on `feature/macha-fixes`: `Client::once` makes the call's completion once-only, shared by the
    call and its handle, and a cancel or abort before placement posts "RPC cancelled" through it at once. The idle test
    failed at 500 ms before the change and completes in about 60 ms after it.
+   `Node.GossipWaitsOutItsCapHoweverMuchDemandThereIs` failed once on arm64 ASan in CI (run 43534279154): the gossip
+   round after its one-second step never reached A. The likely cause, unproven, is that the round is
+   `broadcast_best_effort`, which sends nothing while the route table is busy, yet counts as the round, and the test
+   froze time after the one step. The final wait now steps time on each try, as its first wait does; the frozen
+   section still shows no gossip without a step. In production that costs one interval of gossip, by design.
 2. P6's seven small fixes (Macha), then the owners' test seam, the advert-change watch and non-blocking logging. Five
    fixes are on `feature/macha-fixes`:
    - `idle_for` counts from when the call was made;

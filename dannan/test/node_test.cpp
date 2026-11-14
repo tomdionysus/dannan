@@ -298,9 +298,11 @@ TEST(Node, GossipWaitsOutItsCapHoweverMuchDemandThereIs) {
   EXPECT_LE(seen_at_a(), before);
   // Read before the step: what it lets out may be sampled before a later wake
   // moves the record on, and then nothing more goes until time moves again.
+  // Each try steps again: the round a step allows is best effort, and sends
+  // nothing while the route table is busy, so one round may go nowhere.
   const auto after = local();
-  time.advance(1s);
   EXPECT_TRUE(eventually([&] {
+    time.advance(1s);
     pair.b->context().telemetry().refresh();
     return seen_at_a() >= after;
   }));
