@@ -1708,14 +1708,14 @@ void Client::stop() {
   std::map<std::string, std::vector<Call>> waiting;
   std::map<RouteKey, ReverseWait> reverse;
   std::vector<std::shared_ptr<asio::steady_timer>> timers;
-  std::map<uint64_t, std::shared_ptr<Stalled>> stalled;
+  std::map<uint64_t, std::shared_ptr<Stalled>> held_calls;
   bool again;
   {
     contract::Lock lock(_mutex);
     again = _stopped;
     _stopped = true;
     reverse.swap(_reverse);
-    stalled.swap(_stalled);
+    held_calls.swap(_stalled);
     timers.assign(_reverse_timers.begin(), _reverse_timers.end());
     // The heartbeat's cancel below touches this object: counted, so stop()
     // waits for it.
@@ -1753,7 +1753,7 @@ void Client::stop() {
     for (auto& call : calls) fail(call, "client stopped");
   for (auto& [_, wait] : reverse)
     for (auto& call : wait.calls) fail(call, "client stopped");
-  for (auto& [_, held] : stalled)
+  for (auto& [_, held] : held_calls)
     if (auto call = held->take()) fail(*call, "client stopped");
   for (auto& timer : timers) asio::post(_health_strand, [timer] { timer->cancel(); });
   {
