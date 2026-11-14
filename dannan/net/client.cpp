@@ -37,13 +37,15 @@ struct Stall {
   std::string why;  // written before `stalled` is set
 };
 
-// Watches one call for progress: every quarter of the deadline it asks the
-// session how long the call has gone without a byte of its reply, and
-// cancels it once that reaches the deadline. Touches only the session.
+// Watches one call for progress: every quarter of the deadline it asks how
+// long the call has gone without a byte of its reply (nothing: no longer
+// pending), and cancels it once that reaches the deadline. For a placed call
+// both go to its session; for one a fault holds, to the client's hold.
 struct Watchdog : std::enable_shared_from_this<Watchdog> {
+  using Idle = std::function<std::optional<contract::Clock::duration>()>;
   asio::steady_timer timer;
-  std::weak_ptr<Session> session;
-  uint64_t request_id;
+  Idle idle;
+  std::function<void()> cancel;
   std::chrono::milliseconds deadline;
   std::shared_ptr<Stall> stall;
   std::shared_ptr<std::atomic<bool>> finished;
@@ -54,12 +56,12 @@ struct Watchdog : std::enable_shared_from_this<Watchdog> {
   const contract::TimeSource* time;
   contract::TimePoint placed;
 
-  Watchdog(asio::io_context& io, std::weak_ptr<Session> watched, uint64_t call, std::chrono::milliseconds limit, std::shared_ptr<Stall> stalls,
+  Watchdog(asio::io_context& io, Idle idle_of, std::function<void()> cancel_it, std::chrono::milliseconds limit, std::shared_ptr<Stall> stalls,
            std::shared_ptr<std::atomic<bool>> done, std::chrono::milliseconds every, status::ScopedLogger logger, std::string name,
            const contract::TimeSource* clock)
       : timer(io),
-        session(std::move(watched)),
-        request_id(call),
+        idle(std::move(idle_of)),
+        cancel(std::move(cancel_it)),
         deadline(limit),
         stall(std::move(stalls)),
         finished(std::move(done)),
@@ -82,11 +84,9 @@ struct Watchdog : std::enable_shared_from_this<Watchdog> {
 
   void check() {
     if (finished->load()) return;
-    const auto live = session.lock();
-    if (!live) return;
-    const auto idle = live->idle_for(request_id);
-    if (!idle) return;
-    const auto quiet = std::chrono::duration_cast<std::chrono::milliseconds>(*idle);
+    const auto since = idle();
+    if (!since) return;
+    const auto quiet = std::chrono::duration_cast<std::chrono::milliseconds>(*since);
     if (deadline.count() <= 0 || quiet < deadline) {
       // Progress starts the count again.
       if (notice.count() > 0 && quiet < notice) next_notice = notice;
@@ -101,9 +101,18 @@ struct Watchdog : std::enable_shared_from_this<Watchdog> {
     stall->why = "RPC made no progress for " + std::to_string(quiet.count()) + " ms " + described + " age_ms=" + age() + "; cancelled for retry";
     log.debug(stall->why);
     stall->stalled.store(true);
-    live->cancel(request_id);
+    cancel();
   }
 };
+
+// A session's call, as a watchdog reads and cancels it.
+Watchdog::Idle idle_on(std::weak_ptr<Session> session, uint64_t request_id) {
+  return [session = std::move(session), request_id]() -> std::optional<contract::Clock::duration> {
+    const auto live = session.lock();
+    if (!live) return std::nullopt;
+    return live->idle_for(request_id);
+  };
+}
 
 std::string liveness_reason(const std::string& last_error) {
   return last_error.empty() ? std::string("health could not be established before dead_after") : "health unavailable until dead_after: " + last_error;
@@ -328,6 +337,16 @@ Client::Done Client::once(CallHandle& handle, const asio::any_io_executor& execu
 }
 
 void Client::call(Target target, Call call) {
+  if (_options.call_fault) {
+    {
+      contract::Lock lock(_mutex);
+      if (!target.id)
+        if (const auto known = _endpoint_ids.find(target.endpoint); known != _endpoint_ids.end()) target.id = known->second;
+    }
+    auto fault = _options.call_fault(target.id, target.endpoint, call.type);
+    if (fault.kind == CallFault::Kind::refuse) return fail(call, std::move(fault.why));
+    if (fault.kind == CallFault::Kind::stall) return stall(std::move(target), std::move(call));
+  }
   const auto lane = lane_for(call.type);
   const auto backoff_key = address_of(target.endpoint) + "/" + lane_name(lane);
   std::shared_ptr<Session> route;
@@ -682,15 +701,7 @@ void Client::fail(Call& call, std::string why) {
 void Client::place(const std::shared_ptr<Session>& session, Call call, const Target& target) {
   if (call.handle && call.handle->cancelled_before_placement()) return fail(call, "RPC cancelled");
   const auto lane = session->lane();
-  const auto* rules = _options.routes->find(call.type);
-  const auto deadline = call.watch.no_progress        ? *call.watch.no_progress
-                        : rules && rules->no_progress ? *rules->no_progress
-                        : lane == Lane::data          ? _options.data_no_progress
-                                                      : _options.control_no_progress;
-  const auto notice = call.watch.stall_notice        ? *call.watch.stall_notice
-                      : rules && rules->stall_notice ? *rules->stall_notice
-                      : lane == Lane::data           ? _options.data_stall_notice
-                                                     : _options.control_stall_notice;
+  const auto [deadline, notice] = watch_of(call, lane);
   const auto frame = call.frame;
   auto stall = std::make_shared<Stall>();
   auto finished = std::make_shared<std::atomic<bool>>(false);
@@ -723,10 +734,117 @@ void Client::place(const std::shared_ptr<Session>& session, Call call, const Tar
   }
   if (handle) handle->placed(session, admitted.request_id);
   if (deadline.count() <= 0 && notice.count() <= 0) return;
+  const std::weak_ptr<Session> watched = session;
+  const auto request_id = admitted.request_id;
   auto watchdog = std::make_shared<Watchdog>(
-      _io, session, admitted.request_id, deadline, stall, finished, notice, _log,
+      _io, idle_on(watched, request_id),
+      [watched, request_id] {
+        if (const auto live = watched.lock()) live->cancel(request_id);
+      },
+      deadline, stall, finished, notice, _log,
       std::string("(") + sched::frame_type_name(frame) + ") peer=" + to_string(session->peer().id).substr(0, 12) + " message=" + name, _options.time);
   watchdog->arm();
+}
+
+std::pair<std::chrono::milliseconds, std::chrono::milliseconds> Client::watch_of(const Call& call, Lane lane) const {
+  const auto* rules = _options.routes->find(call.type);
+  const auto deadline = call.watch.no_progress        ? *call.watch.no_progress
+                        : rules && rules->no_progress ? *rules->no_progress
+                        : lane == Lane::data          ? _options.data_no_progress
+                                                      : _options.control_no_progress;
+  const auto notice = call.watch.stall_notice        ? *call.watch.stall_notice
+                      : rules && rules->stall_notice ? *rules->stall_notice
+                      : lane == Lane::data           ? _options.data_stall_notice
+                                                     : _options.control_stall_notice;
+  return {deadline, notice};
+}
+
+void Client::stall(Target target, Call call) {
+  const auto lane = lane_for(call.type);
+  const auto [deadline, notice] = watch_of(call, lane);
+  const auto handle = call.handle;
+  const auto described = std::string("(") + sched::frame_type_name(call.frame) +
+                         ") peer=" + (target.id ? to_string(*target.id).substr(0, 12) : address_of(target.endpoint)) +
+                         " message=" + _options.routes->name(call.type) + " stalled by the test";
+  auto held = std::make_shared<Stalled>();
+  held->peer = target.id;
+  {
+    contract::Lock lock(_mutex);
+    if (_stopped) return fail(call, "client stopped");
+    {
+      contract::Lock hold(held->mutex);
+      held->call = std::move(call);
+    }
+    _stalled.emplace(_next_stalled++, held);
+  }
+  if (deadline.count() <= 0 && notice.count() <= 0) return;
+  // Watched as a placed call is: idle since it was made, since nothing comes.
+  // The watchdog holds only the held call, never the client, which may go first.
+  auto stalled_out = std::make_shared<Stall>();
+  auto finished = std::make_shared<std::atomic<bool>>(false);
+  const std::weak_ptr<Stalled> weak = held;
+  auto watchdog = std::make_shared<Watchdog>(
+      _io,
+      [weak, handle]() -> std::optional<contract::Clock::duration> {
+        const auto live = weak.lock();
+        if (!live || !live->pending() || handle->cancelled_before_placement()) return std::nullopt;
+        return handle->idle_for();
+      },
+      [weak, stalled_out] {
+        if (const auto live = weak.lock())
+          if (auto taken = live->take()) fail(*taken, stalled_out->why);
+      },
+      deadline, stalled_out, finished, notice, _log, described, _options.time);
+  watchdog->arm();
+}
+
+bool Client::Stalled::pending() const {
+  contract::Lock lock(mutex);
+  return call.has_value();
+}
+
+std::optional<Client::Call> Client::Stalled::take() {
+  contract::Lock lock(mutex);
+  auto out = std::move(call);
+  call.reset();
+  return out;
+}
+
+size_t Client::release_stalled(const std::optional<identity::NodeId>& peer) {
+  std::vector<std::shared_ptr<Stalled>> released;
+  {
+    contract::Lock lock(_mutex);
+    for (auto it = _stalled.begin(); it != _stalled.end();) {
+      if (peer && it->second->peer != peer) {
+        ++it;
+        continue;
+      }
+      released.push_back(std::move(it->second));
+      it = _stalled.erase(it);
+    }
+  }
+  size_t failed = 0;
+  for (const auto& held : released) {
+    auto call = held->take();
+    if (!call) continue;
+    if (!call->handle->cancelled_before_placement()) ++failed;
+    fail(*call, "stall released");
+  }
+  return failed;
+}
+
+size_t Client::stalled() const {
+  std::vector<std::shared_ptr<Stalled>> held;
+  {
+    contract::Lock lock(_mutex);
+    for (const auto& [_, each] : _stalled) held.push_back(each);
+  }
+  size_t out = 0;
+  for (const auto& each : held) {
+    contract::Lock lock(each->mutex);
+    if (each->call && !each->call->handle->cancelled_before_placement()) ++out;
+  }
+  return out;
 }
 
 namespace {
@@ -1590,12 +1708,14 @@ void Client::stop() {
   std::map<std::string, std::vector<Call>> waiting;
   std::map<RouteKey, ReverseWait> reverse;
   std::vector<std::shared_ptr<asio::steady_timer>> timers;
+  std::map<uint64_t, std::shared_ptr<Stalled>> stalled;
   bool again;
   {
     contract::Lock lock(_mutex);
     again = _stopped;
     _stopped = true;
     reverse.swap(_reverse);
+    stalled.swap(_stalled);
     timers.assign(_reverse_timers.begin(), _reverse_timers.end());
     // The heartbeat's cancel below touches this object: counted, so stop()
     // waits for it.
@@ -1633,6 +1753,8 @@ void Client::stop() {
     for (auto& call : calls) fail(call, "client stopped");
   for (auto& [_, wait] : reverse)
     for (auto& call : wait.calls) fail(call, "client stopped");
+  for (auto& [_, held] : stalled)
+    if (auto call = held->take()) fail(*call, "client stopped");
   for (auto& timer : timers) asio::post(_health_strand, [timer] { timer->cancel(); });
   {
     contract::Lock lock(_mutex);

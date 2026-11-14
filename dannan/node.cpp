@@ -572,6 +572,7 @@ void Node::start() {
   client_options.data_stall_notice = _config.data_stall_notice;
   client_options.log = _config.log;
   client_options.dial_hook = _config.dial_hook;
+  client_options.call_fault = _config.call_fault;
   client_options.heartbeat = _config.heartbeat;
   client_options.dead_after = _config.dead_after;
   client_options.alive = [this](const NodeRecord& peer) { observe_direct(peer); };
@@ -672,6 +673,10 @@ void Node::cancel_outbound_calls() {
   if (!_started || _calls_cancelled.exchange(true)) return;
   if (_client) _client->stop();
 }
+
+size_t Node::release_stalled_calls(const std::optional<identity::NodeId>& peer) { return _client ? _client->release_stalled(peer) : 0; }
+
+size_t Node::stalled_calls() const { return _client ? _client->stalled() : 0; }
 
 void Node::close_route(const identity::NodeId& peer, net::Lane lane, const std::string& why) {
   if (_client) _client->close_route(peer, lane, why);
