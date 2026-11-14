@@ -45,25 +45,13 @@ test run is repeated without a flake or odd behaviour to justify it, and ASan an
 jobs on push are the gate, not extra runs).
 1. P6's remaining three, for Macha: **done** on `feature/owner-test-seam` and merged into `develop`. Macha reviewed
    it and every follow-up; all passed. CI run 43548808618 was green on every job. See `COMPLETED.md`.
-2. P4: a class-aware worker pool with CPU pacing, from Dagda's `store/cpu_pacing.h`. The proposed shape, with three
-   questions for the maintainer and reviewed by Dagda, Lugh and Macha, is `2026-11-14-p4-worker-pool.md`. the maintainer, 2026-11-14:
-   "work autonomously until you need me", so it was built on the note's recommendations (all four pieces in 0.8, the
-   CPU rest by task CPU time, the node baseline after Macha moves onto the gate). Any of them can still be overruled
-   before the merge. Built on `feature/worker-pool` (`f531ce5`, local): `sched/cpu_pacing.h` (Dagda's),
-   `sched/class_gate.h` (`ClassGate`, `ClassGates`), `sched/worker_pool.h`, and `Context::gates()` and `workers()`.
-   Reviewed in code by Dagda (no defect; two comments added), Lugh (move-only tasks via `contract::UniqueFunction`,
-   the late-drop bound documented, a clearer reserves error) and Macha (the hosted reading may change while running;
-   `NodeConfig::gate_time` and `gate_process_cpu`), all applied (`f752aa9`). Macha's second read found a replaced
-   reading could still be running after `set_contended` returned (a use-after-free at its stop); fixed with a shared
-   lock held across the call (`537c619`). Gate on node-b (g++ Release, warnings as errors, one pass after every
-   fix): 696 tests, 695 passed, the one long-standing skip; 23 new. Waiting on the maintainer's word to push the
-   branch for hosted CI (clang's thread-safety analysis, ASan, UBSan, TSan, macOS, x86-64), before the merge into
-   `develop`. Its proof is Macha's pacing cases
-   (`test_repair_is_paced_not_stopped_while_higher_classes_stay_busy`, `maintenance_trace`) and a baseline run on the
-   nodes.
-3. P3: the shared public listener below the protocols, to Lugh's and Lir's combined requirements
-   (`2026-11-13-stack-needs.md`, P3). The proposed shape, with questions for Lugh, Lir and the maintainer, is
-   `2026-11-14-p3-public-listener.md` (`dannan::listen`; the stream side in 0.8.0, DTLS in 0.9.0); nothing is built.
+2. P4, the class-aware worker pool with CPU pacing: **done**, merged into `develop` (see `COMPLETED.md`). Still to
+   come, Macha's: its maintenance moves onto the node's gate, proved by its pacing cases
+   (`test_repair_is_paced_not_stopped_while_higher_classes_stay_busy`, `maintenance_trace`), then the baseline run
+   on the nodes. Also merged: Lugh's `DANNAN_BUILD_TOOLS` (`feature/tools-option`, CI green on every job).
+3. P3, the shared public listener (`2026-11-14-p3-public-listener.md`): the stream side is built on
+   `feature/public-listener` (`dannan::listen`), reviewed in design by Lugh and Lir; its first gate pass on a Pi and
+   hosted CI are next. DTLS is 0.9.0.
 4. P5: small-message figures in `dannan-bench`, on the Pi cluster between two real machines. It covers notify fan-out,
    batched calls of 1 to 64 envelopes at 64 B to 1 KiB, msgs/s and p50/p99/p99.9, and the io thread count. Its stress
    case is the call path's ceiling, about 6,000 calls/s per peer pair, where calls are refused at

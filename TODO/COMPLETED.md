@@ -3,6 +3,32 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
+## Handoff, 2026-11-14: P4, the worker pool, and DANNAN_BUILD_TOOLS, for 0.8.0
+
+P4 (`2026-11-14-p4-worker-pool.md`; the maintainer confirmed the note's recommendations), on `feature/worker-pool`:
+- `sched/cpu_pacing.h`, Dagda's pacer as it was, the namespace changed only, so Dagda's copy is a delete and an
+  include at the slice that first links 0.8.
+- `sched::ClassGate` and `ClassGates`: one gate per background class per node. A loop holds it (`started`,
+  `should_yield`, `finished`, `cpu_scale`, `charge`), and every pool runs its loader and speculative tasks through
+  it, so a class never takes more than its share however its work runs (Macha's review). The hosted contention
+  reading is held under a shared lock across each call, so once `set_contended` returns the old reading is never
+  called again (Macha's second read: otherwise a use-after-free at its stop).
+- `sched::WorkerPool`: supervised threads by class. It has bounded queues refusing at once with a reason, per-class
+  caps, reserves for the classes above, deadline and cancel honoured at dequeue and told on the caller's executor,
+  and move-only tasks (`contract::UniqueFunction`, for Lugh's secrets). A background task rests d x (1/scale - 1),
+  d its thread's CPU time (Dagda's review).
+- The node's gates and pool on the Context (`gates()`, `workers()`), with `NodeConfig::workers`, the gates'
+  configs, and `gate_time` and `gate_process_cpu` apart from the node's (Macha's review). A hosted system may run its
+  own pool beside the node's (Lugh's hashing).
+Reviewed in code by Dagda, Lugh and Macha, every point applied. Hosted CI's TSan found one race, in the tests: an
+executor destroyed while a pool worker was still returning from posting to it. The tests now keep it, and the
+contract says an executor must outlive the pool. Gate: node-b, g++ Release with warnings as errors, 696
+tests, 695 passed and the one long-standing skip, 23 new; hosted CI run 43610885267 green on every job.
+
+`DANNAN_BUILD_TOOLS` (Lugh), default on, on `feature/tools-option`. Off, the tools are neither built nor installed;
+with `DANNAN_BUILD_TESTING` it is refused at configure. CI's `package` step proves both (run 43610292093, green on
+every job).
+
 ## Handoff, 2026-11-14: P6's remaining three, for 0.8.0
 
 On `feature/owner-test-seam`, merged into `develop`. 0.8 is opened first (`e839322`: CMake 0.8.0, `libdannan0.8`),
