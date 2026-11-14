@@ -33,8 +33,10 @@
 #include "dannan/reach/connectivity.h"
 #include "dannan/reach/inbound.h"
 #include "dannan/reach/paths.h"
+#include "dannan/sched/class_gate.h"
 #include "dannan/sched/retained_memory.h"
 #include "dannan/sched/work.h"
+#include "dannan/sched/worker_pool.h"
 #include "dannan/status/activity.h"
 #include "dannan/status/events.h"
 #include "dannan/status/log.h"
@@ -400,6 +402,13 @@ class Context {
   virtual sched::WaitGuard& wait_guard() = 0;
   // The node's thread bodies, and the hosted system's, under one record.
   virtual supervise::SupervisedThreads& threads() = 0;
+  // The node's pacing of loader and speculative work, one gate per class (P4): a
+  // hosted loop holds its class's gate, and every pool runs its tasks through it,
+  // so the class never takes more than its share however its work runs.
+  virtual sched::ClassGates& gates() = 0;
+  // The node's worker pool, on the gates, started with the node. A hosted system
+  // may build a pool of its own beside it, on gates() and threads().
+  virtual sched::WorkerPool& workers() = 0;
   virtual Diagnostics diagnostics() const = 0;
 };
 
