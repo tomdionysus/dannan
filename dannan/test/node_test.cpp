@@ -1211,6 +1211,71 @@ TEST(Node, AdvertsReachPeersAndSteerPlacement) {
   EXPECT_THROW(pair.a->context().nodes().advertise("", {}), std::invalid_argument);
 }
 
+// A watch on one advert (P6): the value now first, then each change of that
+// key and no other, a peer's at most once a period, the changes inside it
+// coalesced to the latest; a withdrawal is told as no value, and an unwatched
+// watch hears nothing.
+TEST(Node, AnAdvertWatchTellsOneKeysChangesAtItsRate) {
+  struct Told {
+    identity::NodeId node;
+    std::optional<uint64_t> value;
+    std::chrono::steady_clock::time_point at;
+  };
+  std::mutex mutex;
+  std::vector<Told> told;
+  const auto count = [&] {
+    std::lock_guard lock(mutex);
+    return told.size();
+  };
+  const auto last = [&] {
+    std::lock_guard lock(mutex);
+    return told.back();
+  };
+  Pair pair;
+  pair.b->start();
+  const auto a = pair.a->context().identity().id();
+  pair.a->context().nodes().advertise("used", membership::u64_advert(1));
+  ASSERT_TRUE(eventually([&] {
+    const auto record = record_of(*pair.b, a);
+    return record && record->advert_u64("used") == 1u;
+  }));
+  const auto watch = pair.b->context().nodes().watch_advert("used", 600ms, asio::make_strand(pair.io.context), [&](AdvertChange change) {
+    std::optional<uint64_t> value;
+    if (change.value) value = membership::NodeRecord{.adverts = {{"used", *change.value}}}.advert_u64("used");
+    std::lock_guard lock(mutex);
+    told.push_back({change.node, value, std::chrono::steady_clock::now()});
+  });
+  ASSERT_TRUE(eventually([&] { return count() == 1; }));
+  EXPECT_EQ(last().node, a);
+  EXPECT_EQ(last().value, 1u);
+
+  // Another key is not this watch's.
+  pair.a->context().nodes().advertise("capacity", membership::u64_advert(4096));
+  pair.a->context().nodes().advertise("used", membership::u64_advert(2));
+  ASSERT_TRUE(eventually([&] { return count() == 2; }));
+  EXPECT_EQ(last().value, 2u);
+  const auto second = last().at;
+  // Inside the period: held back, then only the latest.
+  pair.a->context().nodes().advertise("used", membership::u64_advert(3));
+  pair.a->context().nodes().advertise("used", membership::u64_advert(4));
+  ASSERT_TRUE(eventually([&] { return last().value == 4u; }));
+  EXPECT_EQ(count(), 3u);
+  EXPECT_GE(last().at - second, 550ms);
+
+  pair.a->context().nodes().withdraw("used");
+  ASSERT_TRUE(eventually([&] { return count() == 4; }));
+  EXPECT_FALSE(last().value);
+
+  pair.b->context().nodes().unwatch_advert(watch);
+  pair.a->context().nodes().advertise("used", membership::u64_advert(5));
+  EXPECT_TRUE(eventually([&] {
+    const auto record = record_of(*pair.b, a);
+    return record && record->advert_u64("used") == 5u;
+  }));
+  std::this_thread::sleep_for(300ms);
+  EXPECT_EQ(count(), 4u);
+}
+
 // Channels across a real cluster: B subscribes, A learns of it by gossip
 // and publishes only there; notify and stream arrive, a stream in order and
 // numbered, and bulk is acknowledged.

@@ -75,6 +75,13 @@ struct RosterChange {
 };
 const char* roster_change_name(RosterChange::Kind) noexcept;
 
+// One peer's advert under a watched key (Nodes::watch_advert): its value now;
+// nothing once it is withdrawn or the peer has left the active roster.
+struct AdvertChange {
+  identity::NodeId node;
+  std::optional<net::Bytes> value;
+};
+
 class Nodes {
  public:
   virtual ~Nodes() = default;
@@ -89,6 +96,15 @@ class Nodes {
   // each change. An id for unwatch. Waits on nothing.
   virtual uint64_t watch(boost::asio::any_io_executor executor, std::function<void(RosterChange)> handler) = 0;
   virtual void unwatch(uint64_t id) = 0;
+  // One advert's changes on the peers (P6): adverts are slow facts, so this is
+  // rate-limited, where the roster watch tells every change of the record.
+  // Posted to `executor` in order when it is a strand: first the value of every
+  // active peer carrying `key`, then each change, a peer's at most once each
+  // `at_most_every`. Changes inside that coalesce: the latest is told after it,
+  // by the next heartbeat. An id for unwatch_advert. Waits on nothing.
+  virtual uint64_t watch_advert(const std::string& key, std::chrono::milliseconds at_most_every, boost::asio::any_io_executor executor,
+                                std::function<void(AdvertChange)> handler) = 0;
+  virtual void unwatch_advert(uint64_t id) = 0;
   virtual membership::NodeRecord self() const = 0;
   // Every known node, self first; and those heard of within dead_after.
   virtual std::vector<membership::NodeRecord> roster() const = 0;

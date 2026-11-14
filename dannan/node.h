@@ -372,6 +372,20 @@ class Node final : public Context {
   std::map<uint64_t, PartitionWatcher> _partition_watchers DANNAN_GUARDED_BY(_watch_mutex);
   std::optional<membership::Partition> _told_partition DANNAN_GUARDED_BY(_watch_mutex);
   membership::Partition partition_locked() const DANNAN_REQUIRES(_watch_mutex);
+  // The advert watchers, under the same lock: what each last told of each
+  // peer's value under its key, and when, so a change inside the rate waits.
+  struct AdvertWatcher {
+    std::string key;
+    std::chrono::milliseconds every{};
+    boost::asio::any_io_executor executor;
+    std::function<void(AdvertChange)> handler;
+    std::map<identity::NodeId, net::Bytes> told;
+    std::map<identity::NodeId, contract::TimePoint> last;
+  };
+  std::map<uint64_t, AdvertWatcher> _advert_watchers DANNAN_GUARDED_BY(_watch_mutex);
+  // Tells each advert watcher what changed in the active roster as last told,
+  // where its rate allows; topology_changed, so at least every heartbeat.
+  void tell_adverts_locked() DANNAN_REQUIRES(_watch_mutex);
   std::unique_ptr<reach::PublicConnectivity> _connectivity;
   // Refreshes the hosted system asked for, served by the connectivity loop,
   // since a refresh waits on the network. Closed once nothing will serve them.
