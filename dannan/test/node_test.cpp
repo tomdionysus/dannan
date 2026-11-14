@@ -1107,6 +1107,50 @@ TEST(Node, ChannelsReachSubscribersAcrossTheCluster) {
   EXPECT_EQ(sequence, (std::vector<uint64_t>{1, 2, 3}));
 }
 
+// Which side of a split this node is on, against the roster as last agreed
+// (P2): a node that leaves stays counted, so one node of two is a minority
+// (an even split); only an operator's retire takes it out of the count. A
+// watcher hears each change.
+TEST(Node, APartitionIsReadAgainstTheAgreedRoster) {
+  // Before the pair: a change posted while the nodes stop still finds them.
+  std::mutex mutex;
+  std::vector<membership::Partition> heard;
+  Pair pair;
+  const auto strand = asio::make_strand(pair.io.context);
+  const auto watching = pair.a->context().nodes().watch_partition(strand, [&](membership::Partition side) {
+    std::lock_guard lock(mutex);
+    heard.push_back(std::move(side));
+  });
+  const auto heard_minority = [&] {
+    std::lock_guard lock(mutex);
+    return std::any_of(heard.begin(), heard.end(), [](const auto& side) { return !side.majority && side.members == 2; });
+  };
+  pair.b->start();
+  const auto a = pair.a->context().identity().id();
+  const auto b = pair.b->context().identity().id();
+  auto& nodes = pair.a->context().nodes();
+  ASSERT_TRUE(eventually([&] {
+    const auto side = nodes.partition();
+    return side.members == 2 && side.reachable == 2 && side.majority;
+  }));
+  EXPECT_EQ(nodes.members(), (std::set<identity::NodeId>{a, b}));
+  pair.b->stop();
+  ASSERT_TRUE(eventually([&] { return nodes.partition().reachable == 1; }));
+  const auto alone = nodes.partition();
+  EXPECT_FALSE(alone.majority) << "one of two is an even split, a minority";
+  EXPECT_EQ(alone.members, 2u);
+  EXPECT_EQ(alone.unreachable, (std::vector<identity::NodeId>{b}));
+  EXPECT_TRUE(eventually(heard_minority));
+  EXPECT_THROW(nodes.retire(a), std::invalid_argument);
+  EXPECT_TRUE(nodes.retire(b));
+  EXPECT_FALSE(nodes.retire(b));
+  const auto retired = nodes.partition();
+  EXPECT_TRUE(retired.majority);
+  EXPECT_EQ(retired.members, 1u);
+  EXPECT_EQ(nodes.members(), (std::set<identity::NodeId>{a}));
+  nodes.unwatch_partition(watching);
+}
+
 // The roster's changes as a feed: a watcher hears a node join, change (an
 // advert; a restart is a new incarnation), and leave once it has been
 // silent for dead_after.
