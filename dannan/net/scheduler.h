@@ -138,9 +138,11 @@ class Answer {
 // Handles a request or notification on a worker and says what it did. May
 // block; an exception is a failure, answered 500.
 using RequestHandler = std::function<Handled(const membership::NodeRecord& peer, sched::FrameType frame, const Message& request)>;
-// The same, given the request's Answer: it may answer now by returning, or
-// move the Answer out, return Handled::deferred() and answer later.
-using DeferringHandler = std::function<Handled(const membership::NodeRecord& peer, sched::FrameType frame, const Message& request, Answer& answer)>;
+// The same, owning the request (it may move the payload out, never copied)
+// and given its Answer: it may answer now by returning, or move the Answer
+// out, return Handled::deferred() and answer later. A lambda taking
+// `const Message&` fits too.
+using DeferringHandler = std::function<Handled(const membership::NodeRecord& peer, sched::FrameType frame, Message request, Answer& answer)>;
 
 // Queues peers' requests by class and runs them on bounded per-class
 // workers. A request that cannot be queued is answered at once with a 503

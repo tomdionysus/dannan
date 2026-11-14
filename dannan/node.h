@@ -249,7 +249,7 @@ class Node final : public Context {
   class TelemetryNoun;
   friend class RoutesNoun;
 
-  net::Handled handle(const membership::NodeRecord& peer, sched::FrameType frame, const net::Message& request, net::Answer& answer);
+  net::Handled handle(const membership::NodeRecord& peer, sched::FrameType frame, net::Message request, net::Answer& answer);
   void observe_direct(const membership::NodeRecord& peer);
   void merge(std::span<const uint8_t> payload);
   std::shared_ptr<net::CallHandle> place_call(std::optional<membership::NodeRecord> peer, const net::Endpoint& endpoint, net::MessageType type,

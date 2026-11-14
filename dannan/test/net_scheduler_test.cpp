@@ -204,6 +204,23 @@ TEST(Scheduler, ADeferredRequestIsChargedUntilAnswered) {
   EXPECT_EQ(memory.stats().used_bytes, 0u);
 }
 
+// A handler given the request by value owns it: it takes the payload the
+// peer sent without copying it (Macha copied every request into its own
+// type).
+TEST(Scheduler, AHandlerTakesTheRequestWithoutACopy) {
+  std::promise<const uint8_t*> taken;
+  RequestScheduler scheduler(routes(), ServerLimits{}, [&](const membership::NodeRecord&, FrameType, Message request, Answer&) {
+    const Bytes payload = std::move(request.payload);
+    taken.set_value(payload.data());
+    return Handled::processed({message::ok, {}, {}});
+  });
+  Bytes payload(4096, 7);
+  const auto* sent = payload.data();
+  auto answer = ask(scheduler, peer(1), 1, put_object, FrameType::loader, std::move(payload));
+  ASSERT_TRUE(answered_within(answer, 2s));
+  EXPECT_EQ(taken.get_future().get(), sent);
+}
+
 // Every class keeps answering while another class's workers are all held.
 TEST(Scheduler, HeldWorkersOfOneClassNeverDelayAnother) {
   struct Case {
