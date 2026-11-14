@@ -61,9 +61,9 @@ jobs on push are the gate, not extra runs).
    0.8.0 waits for P5.
 5. Node-local rollback (the maintainer, 2026-11-14, ruled in Dagda's session on Dannan's proposal), for Dagda's and Lugh's
    node-local state:
-   - 0.8.0: a sealed per-label counter beside custody, `read(label)` and `advance(label, value)` refusing to go back,
-     durable before it returns, sealed under HKDF(seal root, "dannan/counter/1"). It refuses one directory restored
-     alone, not a whole state restored together.
+   - 0.8.0, **done** and merged (see `COMPLETED.md`): the sealed per-label counter beside custody, on the Context's
+     `Identity` (`counter`, `advance_counter`, `advance_counters`, `note_counter`), sealed under HKDF(seal root,
+     "dannan/counter/1"). It refuses one directory restored alone, not a whole state restored together.
    - 0.9.0: the peer-witnessed high-water mark, the rollback defence. Each label's mark is gossiped, peers keep the
      highest they have seen of each node, and at open a node refuses a label below its peers' witness. A lone node
      has only its local counter, and the limit is stated. A wire addition, so its own design and review first.

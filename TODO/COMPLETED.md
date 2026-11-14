@@ -3,6 +3,20 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
+## Handoff, 2026-11-14: node-local counters, rollback's first layer, for 0.8.0
+
+the maintainer's ruling (in Dagda's session, on Dannan's proposal): node-local rollback in two layers, the sealed counter now and
+the peers' witness in 0.9.0. On `feature/sealed-counter`: `identity::SealedCounters`, one file of every label's value
+in `<state>/identity/counters`, sealed with AES-256-GCM under custody's `derive("dannan/counter/1")`, replaced
+durably. The Context's `Identity` has `counter` (zero for a label never advanced), `advance_counter` (durable before
+it returns), `advance_counters` (one write, all or none) and `note_counter` (Dagda's review: a space advances on
+every commit, so a note is made durable by the roster loop within a second, and at stop). A lower value is refused
+naming the label, never a value. A node without custody refuses all four. A wrong key or an altered file is refused
+naming the path. Tests: four on the counters, and one on the node, which reads the file back from another handle
+while the node runs. Its first form watched the file's write time, a race CI's three jobs met; the read-back proves
+the same thing without it. Gate: node-b 701 tests, 700 passed and the one long-standing skip; hosted CI run
+43624572915 green on every job.
+
 ## Handoff, 2026-11-14: P3's stream side, dannan::listen, for 0.8.0
 
 The shared public listener below the protocols (`2026-11-14-p3-public-listener.md`; the maintainer: `dannan::listen`, the
