@@ -10,12 +10,15 @@
 
 #include <gtest/gtest.h>
 
+#include <memory>
+#include <mutex>
 #include <regex>
 #include <sstream>
 #include <stdexcept>
 #include <vector>
 
 #include "dannan/status/log.h"
+#include "dannan/test/fixtures/gate.h"
 
 namespace dannan::status {
 namespace {
@@ -95,6 +98,68 @@ TEST(JsonSink, WritesOneObjectPerLineEscaped) {
       std::regex(
           R"re(\{"time":"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ","level":"ERROR","scope":"lugh\.oauth","message":"a \\"quoted\\" \\\\ path\\nand a tab\\t and \\u0001"\}\n)re")))
       << out.str();
+}
+
+// An inner sink whose device is held shut until the test opens it.
+class Held final : public LogSink {
+ public:
+  bool enabled(LogLevel level) const noexcept override { return level >= LogLevel::info; }
+  void write(LogLevel level, std::string_view scope, std::string_view message) override {
+    gate.enter_and_wait();
+    std::lock_guard lock(mutex);
+    lines.push_back(std::string(log_level_name(level)) + " " + std::string(scope) + ": " + std::string(message));
+  }
+  std::vector<std::string> taken() {
+    std::lock_guard lock(mutex);
+    return lines;
+  }
+  test::Gate gate;
+  std::mutex mutex;
+  std::vector<std::string> lines;
+};
+
+// The asynchronous stage (P6): a writer never waits on the inner sink's
+// device; past the queue's bound records are dropped and counted, and the
+// count is written through after what was queued, in order.
+TEST(AsyncSink, NeverWaitsOnItsSinkAndReportsWhatItDropped) {
+  auto inner = std::make_shared<Held>();
+  AsyncSink sink(inner, 4);
+  // Opened before the stage joins its thread, however the test leaves.
+  test::GateOpener opener(inner->gate);
+  EXPECT_TRUE(sink.enabled(LogLevel::info));
+  EXPECT_FALSE(sink.enabled(LogLevel::debug));
+  const ScopedLogger logger(std::shared_ptr<LogSink>(&sink, [](LogSink*) {}), "net");
+  logger.info("record 0");
+  // The stage's thread holds record 0 in the shut device: the queue is empty.
+  ASSERT_TRUE(inner->gate.wait_for_entries(1));
+  for (int i = 1; i <= 7; ++i) logger.info("record " + std::to_string(i));
+  // Every write above returned with the device still shut.
+  EXPECT_TRUE(inner->taken().empty());
+  EXPECT_EQ(sink.dropped(), 3u);
+  inner->gate.open();
+  sink.flush();
+  const std::vector<std::string> expected{"INFO net: record 0", "INFO net: record 1", "INFO net: record 2",
+                                          "INFO net: record 3", "INFO net: record 4", "WARN log: dropped 3 record(s): the log queue was full"};
+  EXPECT_EQ(inner->taken(), expected);
+  logger.warn("after");
+  sink.flush();
+  EXPECT_EQ(inner->taken().back(), "WARN net: after");
+  EXPECT_EQ(sink.dropped(), 3u);
+}
+
+// Destruction writes what is still queued before it joins.
+TEST(AsyncSink, WritesWhatIsQueuedWhenDestroyed) {
+  auto inner = std::make_shared<Held>();
+  inner->gate.open();
+  {
+    AsyncSink sink(inner, 64);
+    for (int i = 0; i < 20; ++i) sink.write(LogLevel::info, "net", "record " + std::to_string(i));
+  }
+  const auto lines = inner->taken();
+  ASSERT_EQ(lines.size(), 20u);
+  EXPECT_EQ(lines.back(), "INFO net: record 19");
+  EXPECT_THROW(AsyncSink(nullptr), std::invalid_argument);
+  EXPECT_THROW(AsyncSink(inner, 0), std::invalid_argument);
 }
 
 TEST(LogFormat, ParsesTextAndJsonInAnyCase) {
