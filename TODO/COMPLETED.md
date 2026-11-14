@@ -3,6 +3,16 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
+## Handoff, 2026-11-14: 0.7.0
+
+The first batch of the stack's needs (`2026-11-13-stack-needs.md`):
+- the deferred reply (P8), accepted by Dagda's bench: replicas group 511 to 512 calls per sync, against 2;
+- P2, the partition reading, reviewed by Lir and Lugh; Tom kept joins as built and the limit is documented;
+- Macha's small fixes, reviewed by Macha; two were withdrawn;
+- the cancel-before-placement fix and the timing-before-answer fix.
+Tom, 2026-11-14, directly: tag 0.7.0 with what's done; the rest of the batch is 0.8.0. Built and tested on hosted CI
+only (Tom stopped Mac builds the same day, and every Pi was claimed): every job green on each branch and on develop.
+
 ## Handoff, 2026-11-13: 0.6.0
 
 The ABI promise (Tom, 2026-11-13): the SONAME and package are `libdannan.so.0.6` and
@@ -65,6 +75,10 @@ in 3 of 4 full runs (one unexplained handshake timeout, `LevelZero.ANodeIsObserv
 TSan 624 each at that point; later gates and the two open items are in the report and under 0.5.0. Compose relay 5 of 5. Report: `2026-11-06-dannan-capabilities.md`.
 
 ## Releases
+
+- **0.7.0** (2026-11-14, `main`, tag `0.7.0`, at Tom's word given directly: "Tag 0.7.0 with what's done"): see the handoff
+  above. Gates: hosted CI on develop at the release's code, every job; the counts in the merge runs (Debian arm64 664,
+  macOS 663 at P2).
 
 - **0.6.0** (2026-11-13, `main`, tag `0.6.0`, at Tom's word given in advance: once hosted CI was green on every job
   and Macha and Lugh had reviewed it): see the handoff above. Gates: see the ACTIVE note.
