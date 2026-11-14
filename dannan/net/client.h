@@ -46,7 +46,11 @@ struct InboundHandlers {
 class CallHandle {
  public:
   // Completes the call at once as cancelled and tells the peer; before the
-  // dial finished, the call is never placed.
+  // dial finished, the call is never placed. Best effort: "cancelled" means
+  // the caller stopped waiting, not that the peer never acted. A cancel that
+  // lands as the request is admitted still lets it go out and be cancelled
+  // only after it is sent, so a mutation the peer may still apply should be
+  // idempotent.
   void cancel();
   // Cancels and ends the session it is on: the peer's job may finish, its
   // reply is dropped.
