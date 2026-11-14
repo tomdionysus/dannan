@@ -183,6 +183,8 @@ Lane Client::lane_for(MessageType type) const {
   return registration && registration->lanes == Lanes::data ? Lane::data : Lane::control;
 }
 
+CallHandle::CallHandle(const contract::TimeSource* time) : _time(time), _made(time->now()) {}
+
 void CallHandle::placed(const std::shared_ptr<Session>& session, uint64_t request_id) {
   bool cancelled, aborted;
   std::optional<sched::FrameType> promoted;
@@ -190,6 +192,7 @@ void CallHandle::placed(const std::shared_ptr<Session>& session, uint64_t reques
     contract::Lock lock(_mutex);
     _session = session;
     _id = request_id;
+    _placed = _time->now();
     cancelled = _cancelled;
     aborted = _aborted;
     promoted = _promoted;
@@ -198,6 +201,11 @@ void CallHandle::placed(const std::shared_ptr<Session>& session, uint64_t reques
   if (promoted) session->promote(request_id, *promoted);
   if (cancelled) session->cancel(request_id);
   if (aborted) session->close("call aborted");
+}
+
+void CallHandle::finished() {
+  contract::Lock lock(_mutex);
+  _done = true;
 }
 
 bool CallHandle::cancelled_before_placement() const {
@@ -247,27 +255,37 @@ void CallHandle::promote(sched::FrameType frame) {
 std::chrono::milliseconds CallHandle::idle_for() const {
   std::shared_ptr<Session> session;
   uint64_t id;
+  contract::TimePoint placed;
   {
     contract::Lock lock(_mutex);
+    if (_done) return std::chrono::milliseconds::max();
     session = _session.lock();
     id = _id;
+    placed = _placed;
   }
-  if (!session || !id) return std::chrono::milliseconds::max();
+  const auto now = _time->now();
+  const auto since_made = std::chrono::duration_cast<std::chrono::milliseconds>(now - _made);
+  // Not placed yet: dialling or waiting for a route, nothing back so far.
+  if (!id) return since_made;
+  if (!session) return std::chrono::milliseconds::max();
   const auto idle = session->idle_for(id);
-  return idle ? std::chrono::duration_cast<std::chrono::milliseconds>(*idle) : std::chrono::milliseconds::max();
+  if (!idle) return std::chrono::milliseconds::max();
+  // No byte since it was placed: idle since it was made, the dial included.
+  if (*idle >= now - placed) return since_made;
+  return std::chrono::duration_cast<std::chrono::milliseconds>(*idle);
 }
 
 std::shared_ptr<CallHandle> Client::call(const membership::NodeRecord& peer, MessageType type, Bytes payload, sched::FrameType frame,
                                          asio::any_io_executor executor, Done done, CallWatch watch) {
   note_peer(peer);
-  auto handle = std::make_shared<CallHandle>();
+  auto handle = std::shared_ptr<CallHandle>(new CallHandle(_options.time));
   call(Target{peer.id, {peer.host, peer.port}}, Call{type, std::move(payload), frame, std::move(executor), std::move(done), 0, handle, watch});
   return handle;
 }
 
 std::shared_ptr<CallHandle> Client::call(const Endpoint& endpoint, MessageType type, Bytes payload, sched::FrameType frame, asio::any_io_executor executor,
                                          Done done, CallWatch watch) {
-  auto handle = std::make_shared<CallHandle>();
+  auto handle = std::shared_ptr<CallHandle>(new CallHandle(_options.time));
   call(Target{std::nullopt, endpoint}, Call{type, std::move(payload), frame, std::move(executor), std::move(done), 0, handle, watch});
   return handle;
 }
@@ -620,6 +638,7 @@ void Client::close_route(const identity::NodeId& peer, Lane lane, const std::str
 }
 
 void Client::fail(Call& call, std::string why) {
+  if (call.handle) call.handle->finished();
   asio::post(call.executor, [done = std::move(call.done), why = std::move(why)] { done(CallOutcome{std::nullopt, why, {}}); });
 }
 
@@ -644,8 +663,9 @@ void Client::place(const std::shared_ptr<Session>& session, Call call, const Tar
   // Moved from only once admitted: a refusal by a retiring session leaves it
   // to be routed again.
   if (_options.place_hook) _options.place_hook(*session);
-  const auto admitted = session->call(call.type, std::move(call.payload), call.frame, call.executor, [stall, finished, done](CallOutcome outcome) {
+  const auto admitted = session->call(call.type, std::move(call.payload), call.frame, call.executor, [stall, finished, done, handle](CallOutcome outcome) {
     finished->store(true);
+    if (handle) handle->finished();
     if (!outcome.reply && stall->stalled.load()) outcome.failure = stall->why;
     (*done)(std::move(outcome));
   });
@@ -660,6 +680,7 @@ void Client::place(const std::shared_ptr<Session>& session, Call call, const Tar
       known.id = session->peer().id;
       return await_peers_session(std::move(known), lane, std::move(call));
     }
+    if (handle) handle->finished();
     asio::post(call.executor, [done, why = admitted.refused] { (*done)(CallOutcome{std::nullopt, why, {}}); });
     return;
   }
