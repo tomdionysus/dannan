@@ -37,8 +37,9 @@ current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluat
 **First, finish 0.7.0** (Tom, 2026-11-14, directly: "Tag 0.7.0 with what's done").
 - `develop` at `fad81f6` ("Merge version 0.7.0") holds it: the deferred reply, P2, Macha's fixes, the cancel fix and
   the timing fix. The version commit is done (CMake 0.7.0, `libdannan0.7`, README, CHANGELOG, COMPLETED).
-- Its CI and CodeQL were running at the clear (CI run 43542984513, CodeQL 43542984734). When both are green on every
-  job:
+- Its CI and CodeQL were running at the clear (CI run 43542984513, CodeQL 43542984734). The later commits on
+  `develop` change only TODO files, so either that run or the latest run on `develop` will do (`gh run list --branch
+  develop`). When CI and CodeQL are green on every job:
   1. Merge develop into main ("Release 0.7.0"), `git tag -a 0.7.0 -m "0.7.0"`, push main and the tag.
   2. When main's CI is green, download the `deb-x86-64` and `deb-arm64` artifacts from that run into
      `../tomcully-apt/incoming/dannan/0.7.0/`.
