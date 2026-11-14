@@ -1112,11 +1112,12 @@ TEST(Node, ChannelsReachSubscribersAcrossTheCluster) {
 // (an even split); only an operator's retire takes it out of the count. A
 // watcher hears each change.
 TEST(Node, APartitionIsReadAgainstTheAgreedRoster) {
-  Pair pair;
+  // Before the pair: a change posted while the nodes stop still finds them.
   std::mutex mutex;
   std::vector<membership::Partition> heard;
+  Pair pair;
   const auto strand = asio::make_strand(pair.io.context);
-  pair.a->context().nodes().watch_partition(strand, [&](membership::Partition side) {
+  const auto watching = pair.a->context().nodes().watch_partition(strand, [&](membership::Partition side) {
     std::lock_guard lock(mutex);
     heard.push_back(std::move(side));
   });
@@ -1147,6 +1148,7 @@ TEST(Node, APartitionIsReadAgainstTheAgreedRoster) {
   EXPECT_TRUE(retired.majority);
   EXPECT_EQ(retired.members, 1u);
   EXPECT_EQ(nodes.members(), (std::set<identity::NodeId>{a}));
+  nodes.unwatch_partition(watching);
 }
 
 // The roster's changes as a feed: a watcher hears a node join, change (an
