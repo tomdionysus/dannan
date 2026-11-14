@@ -23,6 +23,14 @@ namespace dannan::membership {
 // agreed (P2; Tom, 2026-11-13). A majority only with more than half of the
 // agreed roster reachable, this node counted: an even split is a minority, so
 // two halves never both act as the majority. One rule for every hosted system.
+//
+// The limit (Tom, 2026-11-14, kept as built): a join adds to the agreed
+// roster at once, on the side that sees it, so nodes joined during a split
+// can give both sides a majority. Agreed {A,B,C,D} split {A,B} | {C,D} reads
+// minority on both, but three nodes joining each side makes both read 5 of 7.
+// So is a new node first started during a split, which seeds its roster from
+// the few it knows. Join nodes to a whole cluster. Found by the Lugh and Lir
+// sessions; holding joins until the roster is whole was weighed and not taken.
 struct Partition {
   bool majority = false;
   // The agreed roster, this node included, and how many of it are reachable

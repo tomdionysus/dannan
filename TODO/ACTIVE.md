@@ -162,8 +162,12 @@ branch with tests first, through hosted CI, and reviewed by the session that ask
      roster on first use.
    - `Nodes::partition()`, `watch_partition` and `unwatch_partition`, `members()` and `retire()`; an identity reset
      retires the stale id.
-   - Hosted CI green on all 15 jobs (Debian arm64 664 passed, macOS 663), with Lir and Lugh reviewing. Built and tested
-     on hosted CI only: Tom stopped Mac builds on 2026-11-14 and every Pi was claimed.
+   - Hosted CI green on all 15 jobs (Debian arm64 664 passed, macOS 663). Built and tested on hosted CI only: Tom
+     stopped Mac builds on 2026-11-14 and every Pi was claimed.
+   - Lir and Lugh approved. Both found that joins during a split can give both sides a majority. Tom, 2026-11-14,
+     directly: keep it as built, and document the hazard (done in `agreed_roster.h` and on `Nodes::partition`).
+     Holding joins until the roster is whole, and counting a joiner only once a majority has seen it, were weighed and
+     not taken.
 4. P4, the class-aware worker pool with CPU pacing, from Dagda's `store/cpu_pacing.h`. Macha's pacing cases and a
    baseline run on the nodes are its proof.
 5. P3, the shared public listener below the protocols, to Lugh's and Lir's combined requirements.

@@ -139,7 +139,9 @@ class Nodes {
   // Which side of a split this node is on (P2; Tom, 2026-11-13), read against
   // the roster as last agreed: a majority only with more than half of it
   // reachable, this node counted, so an even split is a minority. One rule for
-  // every hosted system. Waits on nothing.
+  // every hosted system. Nodes joined during a split can give both sides a
+  // majority (membership::Partition says how): join nodes to a whole cluster.
+  // Waits on nothing.
   virtual membership::Partition partition() const = 0;
   // Its changes, posted to `executor` in order when it is a strand: first the
   // reading now, then each change of side, count or who is unreachable. An id
