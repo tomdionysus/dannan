@@ -56,6 +56,17 @@ TEST(FreePort, NeverHandsOutTheSamePortTwice) {
   for (int i = 0; i < 32; ++i) EXPECT_TRUE(seen.insert(free_port()).second);
 }
 
+// Below every kernel's ephemeral range (Linux from 32768, macOS from 49152),
+// so an outgoing connection elsewhere on the host is never given a port a
+// test chose and has yet to bind.
+TEST(FreePort, ComesFromBelowTheEphemeralRange) {
+  for (int i = 0; i < 32; ++i) {
+    const auto port = free_port();
+    EXPECT_GE(port, 10000);
+    EXPECT_LT(port, 32768);
+  }
+}
+
 TEST(FreePort, TheHandedOutPortCanBeBound) {
   const uint16_t port = free_port();
   const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
