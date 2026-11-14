@@ -59,6 +59,19 @@ jobs on push are the gate, not extra runs).
    `max_pending_replies` = 512 (`net/outbound.h:27`). Measure, then raise the cap, make it per class, or cheapen the
    per-call path. Dagda's bench reproduces it (`2026-11-13-stack-needs.md`, P5, has the build and the commands).
    Lir's target: PUBACK p99 under 50 ms at QoS 1 with k = 2.
+   the maintainer, 2026-11-14: run it on the build cluster (node-a, node-b, node-c, node-d), claimed on the board; and
+   0.8.0 waits for P5.
+5. Node-local rollback (the maintainer, 2026-11-14, ruled in Dagda's session on Dannan's proposal), for Dagda's and Lugh's
+   node-local state:
+   - 0.8.0: a sealed per-label counter beside custody, `read(label)` and `advance(label, value)` refusing to go back,
+     durable before it returns, sealed under HKDF(seal root, "dannan/counter/1"). It refuses one directory restored
+     alone, not a whole state restored together.
+   - 0.9.0: the peer-witnessed high-water mark, the rollback defence. Each label's mark is gossiped, peers keep the
+     highest they have seen of each node, and at open a node refuses a label below its peers' witness. A lone node
+     has only its local counter, and the limit is stated. A wire addition, so its own design and review first.
+the maintainer, 2026-11-14, answering directly: P4 and P3 as built on the notes' recommendations stand (all four P4 pieces in
+0.8.0, the CPU rest by task CPU time; `dannan::listen`, TCP and TLS in 0.8.0, DTLS in 0.9.0); push the reviewed
+branches for hosted CI.
 P7, Alpine in CI: not now (the maintainer). The 0.6 and 0.7 work's detailed notes (each fix, each finding, each review) are in
 `COMPLETED.md`, under "ACTIVE.md's history to 2026-11-14".
 
