@@ -118,6 +118,19 @@ branch with tests first, through hosted CI, and reviewed by the session that ask
    Found on the way, not yet fixed: a data-lane type registered only on the answering node makes the caller send it on
    the wrong lane. The peer closes the session, and the caller learns only "peer channel closed: peer closed" after
    about 11 s. The caller should refuse at once with the reason.
+   Dagda's acceptance runs (dagda-bench on the Mac, loopback, k = 2, 8,000 messages/s, 60 s), against the deferred
+   reply:
+   - The server side works: a replica groups 511 to 512 calls per sync, against 2 before, and holds no worker.
+   - Both cases still fail. One call per message: 218,642 of 479,992 failed, p99 174 ms (not deferred: 388,496,
+     333 ms). 256 logs: about 227,000 to 250,000 failed, p99 231 to 240 ms.
+   - The limit is now the call path per connection, about 6,000 calls/s per peer pair. Calls are refused with "peer
+     pending reply limit reached" (`max_pending_replies` = 512, `net/outbound.h:27`) and "peer outbound queue full".
+   - Dagda's log needs only about 100 calls/s per replica, which already passes, so this is Dannan's stress case.
+     P5 measures it before anything changes: raise the cap, make it per class, or cheapen the per-call path.
+   Also found, a contract defect: `CallHandle::cancel()` says it "completes the call at once as cancelled", but before
+   placement it only sets a flag, and the call completes when its dial ends (up to the connect timeout; 5 s in
+   `Client.ACallIsIdleFromWhenItWasMadeNotWhenItWasPlaced`). The fix is a once-only completion shared by the handle
+   and the call. For the 0.7 batch.
 2. P6's seven small fixes (Macha), then the owners' test seam, the advert-change watch and non-blocking logging.
 3. P2, the partition reading on `Nodes`. Even is a minority; a join adds to the agreed roster and only a retire
    removes.
