@@ -1239,7 +1239,7 @@ TEST(Node, AnAdvertWatchTellsOneKeysChangesAtItsRate) {
     const auto record = record_of(*pair.b, a);
     return record && record->advert_u64("used") == 1u;
   }));
-  const auto watch = pair.b->context().nodes().watch_advert("used", 600ms, asio::make_strand(pair.io.context), [&](AdvertChange change) {
+  const auto watch = pair.b->context().nodes().watch_advert("used", 1500ms, asio::make_strand(pair.io.context), [&](AdvertChange change) {
     std::optional<uint64_t> value;
     if (change.value) {
       membership::NodeRecord carrier;
@@ -1264,11 +1264,14 @@ TEST(Node, AnAdvertWatchTellsOneKeysChangesAtItsRate) {
   pair.a->context().nodes().advertise("used", membership::u64_advert(4));
   ASSERT_TRUE(eventually([&] { return last().value == 4u; }));
   EXPECT_EQ(count(), 3u);
-  EXPECT_GE(last().at - second, 550ms);
+  EXPECT_GE(last().at - second, 1450ms);
 
+  // A withdrawal inside the period is told at once, never held back.
+  const auto withdrawn = std::chrono::steady_clock::now();
   pair.a->context().nodes().withdraw("used");
   ASSERT_TRUE(eventually([&] { return count() == 4; }));
   EXPECT_FALSE(last().value);
+  EXPECT_LT(last().at - withdrawn, 1000ms);
 
   pair.b->context().nodes().unwatch_advert(watch);
   pair.a->context().nodes().advertise("used", membership::u64_advert(5));

@@ -99,9 +99,11 @@ class Nodes {
   // One advert's changes on the peers (P6): adverts are slow facts, so this is
   // rate-limited, where the roster watch tells every change of the record.
   // Posted to `executor` in order when it is a strand: first the value of every
-  // active peer carrying `key`, then each change, a peer's at most once each
-  // `at_most_every`. Changes inside that coalesce: the latest is told after it,
-  // by the next heartbeat. An id for unwatch_advert. Waits on nothing.
+  // active peer carrying `key`, then each change, a peer's values at most once
+  // each `at_most_every`. Values inside that coalesce: the latest is told after
+  // it, by the next heartbeat. A withdrawal or a leave (no value) is never held
+  // back or coalesced away, so a peer that leaves and rejoins inside the period
+  // is told as both. An id for unwatch_advert. Waits on nothing.
   virtual uint64_t watch_advert(const std::string& key, std::chrono::milliseconds at_most_every, boost::asio::any_io_executor executor,
                                 std::function<void(AdvertChange)> handler) = 0;
   virtual void unwatch_advert(uint64_t id) = 0;
