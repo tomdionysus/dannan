@@ -51,9 +51,12 @@ jobs on push are the gate, not extra runs).
    CPU rest by task CPU time, the node baseline after Macha moves onto the gate). Any of them can still be overruled
    before the merge. Built on `feature/worker-pool` (`f531ce5`, local): `sched/cpu_pacing.h` (Dagda's),
    `sched/class_gate.h` (`ClassGate`, `ClassGates`), `sched/worker_pool.h`, and `Context::gates()` and `workers()`.
-   Gate on node-a (g++ Release, one pass): 692 tests, 691 passed, the one long-standing skip; 19 new. Waiting
-   on: the three reviews of the code, and the maintainer's word to push the branch for hosted CI (clang's thread-safety analysis,
-   ASan, UBSan, TSan, macOS, x86-64), before the merge into `develop`. Its proof is Macha's pacing cases
+   Reviewed in code by Dagda (no defect; two comments added), Lugh (move-only tasks via `contract::UniqueFunction`,
+   the late-drop bound documented, a clearer reserves error) and Macha (the hosted reading may change while running;
+   `NodeConfig::gate_time` and `gate_process_cpu`), all applied (`f752aa9`). Gate on node-a (g++ Release, one
+   pass after the fixes): 695 tests, 694 passed, the one long-standing skip; 22 new. Waiting on the maintainer's word to push the
+   branch for hosted CI (clang's thread-safety analysis, ASan, UBSan, TSan, macOS, x86-64), before the merge into
+   `develop`. Its proof is Macha's pacing cases
    (`test_repair_is_paced_not_stopped_while_higher_classes_stay_busy`, `maintenance_trace`) and a baseline run on the
    nodes.
 3. P3: the shared public listener below the protocols, to Lugh's and Lir's combined requirements
