@@ -3,6 +3,175 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
+## Handoff, 2026-11-15: 0.8.0 prepared again, with the custody tool and the budget's wait
+
+The approved batch is in: P6's three, P4, P3's stream side, `DANNAN_BUILD_TOOLS`, the sealed counters, and P5's
+figures. the maintainer, 2026-11-14, directly: P5 is enough, cut 0.8.0. The first version commit (`99b2b61`) then waited: the maintainer held
+the tag for Macha's custody tool, and put Dagda's waiting budget in 0.8.0 too; loader promotion is 0.9.0, with the wire
+batch (the maintainer, 2026-11-15). The version commit changes CHANGELOG, README, ACTIVE and this file; CMake and `debian/control`
+(`libdannan0.8`) said 0.8 from the minor's opening (`e839322`). The tag and the push of `main` wait on the maintainer's word.
+Built and tested on hosted CI only. **Gate, develop's run 43677182126, green on every job: `dannan_tests` 735 on
+Debian (deb x86-64), 734 passed and the one long-standing skip (`Supervisor.ADirectoryThatCannotBeListedIsWarnedOf`);
+on macOS 734, 732 passed, the BBR skip and `CustodyTool.InitTakesCustodyBackWhenTheRootCannotBeWritten` (no
+`/dev/full` there).**
+
+On the way, two flakes in tests, neither in the library:
+- `Session.ClosingFromAnotherThreadMidTransferIsSafe` failed on macOS: a fast echo answered the whole 2 MiB call before
+  the close from another thread landed. The peer now holds each request unanswered (`1d7f867`); the test proves the
+  close is safe mid-transfer, not the answer.
+- `LevelZero.TwoNodesBehindNatMeetByAPunch` failed once under TSan (custody run 43674960447): the data lane's punched
+  handshake ran past the client's real-clock `connect_timeout`. Passed on its one rerun. A finding, not fixed: the
+  bound is tight for TSan's slowdown; if it recurs, give the level-zero cluster a longer connect timeout under
+  sanitizers rather than rerun.
+
+## Handoff, 2026-11-15: dannan-custody, for Macha's cutover
+
+Macha's ask (the maintainer's ruling there: its nodes get key custody from a systemd credential, provisioned between a stop and
+a start; dannan-node, which could do it, is the test bed's and not installed). On `feature/custody-tool`, merged at
+`843fd9d`: `tools/dannan_custody.cpp`, installed with `docs/man/dannan-custody.1`.
+- `init --state DIR --credential NAME`: `KeyCustody::create`, the new root printed once in hex and nothing else on
+  stdout, the node id made with it (one there already kept).
+- `show --state DIR --credential NAME [--credentials-dir DIR]`: opens custody as the unit will and prints
+  `{"id","public_key"}`. Macha's review: it writes nothing, and refuses a directory with no node id before taking the
+  lock, so a mistyped path gains nothing.
+- Both refuse under `.dannan.lock` ("already in use"; an flock records no holder, so none is named, as dannan-node).
+- The manual page says a root sealed without a TPM opens only on its host, and what an off-node backup must keep.
+Six process tests (`dannan/test/custody_tool_test.cpp`). CI run 43674960447 green on every job after one TSan rerun
+(the flake above).
+
+Macha's review of the merge found that init could lose its root after `create()`, leaving custody nothing opens and
+an init that will not run again. Fixed on `feature/custody-init-safe`, merged at `470869e`:
+- the node id is made before the custody;
+- the root's line is built in `SecureBytes` and written with write(2), retried on EINTR, SIGPIPE ignored;
+- a failed write removes the custody just made, so init runs again.
+Found on the way: with stdout closed, the next file opened takes fd 1, and the root would have been written into it in
+clear with exit 0. A closed stdout is now refused before anything is opened. The manual page says to pipe the root
+into `systemd-creds encrypt`, never to a file, and what to do if the encrypt fails after the root was written. Two
+more tests: a closed stdout, and stdout on `/dev/full` (Linux only). CI run 43676476946 green on every job. Macha
+approved.
+
+## Handoff, 2026-11-15: the budget's wait, for Dagda's reads
+
+Dagda's ask: its reads hold the reader's class of retained memory, as Macha's do on the ledger
+(`distributed_store.cpp:1744`). On `feature/budget-acquire`, merged at `8794aae`: `Budget` gains `acquire(work, owner,
+bytes, deadline, cancelled)`, `reserve(work, owner, bytes)`, `wake()` (the ledger re-checks a cancel flag only when
+woken) and `stats()`. An owner below `hosted_first`, or a default deadline, is refused. Dagda's review: approved, with
+one comment taken (`26ba1be`: the deadline is on the steady clock, not the node's time). Two node tests. CI run
+43670002036 green on every job. Budget is a virtual interface, so this is 0.8's ABI, not a patch's.
+
+## Handoff, 2026-11-14: P5's figures, and the TLS close made safe
+
+On `feature/bench-small`: `dannan-bench calls` (an open loop at `--rate`, in `--batch`es of `--size`, for
+`--seconds`, on a `--lane`, with `--io-threads`) and `dannan-bench serve`. The figures are in
+`2026-11-14-p5-figures.md`. On one Pi 5 over loopback the call path runs clean to 12,000 calls/s at p99 under 1 ms and
+tops out near 14,800 calls/s on CPU. `max_pending_replies` = 512 only bounds latency at saturation (about 35 ms). It
+stays at 512. Batches of 64 carry 128,000 msgs/s. Two io threads are enough. Between Pis the Wi-Fi carries about
+0.5 MB/s and a few hundred calls/s, so cross-Pi figures measure the link.
+
+The branch's CI met `StreamListener.StopsInTwoStepsAndClosesCleanly` failing in both deb jobs ("stream truncated":
+no close_notify, the 2 s bound expired). The fix that waited for hosted reads before the TLS shutdown had left two
+holes. A hosted write whose completion had not yet run could share the stream with the shutdown. So could a read
+issued after the pending one was cancelled. `Stream` now counts hosted reads and writes alike (`tracked()` in
+`listen/stream.h`), cancels them, starts the shutdown when the last ends, and refuses any begun after it as aborted.
+CI run 43626309311 was green on every job. The branch is merged into `develop` (`be879e0`) and pushed.
+
+## Handoff, 2026-11-14: node-local counters, rollback's first layer, for 0.8.0
+
+the maintainer's ruling (in Dagda's session, on Dannan's proposal): node-local rollback in two layers, the sealed counter now and
+the peers' witness in 0.9.0. On `feature/sealed-counter`: `identity::SealedCounters`, one file of every label's value
+in `<state>/identity/counters`, sealed with AES-256-GCM under custody's `derive("dannan/counter/1")`, replaced
+durably. The Context's `Identity` has `counter` (zero for a label never advanced), `advance_counter` (durable before
+it returns), `advance_counters` (one write, all or none) and `note_counter` (Dagda's review: a space advances on
+every commit, so a note is made durable by the roster loop within a second, and at stop). A lower value is refused
+naming the label, never a value. A node without custody refuses all four. A wrong key or an altered file is refused
+naming the path. Tests: four on the counters, and one on the node, which reads the file back from another handle
+while the node runs. Its first form watched the file's write time, a race CI's three jobs met; the read-back proves
+the same thing without it. Gate: node-b 701 tests, 700 passed and the one long-standing skip; hosted CI run
+43624572915 green on every job.
+
+## Handoff, 2026-11-14: P3's stream side, dannan::listen, for 0.8.0
+
+The shared public listener below the protocols (`2026-11-14-p3-public-listener.md`; the maintainer: `dannan::listen`, the
+stream side in 0.8.0 and DTLS in 0.9.0), on `feature/public-listener`:
+- `Certificates`: the operator's PEM chain, key and client bundle, reloaded when the hosted system says. One serves
+  several listeners. A failure keeps the old and names the path, never a value.
+- `TlsPolicy`: the minimum version, client certificates (never, optional, required) and ALPN, per listener. Under
+  `optional` any presented certificate's thumbprint, subject and chain verdict are kept (Lugh, RFC 8705).
+- `StreamListener` and `Stream`. A stream is Asio's AsyncReadStream and AsyncWriteStream, so Beast runs over it, with
+  `listen/beast.h` for the WebSocket's teardown (Lir); its handler's associators reach the read. It has
+  `start_tls(answer, done)`, which writes the answer itself after checking nothing arrived past the request, and is
+  refused while `send()` holds bytes. `send()` queues under an outbound bound. Deadlines are on injected time
+  (handshake, and idle per stream, off by default). `close()` drains `send()`, then close_notify, within one bound;
+  a close the bound cut short is abrupt. Stop comes in two steps, and `close_all(done)`. Streams are on their own
+  strands or on the executor given, and systemd's inherited sockets are taken.
+- `Limits`: per listener cap and accept rate, per address and per caller, all optional and off by default, bounded
+  (`max_tracked`, evictions counted), trusted proxies by `Prefix` (exempt); and `forwarded_for()`.
+Reviewed in design and code by Lugh and Lir, every point applied; both move their listeners onto it after the
+release. Found on the way:
+- StartTLS's plaintext check had to come before the answer, or a quick ClientHello read as plaintext past it.
+- A slow reader was counted once per racing send.
+- TLS's shutdown cannot share the stream with a hosted read: it now waits for a cancelled read to end, found by the
+  deb job's run, where close_notify never went out.
+Gate: node-b, g++ Release with warnings as errors; hosted CI run 43617250782 green on every job.
+
+## Handoff, 2026-11-14: P4, the worker pool, and DANNAN_BUILD_TOOLS, for 0.8.0
+
+P4 (`2026-11-14-p4-worker-pool.md`; the maintainer confirmed the note's recommendations), on `feature/worker-pool`:
+- `sched/cpu_pacing.h`, Dagda's pacer as it was, the namespace changed only, so Dagda's copy is a delete and an
+  include at the slice that first links 0.8.
+- `sched::ClassGate` and `ClassGates`: one gate per background class per node. A loop holds it (`started`,
+  `should_yield`, `finished`, `cpu_scale`, `charge`), and every pool runs its loader and speculative tasks through
+  it, so a class never takes more than its share however its work runs (Macha's review). The hosted contention
+  reading is held under a shared lock across each call, so once `set_contended` returns the old reading is never
+  called again (Macha's second read: otherwise a use-after-free at its stop).
+- `sched::WorkerPool`: supervised threads by class. It has bounded queues refusing at once with a reason, per-class
+  caps, reserves for the classes above, deadline and cancel honoured at dequeue and told on the caller's executor,
+  and move-only tasks (`contract::UniqueFunction`, for Lugh's secrets). A background task rests d x (1/scale - 1),
+  d its thread's CPU time (Dagda's review).
+- The node's gates and pool on the Context (`gates()`, `workers()`), with `NodeConfig::workers`, the gates'
+  configs, and `gate_time` and `gate_process_cpu` apart from the node's (Macha's review). A hosted system may run its
+  own pool beside the node's (Lugh's hashing).
+Reviewed in code by Dagda, Lugh and Macha, every point applied. Hosted CI's TSan found one race, in the tests: an
+executor destroyed while a pool worker was still returning from posting to it. The tests now keep it, and the
+contract says an executor must outlive the pool. Gate: node-b, g++ Release with warnings as errors, 696
+tests, 695 passed and the one long-standing skip, 23 new; hosted CI run 43610885267 green on every job.
+
+`DANNAN_BUILD_TOOLS` (Lugh), default on, on `feature/tools-option`. Off, the tools are neither built nor installed;
+with `DANNAN_BUILD_TESTING` it is refused at configure. CI's `package` step proves both (run 43610292093, green on
+every job).
+
+## Handoff, 2026-11-14: P6's remaining three, for 0.8.0
+
+On `feature/owner-test-seam`, merged into `develop`. 0.8 is opened first (`e839322`: CMake 0.8.0, `libdannan0.8`),
+since every item changes the ABI.
+- **The owners' test seam.** `NodeConfig::call_fault` (from `net::ClientOptions::call_fault`) is asked about each call,
+  with the peer's id when known (a call by address to a peer met before has it), the address and the type. It answers
+  `net::CallFault::refuse(why)`, under which the call fails at once, or `stall()`, under which it is held unanswered.
+  Neither puts a byte on the wire. A held call is idle from when it was made and is watched as a placed one is (the
+  watchdog now takes an idle reading and a cancel, not a session). It ends by its no-progress watch, its deadline, a
+  cancel, stop, or `Node::release_stalled_calls(peer)` ("stall released"). `Node::stalled_calls()` is the count held
+  now, never cumulative (Macha counts its own where it needs one). `dannan/test/fixtures/bare_peer.h` (installed):
+  `test::BarePeer`, a node with nothing hosted, with a chosen id, failure domain, name, adverts, telemetry fields and
+  routes, and its own io threads. It destroys its node before stopping them, since a node's stop waits on work it
+  posts there; the first CI run hung for want of that. It replaces Macha's `NodeRuntime::CallFault`, `StalledCalls`
+  and `tests/stand_in_peer.hpp`.
+- **The advert watch.** `Nodes::watch_advert(key, at_most_every, executor, handler)` gives `AdvertChange{node, value}`.
+  First come the values of every active peer carrying the key, then each change, a peer's values at most once a
+  period, coalesced to the latest and told by the next heartbeat after it (`topology_changed`, which runs every
+  heartbeat). A withdrawal or a leave is never held back or coalesced away (Macha's review, `86a6fcc`). The roster
+  watch already told advert changes as `changed`, unthrottled; Macha keeps its metadata generation there.
+- **Non-blocking logging.** `status::AsyncSink(inner, capacity)`: `write()` queues and returns, and a supervised
+  `log-writer` thread writes the queue through in order. A record past the bound is dropped and counted (`dropped()`),
+  and the count is written through as a WARN line, scope `log`. `flush()` waits for what was queued. A record keeps
+  the time `write()` took it, through the new `LogSink::write_at` (default: `write`), which `ConsoleSink` and
+  `JsonSink` stamp with (Macha's review, `f27c746`). The writer is supervised because
+  `SupervisedThreads.EveryThreadIsStartedSupervised` demands it of every library thread.
+Tests: eight new (four for the fault, the advert watch, the bare peer, two for the stage). Gate: hosted CI run
+43548808618, every job green on Debian x86-64 and arm64 and macOS, ASan, UBSan and TSan, `abi` against 0.7.0 skipped
+as the minor's first; 673 tests, 672 passed and the one long-standing skip. Never built on the Mac (every Pi was
+claimed; hosted CI was the gate). Not yet measured on the Pis: the stage's effect on io under a slow journal
+(`2026-11-13-stack-needs.md` P6.7 asked for that measurement first).
+
 ## Handoff, 2026-11-14: 0.7.0
 
 The first batch of the stack's needs (`2026-11-13-stack-needs.md`):

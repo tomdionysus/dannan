@@ -13,6 +13,8 @@
 #include <thread>
 #include <vector>
 
+#include "dannan/identity/cluster_key.h"
+#include "dannan/test/fixtures/bare_peer.h"
 #include "dannan/test/fixtures/child_process.h"
 #include "dannan/test/fixtures/gate.h"
 #include "dannan/test/fixtures/ports.h"
@@ -213,6 +215,66 @@ TEST(ChildProcess, ChildrenStartOnManyThreadsAtOnce) {
     });
   for (auto& thread : threads) thread.join();
   EXPECT_EQ(good.load(), count);
+}
+
+bool within(std::chrono::milliseconds bound, const std::function<bool()>& condition) {
+  const auto until = std::chrono::steady_clock::now() + bound;
+  while (std::chrono::steady_clock::now() < until) {
+    if (condition()) return true;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  return condition();
+}
+
+// A bare peer (P6): the node under test meets it as any other, under the id
+// it was given, with its adverts and telemetry, and its routes answer; an
+// advert it changes reaches the node, and a peer that stops goes quiet.
+TEST(BarePeer, IsMetUnderItsIdWithItsAdvertsTelemetryAndAnswers) {
+  TempDir dir;
+  std::ofstream(dir.path() / "cluster.key") << "bare peer test";
+  const auto key = identity::load_cluster_key(dir.path() / "cluster.key");
+  constexpr net::MessageType echo{1321};
+  constexpr uint16_t hosted_field = status::field::first_hosted;
+  BarePeer under_test(dir.path() / "node", key);
+  under_test.start();
+
+  BarePeer::Options shape;
+  shape.bootstrap = {under_test.endpoint()};
+  shape.id = identity::NodeId::random();
+  shape.failure_domain = "rack-b";
+  shape.node_name = "stand-in";
+  shape.adverts["capacity"] = membership::u64_advert(4096);
+  shape.telemetry = [](status::Telemetry& record) { record.set_u64(hosted_field, 42); };
+  shape.before_start = [](Node& node) {
+    node.context().routes().add(echo, {"echo", net::Lanes::control, net::Frames::control_only, false},
+                                [](const membership::NodeRecord&, sched::FrameType, const net::Message& request) {
+                                  return net::Handled::processed({net::message::ok, request.payload, {}});
+                                });
+  };
+  BarePeer peer(dir.path() / "peer", key, shape);
+  peer.start();
+  EXPECT_EQ(peer.id(), *shape.id);
+
+  const auto record = [&]() -> std::optional<membership::NodeRecord> {
+    for (const auto& each : under_test.node().context().nodes().active())
+      if (each.id == *shape.id) return each;
+    return std::nullopt;
+  };
+  ASSERT_TRUE(within(std::chrono::seconds(10), [&] { return record() && record()->advert_u64("capacity") == 4096u; }));
+  EXPECT_EQ(record()->failure_domain, "rack-b");
+  EXPECT_TRUE(within(std::chrono::seconds(10), [&] {
+    for (const auto& each : under_test.node().context().telemetry().all())
+      if (each.node_id() == *shape.id) return each.u64(hosted_field) == 42u;
+    return false;
+  }));
+  const auto answered = under_test.node().context().routes().call_and_wait(*record(), echo, net::Bytes{7}, sched::FrameType::control, std::chrono::seconds(5));
+  ASSERT_TRUE(answered.reply) << answered.failure;
+  EXPECT_EQ(answered.reply->payload, net::Bytes{7});
+
+  peer.advertise("capacity", membership::u64_advert(8192));
+  EXPECT_TRUE(within(std::chrono::seconds(10), [&] { return record() && record()->advert_u64("capacity") == 8192u; }));
+  peer.stop();
+  EXPECT_TRUE(within(std::chrono::seconds(10), [&] { return !record(); }));
 }
 
 }  // namespace

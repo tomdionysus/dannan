@@ -78,6 +78,20 @@ case "$step" in
     cmake -S "$top/test/package" -B "$out/package/consumer" -G Ninja -DCMAKE_PREFIX_PATH="$out/package/prefix" -DDANNAN_EXPECTED_VERSION="$version"
     cmake --build "$out/package/consumer"
     LD_LIBRARY_PATH="$out/package/prefix/lib:$out/package/prefix/lib64" "$out/package/consumer/consumer" "$version"
+    # The library alone, for a project that fetches Dannan for it (Lugh): no tool is
+    # built, and tests without the tools they run are refused at configure.
+    cmake -S "$top" -B "$out/package/library-only" -G Ninja -DCMAKE_BUILD_TYPE=Release -DDANNAN_BUILD_TOOLS=OFF
+    cmake --build "$out/package/library-only" -j "$jobs"
+    for tool in dannan-node dannan-ca dannan-custody dannan-bench dannan-import-macha dannan-version; do
+      if [ -e "$out/package/library-only/$tool" ]; then
+        echo "package: DANNAN_BUILD_TOOLS=OFF still built $tool" >&2
+        exit 1
+      fi
+    done
+    if cmake -S "$top" -B "$out/package/refused" -G Ninja -DDANNAN_BUILD_TESTING=ON -DDANNAN_BUILD_TOOLS=OFF > /dev/null 2>&1; then
+      echo "package: DANNAN_BUILD_TESTING without DANNAN_BUILD_TOOLS was not refused" >&2
+      exit 1
+    fi
     ;;
   coverage)
     configure coverage -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS=--coverage -DCMAKE_EXE_LINKER_FLAGS=--coverage -DCMAKE_SHARED_LINKER_FLAGS=--coverage

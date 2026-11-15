@@ -32,41 +32,53 @@ live cluster is live-a and live-b, both Pi 5 on Debian 13 with Boost
 contract `API_VERSION` 24. The laptop is on MacPorts for everything. Macha's
 current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluation.md`.
 
-## Resume here (2026-11-14)
+## Resume here (2026-11-15)
 
-**First, finish 0.7.0** (the maintainer, 2026-11-14, directly: "Tag 0.7.0 with what's done").
-- `develop` at `fad81f6` ("Merge version 0.7.0") holds it: the deferred reply, P2, Macha's fixes, the cancel fix and
-  the timing fix. The version commit is done (CMake 0.7.0, `libdannan0.7`, README, CHANGELOG, COMPLETED).
-- Its CI and CodeQL were running at the clear (CI run 43542984513, CodeQL 43542984734). The later commits on
-  `develop` change only TODO files, so either that run or the latest run on `develop` will do (`gh run list --branch
-  develop`). When CI and CodeQL are green on every job:
-  1. Merge develop into main ("Release 0.7.0"), `git tag -a 0.7.0 -m "0.7.0"`, push main and the tag.
-  2. When main's CI is green, download the `deb-x86-64` and `deb-arm64` artifacts from that run into
-     `../tomcully-apt/incoming/dannan/0.7.0/`.
-  3. Check them on a Pi with `dpkg-deb`: SONAME `libdannan.so.0.7`, and shlibs `libdannan0.7 (>= 0.7.0)`.
-  4. Tell the maintainer to run `sh publish.sh incoming/dannan/0.7.0/*.deb` and the rsync. Both are his steps; never upload.
-- If a job is red, find the cause from the log before changing anything; a flake is a race to prove and fix.
-- After the tag, tell Dagda, Lir, Lugh and Macha Server. Dagda's slice 4 builds on the deferred reply; Lir and Lugh
-  wire in P2 (Lir: degrade or refuse QoS 1/2 on a minority side; Lugh: Status and the audit log).
+**0.8.0 is prepared on `develop`**: the batch below is all merged, and so are the two the maintainer added on 2026-11-15:
+`dannan-custody` for Macha's cutover (Macha pins 0.8.0) and `Budget::acquire` for Dagda's reads (Dagda gates on the
+tag). Waiting on the maintainer: the tag `0.8.0` and the push of `main`. Then: build and check the `.deb`s (SONAME
+`libdannan.so.0.8`, and `dannan-custody` in `dannan-tools`) for the maintainer to publish, and tell Dagda, Lir, Lugh and Macha,
+who all asked. Next, 0.9.0: DTLS and plain UDP for `dannan::listen`; the peer-witnessed high-water mark; and loader
+promotion at the peer (Dagda's ask, the maintainer: with the wire batch), a new message beside promote_read_ahead and
+promote_foreground. The wire additions are designed and reviewed first.
 
-**Then 0.8.0**, the rest of the approved batch, in order, each on its own `feature/` branch, tests first, hosted CI,
-reviewed by the session that asked:
-1. P6's remaining three, for Macha:
-   - the owners' test seam: a per-call fault, stall or refusal by peer and type, and a bare peer with chosen adverts
-     and telemetry, in Dannan's fixtures;
-   - the advert-change watch: optional, on a named key, rate-limited;
-   - non-blocking logging: an asynchronous sink stage with a bounded queue that counts and reports its drops.
-2. P4: a class-aware worker pool with CPU pacing, from Dagda's `store/cpu_pacing.h`. Its proof is Macha's pacing cases
-   (`test_repair_is_paced_not_stopped_while_higher_classes_stay_busy`, `maintenance_trace`) and a baseline run on the
-   nodes.
-3. P3: the shared public listener below the protocols, to Lugh's and Lir's combined requirements
-   (`2026-11-13-stack-needs.md`, P3).
+**0.7.0 is released** (`main` at `6ce0349`, tag `0.7.0`, both pushed at the maintainer's word). Main's CI was green on every job. The
+`.deb`s are in `../tomcully-apt/incoming/dannan/0.7.0/`; both library packages were checked: SONAME `libdannan.so.0.7`
+and shlibs `libdannan0.7 (>= 0.7.0)`. the maintainer published them to the apt repository (2026-11-14). Dagda, Lir, Lugh and Macha Server were told. Lugh has 0.7.0 (P2 shows in its
+Status with its P8.1). Lir is repinned with P2 wired in (`--minority degrade|refuse`), waiting on a Pi for its gate.
+
+**0.8.0 is open**: the tree and the library's package say 0.8 (`e839322`). The approved batch, in order, each on its own
+`feature/` branch, tests first, hosted CI, reviewed by the session that asked. the maintainer, 2026-11-14, to every session: no
+test run is repeated without a flake or odd behaviour to justify it, and ASan and TSan are for releases (hosted CI's
+jobs on push are the gate, not extra runs).
+1. P6's remaining three, for Macha: **done** on `feature/owner-test-seam` and merged into `develop`. Macha reviewed
+   it and every follow-up; all passed. CI run 43548808618 was green on every job. See `COMPLETED.md`.
+2. P4, the class-aware worker pool with CPU pacing: **done**, merged into `develop` (see `COMPLETED.md`). Still to
+   come, Macha's: its maintenance moves onto the node's gate, proved by its pacing cases
+   (`test_repair_is_paced_not_stopped_while_higher_classes_stay_busy`, `maintenance_trace`), then the baseline run
+   on the nodes. Also merged: Lugh's `DANNAN_BUILD_TOOLS` (`feature/tools-option`, CI green on every job).
+3. P3, the shared public listener (`2026-11-14-p3-public-listener.md`): the stream side, `dannan::listen`, is
+   **done**, merged into `develop` (see `COMPLETED.md`). DTLS and plain UDP associations are 0.9.0.
 4. P5: small-message figures in `dannan-bench`, on the Pi cluster between two real machines. It covers notify fan-out,
    batched calls of 1 to 64 envelopes at 64 B to 1 KiB, msgs/s and p50/p99/p99.9, and the io thread count. Its stress
    case is the call path's ceiling, about 6,000 calls/s per peer pair, where calls are refused at
    `max_pending_replies` = 512 (`net/outbound.h:27`). Measure, then raise the cap, make it per class, or cheapen the
    per-call path. Dagda's bench reproduces it (`2026-11-13-stack-needs.md`, P5, has the build and the commands).
    Lir's target: PUBACK p99 under 50 ms at QoS 1 with k = 2.
+   the maintainer, 2026-11-14: run it on the build cluster (node-a, node-b, node-c, node-d), claimed on the board; and
+   0.8.0 waits for P5. **Done**, merged (see `COMPLETED.md`, `2026-11-14-p5-figures.md`): measured, the ceiling is
+   CPU near 14,800 calls/s on one Pi, not the cap, which stays at 512. the maintainer: enough, cut 0.8.0.
+5. Node-local rollback (the maintainer, 2026-11-14, ruled in Dagda's session on Dannan's proposal), for Dagda's and Lugh's
+   node-local state:
+   - 0.8.0, **done** and merged (see `COMPLETED.md`): the sealed per-label counter beside custody, on the Context's
+     `Identity` (`counter`, `advance_counter`, `advance_counters`, `note_counter`), sealed under HKDF(seal root,
+     "dannan/counter/1"). It refuses one directory restored alone, not a whole state restored together.
+   - 0.9.0: the peer-witnessed high-water mark, the rollback defence. Each label's mark is gossiped, peers keep the
+     highest they have seen of each node, and at open a node refuses a label below its peers' witness. A lone node
+     has only its local counter, and the limit is stated. A wire addition, so its own design and review first.
+the maintainer, 2026-11-14, answering directly: P4 and P3 as built on the notes' recommendations stand (all four P4 pieces in
+0.8.0, the CPU rest by task CPU time; `dannan::listen`, TCP and TLS in 0.8.0, DTLS in 0.9.0); push the reviewed
+branches for hosted CI.
 P7, Alpine in CI: not now (the maintainer). The 0.6 and 0.7 work's detailed notes (each fix, each finding, each review) are in
 `COMPLETED.md`, under "ACTIVE.md's history to 2026-11-14".
 

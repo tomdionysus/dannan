@@ -24,6 +24,7 @@
 
 #include "dannan/context.h"
 #include "dannan/identity/node_identity.h"
+#include "dannan/identity/sealed_counters.h"
 #include "dannan/membership/agreed_roster.h"
 #include "dannan/membership/membership.h"
 #include "dannan/net/client.h"
@@ -105,6 +106,9 @@ struct NodeConfig {
   // Refuses a dial by naming why, for tests that fail links; see
   // net::ClientOptions::dial_hook.
   std::function<std::string(const net::Endpoint&, net::Lane)> dial_hook;
+  // The owners' test seam (P6): refuses or stalls one call by peer and type,
+  // the node's own calls included; see net::CallFault. Tests only.
+  std::function<net::CallFault(const std::optional<identity::NodeId>& peer, const net::Endpoint& endpoint, net::MessageType type)> call_fault;
   // reach::PathsConfig's: how long a relayed circuit waits for chunks that may have died
   // with a session (none: dead_after), and, tests only, the chunks a relay drops.
   std::optional<std::chrono::milliseconds> relay_finish_wait;
@@ -115,6 +119,16 @@ struct NodeConfig {
   size_t max_frame = 256 * 1024;
   net::ServerLimits limits;
   reach::ConnectivityConfig connectivity;
+  // The node's worker pool and the gates its loader and speculative work run
+  // through (P4); a hosted system sets its classes' caps and bounds here.
+  sched::WorkerPoolConfig workers;
+  sched::GateConfig loader_gate;
+  sched::GateConfig speculative_gate;
+  // The gates' own time and process CPU, apart from the node's, so a hosted
+  // system's pacing tests step them while the node runs on real time (Macha's
+  // review). Null: `time` below, and the process's real CPU.
+  const contract::TimeSource* gate_time = nullptr;
+  sched::ProcessCpu gate_process_cpu;
   // The node's retained-memory budget and its reserves.
   uint64_t memory_bytes = 768ull << 20;
   uint64_t control_reserve_bytes = 64ull << 20;
@@ -198,6 +212,12 @@ class Node final : public Context {
   // blocked in one can be joined; the rest of the node runs on until stop().
   void cancel_outbound_calls();
 
+  // Tests only, with NodeConfig::call_fault: fails the calls it stalled to
+  // `peer` (every peer when none) as "stall released"; how many. And how many
+  // it holds now.
+  size_t release_stalled_calls(const std::optional<identity::NodeId>& peer = std::nullopt);
+  size_t stalled_calls() const;
+
   // Beneath the Context, for the hosted system's facade.
   membership::Membership& membership() noexcept { return _members; }
   status::TelemetryStore& telemetry_store() noexcept { return _telemetry; }
@@ -237,6 +257,8 @@ class Node final : public Context {
   status::Observations& observations() override { return _observations; }
   sched::WaitGuard& wait_guard() override { return _wait_guard; }
   supervise::SupervisedThreads& threads() override { return _threads; }
+  sched::ClassGates& gates() override { return _gates; }
+  sched::WorkerPool& workers() override { return _workers; }
   Diagnostics diagnostics() const override;
 
  private:
@@ -264,6 +286,8 @@ class Node final : public Context {
   void telemetry_loop(std::stop_token stop);
   void connectivity_loop(std::stop_token stop);
   void roster_loop(std::stop_token stop);
+  // Writes the counters' noted advances; a failure is said and tried again.
+  void flush_counters();
   void serve_refreshes();
   // Wakes the loops' wait. Takes _wait_mutex, so never call it holding a lock
   // the waiters' conditions take (_refresh_mutex).
@@ -294,6 +318,8 @@ class Node final : public Context {
   identity::StateLock _lock;
   identity::NodeIdentity _identity;
   std::optional<identity::KeyCustody> _custody;
+  // Beside custody, under a key derived from its seal root; none without custody.
+  std::optional<identity::SealedCounters> _counters;
   // What this node proves itself with, and the CA's revocations it holds.
   net::Credentials _credentials;
   // Scope: the source the directory installs; read under the lock.
@@ -315,6 +341,9 @@ class Node final : public Context {
   status::ActivityClocks _activity;
   status::Observations _observations;
   supervise::SupervisedThreads _threads;
+  // The gates before the pool that runs through them, both after the threads.
+  sched::ClassGates _gates;
+  sched::WorkerPool _workers;
   sched::WaitGuard _wait_guard;
   sched::RetainedMemoryLedger _memory;
   const std::shared_ptr<net::TransportTraffic> _traffic = std::make_shared<net::TransportTraffic>();
@@ -363,6 +392,20 @@ class Node final : public Context {
   std::map<uint64_t, PartitionWatcher> _partition_watchers DANNAN_GUARDED_BY(_watch_mutex);
   std::optional<membership::Partition> _told_partition DANNAN_GUARDED_BY(_watch_mutex);
   membership::Partition partition_locked() const DANNAN_REQUIRES(_watch_mutex);
+  // The advert watchers, under the same lock: what each last told of each
+  // peer's value under its key, and when, so a change inside the rate waits.
+  struct AdvertWatcher {
+    std::string key;
+    std::chrono::milliseconds every{};
+    boost::asio::any_io_executor executor;
+    std::function<void(AdvertChange)> handler;
+    std::map<identity::NodeId, net::Bytes> told;
+    std::map<identity::NodeId, contract::TimePoint> last;
+  };
+  std::map<uint64_t, AdvertWatcher> _advert_watchers DANNAN_GUARDED_BY(_watch_mutex);
+  // Tells each advert watcher what changed in the active roster as last told,
+  // where its rate allows; topology_changed, so at least every heartbeat.
+  void tell_adverts_locked() DANNAN_REQUIRES(_watch_mutex);
   std::unique_ptr<reach::PublicConnectivity> _connectivity;
   // Refreshes the hosted system asked for, served by the connectivity loop,
   // since a refresh waits on the network. Closed once nothing will serve them.

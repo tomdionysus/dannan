@@ -131,6 +131,26 @@ class Node::NodesNoun final : public Nodes {
     contract::Lock lock(_node._watch_mutex);
     _node._watchers.erase(id);
   }
+  uint64_t watch_advert(const std::string& key, std::chrono::milliseconds at_most_every, asio::any_io_executor executor,
+                        std::function<void(AdvertChange)> handler) override {
+    contract::Lock lock(_node._watch_mutex);
+    const auto id = _node._next_watcher++;
+    AdvertWatcher watcher{key, at_most_every, std::move(executor), std::move(handler), {}, {}};
+    // The values now, from the roster as the others were last told of it; the
+    // first change after is not held back by them.
+    for (const auto& [node_id, node] : _node._told)
+      if (const auto value = node.advert(key)) {
+        net::Bytes bytes(value->begin(), value->end());
+        watcher.told[node_id] = bytes;
+        asio::post(watcher.executor, [handler = watcher.handler, change = AdvertChange{node_id, std::move(bytes)}] { handler(change); });
+      }
+    _node._advert_watchers.emplace(id, std::move(watcher));
+    return id;
+  }
+  void unwatch_advert(uint64_t id) override {
+    contract::Lock lock(_node._watch_mutex);
+    _node._advert_watchers.erase(id);
+  }
   void withdraw(const std::string& key) override { _node._members.clear_advert(key); }
   membership::Partition partition() const override {
     contract::Lock lock(_node._watch_mutex);
@@ -281,11 +301,19 @@ class Node::IdentityNoun final : public Identity {
   identity::Bytes node_public_key() const override { return _node._custody ? _node._custody->node_key().public_key() : identity::Bytes{}; }
   identity::Bytes sign(std::span<const uint8_t> message) const override { return custody().node_key().sign(message); }
   identity::Secret derive_local(std::string_view label) const override { return custody().derive(label); }
+  uint64_t counter(std::string_view label) const override { return counters().read(label); }
+  void advance_counter(std::string_view label, uint64_t value) override { counters().advance(label, value); }
+  void advance_counters(const std::map<std::string, uint64_t>& values) override { counters().advance(values); }
+  void note_counter(std::string_view label, uint64_t value) override { counters().note(label, value); }
 
  private:
   const identity::KeyCustody& custody() const {
     if (!_node._custody) throw std::logic_error("this node has no key custody (NodeConfig::custody)");
     return *_node._custody;
+  }
+  identity::SealedCounters& counters() const {
+    if (!_node._counters) throw std::logic_error("this node has no key custody (NodeConfig::custody), so no sealed counters");
+    return *_node._counters;
   }
 
  public:
@@ -312,8 +340,26 @@ class Node::BudgetNoun final : public Budget {
   std::optional<sched::RetainedMemoryLedger::Lease> reserve(sched::WorkClass work, uint64_t bytes) override {
     return _node._memory.try_acquire(work, sched::MemoryOwner::hosted_first, bytes);
   }
+  std::optional<sched::RetainedMemoryLedger::Lease> reserve(sched::WorkClass work, sched::MemoryOwner owner, uint64_t bytes) override {
+    return _node._memory.try_acquire(work, hosted(owner), bytes);
+  }
+  std::optional<sched::RetainedMemoryLedger::Lease> acquire(sched::WorkClass work, sched::MemoryOwner owner, uint64_t bytes, contract::TimePoint deadline,
+                                                            std::atomic_bool* cancelled) override {
+    // No call waits without a deadline; the ledger reads none as forever.
+    if (deadline == contract::TimePoint{}) throw std::invalid_argument("a budget wait needs a deadline");
+    return _node._memory.acquire(work, hosted(owner), bytes, deadline, cancelled);
+  }
+  void wake() override { _node._memory.wake(); }
+  sched::RetainedMemoryStats stats() const override { return _node._memory.stats(); }
 
  private:
+  static sched::MemoryOwner hosted(sched::MemoryOwner owner) {
+    if (static_cast<uint16_t>(owner) < static_cast<uint16_t>(sched::MemoryOwner::hosted_first))
+      throw std::invalid_argument("memory owner " + std::to_string(static_cast<uint16_t>(owner)) + " is Dannan's; a hosted system numbers its own from " +
+                                  std::to_string(static_cast<uint16_t>(sched::MemoryOwner::hosted_first)));
+    return owner;
+  }
+
   Node& _node;
 };
 
@@ -443,6 +489,7 @@ Node::Node(asio::io_context& io, NodeConfig config)
       _lock(_config.state_path),
       _identity(_config.state_path, _config.key),
       _custody(_config.custody ? std::optional<identity::KeyCustody>(identity::KeyCustody::open(_config.state_path, *_config.custody)) : std::nullopt),
+      _counters(_custody ? std::optional<identity::SealedCounters>(std::in_place, _config.state_path, _custody->derive("dannan/counter/1")) : std::nullopt),
       _inbound(_config.inbound, _config.state_path, _config.wall, _config.reprobe_while_capable, _config.reprobe_while_incapable, _config.heartbeat),
       _members(initial_self(_config, _identity.id, _identity.durability_epoch, _inbound.capable()), _config.dead_after,
                _config.state_path / "membership" / "known-nodes.bin", _config.forget_after, _config.time, _config.wall),
@@ -451,6 +498,8 @@ Node::Node(asio::io_context& io, NodeConfig config)
       _readiness(_config.planes, _config.wall),
       _activity(_config.time),
       _threads(std::chrono::seconds(1), std::chrono::seconds(60), _config.wall, _config.time, _config.log),
+      _gates(_config.loader_gate, _config.speculative_gate, _config.gate_time ? _config.gate_time : _config.time, _config.gate_process_cpu),
+      _workers(_config.workers, _gates, &_threads, _config.time),
       _wait_guard(status::ScopedLogger(_config.log, "wait")),
       _memory(_config.memory_bytes, _config.control_reserve_bytes, _config.foreground_reserve_bytes, _config.loader_reserve_bytes,
               _config.reassembly_reserve_bytes),
@@ -572,6 +621,7 @@ void Node::start() {
   client_options.data_stall_notice = _config.data_stall_notice;
   client_options.log = _config.log;
   client_options.dial_hook = _config.dial_hook;
+  client_options.call_fault = _config.call_fault;
   client_options.heartbeat = _config.heartbeat;
   client_options.dead_after = _config.dead_after;
   client_options.alive = [this](const NodeRecord& peer) { observe_direct(peer); };
@@ -651,6 +701,7 @@ void Node::start() {
   _readiness.close_declarations();
   _readiness.control_plane(true);
   _client->start();
+  _workers.start();
 
   contract::Lock loops(_loops_mutex);
   _loops.emplace_back([this](std::stop_token stop) { _threads.loop("cluster-maintenance", stop, [this, stop] { membership_loop(stop); }); });
@@ -673,6 +724,10 @@ void Node::cancel_outbound_calls() {
   if (_client) _client->stop();
 }
 
+size_t Node::release_stalled_calls(const std::optional<identity::NodeId>& peer) { return _client ? _client->release_stalled(peer) : 0; }
+
+size_t Node::stalled_calls() const { return _client ? _client->stalled() : 0; }
+
 void Node::close_route(const identity::NodeId& peer, net::Lane lane, const std::string& why) {
   if (_client) _client->close_route(peer, lane, why);
 }
@@ -692,6 +747,8 @@ void Node::stop() {
   // The transport goes first: a loop waiting on a call is released by it.
   if (_server) _server->stop();
   cancel_outbound_calls();
+  // After the calls: a task waiting on one is released, and what is queued is told it stopped.
+  _workers.stop();
   if (_paths) _paths->stop();
   std::vector<std::jthread> loops;
   {
@@ -701,6 +758,7 @@ void Node::stop() {
   for (auto& loop : loops)
     if (loop.joinable()) loop.join();
   // A clean stop leaves the last state on disk, and any later observation writes for itself.
+  flush_counters();
   _members.defer_observed_writes({});
   try {
     _members.flush();
@@ -893,6 +951,7 @@ void Node::topology_changed(bool quiet) {
     for (const auto& change : changes)
       if (change.kind == RosterChange::Kind::joined) joined.push_back(change.node.id);
     _told = std::move(now);
+    tell_adverts_locked();
     for (const auto& [_, watcher] : _watchers)
       for (const auto& change : changes) asio::post(watcher.executor, [handler = watcher.handler, change] { handler(change); });
     // A join adds to the agreed roster in memory; the roster loop writes it.
@@ -912,6 +971,34 @@ void Node::topology_changed(bool quiet) {
   }
   if (!quiet || !changes.empty()) _events.notify(status::NodeEvents::topology);
   if (membership) _events.notify(status::NodeEvents::membership);
+}
+
+void Node::tell_adverts_locked() {
+  if (_advert_watchers.empty()) return;
+  const auto now = _config.time->now();
+  for (auto& [watch_id, watcher] : _advert_watchers) {
+    // Every peer with a value now or one told before.
+    std::map<identity::NodeId, std::optional<net::Bytes>> current;
+    for (const auto& [id, node] : _told)
+      if (const auto value = node.advert(watcher.key)) current[id] = net::Bytes(value->begin(), value->end());
+    for (const auto& [id, _] : watcher.told) current.try_emplace(id, std::nullopt);
+    for (auto& [id, value] : current) {
+      const auto before = watcher.told.find(id);
+      const bool same = before == watcher.told.end() ? !value : value && *value == before->second;
+      if (same) continue;
+      // A value inside the period waits; a withdrawal or a leave never does, so
+      // no rejoin inside the period can hide it.
+      if (const auto last = watcher.last.find(id); value && last != watcher.last.end() && now - last->second < watcher.every) continue;
+      if (value) {
+        watcher.told[id] = *value;
+        watcher.last[id] = now;
+      } else {
+        watcher.told.erase(id);
+        watcher.last.erase(id);
+      }
+      asio::post(watcher.executor, [handler = watcher.handler, change = AdvertChange{id, std::move(value)}] { handler(change); });
+    }
+  }
 }
 
 membership::Partition Node::partition_locked() const {
@@ -1042,12 +1129,23 @@ void Node::sleep_until(std::stop_token stop, contract::TimePoint due) {
   if (due > now) _wake.wait_for(lock, stop, due - now, [] { return false; });
 }
 
+void Node::flush_counters() {
+  if (!_counters) return;
+  try {
+    _counters->flush();
+  } catch (const std::exception& error) {
+    // Noted advances stay noted, and the next pass tries again.
+    status::ScopedLogger(_config.log, "node").warn(std::string("node-local counters not written: ") + error.what());
+  }
+}
+
 void Node::roster_loop(std::stop_token stop) {
   status::ThreadCpuReporter cpu("cluster-roster", std::chrono::seconds(5), status::ScopedLogger(_config.log, "node"));
   while (!stop.stop_requested()) {
     cpu.tick();
     _members.flush();
     _agreed.flush();
+    flush_counters();
     std::unique_lock lock(_roster_mutex);
     // Observations made during a write combine into the next.
     _roster_wake.wait_for(lock, stop, std::chrono::seconds(1), [this] { return _roster_wanted.exchange(false); });

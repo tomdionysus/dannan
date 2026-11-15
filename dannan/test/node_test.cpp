@@ -350,6 +350,158 @@ TEST(Node, ACallIsWatchedOnlyIfItAsks) {
   EXPECT_TRUE(unwatched.reply) << unwatched.failure;
 }
 
+// The owners' test seam (P6): which of B's calls its fault takes, set once A is
+// up: the calls to one peer of the types named. The node's own calls (its
+// membership exchange) are never named, so they go on.
+struct FaultPlan {
+  std::mutex mutex;
+  std::optional<identity::NodeId> peer;
+  std::set<net::MessageType> types;
+  net::CallFault fault;
+  std::atomic<int> taken{0};
+
+  void set(identity::NodeId to, std::set<net::MessageType> of, net::CallFault what) {
+    std::lock_guard lock(mutex);
+    peer = to;
+    types = std::move(of);
+    fault = std::move(what);
+  }
+  static std::function<net::CallFault(const std::optional<identity::NodeId>&, const net::Endpoint&, net::MessageType)> hook(std::shared_ptr<FaultPlan> plan) {
+    return [plan](const std::optional<identity::NodeId>& to, const net::Endpoint&, net::MessageType of) {
+      std::lock_guard lock(plan->mutex);
+      if (plan->fault.kind == net::CallFault::Kind::none || to != plan->peer || !plan->types.contains(of)) return net::CallFault{};
+      ++plan->taken;
+      return plan->fault;
+    };
+  }
+};
+
+// The node's record of `id`, once it lists it as active.
+std::optional<membership::NodeRecord> record_of(const Node& node, const identity::NodeId& id) {
+  for (const auto& each : node.context().nodes().active())
+    if (each.id == id) return each;
+  return std::nullopt;
+}
+
+// Two types on A that count their calls, for the fault's tests.
+constexpr net::MessageType faulted_type{1311};
+constexpr net::MessageType passed_type{1312};
+std::function<void(Node&)> counted_types(std::atomic<int>& handled) {
+  return [&handled](Node& a) {
+    for (const auto type : {faulted_type, passed_type})
+      a.context().routes().add(type, {type == faulted_type ? "faulted" : "passed", net::Lanes::control, net::Frames::control_only, false},
+                               [&handled](const membership::NodeRecord&, sched::FrameType, const net::Message& request) {
+                                 ++handled;
+                                 return net::Handled::processed({net::message::ok, request.payload, {}});
+                               });
+  };
+}
+
+// A refused call fails at once with the fault's reason and never reaches the
+// peer, by record and by an address the node has met; another type passes.
+TEST(Node, ACallFaultRefusesACallByPeerAndTypeBeforeTheWire) {
+  std::atomic<int> handled{0};
+  auto plan = std::make_shared<FaultPlan>();
+  Pair pair([&](NodeConfig& b) { b.call_fault = FaultPlan::hook(plan); }, counted_types(handled));
+  const auto a = pair.a->context().identity().id();
+  plan->set(a, {faulted_type}, net::CallFault::refuse("link refused by the test"));
+  pair.b->start();
+  ASSERT_TRUE(eventually([&] { return record_of(*pair.b, a).has_value(); }));
+  const auto record = *record_of(*pair.b, a);
+  const auto refused = pair.b->context().routes().call_and_wait(record, faulted_type, {}, FrameType::control, 5s);
+  EXPECT_FALSE(refused.reply);
+  EXPECT_EQ(refused.failure, "link refused by the test");
+  const auto by_address = pair.b->context().routes().call_and_wait(net::Endpoint{"127.0.0.1", pair.a->port()}, faulted_type, {}, FrameType::control, 5s);
+  EXPECT_EQ(by_address.failure, "link refused by the test");
+  const auto passed = pair.b->context().routes().call_and_wait(record, passed_type, {}, FrameType::control, 5s);
+  EXPECT_TRUE(passed.reply) << passed.failure;
+  EXPECT_EQ(handled.load(), 1);
+  EXPECT_EQ(plan->taken.load(), 2);
+}
+
+// A stalled call is held unanswered, as one to a dead link: its idleness grows
+// from when it was made, nothing reaches the peer, and its deadline ends it.
+TEST(Node, AStalledCallIsHeldUnansweredUntilItsDeadline) {
+  std::atomic<int> handled{0};
+  auto plan = std::make_shared<FaultPlan>();
+  Pair pair([&](NodeConfig& b) { b.call_fault = FaultPlan::hook(plan); }, counted_types(handled));
+  const auto a = pair.a->context().identity().id();
+  plan->set(a, {faulted_type}, net::CallFault::stall());
+  pair.b->start();
+  ASSERT_TRUE(eventually([&] { return record_of(*pair.b, a).has_value(); }));
+  auto outcome = std::make_shared<std::promise<net::CallOutcome>>();
+  auto ended = outcome->get_future();
+  const auto handle = pair.b->context().routes().call(*record_of(*pair.b, a), faulted_type, {}, FrameType::control, 600ms, pair.io.context.get_executor(),
+                                                      [outcome](net::CallOutcome out) { outcome->set_value(std::move(out)); });
+  EXPECT_EQ(pair.b->stalled_calls(), 1u);
+  EXPECT_TRUE(eventually([&] { return handle->idle_for() >= 200ms; }));
+  ASSERT_EQ(ended.wait_for(10s), std::future_status::ready);
+  const auto out = ended.get();
+  EXPECT_FALSE(out.reply);
+  EXPECT_NE(out.failure.find("deadline of 600 ms"), std::string::npos) << out.failure;
+  EXPECT_EQ(pair.b->stalled_calls(), 0u);
+  EXPECT_EQ(handled.load(), 0);
+}
+
+// A stalled call is watched as a placed one is: its no-progress watch cancels
+// it for retry, long before its deadline.
+TEST(Node, AStalledCallIsCancelledByItsWatch) {
+  std::atomic<int> handled{0};
+  auto plan = std::make_shared<FaultPlan>();
+  Pair pair([&](NodeConfig& b) { b.call_fault = FaultPlan::hook(plan); }, counted_types(handled));
+  const auto a = pair.a->context().identity().id();
+  plan->set(a, {faulted_type}, net::CallFault::stall());
+  pair.b->start();
+  ASSERT_TRUE(eventually([&] { return record_of(*pair.b, a).has_value(); }));
+  const auto began = std::chrono::steady_clock::now();
+  const auto watched =
+      pair.b->context().routes().call_and_wait(*record_of(*pair.b, a), faulted_type, {}, FrameType::control, 20s, net::CallWatch{150ms, std::nullopt});
+  EXPECT_LT(std::chrono::steady_clock::now() - began, 10s);
+  EXPECT_FALSE(watched.reply);
+  EXPECT_NE(watched.failure.find("cancelled for retry"), std::string::npos) << watched.failure;
+  EXPECT_EQ(pair.b->stalled_calls(), 0u);
+  EXPECT_EQ(handled.load(), 0);
+}
+
+// Releasing a stall fails the calls it holds, as a link that timed out, and
+// stopping the node's calls fails those held after.
+TEST(Node, ReleasingAStallFailsItsHeldCallsAndCancellingFailsTheRest) {
+  std::atomic<int> handled{0};
+  auto plan = std::make_shared<FaultPlan>();
+  Pair pair([&](NodeConfig& b) { b.call_fault = FaultPlan::hook(plan); }, counted_types(handled));
+  const auto a = pair.a->context().identity().id();
+  pair.b->start();
+  ASSERT_TRUE(eventually([&] { return record_of(*pair.b, a).has_value(); }));
+  const auto record = *record_of(*pair.b, a);
+  // Every call to A of both types from here.
+  plan->set(a, {faulted_type, passed_type}, net::CallFault::stall());
+  std::vector<std::shared_ptr<std::promise<net::CallOutcome>>> outcomes;
+  std::vector<std::future<net::CallOutcome>> ends;
+  const auto place = [&](net::MessageType type) {
+    auto outcome = std::make_shared<std::promise<net::CallOutcome>>();
+    ends.push_back(outcome->get_future());
+    outcomes.push_back(outcome);
+    pair.b->context().routes().call(record, type, {}, FrameType::control, 30s, pair.io.context.get_executor(),
+                                    [outcome](net::CallOutcome out) { outcome->set_value(std::move(out)); });
+  };
+  place(faulted_type);
+  place(passed_type);
+  EXPECT_EQ(pair.b->stalled_calls(), 2u);
+  EXPECT_EQ(pair.b->release_stalled_calls(identity::NodeId::random()), 0u);
+  EXPECT_EQ(pair.b->release_stalled_calls(a), 2u);
+  for (size_t i = 0; i < 2; ++i) {
+    ASSERT_EQ(ends[i].wait_for(10s), std::future_status::ready);
+    EXPECT_EQ(ends[i].get().failure, "stall released");
+  }
+  place(faulted_type);
+  EXPECT_EQ(pair.b->stalled_calls(), 1u);
+  pair.b->cancel_outbound_calls();
+  ASSERT_EQ(ends[2].wait_for(10s), std::future_status::ready);
+  EXPECT_EQ(ends[2].get().failure, "client stopped");
+  EXPECT_EQ(pair.b->stalled_calls(), 0u);
+  EXPECT_EQ(handled.load(), 0);
+}
+
 // A hosted system's handler may answer later (P8): bound with
 // bind_deferred, it keeps the request's Answer and gives it from another
 // thread; the caller on the other node gets that reply, and a request it
@@ -573,6 +725,49 @@ TEST(Node, ACorruptPersistedFileIsSaidAndSurvived) {
 }
 
 // Status reads Macha's names for the three loops; ruling B, 2026-11-05.
+// P4: the node's worker pool runs with the node, and a hosted system's own pool
+// runs beside it on the node's gates, its threads under the node's supervision.
+TEST(Node, TheNodesPoolRunsWithItAndAHostedPoolBesideIt) {
+  Pair pair;
+  std::atomic<int> ran{0};
+  ASSERT_TRUE(pair.a->context().workers().submit(sched::WorkContext(FrameType::foreground), [&](sched::WorkerPool::Turn&) { ++ran; }).accepted);
+  sched::WorkerPoolConfig own;
+  own.threads = 1;
+  own.name = "hash";
+  own.reserve = {0, 0, 0, 0};
+  sched::WorkerPool hashing(own, pair.a->context().gates(), &pair.a->context().threads());
+  hashing.start();
+  ASSERT_TRUE(hashing.submit(sched::WorkContext(FrameType::foreground), [&](sched::WorkerPool::Turn&) { ++ran; }).accepted);
+  EXPECT_TRUE(eventually([&] { return ran.load() == 2; }));
+  std::set<std::string> names;
+  for (const auto& thread : pair.a->context().threads().statuses()) names.insert(thread.name);
+  EXPECT_TRUE(names.contains("work-0"));
+  EXPECT_TRUE(names.contains("hash-0"));
+  EXPECT_EQ(&pair.a->context().gates().gate(sched::WorkClass::speculative), &pair.a->gates().gate(sched::WorkClass::speculative));
+  hashing.stop();
+  pair.a->stop();
+  EXPECT_EQ(pair.a->context().workers().submit(sched::WorkContext(FrameType::foreground), [](sched::WorkerPool::Turn&) {}).why,
+            sched::WorkerPool::Refused::stopped);
+}
+
+// The gates keep their own time, apart from the node's: a hosted system's pacing
+// tests step it while the node runs on real time (Macha's review).
+TEST(Node, TheGatesRunOnTheirOwnTime) {
+  test::SteppedTime paced;
+  Pair pair([&](NodeConfig& b) { b.gate_time = &paced; });
+  pair.b->start();
+  auto& gate = pair.b->context().gates().gate(sched::WorkClass::speculative);
+  gate.set_contended([] { return true; });
+  gate.started();
+  paced.advance(10ms);
+  // 95:5 by default: 10 ms earns 190 ms, in the gates' time alone.
+  EXPECT_EQ(gate.finished(), 190ms);
+  EXPECT_EQ(gate.rest(), 190ms);
+  paced.advance(190ms);
+  EXPECT_EQ(gate.rest(), 0ms);
+  gate.set_contended({});
+}
+
 TEST(Node, TheLoopsCarryTheirNames) {
   Pair pair;
   std::set<std::string> names;
@@ -758,6 +953,62 @@ TEST(Node, ABudgetBelowOneUnitIsRefused) {
   EXPECT_EQ(lease->bytes(), 4096u);
 }
 
+// A hosted system's charges show under its own owner; Dannan's owners are not
+// its to name (Dagda's ask: its reads show as object payload).
+TEST(Node, ABudgetChargesTheHostedOwnerNamed) {
+  Pair pair;
+  auto& budget = pair.a->context().budget();
+  const auto payload = static_cast<sched::MemoryOwner>(static_cast<uint16_t>(sched::MemoryOwner::hosted_first) + 3);
+  auto lease = budget.reserve(sched::WorkClass::foreground, payload, 4096);
+  ASSERT_TRUE(lease);
+  EXPECT_EQ(budget.stats().owner_bytes.at(payload), 4096u);
+  lease.reset();
+  const auto after = budget.stats().owner_bytes;
+  EXPECT_TRUE(!after.contains(payload) || after.at(payload) == 0u);
+  EXPECT_THROW((void)budget.reserve(sched::WorkClass::foreground, sched::MemoryOwner::rpc_frame, 1), std::invalid_argument);
+  EXPECT_THROW((void)budget.acquire(sched::WorkClass::foreground, sched::MemoryOwner::rpc_frame, 1, contract::Clock::now() + 1s), std::invalid_argument);
+  // No call waits without a deadline.
+  EXPECT_THROW((void)budget.acquire(sched::WorkClass::foreground, payload, 1, contract::TimePoint{}), std::invalid_argument);
+}
+
+// A read waits for room under its deadline and its cancel flag, as Macha's do
+// on the ledger (distributed_store.cpp:1744): room let go admits the waiter,
+// a deadline that passes or a cancel ends the wait empty.
+TEST(Node, ABudgetWaitsForRoomUnderADeadlineAndACancel) {
+  Pair pair([](NodeConfig& c) {
+    c.memory_bytes = 64ull << 20;
+    c.control_reserve_bytes = 8ull << 20;
+    c.foreground_reserve_bytes = 8ull << 20;
+    c.loader_reserve_bytes = 8ull << 20;
+    c.reassembly_reserve_bytes = 8ull << 20;
+  });
+  auto& budget = pair.a->context().budget();
+  const auto owner = sched::MemoryOwner::hosted_first;
+  // Take all the loader class may hold, a MiB at a time.
+  std::vector<sched::RetainedMemoryLedger::Lease> held;
+  while (auto lease = budget.reserve(sched::WorkClass::loader, owner, 1ull << 20)) held.push_back(std::move(*lease));
+  ASSERT_FALSE(held.empty());
+
+  EXPECT_FALSE(budget.acquire(sched::WorkClass::loader, owner, 1ull << 20, contract::Clock::now() + 50ms));
+
+  std::atomic_bool cancelled{false};
+  auto cancelled_wait = std::async(
+      std::launch::async, [&] { return budget.acquire(sched::WorkClass::loader, owner, 1ull << 20, contract::Clock::now() + 60s, &cancelled).has_value(); });
+  EXPECT_EQ(cancelled_wait.wait_for(50ms), std::future_status::timeout);
+  cancelled = true;
+  budget.wake();
+  ASSERT_EQ(cancelled_wait.wait_for(10s), std::future_status::ready);
+  EXPECT_FALSE(cancelled_wait.get());
+
+  auto admitted = std::async(std::launch::async, [&] { return budget.acquire(sched::WorkClass::loader, owner, 1ull << 20, contract::Clock::now() + 60s); });
+  EXPECT_EQ(admitted.wait_for(50ms), std::future_status::timeout);
+  held.pop_back();
+  ASSERT_EQ(admitted.wait_for(10s), std::future_status::ready);
+  auto lease = admitted.get();
+  ASSERT_TRUE(lease);
+  EXPECT_EQ(lease->bytes(), 1ull << 20);
+}
+
 TEST(Node, StoppingIsPromptAndCallsFailAfter) {
   Pair pair;
   pair.b->start();
@@ -828,6 +1079,50 @@ TEST(Node, OpensItsKeyCustody) {
   auto missing = config(dir.path() / "c", key);
   missing.custody = source;
   EXPECT_THROW(Node(io.context, missing), std::runtime_error);
+}
+
+// Node-local counters beside custody (the maintainer, 2026-11-14): through the Context, an
+// advance durable at once and a note durable within the node's next flush; a node
+// without custody has none.
+TEST(Node, KeepsNodeLocalCountersBesideCustody) {
+  Io io;
+  test::TempDir dir;
+  const auto key = cluster_key(dir.path());
+  const auto source = identity::KeySource::typed_passphrase(
+      [] {
+        const std::string p = "node passphrase";
+        return identity::Secret(std::span(reinterpret_cast<const uint8_t*>(p.data()), p.size()));
+      },
+      identity::Argon2Costs{1024, 1, 1});
+  (void)identity::KeyCustody::create(dir.path() / "a", source);
+  auto with = config(dir.path() / "a", key);
+  with.custody = source;
+  // What is on disk, read as a restart would: from another handle on the file.
+  identity::KeyCustody custody = identity::KeyCustody::open(dir.path() / "a", source);
+  const auto on_disk = [&](std::string_view label) { return identity::SealedCounters(dir.path() / "a", custody.derive("dannan/counter/1")).read(label); };
+  {
+    Node a(io.context, with);
+    a.start();
+    auto& identity = a.context().identity();
+    EXPECT_EQ(identity.counter("dagda/heads/01/1"), 0u);
+    identity.advance_counter("dagda/heads/01/1", 4);
+    identity.advance_counters({{"dagda/heads/02/1", 1}, {"lugh/grants/1", 9}});
+    EXPECT_THROW(identity.advance_counter("dagda/heads/01/1", 3), std::invalid_argument);
+    EXPECT_EQ(on_disk("dagda/heads/01/1"), 4u);
+    identity.note_counter("dagda/heads/01/1", 6);
+    EXPECT_EQ(identity.counter("dagda/heads/01/1"), 6u);
+    // The roster loop's pass, within a second and with the node running, makes the
+    // note durable: whether it came before this line or after, the file says so.
+    EXPECT_TRUE(eventually([&] { return on_disk("dagda/heads/01/1") == 6u; }, 5s));
+    a.stop();
+  }
+  // What a restart reads.
+  EXPECT_EQ(on_disk("dagda/heads/01/1"), 6u);
+  EXPECT_EQ(on_disk("lugh/grants/1"), 9u);
+
+  Node b(io.context, config(dir.path() / "b", key));
+  EXPECT_THROW((void)b.context().identity().counter("x"), std::logic_error);
+  EXPECT_THROW(b.context().identity().note_counter("x", 1), std::logic_error);
 }
 
 // A node configured with a certificate: custody made, its id and key
@@ -1057,6 +1352,80 @@ TEST(Node, AdvertsReachPeersAndSteerPlacement) {
   pair.a->context().nodes().withdraw("capacity");
   EXPECT_TRUE(eventually([&] { return pair.b->context().nodes().placement(key, 1, scheme, "capacity").empty(); }));
   EXPECT_THROW(pair.a->context().nodes().advertise("", {}), std::invalid_argument);
+}
+
+// A watch on one advert (P6): the value now first, then each change of that
+// key and no other, a peer's at most once a period, the changes inside it
+// coalesced to the latest; a withdrawal is told as no value, and an unwatched
+// watch hears nothing.
+TEST(Node, AnAdvertWatchTellsOneKeysChangesAtItsRate) {
+  struct Told {
+    identity::NodeId node;
+    std::optional<uint64_t> value;
+    std::chrono::steady_clock::time_point at;
+  };
+  std::mutex mutex;
+  std::vector<Told> told;
+  const auto count = [&] {
+    std::lock_guard lock(mutex);
+    return told.size();
+  };
+  const auto last = [&] {
+    std::lock_guard lock(mutex);
+    return told.back();
+  };
+  Pair pair;
+  pair.b->start();
+  const auto a = pair.a->context().identity().id();
+  pair.a->context().nodes().advertise("used", membership::u64_advert(1));
+  ASSERT_TRUE(eventually([&] {
+    const auto record = record_of(*pair.b, a);
+    return record && record->advert_u64("used") == 1u;
+  }));
+  const auto watch = pair.b->context().nodes().watch_advert("used", 1500ms, asio::make_strand(pair.io.context), [&](AdvertChange change) {
+    std::optional<uint64_t> value;
+    if (change.value) {
+      membership::NodeRecord carrier;
+      carrier.adverts["used"] = *change.value;
+      value = carrier.advert_u64("used");
+    }
+    std::lock_guard lock(mutex);
+    told.push_back({change.node, value, std::chrono::steady_clock::now()});
+  });
+  ASSERT_TRUE(eventually([&] { return count() == 1; }));
+  EXPECT_EQ(last().node, a);
+  EXPECT_EQ(last().value, 1u);
+
+  // Another key is not this watch's.
+  pair.a->context().nodes().advertise("capacity", membership::u64_advert(4096));
+  pair.a->context().nodes().advertise("used", membership::u64_advert(2));
+  ASSERT_TRUE(eventually([&] { return count() == 2; }));
+  EXPECT_EQ(last().value, 2u);
+  const auto second = last().at;
+  // Inside the period: held back, then only the latest.
+  pair.a->context().nodes().advertise("used", membership::u64_advert(3));
+  pair.a->context().nodes().advertise("used", membership::u64_advert(4));
+  ASSERT_TRUE(eventually([&] { return last().value == 4u; }));
+  EXPECT_EQ(count(), 3u);
+  EXPECT_GE(last().at - second, 1450ms);
+
+  // A withdrawal inside the period is told at once, never held back. Gossip
+  // reaches B within a heartbeat or two (100 ms); one held back would come
+  // only at the period's end, some 1400 ms from here.
+  const auto withdrawn = std::chrono::steady_clock::now();
+  pair.a->context().nodes().withdraw("used");
+  ASSERT_TRUE(eventually([&] { return count() == 4; }));
+  EXPECT_FALSE(last().value);
+  EXPECT_LT(last().at - withdrawn, 1200ms);
+
+  pair.b->context().nodes().unwatch_advert(watch);
+  pair.a->context().nodes().advertise("used", membership::u64_advert(5));
+  EXPECT_TRUE(eventually([&] {
+    const auto record = record_of(*pair.b, a);
+    return record && record->advert_u64("used") == 5u;
+  }));
+  std::this_thread::sleep_for(300ms);
+  EXPECT_EQ(count(), 4u);
 }
 
 // Channels across a real cluster: B subscribes, A learns of it by gossip

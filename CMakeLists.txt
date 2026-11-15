@@ -8,7 +8,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 # One number for the repository: both libraries, the tag and --version.
-project(dannan VERSION 0.7.0 LANGUAGES CXX)
+project(dannan VERSION 0.8.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -24,6 +24,11 @@ option(DANNAN_BUILD_TESTING "Build dannan_tests (GoogleTest)" OFF)
 option(DANNAN_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 option(DANNAN_BUILD_COMPOSE_TESTS "Build dannan_compose_tests, the Docker NAT bed's driver (needs DANNAN_BUILD_TESTING)" OFF)
 option(DANNAN_BUILD_FUZZING "Build each fuzz target as its own binary (libFuzzer where the compiler has it)" OFF)
+# Off for a project that fetches Dannan for the library alone (Lugh's client library).
+option(DANNAN_BUILD_TOOLS "Build and install the tools: dannan-node, dannan-ca, dannan-bench, dannan-import-macha, dannan-version" ON)
+if(DANNAN_BUILD_TESTING AND NOT DANNAN_BUILD_TOOLS)
+  message(FATAL_ERROR "DANNAN_BUILD_TESTING needs DANNAN_BUILD_TOOLS: the tests run dannan-node and dannan-ca")
+endif()
 
 # Asio is header-only. The floor is Debian 13's 1.83, which the live nodes run
 # and the suite passes on (test/linux, arm64). One number for the build and the
@@ -50,7 +55,9 @@ endif()
 configure_file(dannan/include/dannan/version.h.in ${PROJECT_BINARY_DIR}/generated/dannan/version.h @ONLY)
 
 add_subdirectory(dannan)
-add_subdirectory(tools)
+if(DANNAN_BUILD_TOOLS)
+  add_subdirectory(tools)
+endif()
 
 if(DANNAN_BUILD_TESTING OR DANNAN_BUILD_FUZZING)
   add_subdirectory(dannan/fuzz)

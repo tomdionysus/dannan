@@ -20,6 +20,11 @@ target_include_directories(dannan-node PRIVATE "${PROJECT_SOURCE_DIR}")
 add_executable(dannan-ca dannan_ca.cpp)
 target_link_libraries(dannan-ca PRIVATE dannan dannan_warnings)
 
+# dannan-custody: a node's key custody, made and checked on the node with the
+# node stopped.
+add_executable(dannan-custody dannan_custody.cpp)
+target_link_libraries(dannan-custody PRIVATE dannan dannan_warnings)
+
 # dannan-import-macha: Macha's state files into Dannan's formats, once, at the
 # first cutover.
 add_executable(dannan-import-macha dannan_import_macha.cpp macha_import.cpp)
@@ -31,9 +36,10 @@ add_executable(dannan-bench dannan_bench.cpp)
 target_link_libraries(dannan-bench PRIVATE dannan dannan_warnings)
 target_include_directories(dannan-bench PRIVATE "${PROJECT_SOURCE_DIR}")
 
-# Installed, as the dannan-tools package ships them: the operator's CA, the
-# one-time import and the version. dannan-node and dannan-bench are the test
-# bed's and stay in the build tree.
-install(TARGETS dannan-ca dannan-import-macha dannan-version RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-install(FILES "${PROJECT_SOURCE_DIR}/docs/man/dannan-ca.1" "${PROJECT_SOURCE_DIR}/docs/man/dannan-import-macha.1"
-              "${PROJECT_SOURCE_DIR}/docs/man/dannan-version.1" DESTINATION ${CMAKE_INSTALL_MANDIR}/man1)
+# Installed, as the dannan-tools package ships them: the operator's CA, a
+# node's custody, the one-time import and the version. dannan-node and
+# dannan-bench are the test bed's and stay in the build tree.
+install(TARGETS dannan-ca dannan-custody dannan-import-macha dannan-version RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(FILES "${PROJECT_SOURCE_DIR}/docs/man/dannan-ca.1" "${PROJECT_SOURCE_DIR}/docs/man/dannan-custody.1"
+              "${PROJECT_SOURCE_DIR}/docs/man/dannan-import-macha.1" "${PROJECT_SOURCE_DIR}/docs/man/dannan-version.1"
+        DESTINATION ${CMAKE_INSTALL_MANDIR}/man1)

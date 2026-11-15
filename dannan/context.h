@@ -33,8 +33,10 @@
 #include "dannan/reach/connectivity.h"
 #include "dannan/reach/inbound.h"
 #include "dannan/reach/paths.h"
+#include "dannan/sched/class_gate.h"
 #include "dannan/sched/retained_memory.h"
 #include "dannan/sched/work.h"
+#include "dannan/sched/worker_pool.h"
 #include "dannan/status/activity.h"
 #include "dannan/status/events.h"
 #include "dannan/status/log.h"
@@ -75,6 +77,13 @@ struct RosterChange {
 };
 const char* roster_change_name(RosterChange::Kind) noexcept;
 
+// One peer's advert under a watched key (Nodes::watch_advert): its value now;
+// nothing once it is withdrawn or the peer has left the active roster.
+struct AdvertChange {
+  identity::NodeId node;
+  std::optional<net::Bytes> value;
+};
+
 class Nodes {
  public:
   virtual ~Nodes() = default;
@@ -89,6 +98,17 @@ class Nodes {
   // each change. An id for unwatch. Waits on nothing.
   virtual uint64_t watch(boost::asio::any_io_executor executor, std::function<void(RosterChange)> handler) = 0;
   virtual void unwatch(uint64_t id) = 0;
+  // One advert's changes on the peers (P6): adverts are slow facts, so this is
+  // rate-limited, where the roster watch tells every change of the record.
+  // Posted to `executor` in order when it is a strand: first the value of every
+  // active peer carrying `key`, then each change, a peer's values at most once
+  // each `at_most_every`. Values inside that coalesce: the latest is told after
+  // it, by the next heartbeat. A withdrawal or a leave (no value) is never held
+  // back or coalesced away, so a peer that leaves and rejoins inside the period
+  // is told as both. An id for unwatch_advert. Waits on nothing.
+  virtual uint64_t watch_advert(const std::string& key, std::chrono::milliseconds at_most_every, boost::asio::any_io_executor executor,
+                                std::function<void(AdvertChange)> handler) = 0;
+  virtual void unwatch_advert(uint64_t id) = 0;
   virtual membership::NodeRecord self() const = 0;
   // Every known node, self first; and those heard of within dead_after.
   virtual std::vector<membership::NodeRecord> roster() const = 0;
@@ -290,6 +310,18 @@ class Identity {
   virtual identity::Bytes node_public_key() const = 0;
   virtual identity::Bytes sign(std::span<const uint8_t> message) const = 0;
   virtual identity::Secret derive_local(std::string_view label) const = 0;
+  // Node-local counters that only go up, sealed beside custody (the maintainer, 2026-11-14:
+  // node-local rollback's first layer; identity/sealed_counters.h): read (zero for
+  // a label never advanced); advance, durable before it returns; several in one
+  // durable write; and note, durable at the next flush, which the node makes within
+  // a second and at stop. A lower value throws std::invalid_argument naming the
+  // label. Each throws std::logic_error without custody. They refuse one directory
+  // restored alone, not a whole state restored together. Writes wait on the state
+  // device.
+  virtual uint64_t counter(std::string_view label) const = 0;
+  virtual void advance_counter(std::string_view label, uint64_t value) = 0;
+  virtual void advance_counters(const std::map<std::string, uint64_t>& values) = 0;
+  virtual void note_counter(std::string_view label, uint64_t value) = 0;
 
   // Certificates (wire version 2): this node's, when it has one; and a
   // revocation the cluster's CA signed, applied here at once (the revoked
@@ -319,8 +351,25 @@ class Budget {
   // std::invalid_argument if the node's budget cannot hold one.
   virtual void declare(sched::WorkClass work, uint64_t unit_bytes) = 0;
   // Bytes held until the lease goes; nothing when the class has no room
-  // now. Waits on nothing.
+  // now. Waits on nothing. Charged to MemoryOwner::hosted_first.
   virtual std::optional<sched::RetainedMemoryLedger::Lease> reserve(sched::WorkClass work, uint64_t bytes) = 0;
+  // As reserve(), charged to `owner`, which is the hosted system's: one below
+  // MemoryOwner::hosted_first throws std::invalid_argument.
+  virtual std::optional<sched::RetainedMemoryLedger::Lease> reserve(sched::WorkClass work, sched::MemoryOwner owner, uint64_t bytes) = 0;
+  // Waits until `bytes` may be held, as the node's ledger does: nothing once
+  // the deadline passes, or once `cancelled` is set and wake() is called, and
+  // at once when the class could never hold that much. Charged to `owner`, as
+  // reserve(). The deadline is on the steady clock (contract::Clock::now() +
+  // what is left), not the node's time(): a stepped clock's reading would put
+  // it far off either way (Dagda's review). No deadline (a default TimePoint)
+  // throws std::invalid_argument.
+  // Waits on other holders and on the deadline; thread-safe.
+  virtual std::optional<sched::RetainedMemoryLedger::Lease> acquire(sched::WorkClass work, sched::MemoryOwner owner, uint64_t bytes,
+                                                                    contract::TimePoint deadline, std::atomic_bool* cancelled = nullptr) = 0;
+  // Wakes every acquire() to re-check its cancel flag. Never waits.
+  virtual void wake() = 0;
+  // The node's ledger as it stands, every owner's bytes among it.
+  virtual sched::RetainedMemoryStats stats() const = 0;
 };
 
 // Faults are values: raised, counted in Status, and handed to the sink the
@@ -382,6 +431,13 @@ class Context {
   virtual sched::WaitGuard& wait_guard() = 0;
   // The node's thread bodies, and the hosted system's, under one record.
   virtual supervise::SupervisedThreads& threads() = 0;
+  // The node's pacing of loader and speculative work, one gate per class (P4): a
+  // hosted loop holds its class's gate, and every pool runs its tasks through it,
+  // so the class never takes more than its share however its work runs.
+  virtual sched::ClassGates& gates() = 0;
+  // The node's worker pool, on the gates, started with the node. A hosted system
+  // may build a pool of its own beside it, on gates() and threads().
+  virtual sched::WorkerPool& workers() = 0;
   virtual Diagnostics diagnostics() const = 0;
 };
 

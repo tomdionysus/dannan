@@ -96,8 +96,10 @@ void SupervisedThreads::loop(std::string_view name, std::stop_token stop, const 
 }
 
 void supervised_loop(SupervisedThreads* threads, std::string_view name, std::stop_token stop, const std::function<void()>& body) noexcept {
-  static SupervisedThreads unrecorded;
-  (threads ? *threads : unrecorded).loop(name, stop, body);
+  // Never destroyed: an owner held as a static (a process's log stage, say) may
+  // be built before this and so outlive it, its thread still in loop() at exit.
+  static SupervisedThreads* const unrecorded = new SupervisedThreads();
+  (threads ? *threads : *unrecorded).loop(name, stop, body);
 }
 
 void SupervisedThreads::once(std::string_view name, const std::function<void()>& body) noexcept {

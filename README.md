@@ -147,7 +147,7 @@ On Debian 13 (x86-64 or arm64), from the tomcully.com apt repository:
 sudo curl -fsSLo /etc/apt/sources.list.d/tomcully.sources https://tomcully.com/apt/tomcully.sources
 sudo apt update
 sudo apt install libdannan-dev    # the library, its headers and CMake package
-sudo apt install dannan-tools     # dannan-ca, dannan-import-macha, dannan-version
+sudo apt install dannan-tools     # dannan-ca, dannan-custody, dannan-import-macha, dannan-version
 ```
 
 Elsewhere, from a build:
@@ -161,7 +161,7 @@ patch release keeps the ABI, so any later patch of the same minor is accepted
 and loads:
 
 ```cmake
-find_package(dannan 0.7.0 CONFIG REQUIRED)
+find_package(dannan 0.8.0 CONFIG REQUIRED)
 target_link_libraries(my_system PRIVATE dannan::dannan)
 ```
 
@@ -270,6 +270,19 @@ dannan-node --state ./a --custody-passphrase-env NODE_PASS \
   --ca ./ca/ca.pem --certificate ./a/node.pem --no-cluster-key ...
 ```
 
+On a production node, `dannan-custody` makes custody under a systemd
+credential, with the node stopped, and prints the new root once for
+sealing; `show` proves the sealed credential opens it before the node is
+started on it:
+
+```
+dannan-custody init --state /var/lib/node --credential dannan-root \
+  | systemd-creds encrypt --name=dannan-root - /etc/credstore.encrypted/dannan-root
+dannan-custody show --state /var/lib/node --credential dannan-root \
+  --credentials-dir <where the credential is decrypted>
+#   {"id":"<node id>","public_key":"<hex>"}
+```
+
 To remove a node, revoke it and hand the revocation to any node; it
 reaches the rest within one gossip round:
 
@@ -281,7 +294,7 @@ dannan-node ... --revocations revocation.bin
 
 ## Status
 
-Version 0.7.0. The library, wire versions 1 and 2, reachability and
+Version 0.8.0. The library, wire versions 1 and 2, reachability and
 identity are complete and tested. The interfaces may still change between
 minor versions while the hosted systems are built on them. Macha and
 AthenaSIP will be ported onto Dannan and Dagda later.
