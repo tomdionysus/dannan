@@ -37,14 +37,16 @@ std::optional<Refusal> admitted(const identity::NodeId& self, const identity::No
 
 }  // namespace
 
-PrepareStep on_prepare(const identity::NodeId& self, const identity::NodeId& from, const Prepare& request, std::span<const AcceptorState> held) {
+PrepareStep on_prepare(const identity::NodeId& self, const identity::NodeId& from, const Prepare& request, std::span<const AcceptorState> held,
+                       const Ballot& floor) {
   PrepareStep out;
   if (auto refused = admitted(self, from, request.set, held, request.names.size())) {
     out.answer.refused = std::move(refused);
     return out;
   }
-  // A promise only above every promise and acceptance held, for every name at once.
-  Ballot highest;
+  // A promise only above every promise and acceptance held, for every name at once, and
+  // above the floor forgotten names left.
+  Ballot highest = floor;
   for (const auto& state : held) highest = std::max({highest, state.promised, state.accepted});
   if (!(request.ballot > highest)) {
     out.answer.refused = Refusal{"a higher ballot is promised", highest, {}};
@@ -59,7 +61,8 @@ PrepareStep on_prepare(const identity::NodeId& self, const identity::NodeId& fro
   return out;
 }
 
-AcceptStep on_accept(const identity::NodeId& self, const identity::NodeId& from, const Accept& request, std::span<const AcceptorState> held) {
+AcceptStep on_accept(const identity::NodeId& self, const identity::NodeId& from, const Accept& request, std::span<const AcceptorState> held,
+                     const Ballot& floor) {
   AcceptStep out;
   if (auto refused = admitted(self, from, request.set, held, request.names.size())) {
     out.answer.refused = std::move(refused);
@@ -69,11 +72,12 @@ AcceptStep on_accept(const identity::NodeId& self, const identity::NodeId& from,
     out.answer.refused = Refusal{"the accept names, values and changes differ in count", {}, {}};
     return out;
   }
-  // Accepted at the ballot promised or above; equal is the same proposer's retry.
+  // Accepted at the ballot promised or above; equal is the same proposer's retry. Never at
+  // or below the floor.
   Ballot highest;
   for (const auto& state : held) highest = std::max({highest, state.promised, state.accepted});
-  if (request.ballot < highest) {
-    out.answer.refused = Refusal{"a higher ballot is promised", highest, {}};
+  if (request.ballot < highest || !(request.ballot > floor)) {
+    out.answer.refused = Refusal{"a higher ballot is promised", std::max(highest, floor), {}};
     return out;
   }
   std::vector<AcceptorState> keep(held.begin(), held.end());
@@ -85,6 +89,24 @@ AcceptStep on_accept(const identity::NodeId& self, const identity::NodeId& from,
     keep[i].served = request.set;
   }
   out.keep = std::move(keep);
+  return out;
+}
+
+PurgeStep on_purge(const identity::NodeId& self, const identity::NodeId& from, const Purge& request, std::span<const AcceptorState> held, const Ballot& floor) {
+  PurgeStep out;
+  out.floor = floor;
+  if (auto refused = admitted(self, from, request.set, held, request.names.size())) {
+    out.refused = std::move(refused);
+    return out;
+  }
+  out.keep.assign(held.begin(), held.end());
+  for (auto& state : out.keep) {
+    // Only the tombstone itself: a newer write, or a state that never saw it, stays.
+    if (state.accepted != request.ballot || state.value) continue;
+    out.floor = std::max({out.floor, state.promised, state.accepted});
+    state = AcceptorState{};
+    ++out.forgotten;
+  }
   return out;
 }
 

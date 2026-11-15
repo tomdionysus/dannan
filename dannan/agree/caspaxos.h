@@ -119,8 +119,33 @@ struct PrepareStep : Step {
 struct AcceptStep : Step {
   AcceptAnswer answer;
 };
-PrepareStep on_prepare(const identity::NodeId& self, const identity::NodeId& from, const Prepare& request, std::span<const AcceptorState> held);
-AcceptStep on_accept(const identity::NodeId& self, const identity::NodeId& from, const Accept& request, std::span<const AcceptorState> held);
+//
+// `floor`: the space's floor, the highest ballot any name this acceptor has forgotten
+// held. Every request must be above it, so a forgotten name behaves as though still
+// promised at the floor and no stale proposer brings a forgotten value back.
+PrepareStep on_prepare(const identity::NodeId& self, const identity::NodeId& from, const Prepare& request, std::span<const AcceptorState> held,
+                       const Ballot& floor = {});
+AcceptStep on_accept(const identity::NodeId& self, const identity::NodeId& from, const Accept& request, std::span<const AcceptorState> held,
+                     const Ballot& floor = {});
+
+// Forgetting names (the design's "Deleting a name", Dagda's review), once a tombstone (no
+// value) was committed at `ballot` and every acceptor of the set was seen to hold it. Each
+// name is forgotten only where it holds exactly that tombstone, so a newer write, or an
+// acceptor that missed the tombstone, keeps its state. `keep` holds a default state for each
+// name forgotten (a store may drop such entries) and the rest unchanged; `floor` the floor
+// raised past every ballot a forgotten name held.
+struct Purge {
+  ReplicaSet set;
+  Ballot ballot;
+  std::vector<Name> names;
+};
+struct PurgeStep {
+  std::optional<Refusal> refused;
+  std::vector<AcceptorState> keep;
+  Ballot floor;
+  size_t forgotten = 0;
+};
+PurgeStep on_purge(const identity::NodeId& self, const identity::NodeId& from, const Purge& request, std::span<const AcceptorState> held, const Ballot& floor);
 
 // What a change makes of the current values: the new values, one per name (none: absent),
 // and an opaque result for the caller (a popped element, SET NX's answer). It may run more

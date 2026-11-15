@@ -61,6 +61,8 @@ struct Outcome {
   std::optional<ReplicaSet> serving;
   // Attempts made, retries included.
   uint32_t attempts = 0;
+  // forget(): every replica held the tombstone and was told to purge it.
+  bool forgotten = false;
 };
 
 class Agreement {
@@ -101,7 +103,22 @@ class Agreement {
   void read(std::string space, std::vector<Name> names, std::vector<identity::NodeId> replicas, uint64_t version, Reduce reduce,
             std::chrono::milliseconds deadline, boost::asio::any_io_executor executor, std::function<void(Outcome)> done);
 
-  // A peer's agree_prepare or agree_accept: answered through `answer`, later. Returns the
+  // Deletes `names` (Dagda's review, safety 2): commits a tombstone (no value), and only
+  // once every replica is seen to hold it, purges it, each acceptor raising its space's
+  // floor past what the names held so no stale proposer brings a value back. A replica that
+  // cannot be reached leaves the tombstone in place, which reads as absent; `Outcome::why`
+  // says so and the call may be repeated. Committed: the tombstone is committed; forgotten
+  // is said in `Outcome::forgotten`.
+  void forget(std::string space, std::vector<Name> names, std::vector<identity::NodeId> replicas, uint64_t version, std::chrono::milliseconds deadline,
+              boost::asio::any_io_executor executor, std::function<void(Outcome)> done);
+  // For a store that restarted without its state (the design's restart rule): a strict read
+  // of `names` at a majority of the other replicas, installed into this node's store for
+  // `space` at the committing ballot. The store says ready() once every name it serves has
+  // caught up, by this helper or its own transfer (Mimir's review).
+  void catch_up(std::string space, std::vector<Name> names, std::vector<identity::NodeId> replicas, uint64_t version, std::chrono::milliseconds deadline,
+                boost::asio::any_io_executor executor, std::function<void(Outcome)> done);
+
+  // A peer's agree_prepare, agree_accept or agree_purge: answered through `answer`, later. Returns the
   // message to answer at once when it cannot be served (an unknown space, a refusal before
   // the store is asked), or nothing when the answer will be given.
   std::optional<net::Message> serve_request(const identity::NodeId& from, const net::Message& request, std::function<void(net::Message)> answer);

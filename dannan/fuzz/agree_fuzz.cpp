@@ -27,6 +27,7 @@ const Registration agreement(
     [](std::span<const uint8_t> data) {
       decoding([&] { (void)agree::decode_prepare(data); });
       decoding([&] { (void)agree::decode_accept(data); });
+      decoding([&] { (void)agree::decode_purge(data); });
       decoding([&] { (void)agree::decode_prepare_answer(data); });
       decoding([&] { (void)agree::decode_accept_answer(data); });
     },
@@ -40,6 +41,7 @@ const Registration agreement(
       const agree::Name name{'k', 0, 'x'};
       return std::vector<net::Bytes>{agree::encode(agree::PrepareMessage{"mimir", {set, ballot, {name}}}),
                                      agree::encode(agree::AcceptMessage{"lugh/totp", {set, ballot, {name}, {agree::Bytes{1, 2, 3}}, {ballot}}}),
+                                     agree::encode(agree::PurgeMessage{"mimir", {set, ballot, {name}}}),
                                      agree::encode(agree::PrepareAnswer{{}, {{ballot, agree::Bytes{9}, ballot}}}),
                                      agree::encode(agree::AcceptAnswer{agree::Refusal{"a higher ballot is promised", ballot, set}})};
     });

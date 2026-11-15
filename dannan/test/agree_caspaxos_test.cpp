@@ -39,6 +39,7 @@ Ballot ballot(uint64_t counter, uint8_t by) { return Ballot{counter, node(by), n
 // by the name's bytes as a string: GCC 14 at -O3 misreads a map of byte vectors' compare.
 struct Acceptors {
   std::map<identity::NodeId, std::map<std::string, AcceptorState>> held;
+  std::map<identity::NodeId, Ballot> floor;
 
   static std::string key(const Name& name) { return std::string(name.begin(), name.end()); }
   std::vector<AcceptorState> load(const identity::NodeId& at, const std::vector<Name>& names) {
@@ -51,15 +52,24 @@ struct Acceptors {
   }
   PrepareAnswer prepare(const identity::NodeId& at, const identity::NodeId& from, const Prepare& request) {
     const auto state = load(at, request.names);
-    auto step = on_prepare(at, from, request, state);
+    auto step = on_prepare(at, from, request, state, floor[at]);
     if (step.keep) keep(at, request.names, *step.keep);
     return step.answer;
   }
   AcceptAnswer accept(const identity::NodeId& at, const identity::NodeId& from, const Accept& request) {
     const auto state = load(at, request.names);
-    auto step = on_accept(at, from, request, state);
+    auto step = on_accept(at, from, request, state, floor[at]);
     if (step.keep) keep(at, request.names, *step.keep);
     return step.answer;
+  }
+  PurgeStep purge(const identity::NodeId& at, const identity::NodeId& from, const Purge& request) {
+    const auto state = load(at, request.names);
+    auto step = on_purge(at, from, request, state, floor[at]);
+    if (!step.refused) {
+      keep(at, request.names, step.keep);
+      floor[at] = step.floor;
+    }
+    return step;
   }
 };
 
@@ -170,6 +180,37 @@ TEST(Agreement, ANameServedByOneSetRefusesAnother) {
   EXPECT_EQ(refused.phase(), Attempt::Phase::refused);
   ASSERT_TRUE(refused.serving());
   EXPECT_EQ(*refused.serving(), three);
+}
+
+// Deleting a name (Dagda's review, safety 2): a tombstone every replica holds is purged,
+// and the floor it leaves refuses a stale proposer that would bring the old value back. A
+// replica that missed the tombstone keeps its state, so nothing is purged from under it.
+TEST(Agreement, AForgottenNameStaysForgotten) {
+  Acceptors acceptors;
+  ASSERT_EQ(run(acceptors, three, node(1), ballot(1, 1), {bytes("k")}, put("v")).phase(), Attempt::Phase::committed);
+  const auto tombstone = run(acceptors, three, node(2), ballot(2, 2), {bytes("k")},
+                             [](std::span<const std::optional<Bytes>> current) { return Changed{std::vector<std::optional<Bytes>>(current.size()), {}}; });
+  ASSERT_EQ(tombstone.phase(), Attempt::Phase::committed);
+  for (const auto& at : three.nodes) {
+    const auto step = acceptors.purge(at, node(2), Purge{three, ballot(2, 2), {bytes("k")}});
+    ASSERT_FALSE(step.refused);
+    EXPECT_EQ(step.forgotten, 1u);
+    EXPECT_FALSE(acceptors.held[at]["k"].value);
+    EXPECT_TRUE(acceptors.held[at]["k"].accepted.zero());
+    EXPECT_GE(acceptors.floor[at], ballot(2, 2));
+  }
+  // A proposer that had prepared before the delete, at a ballot below the floor, is refused.
+  const auto stale = run(acceptors, three, node(3), ballot(2, 1), {bytes("k")}, put("resurrected"));
+  EXPECT_EQ(stale.phase(), Attempt::Phase::refused);
+  const auto read = run(acceptors, three, node(1), ballot(9, 1), {bytes("k")}, identity_change());
+  ASSERT_EQ(read.phase(), Attempt::Phase::committed);
+  EXPECT_FALSE(read.values()[0]);
+
+  // Only the exact tombstone is purged: a replica holding something else keeps it.
+  ASSERT_EQ(run(acceptors, three, node(1), ballot(10, 1), {bytes("j")}, put("w")).phase(), Attempt::Phase::committed);
+  const auto kept = acceptors.purge(node(1), node(1), Purge{three, ballot(2, 2), {bytes("j")}});
+  EXPECT_EQ(kept.forgotten, 0u);
+  EXPECT_EQ(text(*acceptors.held[node(1)]["j"].value), "w");
 }
 
 // A minority answers: nothing commits.
