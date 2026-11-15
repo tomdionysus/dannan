@@ -405,6 +405,63 @@ TEST(Simulation, AOneNodeGenesisGrowsToFiveUnderFaults) {
   EXPECT_GT(committed, 0u);
 }
 
+// The slot table is the cluster's, the same on every node: a node configured with another
+// count is refused by every acceptor, so it neither commits nor counts towards a majority,
+// while the rest carry on.
+TEST(Simulation, ANodeWithAnotherSlotTableIsRefused) {
+  World world(7);
+  Cluster cluster(world, 3, NetworkFaults{});
+  cluster.restart_with_slots(2, Cluster::slots * 2);
+  std::optional<agree::Outcome> odd;
+  cluster.agreement(2).change(Cluster::space, counter_slot, {agree::Name{'c'}}, cluster.ids(), Cluster::genesis_version, increment(), {}, 500ms,
+                              world.io.get_executor(), [&](agree::Outcome outcome) { odd = std::move(outcome); });
+  ASSERT_TRUE(world.run_until([&] { return odd.has_value(); }, 2'000'000));
+  EXPECT_FALSE(odd->committed);
+  // The two that agree on the table still commit, without the odd one.
+  std::optional<agree::Outcome> even;
+  cluster.agreement(0).change(Cluster::space, counter_slot, {agree::Name{'c'}}, cluster.ids(), Cluster::genesis_version, increment(), {}, 2000ms,
+                              world.io.get_executor(), [&](agree::Outcome outcome) { even = std::move(outcome); });
+  ASSERT_TRUE(world.run_until([&] { return even.has_value(); }, 2'000'000));
+  ASSERT_TRUE(even->committed) << even->why;
+  EXPECT_EQ(std::count(even->accepted.begin(), even->accepted.end(), cluster.id(2)), 0);
+}
+
+// Finding a moved slot (Kvasir's review): each node's advert says which slots its records
+// serve, so a node never told where a slot went finds it there. The advert carries no
+// version, so a change on the hint with a guessed one is refused, told the set and its
+// version, and commits there.
+TEST(Simulation, AMovedSlotIsFoundFromTheAdvertsAndTheRefusal) {
+  World world(11);
+  Cluster cluster(world, 5, NetworkFaults{}, true, 3);
+  const auto told = [&](auto start) {
+    std::optional<agree::Outcome> out;
+    start([&](agree::Outcome outcome) { out = std::move(outcome); });
+    world.run_until([&] { return out.has_value(); }, 2'000'000);
+    return out.value_or(agree::Outcome{});
+  };
+  const auto founded = told([&](auto done) { cluster.agreement(0).found(Cluster::space, 2000ms, world.io.get_executor(), done); });
+  ASSERT_TRUE(founded.committed) << founded.why;
+  EXPECT_EQ(cluster.agreement(4).hint(Cluster::space, 1), cluster.ids({0, 1, 2}));
+  const auto moved = told([&](auto done) {
+    cluster.agreement(2).transfer(Cluster::space, 1, cluster.ids({0, 1, 2}), 0, cluster.ids({2, 3, 4}), 1, 2000ms, world.io.get_executor(), done);
+  });
+  ASSERT_TRUE(moved.committed) << moved.why;
+  EXPECT_EQ(cluster.agreement(0).hint(Cluster::space, 1), cluster.ids({2, 3, 4}));
+  EXPECT_EQ(cluster.agreement(0).hint(Cluster::space, 0), cluster.ids({0, 1, 2}));
+  const auto guessed = told([&](auto done) {
+    cluster.agreement(3).change(Cluster::space, 1, {agree::Name{'m'}}, cluster.agreement(3).hint(Cluster::space, 1), 0, increment(), {}, 2000ms,
+                                world.io.get_executor(), done);
+  });
+  EXPECT_FALSE(guessed.committed);
+  ASSERT_TRUE(guessed.serving);
+  EXPECT_EQ(*guessed.serving, agree::ReplicaSet::of(cluster.ids({2, 3, 4}), 1));
+  const auto redirected = told([&](auto done) {
+    cluster.agreement(3).change(Cluster::space, 1, {agree::Name{'m'}}, guessed.serving->nodes, guessed.serving->version, increment(), {}, 2000ms,
+                                world.io.get_executor(), done);
+  });
+  EXPECT_TRUE(redirected.committed) << redirected.why;
+}
+
 // A seed replays exactly.
 TEST(Simulation, ASeedReplaysExactly) {
   const auto first = simulate(42, Mode::keep);

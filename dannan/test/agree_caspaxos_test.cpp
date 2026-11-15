@@ -598,6 +598,12 @@ TEST(AgreementWire, EveryMessageRoundTrips) {
   EXPECT_EQ(*refused.refused->serving, four);
   EXPECT_EQ(*refused.refused->pending_from, three);
 
+  // The sender's slot table, fixed by the count and the genesis set.
+  const auto table = table_fingerprint(256, three);
+  EXPECT_NE(table, table_fingerprint(512, three));
+  EXPECT_NE(table, table_fingerprint(256, four));
+  EXPECT_EQ(decode_prepare(encode(PrepareMessage{"mimir", {three, std::nullopt, slot, ballot(4, 1), {binary}}, table})).table, table);
+
   const auto settled = decode_settle(encode(SettleMessage{"mimir", {three, four, slot, ballot(6, 2)}}));
   EXPECT_EQ(settled.settle.from, three);
   EXPECT_EQ(settled.settle.to, four);

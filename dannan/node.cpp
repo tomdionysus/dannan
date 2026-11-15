@@ -588,7 +588,20 @@ Node::Node(asio::io_context& io, NodeConfig config)
           if (record.id == node) return record.adverts.contains(capability);
         return false;
       },
-      _config.time);
+      _config.time, agree::Agreement::Schedule{},
+      // The slot advert, through the roster's adverts like any hosted system's.
+      [this](const std::string& key, std::optional<net::Bytes> value) {
+        if (value)
+          _members.set_advert(key, std::move(*value));
+        else
+          _members.clear_advert(key);
+      },
+      [this](const std::string& key) {
+        std::vector<std::pair<identity::NodeId, net::Bytes>> out;
+        for (const auto& record : _members.active())
+          if (const auto value = record.advert(key)) out.emplace_back(record.id, net::Bytes(value->begin(), value->end()));
+        return out;
+      });
   // Tombstones loaded with the roster fence telemetry before anything runs.
   for (const auto& reset : _members.identity_resets()) _telemetry.apply_identity_reset(reset);
 }

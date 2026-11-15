@@ -47,6 +47,9 @@ class AcceptorStore {
   // has caught up (the design's rule; a store that votes with lost state can commit two
   // values for one name).
   virtual bool ready() const = 0;
+  // Every slot record the store holds, for the slot advert after a start. The default holds
+  // none, and the advert fills as requests arrive.
+  virtual void records(std::function<void(std::vector<std::pair<Slot, SlotState>>)> done) { done({}); }
 };
 
 // What a change did, and who said what: never a boolean.
@@ -83,6 +86,16 @@ class Agreement {
   // deadline. Empty: a timer on `executor` reading `time`. The simulation harness gives its
   // own, so a run's every wait is an event in its world.
   using Schedule = std::function<void(std::chrono::milliseconds after, std::function<void()> task)>;
+  // Sets this node's advert `key` to `value`, or withdraws it (none).
+  using Publish = std::function<void(const std::string& key, std::optional<net::Bytes> value)>;
+  // Every node's advert `key`, by node.
+  using Adverts = std::function<std::vector<std::pair<identity::NodeId, net::Bytes>>(const std::string& key)>;
+
+  // The advert a node's served slots of `space` are published under: one bitmap of
+  // ceil(slots / 8) bytes, bit i (slot i % 8 of byte i / 8, low bit first) set where this
+  // node's record says it serves slot i. A hint, never authority (the design's "Finding a
+  // moved slot"): the acceptors' records and their refusals are the truth.
+  static std::string slot_advert(const std::string& space) { return "agree.slots/" + space; }
 
   // The cluster's slot table, fixed for its life: the count, and the genesis set that
   // serves a slot no acceptor has recorded (the maintainer, 2026-11-15: "No root except at genesis. A
@@ -95,8 +108,9 @@ class Agreement {
   // `executor` runs the proposers' and acceptors' steps; `epoch` is the node's durability
   // epoch, so a restart never reuses a ballot. Throws std::invalid_argument for a table of
   // no slots or more than max_slots.
+  // `publish` and `adverts` carry the slot advert; without them there is none.
   Agreement(boost::asio::any_io_executor executor, identity::NodeId self, identity::NodeId epoch, Table table, Call call, Advertises advertises,
-            const contract::TimeSource* time = &contract::steady_time_source(), Schedule schedule = {});
+            const contract::TimeSource* time = &contract::steady_time_source(), Schedule schedule = {}, Publish publish = {}, Adverts adverts = {});
   ~Agreement();
   Agreement(const Agreement&) = delete;
   Agreement& operator=(const Agreement&) = delete;
@@ -108,6 +122,11 @@ class Agreement {
   void unserve(const std::string& space);
 
   const Table& table() const noexcept;
+
+  // The nodes whose advert says they serve `slot` of `space`, sorted: where to look first
+  // for a slot that has moved. A stale or wrong hint costs one refusal, which names the set
+  // and its version. Empty when no node advertises it.
+  std::vector<identity::NodeId> hint(const std::string& space, Slot slot) const;
 
   // Changes `names`, all of `slot`, together over `replicas` (version `version` of the
   // slot's configuration): `change` is given their current values and returns the new ones

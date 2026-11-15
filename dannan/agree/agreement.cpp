@@ -29,6 +29,7 @@ using Reply = std::function<void(std::optional<net::Bytes>, std::string)>;
 // One space served on this node: its store, the capability its proposers advertise,
 // and its requests one at a time (load, the rules, keep, answer).
 struct Space {
+  std::string name;
   std::string capability;
   std::shared_ptr<AcceptorStore> store;
   asio::any_io_executor executor;
@@ -75,6 +76,8 @@ struct Request {
   std::optional<Accept> accept;
   std::optional<Purge> purge;
   std::optional<Settle> settle;
+  // The sender's slot table's fingerprint.
+  uint64_t table = 0;
 };
 
 Request decode_request(const net::Message& message) {
@@ -82,17 +85,19 @@ Request decode_request(const net::Message& message) {
   Request out{};
   if (message.type == m::agree_prepare) {
     auto decoded = decode_prepare(message.payload);
-    out = Request{
-        Request::Kind::prepare, decoded.space, decoded.prepare.slot, decoded.prepare.names, decoded.prepare.to.has_value(), decoded.prepare, {}, {}, {}};
+    out =
+        Request{Request::Kind::prepare, decoded.space, decoded.prepare.slot, decoded.prepare.names, decoded.prepare.to.has_value(), decoded.prepare, {}, {}, {},
+                decoded.table};
   } else if (message.type == m::agree_accept) {
     auto decoded = decode_accept(message.payload);
-    out = Request{Request::Kind::accept, decoded.space, decoded.accept.slot, decoded.accept.names, decoded.accept.to.has_value(), {}, decoded.accept, {}, {}};
+    out = Request{Request::Kind::accept, decoded.space, decoded.accept.slot, decoded.accept.names, decoded.accept.to.has_value(), {}, decoded.accept, {}, {},
+                  decoded.table};
   } else if (message.type == m::agree_purge) {
     auto decoded = decode_purge(message.payload);
-    out = Request{Request::Kind::purge, decoded.space, decoded.purge.slot, decoded.purge.names, false, {}, {}, decoded.purge, {}};
+    out = Request{Request::Kind::purge, decoded.space, decoded.purge.slot, decoded.purge.names, false, {}, {}, decoded.purge, {}, decoded.table};
   } else {
     auto decoded = decode_settle(message.payload);
-    out = Request{Request::Kind::settle, decoded.space, decoded.settle.slot, {}, false, {}, {}, {}, decoded.settle};
+    out = Request{Request::Kind::settle, decoded.space, decoded.settle.slot, {}, false, {}, {}, {}, decoded.settle, decoded.table};
   }
   return out;
 }
@@ -121,10 +126,18 @@ struct Agreement::Core : std::enable_shared_from_this<Core> {
   identity::NodeId self;
   identity::NodeId epoch;
   Table table;
+  // The table's fingerprint, carried on every request and checked on every one served.
+  uint64_t fingerprint = 0;
   Call call;
   Advertises advertises;
   const contract::TimeSource* time;
   Schedule schedule;
+  Publish publish;
+  Adverts adverts;
+  // Each space's slot bitmap, as last published. Held across the publish, so two keeps never
+  // publish out of order. Lock order: this before the roster's own (publish sets an advert).
+  contract::Mutex publishing;
+  std::map<std::string, std::vector<uint8_t>> bitmaps DANNAN_GUARDED_BY(publishing);
   std::atomic<uint64_t> counter{0};
   // Each change's own, so two on one node never share a backoff sequence.
   std::atomic<uint64_t> runs{0};
@@ -151,6 +164,29 @@ struct Agreement::Core : std::enable_shared_from_this<Core> {
     return Ballot{next, self, epoch};
   }
 
+  // A record of `slot` of `space` was just kept here: whether this node serves it goes into
+  // the space's slot advert, published when it changes.
+  void note(const std::string& space, Slot slot, const SlotState& record) {
+    if (!publish) return;
+    const bool serving = record.served && record.served->contains(self);
+    contract::Lock lock(publishing);
+    auto& bitmap = bitmaps[space];
+    bitmap.resize((table.slots + 7) / 8);
+    const auto bit = static_cast<uint8_t>(1u << (slot % 8));
+    auto& byte = bitmap[slot / 8];
+    const auto next = static_cast<uint8_t>(serving ? (byte | bit) : (byte & ~bit));
+    if (next == byte) return;
+    byte = next;
+    publish(Agreement::slot_advert(space), net::Bytes(bitmap.begin(), bitmap.end()));
+  }
+
+  void withdraw(const std::string& space) {
+    if (!publish) return;
+    contract::Lock lock(publishing);
+    bitmaps.erase(space);
+    publish(Agreement::slot_advert(space), std::nullopt);
+  }
+
   // Serves a request: an answer at once, or nothing when `answer` will be called.
   std::optional<net::Message> serve(const identity::NodeId& from, const net::Message& message, std::function<void(net::Message)> answer) {
     Request request;
@@ -170,59 +206,64 @@ struct Agreement::Core : std::enable_shared_from_this<Core> {
       return kind == Request::Kind::prepare ? net::Message{replied, encode(PrepareAnswer{refusal_of(std::move(why)), {}, {}, {}, {}}), {}}
                                             : net::Message{replied, encode(AcceptAnswer{refusal_of(std::move(why))}), {}};
     };
+    if (request.table != fingerprint) return refusal("the sender's slot table (count or genesis set) differs from this node's");
     if (!space->store->ready()) return refusal("this acceptor is catching up");
     space->enqueue(
-        [space, me = self, genesis = table.genesis, from, refusal, request = std::move(request), replied,
+        [core = shared_from_this(), space, me = self, genesis = table.genesis, from, refusal, request = std::move(request), replied,
          answer = std::move(answer)](std::function<void()> done) mutable {
           const auto slot = request.slot;
           const auto every = request.every;
           auto names = request.names;
-          space->store->load(slot, names, every, [space, me, genesis, from, refusal, request = std::move(request), replied, answer, done](Held held) mutable {
-            if (held.states.size() != held.names.size() || held.names.size() < request.names.size()) {
-              answer(refusal("the store loaded a different count"));
-              return done();
-            }
-            if (request.every && held.names.size() > max_names) {
-              answer(refusal("the slot holds more names than one transfer carries"));
-              return done();
-            }
-            std::optional<Held> keep;
-            net::Bytes reply;
-            switch (request.kind) {
-              case Request::Kind::prepare: {
-                auto step = on_prepare(me, from, *request.prepare, held, genesis);
-                keep = std::move(step.keep);
-                reply = encode(step.answer);
-                break;
-              }
-              case Request::Kind::accept: {
-                auto step = on_accept(me, from, *request.accept, held, genesis);
-                keep = std::move(step.keep);
-                reply = encode(step.answer);
-                break;
-              }
-              case Request::Kind::purge: {
-                auto step = on_purge(me, from, *request.purge, held);
-                reply = encode(AcceptAnswer{step.refused});
-                if (!step.refused) keep = std::move(step.keep);
-                break;
-              }
-              case Request::Kind::settle: {
-                auto step = on_settle(me, from, *request.settle, held);
-                keep = std::move(step.keep);
-                reply = encode(step.answer);
-                break;
-              }
-            }
-            if (!keep) {
-              answer({replied, std::move(reply), {}});
-              return done();
-            }
-            space->store->keep(request.slot, *keep, [answer, done, replied, refusal, reply = std::move(reply)](bool kept) {
-              answer(kept ? net::Message{replied, reply, {}} : refusal("the store could not keep"));
-              done();
-            });
-          });
+          space->store->load(
+              slot, names, every, [core, space, me, genesis, from, refusal, request = std::move(request), replied, answer, done](Held held) mutable {
+                if (held.states.size() != held.names.size() || held.names.size() < request.names.size()) {
+                  answer(refusal("the store loaded a different count"));
+                  return done();
+                }
+                if (request.every && held.names.size() > max_names) {
+                  answer(refusal("the slot holds more names than one transfer carries"));
+                  return done();
+                }
+                std::optional<Held> keep;
+                net::Bytes reply;
+                switch (request.kind) {
+                  case Request::Kind::prepare: {
+                    auto step = on_prepare(me, from, *request.prepare, held, genesis);
+                    keep = std::move(step.keep);
+                    reply = encode(step.answer);
+                    break;
+                  }
+                  case Request::Kind::accept: {
+                    auto step = on_accept(me, from, *request.accept, held, genesis);
+                    keep = std::move(step.keep);
+                    reply = encode(step.answer);
+                    break;
+                  }
+                  case Request::Kind::purge: {
+                    auto step = on_purge(me, from, *request.purge, held);
+                    reply = encode(AcceptAnswer{step.refused});
+                    if (!step.refused) keep = std::move(step.keep);
+                    break;
+                  }
+                  case Request::Kind::settle: {
+                    auto step = on_settle(me, from, *request.settle, held);
+                    keep = std::move(step.keep);
+                    reply = encode(step.answer);
+                    break;
+                  }
+                }
+                if (!keep) {
+                  answer({replied, std::move(reply), {}});
+                  return done();
+                }
+                space->store->keep(
+                    request.slot, *keep,
+                    [core, space, slot = request.slot, record = keep->slot, answer, done, replied, refusal, reply = std::move(reply)](bool kept) {
+                      if (kept) core->note(space->name, slot, record);
+                      answer(kept ? net::Message{replied, reply, {}} : refusal("the store could not keep"));
+                      done();
+                    });
+              });
         },
         space);
     return std::nullopt;
@@ -316,7 +357,7 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
     const auto ballot = core->next_ballot(above);
     attempt = std::make_unique<Attempt>(finishing ? Attempt::transfer(finishing->first, finishing->second, slot, ballot) : make(ballot));
     outstanding = attempt->recipients().size();
-    const auto request = encode(PrepareMessage{space, attempt->prepare()});
+    const auto request = encode(PrepareMessage{space, attempt->prepare(), core->fingerprint});
     for (const auto& node : attempt->recipients())
       core->send(node, net::message::agree_prepare, request, left(),
                  [self = shared_from_this(), at = generation, node](std::optional<net::Bytes> answer, std::string) {
@@ -336,7 +377,7 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
     }
     if (accept) {
       outstanding = attempt->recipients().size();
-      const auto request = encode(AcceptMessage{space, *accept});
+      const auto request = encode(AcceptMessage{space, *accept, core->fingerprint});
       for (const auto& to : attempt->recipients())
         core->send(to, net::message::agree_accept, request, left(), [self = shared_from_this(), at, to](std::optional<net::Bytes> replied, std::string) {
           asio::post(self->strand, [self, at, to, replied = std::move(replied)] { self->accepted(at, to, replied); });
@@ -364,7 +405,7 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
   void committed() {
     const auto& prepare = attempt->prepare();
     if (prepare.to) {
-      const auto request = encode(SettleMessage{space, Settle{prepare.set, *prepare.to, slot, prepare.ballot}});
+      const auto request = encode(SettleMessage{space, Settle{prepare.set, *prepare.to, slot, prepare.ballot}, core->fingerprint});
       for (const auto& node : attempt->recipients())
         core->send(node, net::message::agree_settle, request, left(), [](std::optional<net::Bytes>, std::string) {});
     }
@@ -465,15 +506,18 @@ void after_on(const asio::any_io_executor& executor, const contract::TimeSource*
 }  // namespace
 
 Agreement::Agreement(asio::any_io_executor executor, identity::NodeId self, identity::NodeId epoch, Table table, Call call, Advertises advertises,
-                     const contract::TimeSource* time, Schedule schedule)
+                     const contract::TimeSource* time, Schedule schedule, Publish publish, Adverts adverts)
     : _core(std::make_shared<Core>()) {
   if (table.slots == 0 || table.slots > max_slots) throw std::invalid_argument("a slot table holds 1 to 8192 slots");
   _core->executor = std::move(executor);
   _core->self = self;
   _core->epoch = epoch;
   _core->table = std::move(table);
+  _core->fingerprint = table_fingerprint(_core->table.slots, _core->table.genesis);
   _core->call = std::move(call);
   _core->advertises = std::move(advertises);
+  _core->publish = std::move(publish);
+  _core->adverts = std::move(adverts);
   _core->time = time;
   _core->schedule = schedule ? std::move(schedule) : Schedule([executor = _core->executor, time](std::chrono::milliseconds after, std::function<void()> task) {
     after_on(executor, time, time->now() + after, std::move(task));
@@ -491,16 +535,36 @@ void Agreement::serve(std::string space, std::string capability, std::shared_ptr
   if (space.empty() || space.size() > max_space) throw std::invalid_argument("a space is named in 1 to 255 bytes");
   if (!store) throw std::invalid_argument("a served space needs its store");
   auto served = std::make_shared<Space>();
+  served->name = space;
   served->capability = std::move(capability);
-  served->store = std::move(store);
+  served->store = store;
   served->executor = _core->executor;
-  contract::Lock lock(_core->mutex);
-  if (!_core->spaces.emplace(space, std::move(served)).second) throw std::invalid_argument("the space " + space + " is already served");
+  {
+    contract::Lock lock(_core->mutex);
+    if (!_core->spaces.emplace(space, std::move(served)).second) throw std::invalid_argument("the space " + space + " is already served");
+  }
+  // The slot advert from what the store already holds.
+  store->records([core = _core, space](std::vector<std::pair<Slot, SlotState>> records) {
+    for (const auto& [slot, record] : records)
+      if (slot < core->table.slots) core->note(space, slot, record);
+  });
 }
 
 void Agreement::unserve(const std::string& space) {
-  contract::Lock lock(_core->mutex);
-  _core->spaces.erase(space);
+  {
+    contract::Lock lock(_core->mutex);
+    _core->spaces.erase(space);
+  }
+  _core->withdraw(space);
+}
+
+std::vector<identity::NodeId> Agreement::hint(const std::string& space, Slot slot) const {
+  std::vector<identity::NodeId> out;
+  if (!_core->adverts || slot >= _core->table.slots) return out;
+  for (const auto& [node, bitmap] : _core->adverts(slot_advert(space)))
+    if (slot / 8 < bitmap.size() && ((bitmap[slot / 8] >> (slot % 8)) & 1u)) out.push_back(node);
+  std::sort(out.begin(), out.end());
+  return out;
 }
 
 namespace {
@@ -634,13 +698,14 @@ void Agreement::forget(std::string space, Slot slot, std::vector<Name> names, st
   change(
       space, slot, names, replicas, version,
       [](std::span<const std::optional<Bytes>> current) { return Changed{std::vector<std::optional<Bytes>>(current.size()), {}}; }, {}, deadline, executor,
-      [space, slot, names, set, send, deadline, executor, done = std::move(done)](Outcome tombstone) mutable {
+      [space, slot, names, set, send, deadline, executor, fingerprint = core->fingerprint, done = std::move(done)](Outcome tombstone) mutable {
         if (!tombstone.committed) return done(std::move(tombstone));
         // Every replica must hold the tombstone before any forgets it: sent again, the same
         // accept, to all.
         const Accept again{set, std::nullopt, slot, tombstone.ballot, names, std::vector<std::optional<Bytes>>(names.size()), tombstone.changed_at};
-        fan_out(send, set.nodes, net::message::agree_accept, encode(AcceptMessage{space, again}), deadline, executor,
-                [space, slot, names, set, send, deadline, executor, done = std::move(done), tombstone](std::vector<std::optional<net::Bytes>> answers) mutable {
+        fan_out(send, set.nodes, net::message::agree_accept, encode(AcceptMessage{space, again, fingerprint}), deadline, executor,
+                [space, slot, names, set, send, deadline, executor, fingerprint, done = std::move(done),
+                 tombstone](std::vector<std::optional<net::Bytes>> answers) mutable {
                   for (const auto& answer : answers) {
                     bool held = false;
                     if (answer) try {
@@ -652,8 +717,8 @@ void Agreement::forget(std::string space, Slot slot, std::vector<Name> names, st
                       return done(std::move(tombstone));
                     }
                   }
-                  fan_out(send, set.nodes, net::message::agree_purge, encode(PurgeMessage{space, Purge{set, slot, tombstone.ballot, names}}), deadline,
-                          executor, [done = std::move(done), tombstone](std::vector<std::optional<net::Bytes>> purged) mutable {
+                  fan_out(send, set.nodes, net::message::agree_purge, encode(PurgeMessage{space, Purge{set, slot, tombstone.ballot, names}, fingerprint}),
+                          deadline, executor, [done = std::move(done), tombstone](std::vector<std::optional<net::Bytes>> purged) mutable {
                             tombstone.forgotten = std::all_of(purged.begin(), purged.end(), [](const std::optional<net::Bytes>& answer) {
                               try {
                                 return answer && !decode_accept_answer(*answer).refused;
@@ -678,12 +743,13 @@ void Agreement::catch_up(std::string space, Slot slot, std::vector<Name> names, 
   read(space, slot, names, replicas, version, {}, deadline, executor, [core, space, slot, names, set, done = std::move(done)](Outcome outcome) mutable {
     const auto served = core->find(space);
     if (!outcome.committed || !served) return done(std::move(outcome));
-    served->store->load(slot, names, false, [served, slot, set, outcome = std::move(outcome), done = std::move(done)](Held held) mutable {
+    served->store->load(slot, names, false, [core, space, served, slot, set, outcome = std::move(outcome), done = std::move(done)](Held held) mutable {
       for (size_t i = 0; i < held.states.size() && i < outcome.values.size(); ++i)
         held.states[i] = AcceptorState{outcome.ballot, outcome.ballot, outcome.values[i], outcome.changed_at[i]};
       held.slot.served = set;
       held.slot.pending_from.reset();
-      served->store->keep(slot, held, [done = std::move(done), outcome = std::move(outcome)](bool kept) mutable {
+      served->store->keep(slot, held, [core, space, slot, record = held.slot, done = std::move(done), outcome = std::move(outcome)](bool kept) mutable {
+        if (kept) core->note(space, slot, record);
         if (!kept) {
           outcome.committed = false;
           outcome.why = "the store could not keep what was caught up";

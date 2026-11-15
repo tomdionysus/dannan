@@ -25,22 +25,32 @@ inline constexpr size_t max_name = 64 * 1024;
 inline constexpr size_t max_value = 256u * 1024 * 1024;
 inline constexpr size_t max_why = 1024;
 
+// Each request carries the sender's slot table as its fingerprint (table_fingerprint): a
+// node configured with another count or genesis set is refused by every acceptor, since the
+// rule for an unrecorded slot would differ between them.
 struct PrepareMessage {
   std::string space;
   Prepare prepare;
+  uint64_t table = 0;
 };
 struct AcceptMessage {
   std::string space;
   Accept accept;
+  uint64_t table = 0;
 };
 struct PurgeMessage {
   std::string space;
   Purge purge;
+  uint64_t table = 0;
 };
 struct SettleMessage {
   std::string space;
   Settle settle;
+  uint64_t table = 0;
 };
+
+// FNV-1a 64 over the slot count (4 bytes) and the genesis set as the wire writes it.
+uint64_t table_fingerprint(uint32_t slots, const ReplicaSet& genesis);
 
 net::Bytes encode(const PrepareMessage& message);
 net::Bytes encode(const AcceptMessage& message);

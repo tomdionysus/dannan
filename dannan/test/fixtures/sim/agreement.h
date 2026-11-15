@@ -60,6 +60,9 @@ class Store final : public agree::AcceptorStore {
     done(true);
   }
   bool ready() const override { return _ready; }
+  void records(std::function<void(std::vector<std::pair<agree::Slot, agree::SlotState>>)> done) override {
+    done(std::vector<std::pair<agree::Slot, agree::SlotState>>(_current.slots.begin(), _current.slots.end()));
+  }
 
   // A crash: what was not durable is gone.
   void crash() { _current = _durable; }
@@ -177,12 +180,19 @@ class Cluster {
     _nodes.at(i)->store->set_ready(ready);
     start(i);
   }
+  // The node starts again configured with another slot count (a misconfigured node).
+  void restart_with_slots(size_t i, uint32_t count) {
+    crash(i);
+    _nodes.at(i)->slots = count;
+    start(i);
+  }
 
  private:
   struct Node {
     identity::NodeId id;
     std::shared_ptr<Store> store;
     std::unique_ptr<agree::Agreement> agreement;
+    uint32_t slots = Cluster::slots;
   };
 
   void start(size_t i) {
@@ -190,13 +200,26 @@ class Cluster {
     identity::NodeId epoch;
     for (auto& byte : epoch.bytes) byte = static_cast<uint8_t>(_world.random.next());
     node.agreement = std::make_unique<agree::Agreement>(
-        _world.io.get_executor(), node.id, epoch, agree::Agreement::Table{slots, _genesis},
+        _world.io.get_executor(), node.id, epoch, agree::Agreement::Table{node.slots, _genesis},
         [this, i](const identity::NodeId& to, net::MessageType type, net::Bytes payload, std::chrono::milliseconds deadline,
                   std::function<void(std::optional<net::Bytes>, std::string)> done) {
           send(i, index(to), type, std::move(payload), deadline, std::move(done));
         },
         [](const identity::NodeId&, const std::string&) { return true; }, &_time,
-        [this](std::chrono::milliseconds after, std::function<void()> task) { _world.after(static_cast<uint64_t>(after.count()), std::move(task)); });
+        [this](std::chrono::milliseconds after, std::function<void()> task) { _world.after(static_cast<uint64_t>(after.count()), std::move(task)); },
+        // Adverts reach every node at once: the world's gossip is not what is under test.
+        [this, i](const std::string& key, std::optional<net::Bytes> value) {
+          if (value)
+            _adverts[{i, key}] = std::move(*value);
+          else
+            _adverts.erase({i, key});
+        },
+        [this](const std::string& key) {
+          std::vector<std::pair<identity::NodeId, net::Bytes>> out;
+          for (const auto& [at, value] : _adverts)
+            if (at.second == key) out.emplace_back(id(at.first), value);
+          return out;
+        });
     node.agreement->serve(space, space, node.store);
   }
 
@@ -242,6 +265,7 @@ class Cluster {
   Time _time;
   NetworkFaults _faults;
   agree::ReplicaSet _genesis;
+  std::map<std::pair<size_t, std::string>, net::Bytes> _adverts;
   std::vector<std::unique_ptr<Node>> _nodes;
   std::set<std::pair<size_t, size_t>> _blocked;
 };

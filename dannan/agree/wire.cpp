@@ -132,6 +132,7 @@ net::Bytes encode(const PrepareMessage& message) {
   Writer out;
   out.u8(message_version);
   out.string(message.space);
+  out.u64(message.table);
   put(out, message.prepare.set);
   put(out, message.prepare.to);
   out.u32(message.prepare.slot);
@@ -144,6 +145,7 @@ net::Bytes encode(const AcceptMessage& message) {
   Writer out;
   out.u8(message_version);
   out.string(message.space);
+  out.u64(message.table);
   put(out, message.accept.set);
   put(out, message.accept.to);
   out.u32(message.accept.slot);
@@ -158,6 +160,7 @@ net::Bytes encode(const PurgeMessage& message) {
   Writer out;
   out.u8(message_version);
   out.string(message.space);
+  out.u64(message.table);
   put(out, message.purge.set);
   out.u32(message.purge.slot);
   put(out, message.purge.ballot);
@@ -169,6 +172,7 @@ net::Bytes encode(const SettleMessage& message) {
   Writer out;
   out.u8(message_version);
   out.string(message.space);
+  out.u64(message.table);
   put(out, message.settle.from);
   put(out, message.settle.to);
   out.u32(message.settle.slot);
@@ -181,6 +185,7 @@ PurgeMessage decode_purge(std::span<const uint8_t> bytes) {
   open(in);
   PurgeMessage out;
   out.space = in.string(max_space);
+  out.table = in.u64();
   out.purge.set = get_set(in);
   out.purge.slot = get_slot(in);
   out.purge.ballot = get_ballot(in);
@@ -194,6 +199,7 @@ SettleMessage decode_settle(std::span<const uint8_t> bytes) {
   open(in);
   SettleMessage out;
   out.space = in.string(max_space);
+  out.table = in.u64();
   out.settle.from = get_set(in);
   out.settle.to = get_set(in);
   out.settle.slot = get_slot(in);
@@ -230,6 +236,7 @@ PrepareMessage decode_prepare(std::span<const uint8_t> bytes) {
   open(in);
   PrepareMessage out;
   out.space = in.string(max_space);
+  out.table = in.u64();
   out.prepare.set = get_set(in);
   out.prepare.to = get_optional_set(in, "a transfer's set");
   out.prepare.slot = get_slot(in);
@@ -246,6 +253,7 @@ AcceptMessage decode_accept(std::span<const uint8_t> bytes) {
   open(in);
   AcceptMessage out;
   out.space = in.string(max_space);
+  out.table = in.u64();
   out.accept.set = get_set(in);
   out.accept.to = get_optional_set(in, "a transfer's set");
   out.accept.slot = get_slot(in);
@@ -285,6 +293,20 @@ AcceptAnswer decode_accept_answer(std::span<const uint8_t> bytes) {
   out.refused = get_refusal(in);
   in.finish();
   return out;
+}
+
+uint64_t table_fingerprint(uint32_t slots, const ReplicaSet& genesis) {
+  Writer out;
+  out.u32(slots);
+  out.u64(genesis.version);
+  out.u16(static_cast<uint16_t>(genesis.nodes.size()));
+  for (const auto& node : genesis.nodes) out.fixed(node.bytes);
+  uint64_t hash = 0xcbf29ce484222325ull;
+  for (const auto byte : out.take()) {
+    hash ^= byte;
+    hash *= 0x100000001b3ull;
+  }
+  return hash;
 }
 
 std::array<uint8_t, 40> encode_ballot(const Ballot& ballot) noexcept {
