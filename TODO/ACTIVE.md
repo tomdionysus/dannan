@@ -41,6 +41,20 @@ skipped when run as root). See the handoff in `COMPLETED.md`. Develop's CI is gr
 43769767060, 15 of 15), and 43765614152 passed the scheduler fix under ASan. The branch's own CI, and develop's
 local commits from `fbcbb90` on, need a push, which waits on the maintainer's word.
 
+**First, before more 0.9 work: Lir's TSan report against 0.8.3** (2026-11-16).
+- What: a heap-use-after-free in `~NodeRecord`, in Lir run 43773090610 (`ClusterTest.ConnectingOnAnotherNodeTakesTheClientOver`, two
+  nodes in one process, 4 io threads). The log is at `../lir/build/ci-logs/tsan-43773090610.log`.
+  - The read: `~ClientHandshake` (`_local`, a copy of `Membership::self()`) under `~DialState` (`net/session.cpp:462`).
+  - The earlier free, of the same map node: `~vector<NodeRecord>` of `observe_direct`'s `before` (`_members.active()`),
+    from the server's established callback.
+- Ruled out by reading: every Membership accessor and setter holds `_mutex`; `self()`, `active()` and `all()` return
+  deep copies; ClientHandshake takes `local` by value; the dial and accept states share no record.
+- Next: reproduce under TSan in Dannan (two nodes, one process, 4 threads, repeated dials while adverts change), the
+  allowed local sanitizer hunt. Ask Lir whether its `_deps` Dannan build matches lir_tests' flags: both binaries
+  instantiate `~NodeRecord`.
+- Lir also saw two other intermittent failures, being looked at on Lir's side: run 43757235866 (TSan) and run
+  43765626713 (release arm64).
+
 **Waiting on the maintainer:**
 - Whether the scheduler fix (`0ce0b82`: a deferred answer gives back its place and bytes before its reply is sent;
   it shipped in 0.8 and ASan caught it) also goes out as **0.8.4**. It is internal to `net/scheduler.cpp`, so it
@@ -76,13 +90,22 @@ local commits from `fbcbb90` on, need a push, which waits on the maintainer's wo
    - **For the maintainer:** the design said a node with another table is "refused at join". It is refused at every agreement
      request instead, which keeps membership free of agreement's settings. Whether join-time refusal is still wanted
      on top is his call.
-   - Left for step 2: the test "the fast path lost across a transfer".
+   - The test "the fast path lost across a transfer" is `FastPath.IsLostAcrossATransfer` (`6c90f50`).
+2. **The fast path: built** at `6c90f50`.
+   - How it works: a plain accept reserves the proposer's next ballot (`Accept::reserve`), and the next change of the
+     same names is an accept at that ballot with `fast_from`. A change with an owner's reduction never goes fast (merge
+     writes are seen only in a prepare). The runtime caches the last commit per space, slot, set and names; a miss
+     goes the full way at once.
+   - What the simulator found on the way: a fast ballot chosen at send time could outrank a commit made in between;
+     reserving it is CASPaxos's own form, and fixes it. A retry after a partial accept applied its change twice; a
+     retry that finds its own accept newest now commits it unchanged.
+   - The suite on node-d ran 784 tests: 783 passed and 1 skipped (it is skipped when run as root).
+   - Still to do in step 2: **value-less prepare and deltas**.
 
    Tests are named there: one-node genesis grown to five, the root unreachable, the fast path lost across a
    transfer.
-2. **The fast path** (one round uncontended), then **value-less prepare and deltas**. These come before a transfer of
-   large values (Kvasir's ranges: new acceptors are caught up by the store first, and the joint round then carries a
-   version or a delta).
+   Value-less prepare and deltas come before a transfer of large values (Kvasir's ranges: new acceptors are caught up
+   by the store first, and the joint round then carries a version or a delta).
 3. **The harness's next phase** (`2026-11-15-simulation-harness.md`):
    - membership, Routes, placement and correlated kills in the world;
    - the history with faults and resolutions;

@@ -38,6 +38,15 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `a5d12df` (767 ran, 766 passed, 1 skipped). For 0.8.4 if the maintainer wants one.
 - Asks recorded in the plan: Kvasir's (and Mimir's) fuzz-harness export (item 8); Mimir's need for multi-slot commit
   (item 7).
+- **Later the same session** (branch `feature/agreement-reconfiguration`, still unmerged):
+  - `c524a28`: every agreement request carries the slot table's fingerprint, and an acceptor with another table
+    refuses it (`Simulation.ANodeWithAnotherSlotTableIsRefused`); the slot advert `agree.slots/<space>` and
+    `Agreement::hint()` (`Simulation.AMovedSlotIsFoundFromTheAdvertsAndTheRefusal`). 778 ran, 777 passed, 1 skipped.
+  - `6c90f50`: the fast path, with reservations, and a retry adopting its own newest accept. Simulator seeds 30 and
+    99 found the two flaws the design had. New tests: `FastPath.*` (4), `Agreement.ARetryAfterAPartialAccept...`,
+    `Simulation.TheFastPathIsTakenUncontendedAndLeftWhenContended`. 784 ran, 783 passed, 1 skipped.
+  - Lir's TSan report against 0.8.3 is recorded at the top of `ACTIVE.md`, read but not yet reproduced.
+  - Develop's hosted CI came back green (43769767060, 15 of 15; the scheduler fix passed ASan in 43765614152).
 
 ## Handoff, 2026-11-15: agreement's lifecycle merged; reconfiguration ruled
 
