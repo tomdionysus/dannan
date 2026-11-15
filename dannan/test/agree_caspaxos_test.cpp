@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "dannan/agree/caspaxos.h"
+#include "dannan/agree/wire.h"
 
 namespace dannan::agree {
 namespace {
@@ -290,6 +291,60 @@ TEST(Agreement, RacingProposersNeverBothWin) {
     ASSERT_EQ(read.phase(), Attempt::Phase::committed) << "seed " << seed;
     EXPECT_EQ(text(*read.values()[0]), winner.value) << "seed " << seed;
   }
+}
+
+// The wire: every message round-trips, a name may hold any byte, and a decoder refuses
+// what is out of bounds or out of order rather than guessing.
+TEST(AgreementWire, EveryMessageRoundTrips) {
+  const Name binary{'k', 0, 0xff};
+  const PrepareMessage prepare{"mimir", {three, ballot(4, 1), {binary, bytes("b")}}};
+  const auto prepared = decode_prepare(encode(prepare));
+  EXPECT_EQ(prepared.space, "mimir");
+  EXPECT_EQ(prepared.prepare.set, three);
+  EXPECT_EQ(prepared.prepare.ballot, ballot(4, 1));
+  EXPECT_EQ(prepared.prepare.names, prepare.prepare.names);
+
+  const AcceptMessage accept{"lugh/totp", {three, ballot(4, 1), {binary}, {std::nullopt}, {ballot(2, 2)}}};
+  const auto accepted = decode_accept(encode(accept));
+  EXPECT_EQ(accepted.accept.names, accept.accept.names);
+  EXPECT_FALSE(accepted.accept.values[0]);
+  EXPECT_EQ(accepted.accept.changed_at[0], ballot(2, 2));
+
+  const PrepareAnswer promise{{}, {{ballot(1, 1), bytes("v"), ballot(1, 1)}, {Ballot{}, std::nullopt, Ballot{}}}};
+  const auto promised = decode_prepare_answer(encode(promise));
+  ASSERT_EQ(promised.states.size(), 2u);
+  EXPECT_EQ(text(*promised.states[0].value), "v");
+  EXPECT_FALSE(promised.states[1].value);
+
+  const AcceptAnswer refusal{Refusal{"a name is served by another replica set", ballot(9, 3), three}};
+  const auto refused = decode_accept_answer(encode(refusal));
+  ASSERT_TRUE(refused.refused);
+  EXPECT_EQ(*refused.refused->higher, ballot(9, 3));
+  EXPECT_EQ(*refused.refused->serving, three);
+}
+
+TEST(AgreementWire, RefusesWhatItCannotTrust) {
+  auto bytes_of = encode(PrepareMessage{"mimir", {three, ballot(4, 1), {bytes("k")}}});
+  bytes_of[0] = 2;  // a version it does not speak
+  EXPECT_THROW(decode_prepare(bytes_of), net::DecodeError);
+  auto truncated = encode(PrepareMessage{"mimir", {three, ballot(4, 1), {bytes("k")}}});
+  truncated.pop_back();
+  EXPECT_THROW(decode_prepare(truncated), net::DecodeError);
+  // A set whose nodes are out of order is not a set Dannan makes.
+  ReplicaSet unsorted{{node(3), node(1)}, 1};
+  EXPECT_THROW(decode_prepare(encode(PrepareMessage{"mimir", {unsorted, ballot(4, 1), {bytes("k")}}})), net::DecodeError);
+  // No names, or trailing bytes.
+  EXPECT_THROW(decode_prepare(encode(PrepareMessage{"mimir", {three, ballot(4, 1), {}}})), net::DecodeError);
+  auto trailing = encode(AcceptAnswer{});
+  trailing.push_back(0);
+  EXPECT_THROW(decode_accept_answer(trailing), net::DecodeError);
+}
+
+// The fencing token's bytes order as the ballots do.
+TEST(AgreementWire, ABallotsBytesOrderAsItDoes) {
+  EXPECT_LT(encode_ballot(ballot(1, 9)), encode_ballot(ballot(2, 1)));
+  EXPECT_LT(encode_ballot(ballot(2, 1)), encode_ballot(ballot(2, 2)));
+  EXPECT_EQ(encode_ballot(ballot(5, 5)), encode_ballot(ballot(5, 5)));
 }
 
 }  // namespace
