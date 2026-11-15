@@ -1,5 +1,22 @@
 # Current release
 
+## 0.8.2: placement copies only its answer, and a listener's key is refused for what is wrong with it
+
+Placement: `Nodes::placement` takes one copy of the roster and narrows it in place,
+and `placement::by_capacity` ranks pointers into it, copying each record (adverts
+and all) once, into the answer; before, one call copied every record about five
+times. The fallback order hashes each node once rather than at every comparison.
+The answers are the same. Measured by Dagda on a Pi 5 (200 files of 64 KiB, two
+nodes): the placement copies are gone from the profile, and CPU per run is
+unchanged within its spread, so this is no speed-up on that workload.
+
+`dannan::listen`: a key that is not the chain's leaf's is refused as "not the key
+of" the chain, not as "not a PEM private key", which OpenSSL's own pair check had
+made it. A passphrase is never asked for: an encrypted key is refused as one,
+where OpenSSL's default would prompt on a terminal and fail under systemd.
+
+The ABI is 0.8.0's.
+
 ## 0.8.1: public sockets send at once, and a listener stops from anywhere
 
 `dannan::listen`: every accepted socket sends at once (TCP_NODELAY), so a public

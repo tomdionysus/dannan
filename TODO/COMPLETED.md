@@ -3,6 +3,24 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
+## Handoff, 2026-11-15: 0.8.2 prepared; 0.8.1 released
+
+0.8.1: tagged at the maintainer's word (`53cc933`), main's CI run 43734647887 green, `.deb`s staged and checked. Lir moved with
+no code change (337 passed on node-c).
+
+0.8.2 (the maintainer approved), on `feature/placement-copies`, merged at `bb69e51`:
+- Dagda's measurement: one `Nodes::placement` call copied every record, its advert map with it, about five times. The
+  node now narrows its one roster copy in place, and `by_capacity` ranks pointers (domains, the relay-only split, the
+  fallbacks) and copies each record once, into the answer; the fallback sort hashes each node once. Same answers: a
+  new check compares the node's placement with `by_capacity` over `with_advert(active())` for 16 keys and 1 to 3
+  copies. Dagda reviewed (pointer lifetimes, salt check, order, erase_if) and measured on node-a, 200 files of
+  64 KiB, three alternating rounds: the copies are gone from the profile, CPU per run unchanged within spread (median
+  0.772 s before, 0.797 s after). No speed-up is claimed.
+- Lugh's finding: with the chain loaded, OpenSSL's `use_private_key` refused a mismatched pair itself, so it read as
+  "not a PEM private key". The key is now read apart and matched to the leaf, each failure told for what it is; and
+  (Lugh's review) no passphrase is ever asked for, an encrypted key refused as one. The reload test asserts all three.
+CI run 43735785471 green on every job, `abi` against 0.8.0 included. Lugh approved both key commits.
+
 ## Handoff, 2026-11-15: 0.8.1 prepared
 
 Two findings from moving Lir's and Lugh's listeners onto `dannan::listen` 0.8.0; the maintainer approved a 0.8.1 patch. On

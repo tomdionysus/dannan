@@ -34,19 +34,22 @@ current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluat
 
 ## Resume here (2026-11-15)
 
-**0.8.1 is prepared on `develop`** (the maintainer approved the patch, 2026-11-15): TCP_NODELAY on accepted sockets (Lir) and
-`stop_accepting()` safe from anywhere (Lugh), both reviewed and approved; the ABI check leaves out std instances (the maintainer).
-Waiting on the maintainer: the tag `0.8.1` and the push of `main`. Then stage the `.deb`s and tell Lir and Lugh (both repin),
-Dagda and Macha.
+**0.8.2 is prepared on `develop`** (the maintainer approved it, 2026-11-15): Dagda's placement copies, and Lugh's two key
+messages (a mismatched key, an encrypted key), each reviewed and approved. Waiting on the maintainer: the tag `0.8.2` and the push
+of `main`. Then stage the `.deb`s and tell Dagda, Lugh, Lir and Macha.
+
+**0.8.1 is released** (`main` and tag at `53cc933`, pushed at the maintainer's word, 2026-11-15; main's CI run 43734647887 green).
+The `.deb`s are staged in `../tomcully-apt/incoming/dannan/0.8.1/` and checked (shlibs `libdannan0.8 (>= 0.8.1)`).
+Lir runs on it (337 passed on node-c, no code change); Lugh is moving.
 
 **0.8.0 is released** (`main` at `6c240cc`, tag `0.8.0`, pushed at the maintainer's word, 2026-11-15). Main's CI run 43721335614
 green on every job. The `.deb`s are staged in `../tomcully-apt/incoming/dannan/0.8.0/` and checked (SONAME
 `libdannan.so.0.8`, shlibs `libdannan0.8 (>= 0.8.0)`, `dannan-custody` and its page in `dannan-tools`), for the maintainer to
 publish. Dagda, Lir, Lugh and Macha were told; Dagda gated on the tag (1106 ran, 1103 passed), Lir runs on it.
 
-Next, to ask the maintainer: 0.8.2, Dagda's placement cost (a `Nodes::placement` call copies every record, adverts and all, about
-five times; 376 perf samples against Macha's 139 on 200 small files; rank over indices into one roster copy, copy
-only the chosen; no interface change). Then 0.9.0: DTLS and plain UDP for `dannan::listen`; the peer-witnessed
+For 0.9.0, an ABI change so not a patch (Dagda's after-profile of 0.8.2): every call still copies its peer's whole
+record, adverts and all, in `Client::handlers_for`'s capture, `CallOutcome::peer` and `RequestScheduler::Job`;
+carry a `shared_ptr<const NodeRecord>` or the id instead. Then 0.9.0: DTLS and plain UDP for `dannan::listen`; the peer-witnessed
 high-water mark; and loader promotion at the peer (Dagda's ask, the maintainer: with the wire batch), a new message beside
 promote_read_ahead and promote_foreground. The wire additions are designed and reviewed first.
 
