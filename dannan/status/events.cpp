@@ -41,4 +41,22 @@ bool NodeEvents::wait_for_change(uint64_t seen, std::chrono::milliseconds timeou
   return _changed.wait_for(lock.native(), timeout, [&] { return total() != seen; });
 }
 
+bool NodeEvents::wait_for_change(uint64_t seen, std::chrono::milliseconds timeout, std::stop_token stop) {
+  // Registered before the lock is taken: a stop already requested runs the callback here,
+  // and it takes the lock itself, as notify() does, so a waiter cannot miss it.
+  std::stop_callback wake(stop, [this] {
+    {
+      contract::Lock lock(_wait_mutex);
+    }
+    _changed.notify_all();
+  });
+  contract::Lock lock(_wait_mutex);
+  const auto done = [&] { return total() != seen || stop.stop_requested(); };
+  if (timeout == std::chrono::milliseconds::max())
+    _changed.wait(lock.native(), done);
+  else
+    _changed.wait_for(lock.native(), timeout, done);
+  return total() != seen;
+}
+
 }  // namespace dannan::status
