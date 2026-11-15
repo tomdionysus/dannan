@@ -12,6 +12,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <stop_token>
 #include <string>
 #include <vector>
 
@@ -47,6 +48,10 @@ class NodeEvents {
   uint64_t total() const noexcept;
   // Waits until total() differs from `seen`, or `timeout`; whether it did.
   bool wait_for_change(uint64_t seen, std::chrono::milliseconds timeout);
+  // The same, returning early once `stop` is requested, so a component's stop
+  // wakes its waiter at once. milliseconds::max() waits with no timeout. Says
+  // whether total() moved; a stop reports a change already there.
+  bool wait_for_change(uint64_t seen, std::chrono::milliseconds timeout, std::stop_token stop);
 
  private:
   std::array<std::atomic<uint64_t>, max_kinds> _counts{};
