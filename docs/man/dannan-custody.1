@@ -41,7 +41,9 @@ as 64 hex digits and a line end, and nothing else is written to standard
 output, so it may be piped straight to
 .BR systemd-creds (1)
 .BR encrypt .
-It is never stored in clear. Standard output closed is refused before anything
+It is never stored in clear: pipe it straight into
+.BR "systemd-creds encrypt" ,
+never to a file, which would keep the root on disk in clear. Standard output closed is refused before anything
 is made. If the root cannot be written (a full device, or its reader gone), the
 custody just made is removed and init exits 1, so it may run again. If the root was written but
 .B systemd-creds encrypt

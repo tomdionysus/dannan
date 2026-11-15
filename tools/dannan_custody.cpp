@@ -34,6 +34,7 @@
 #include "dannan/identity/crypto.h"
 #include "dannan/identity/key_custody.h"
 #include "dannan/identity/node_identity.h"
+#include "dannan/identity/secure_memory.h"
 
 namespace {
 
@@ -110,10 +111,30 @@ int main(int argc, char** argv) {
       // closed stdout, a reader that went: no SIGPIPE, so EPIPE) takes the
       // custody back: nothing has used the root, and the node is stopped.
       std::signal(SIGPIPE, SIG_IGN);
-      const auto line = identity::hex(root->reveal()) + "\n";
-      const bool written = std::fwrite(line.data(), 1, line.size(), stdout) == line.size() && std::fflush(stdout) == 0 && !std::ferror(stdout);
-      if (!written) {
-        const int why = errno;
+      // The hex line lives in secure memory and is written from there, past
+      // stdio's buffer, so the root is never in ordinary memory (Macha's review).
+      const auto bytes = root->reveal();
+      identity::SecureBytes line(bytes.size() * 2 + 1);
+      static constexpr char digits[] = "0123456789abcdef";
+      for (size_t i = 0; i < bytes.size(); ++i) {
+        line.data()[2 * i] = static_cast<uint8_t>(digits[bytes[i] >> 4]);
+        line.data()[2 * i + 1] = static_cast<uint8_t>(digits[bytes[i] & 0x0f]);
+      }
+      line.data()[line.size() - 1] = '\n';
+      size_t done = 0;
+      int why = 0;
+      while (done < line.size()) {
+        const auto wrote = ::write(STDOUT_FILENO, line.data() + done, line.size() - done);
+        if (wrote > 0) {
+          done += static_cast<size_t>(wrote);
+        } else if (wrote < 0 && errno == EINTR) {
+          continue;
+        } else {
+          why = wrote < 0 ? errno : EIO;
+          break;
+        }
+      }
+      if (done < line.size()) {
         std::error_code removed;
         std::filesystem::remove(state / "identity" / "custody", removed);
         std::cerr << "dannan-custody: the new root could not be written to stdout (" << std::strerror(why) << "); "
