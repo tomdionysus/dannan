@@ -32,8 +32,11 @@ enum class TlsVersion : uint8_t { tls12, tls13 };
 // Whether a listener asks for a client certificate. `optional` asks every
 // connection and never ends the handshake on the chain: the verdict is kept on the
 // stream for the hosted system to judge (RFC 8705's certificate-bound tokens bind to
-// any certificate, self-signed included). `required` ends it on a chain that does
-// not verify. A browser-facing listener says `never`.
+// any certificate, self-signed included). Under `optional` a hosted system that
+// trusts the chain must check `verified`, not only that a certificate is present:
+// one from another CA is handed up with verified false, never as no certificate
+// (Lir refuses such a stream itself). `required` ends it on a chain that does not
+// verify. A browser-facing listener says `never`.
 enum class ClientCertificates : uint8_t { never, optional, required };
 
 struct TlsPolicy {

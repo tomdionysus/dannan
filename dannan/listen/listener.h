@@ -91,7 +91,13 @@ class StreamListener {
   void start(boost::asio::any_io_executor executor, Accepted accepted);
   uint16_t port() const noexcept { return _port.load(); }
 
-  // Stops accepting; what is open stays open.
+  // Stops accepting; what is open stays open, and nothing is handed up after it
+  // returns. From any thread, the io context's own included (a signal handler on a
+  // one-thread context, Lugh's review), and after the io context has stopped (the
+  // destructor's case). From a thread outside the io context the acceptor is closed
+  // when it returns, so a connect after it is refused; it waits up to five seconds
+  // for the strand. From one of its threads the close is queued and not waited for:
+  // until it runs, a connection may reach the backlog, and is closed unserved.
   void stop_accepting();
   // Closes every connection it handed up, cleanly within the close bound.
   void close_all();
