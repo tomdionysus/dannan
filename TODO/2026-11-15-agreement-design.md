@@ -225,11 +225,41 @@ no served set recorded anywhere, two proposers whose rosters differ can name dis
 majorities, and both commit. No rule at the acceptors can see this (nothing is there to
 compare against), so the set a never-touched name starts on must itself be agreed. The
 hosted system keeps its placement (Mimir's shard map, Kvasir's range map) as registers in
-a space of its own, on a **root set** the operator declares (three or five nodes, named in
-configuration, changed only by an operator's `transfer` of the root registers). A proposer
-takes a name's set from the agreed map, and the map changes only by agreement, with the
-transfers it implies. Placement over each node's own roster (Dannan's `by_capacity`) stays
-the way to *propose* a new map, never the map itself.
+a space of its own. A proposer takes a name's set from the agreed map, and the map changes
+only by agreement, with the transfers it implies. Placement over each node's own roster
+(Dannan's `by_capacity`) stays the way to *propose* a new map, never the map itself.
+
+**The root is a genesis value, not a role** (Mimir's condition and Kvasir's concern, both
+from the maintainer's rule of no designated nodes). The map registers' first set is the cluster's
+founding members, listed in configuration (the list a node joins by). From then on it is an
+ordinary register whose set is recorded in itself and changes by `transfer()` like any
+other, proposed by the hosted system's placement when a member has been off the roster long
+enough. A node whose configuration names an old root finds the current one by the serving
+refusal (below). An operator is needed only when a majority of the root is lost for ever,
+which no design avoids. While the root has no majority, map changes wait and nothing else
+does: commands on names already touched run from a cached map.
+
+**What the hosted systems rely on, stated as contract:**
+
+- A refusal for a set or version the acceptor does not serve carries the set and version it
+  does (`Outcome::serving`, built). A proposer with a stale map retries there without
+  reading the map. Test: the root unreachable, a moved name is still found and changed.
+- **Map first, then touch.** A name is first touched only after a committed map entry names
+  its set. A split commits its intent to the map (R becomes R1 and R2 on S), then one change
+  on S naming R and the new names, then marks the map done; whoever finds an unfinished
+  intent finishes it. That is safe because the intent names one set for the new names, and
+  every reader of the map, between the steps or after, takes that set.
+- **transfer() of a large value** (Kvasir's ranges, gigabytes mostly in Dagda as shared
+  chunks): the new acceptors are caught up beforehand by the store's own means (a manifest
+  and the log tail) and say `ready()`. The joint round then carries a version or a delta,
+  answered "need whole" otherwise, under a deadline, and the old set serves until it
+  commits. This rides on the value-less prepare and deltas, which come first.
+- **The fast path across a transfer:** a cached ballot is held for a set and version, so an
+  accept naming the old version is refused with the set now served. The last committer
+  loses the fast path and never commits once more on the old set. Test named for it.
+- **No forced transfer.** A set that has lost its majority for ever cannot be transferred.
+  Rebuilding from a surviving replica is the hosted system's recorded operator action under
+  a new name or set, not something Dannan offers.
 
 So Dannan provides `transfer()` and states the rule for untouched names; the agreed map is
 each hosted system's (Mimir, Kvasir), on the root set they configure. Tests: two proposers
