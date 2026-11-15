@@ -32,6 +32,17 @@ Identity: counters that only go up, sealed beside custody (`Identity::counter`,
 a copy of itself restored from before. They refuse one directory restored alone, not
 a whole state; the peers' witness follows in 0.9.0.
 
+Memory: a hosted system waits on the node's budget for room, under a deadline on
+the steady clock and a cancel flag (`Budget::acquire`, `wake`), and charges what it
+holds to an owner of its own (`Budget::reserve(work, owner, bytes)`), which
+`Budget::stats()` shows. An owner of Dannan's, or a wait without a deadline, is
+refused.
+
+Tools: `dannan-custody`, installed with a manual page, makes a node's key custody
+under a systemd credential with the node stopped, printing the new root once for
+`systemd-creds encrypt`, and shows the node's id and key once the sealed credential
+opens it. Both refuse while a node holds the state; show writes nothing.
+
 For hosted systems: a call refused or stalled by peer and type, and a bare peer, for
 owners' tests (`NodeConfig::call_fault`, `test/fixtures/bare_peer.h`). A watch on one
 advert's changes, rate-limited (`Nodes::watch_advert`). An asynchronous log stage that

@@ -3,14 +3,47 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
-## Handoff, 2026-11-14: 0.8.0 prepared
+## Handoff, 2026-11-15: 0.8.0 prepared again, with the custody tool and the budget's wait
 
 The approved batch is in: P6's three, P4, P3's stream side, `DANNAN_BUILD_TOOLS`, the sealed counters, and P5's
-figures. the maintainer, 2026-11-14, directly: P5 is enough, cut 0.8.0. The version commit on `develop` changes CHANGELOG, README,
-ACTIVE and this file; CMake and `debian/control` (`libdannan0.8`) said 0.8 from the minor's opening (`e839322`). The
-tag and the push of `main` wait on the maintainer's word. Built and tested on hosted CI only: the gate is `dannan_tests` 720,
-718 passed, the one long-standing skip (`Supervisor.ADirectoryThatCannotBeListedIsWarnedOf`), as the deb jobs ran
-them.
+figures. the maintainer, 2026-11-14, directly: P5 is enough, cut 0.8.0. The first version commit (`99b2b61`) then waited: the maintainer held
+the tag for Macha's custody tool, and put Dagda's waiting budget in 0.8.0 too; loader promotion is 0.9.0, with the wire
+batch (the maintainer, 2026-11-15). The version commit changes CHANGELOG, README, ACTIVE and this file; CMake and `debian/control`
+(`libdannan0.8`) said 0.8 from the minor's opening (`e839322`). The tag and the push of `main` wait on the maintainer's word.
+Built and tested on hosted CI only; the gate counts are in the record below once develop's run is in.
+
+On the way, two flakes in tests, neither in the library:
+- `Session.ClosingFromAnotherThreadMidTransferIsSafe` failed on macOS: a fast echo answered the whole 2 MiB call before
+  the close from another thread landed. The peer now holds each request unanswered (`1d7f867`); the test proves the
+  close is safe mid-transfer, not the answer.
+- `LevelZero.TwoNodesBehindNatMeetByAPunch` failed once under TSan (custody run 43674960447): the data lane's punched
+  handshake ran past the client's real-clock `connect_timeout`. Passed on its one rerun. A finding, not fixed: the
+  bound is tight for TSan's slowdown; if it recurs, give the level-zero cluster a longer connect timeout under
+  sanitizers rather than rerun.
+
+## Handoff, 2026-11-15: dannan-custody, for Macha's cutover
+
+Macha's ask (the maintainer's ruling there: its nodes get key custody from a systemd credential, provisioned between a stop and
+a start; dannan-node, which could do it, is the test bed's and not installed). On `feature/custody-tool`, merged at
+`843fd9d`: `tools/dannan_custody.cpp`, installed with `docs/man/dannan-custody.1`.
+- `init --state DIR --credential NAME`: `KeyCustody::create`, the new root printed once in hex and nothing else on
+  stdout, the node id made with it (one there already kept).
+- `show --state DIR --credential NAME [--credentials-dir DIR]`: opens custody as the unit will and prints
+  `{"id","public_key"}`. Macha's review: it writes nothing, and refuses a directory with no node id before taking the
+  lock, so a mistyped path gains nothing.
+- Both refuse under `.dannan.lock` ("already in use"; an flock records no holder, so none is named, as dannan-node).
+- The manual page says a root sealed without a TPM opens only on its host, and what an off-node backup must keep.
+Six process tests (`dannan/test/custody_tool_test.cpp`). CI run 43674960447 green on every job after one TSan rerun
+(the flake above). Macha reviews the merge.
+
+## Handoff, 2026-11-15: the budget's wait, for Dagda's reads
+
+Dagda's ask: its reads hold the reader's class of retained memory, as Macha's do on the ledger
+(`distributed_store.cpp:1744`). On `feature/budget-acquire`, merged at `8794aae`: `Budget` gains `acquire(work, owner,
+bytes, deadline, cancelled)`, `reserve(work, owner, bytes)`, `wake()` (the ledger re-checks a cancel flag only when
+woken) and `stats()`. An owner below `hosted_first`, or a default deadline, is refused. Dagda's review: approved, with
+one comment taken (`26ba1be`: the deadline is on the steady clock, not the node's time). Two node tests. CI run
+43670002036 green on every job. Budget is a virtual interface, so this is 0.8's ABI, not a patch's.
 
 ## Handoff, 2026-11-14: P5's figures, and the TLS close made safe
 

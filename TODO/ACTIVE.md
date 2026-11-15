@@ -32,12 +32,15 @@ live cluster is live-a and live-b, both Pi 5 on Debian 13 with Boost
 contract `API_VERSION` 24. The laptop is on MacPorts for everything. Macha's
 current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluation.md`.
 
-## Resume here (2026-11-14, evening)
+## Resume here (2026-11-15)
 
-**0.8.0 is prepared on `develop`**: the batch below is all merged, and the version commit is made. Waiting on the maintainer:
-the tag `0.8.0` and the push of `main`. Then: build and check the `.deb`s (SONAME `libdannan.so.0.8`) for the maintainer to
-publish, and tell Dagda, Lir, Lugh and Macha, who all asked. Next, 0.9.0: DTLS and plain UDP for `dannan::listen`,
-and the peer-witnessed high-water mark (its wire addition designed and reviewed first).
+**0.8.0 is prepared on `develop`**: the batch below is all merged, and so are the two the maintainer added on 2026-11-15:
+`dannan-custody` for Macha's cutover (Macha pins 0.8.0) and `Budget::acquire` for Dagda's reads (Dagda gates on the
+tag). Waiting on the maintainer: the tag `0.8.0` and the push of `main`. Then: build and check the `.deb`s (SONAME
+`libdannan.so.0.8`, and `dannan-custody` in `dannan-tools`) for the maintainer to publish, and tell Dagda, Lir, Lugh and Macha,
+who all asked. Next, 0.9.0: DTLS and plain UDP for `dannan::listen`; the peer-witnessed high-water mark; and loader
+promotion at the peer (Dagda's ask, the maintainer: with the wire batch), a new message beside promote_read_ahead and
+promote_foreground. The wire additions are designed and reviewed first.
 
 **0.7.0 is released** (`main` at `6ce0349`, tag `0.7.0`, both pushed at the maintainer's word). Main's CI was green on every job. The
 `.deb`s are in `../tomcully-apt/incoming/dannan/0.7.0/`; both library packages were checked: SONAME `libdannan.so.0.7`
