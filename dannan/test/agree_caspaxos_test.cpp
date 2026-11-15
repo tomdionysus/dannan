@@ -212,7 +212,11 @@ TEST(Agreement, RacingProposersNeverBothWin) {
       std::optional<std::string> result;
       std::optional<std::string> saw;
     };
-    std::vector<Proposer> proposers{{node(1), "one"}, {node(2), "two"}};
+    std::vector<Proposer> proposers(2);
+    proposers[0].id = node(1);
+    proposers[0].value = "one";
+    proposers[1].id = node(2);
+    proposers[1].value = "two";
     struct Event {
       size_t proposer;
       uint64_t generation;
