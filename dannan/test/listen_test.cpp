@@ -556,15 +556,25 @@ TEST(Certificates, AReloadReachesEveryListenerItServesAndAFailureKeepsTheOld) {
     EXPECT_NE(served_der(after), old_certificate);
   }
 
-  // A key that is not the chain's, and a missing file: refused, the old kept.
+  // A key that is not the chain's, one that is not a key at all, and a missing
+  // file: refused, each said for what it is (Lugh: a mismatched key was reported
+  // as not a key), the old kept.
+  const auto refused = [&](const std::string& said) {
+    try {
+      certificates->reload();
+      ADD_FAILURE() << "taken: " << said;
+    } catch (const std::runtime_error& error) {
+      const std::string what = error.what();
+      EXPECT_NE(what.find(paths.key.string()), std::string::npos) << what;
+      EXPECT_NE(what.find(said), std::string::npos) << what;
+      EXPECT_EQ(what.find("BEGIN"), std::string::npos) << what;
+    }
+  };
   write(paths.key, pki.issue(3).key);
-  try {
-    certificates->reload();
-    ADD_FAILURE() << "a mismatched key was taken";
-  } catch (const std::runtime_error& error) {
-    EXPECT_NE(std::string(error.what()).find(paths.key.string()), std::string::npos) << error.what();
-    EXPECT_EQ(std::string(error.what()).find("BEGIN"), std::string::npos) << error.what();
-  }
+  refused("not the key of " + paths.chain.string());
+  write(paths.key, "-----BEGIN PRIVATE KEY-----\nnot base64 at all\n-----END PRIVATE KEY-----\n");
+  refused("not a PEM private key");
+  write(paths.key, renewed.key);
   std::filesystem::remove(paths.client_ca);
   EXPECT_THROW(certificates->reload(), std::runtime_error);
   EXPECT_EQ(certificates->generation(), 2u);

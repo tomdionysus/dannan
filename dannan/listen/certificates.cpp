@@ -7,12 +7,18 @@
 
 #include "dannan/listen/certificates.h"
 
+#include <openssl/bio.h>
 #include <openssl/crypto.h>
+#include <openssl/err.h>
+#include <openssl/evp.h>
+#include <openssl/pem.h>
 #include <openssl/ssl.h>
+#include <openssl/x509.h>
 
 #include <algorithm>
 #include <fstream>
 #include <iterator>
+#include <memory>
 #include <sstream>
 #include <stdexcept>
 
@@ -60,9 +66,22 @@ void check(const Certificates::Material& material, const CertificatePaths& paths
   boost::system::error_code error;
   context.use_certificate_chain(asio::buffer(material.chain), error);
   if (error) throw std::runtime_error(paths.chain.string() + ": not a PEM certificate chain");
+  // The key read apart from the chain, then matched to its leaf: OpenSSL's
+  // use_private_key refuses a mismatched pair itself, which read as "not a key"
+  // (Lugh's finding), so each failure is told for what it is.
+  std::unique_ptr<BIO, decltype(&BIO_free)> bio(BIO_new_mem_buf(material.key.data(), static_cast<int>(material.key.size())), BIO_free);
+  std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> key(bio ? PEM_read_bio_PrivateKey(bio.get(), nullptr, nullptr, nullptr) : nullptr, EVP_PKEY_free);
+  if (!key) {
+    ERR_clear_error();
+    throw std::runtime_error(paths.key.string() + ": not a PEM private key");
+  }
+  X509* leaf = SSL_CTX_get0_certificate(context.native_handle());
+  if (!leaf || X509_check_private_key(leaf, key.get()) != 1) {
+    ERR_clear_error();
+    throw std::runtime_error(paths.key.string() + ": not the key of " + paths.chain.string());
+  }
   context.use_private_key(asio::buffer(material.key), ssl::context::pem, error);
   if (error) throw std::runtime_error(paths.key.string() + ": not a PEM private key");
-  if (SSL_CTX_check_private_key(context.native_handle()) != 1) throw std::runtime_error(paths.key.string() + ": not the key of " + paths.chain.string());
   if (!paths.client_ca.empty()) {
     context.add_certificate_authority(asio::buffer(material.client_ca), error);
     if (error) throw std::runtime_error(paths.client_ca.string() + ": not a PEM certificate bundle");
