@@ -156,8 +156,8 @@ foreground class (a client waits on them). One message carries every name of one
   Test: a non-member's prepare is refused; a member without the capability is refused.
 - **TOTP as a register, not a lease: ruled** (the maintainer to Lugh, 2026-11-15, relayed by Lugh):
   Lugh's P8.6 uses this register for TOTP and recovery codes once 0.9.0 ships, and key
-  rotation becomes a register change; the 2026-11-13 per-user Dagda lease stays only if
-  P8.6 lands before 0.9.0 (Q2). A code's time step is accepted at most once
+  rotation becomes a register change; no interim Dagda lease and no workaround, the maintainer having
+  confirmed that his wait-for-agreement ruling supersedes the earlier condition (Q2). A code's time step is accepted at most once
   per user: `change("lugh/totp", [user], replicas, f)`, with
   `f(last) = step > last ? (step, accepted) : (last, replayed)`; Lugh accepts the code
   only when the committed attempt's result says accepted. No holder, no time, no fence;
