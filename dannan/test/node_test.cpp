@@ -1350,7 +1350,10 @@ TEST(Node, AdvertsReachPeersAndSteerPlacement) {
   EXPECT_EQ(pair.b->context().nodes().placement(key, 2, scheme).size(), 2u);
   // The node's placement is the pure function's over its roster, narrowed as
   // with_advert narrows it, whatever the node copies or does not on the way
-  // (Dagda's measurement: one call copied every record about five times).
+  // (Dagda's measurement: one call copied every record about five times). The
+  // roster is read apart from each placement, which takes its own; placement
+  // reads only ids, failure domains, path classes and the capacity advert, all
+  // fixed by now, so a heartbeat between the two changes nothing (Dagda's review).
   const auto ids = [](const std::vector<membership::NodeRecord>& nodes) {
     std::vector<identity::NodeId> out;
     for (const auto& node : nodes) out.push_back(node.id);
