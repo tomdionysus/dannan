@@ -37,9 +37,9 @@ current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluat
 **State.** `develop` is 0.9 (CMake 0.9.0, `libdannan0.9`), at `a5d12df`, not pushed. 0.8.3 is the last release
 (`main` and tag at `00a3a12`; every 0.8 release's record is in `COMPLETED.md`). In flight:
 `feature/agreement-reconfiguration`, at `2329b9f`. Its suite on node-d ran 776 tests: 775 passed and 1 skipped (it is
-skipped when run as root). See the handoff in `COMPLETED.md`. Develop's CI runs from 43765614152 on were still
-queued at 2026-11-15 23:00Z, because hosted CI was not running (Kvasir saw the same): **check them first**. The
-scheduler fix's first real test is the ASan job.
+skipped when run as root). See the handoff in `COMPLETED.md`. Develop's CI is green up to the pushed `c6fed5e` (run
+43769767060, 15 of 15), and 43765614152 passed the scheduler fix under ASan. The branch's own CI, and develop's
+local commits from `fbcbb90` on, need a push, which waits on the maintainer's word.
 
 **Waiting on the maintainer:**
 - Whether the scheduler fix (`0ce0b82`: a deferred answer gives back its place and bytes before its reply is sent;
