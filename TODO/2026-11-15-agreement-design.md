@@ -170,6 +170,20 @@ foreground class (a client waits on them). One message carries every name of one
   majority restarting inside a code's window); `forget()` on user deletion as designed;
   one round uncontended is ample for a sign-in's 15 s step.
 
+## A fencing token (Louhi's answer to question 2)
+
+A strict read is an identity change, which commits the same value under the reader's new
+ballot, so the committing ballot changes on every read and cannot fence. So each name also
+carries the ballot of the last change that altered its value (`changed_at`): an identity
+change, a strict read included, keeps it; a change that alters the value sets it to its
+own ballot. `Outcome` reports it per name. It is monotonic per name, never reused, stable
+for the life of a value, and comparable by a third party as its 8-byte counter, then the
+node id, then the epoch (an encoding is provided). Louhi hands a `run_once` task its
+placement's `changed_at` as its fencing token; a task that keeps its own epoch in the value
+needs nothing from this. Louhi's uses (per-task placement, address and quota registers)
+are its recommendation to the maintainer, who earlier chose placement functions now and a scheduler
+lease later; Louhi is putting the conflict with the wait-for-agreement ruling to him.
+
 ## One replica set at a time (Dagda's review, safety 1)
 
 The caller names `replicas` from its own placement, and two proposers whose rosters differ
