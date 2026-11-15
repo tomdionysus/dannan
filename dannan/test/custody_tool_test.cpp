@@ -90,6 +90,54 @@ TEST(CustodyTool, MakesCustodyUnderACredentialAndShowsTheIdentity) {
   EXPECT_EQ(still.out, shown.out);
 }
 
+// Runs the tool under /bin/sh with its stdout redirected as `redirect` says,
+// returning its status and what it wrote to stderr.
+Ran run_redirected(const test::TempDir& dir, const std::filesystem::path& state, const std::string& redirect) {
+  const auto log = dir.path() / "redirected.log";
+  Ran ran;
+  {
+    const std::string command = std::string("exec '") + DANNAN_CUSTODY_BINARY + "' init --state '" + state.string() + "' --credential dannan-root " + redirect +
+                                " 2>'" + log.string() + "'";
+    test::ChildProcess child({"/bin/sh", "-c", command}, dir.path() / "sh.log");
+    const auto deadline = std::chrono::steady_clock::now() + 30s;
+    (void)child.read_all(deadline);
+    ran.status = child.wait(deadline).value_or(-1);
+  }
+  std::ifstream input(log);
+  ran.err.assign(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+  return ran;
+}
+
+// With stdout closed, the next file opened would take its descriptor and the
+// root be written into it in clear: refused before anything is made.
+TEST(CustodyTool, InitRefusesAClosedStdoutBeforeMakingAnything) {
+  test::TempDir dir;
+  const auto state = dir.path() / "state";
+  const auto closed = run_redirected(dir, state, "1>&-");
+  EXPECT_EQ(closed.status, 1) << closed.err;
+  EXPECT_NE(closed.err.find("standard output is closed"), std::string::npos) << closed.err;
+  EXPECT_FALSE(std::filesystem::exists(state));
+}
+
+// The root is printed once and custody is never replaced, so a root that
+// cannot be written takes its custody back (Macha's review): init fails,
+// leaves no custody, and runs again cleanly after. /dev/full refuses every
+// write; Linux has it.
+TEST(CustodyTool, InitTakesCustodyBackWhenTheRootCannotBeWritten) {
+  if (!std::filesystem::exists("/dev/full")) GTEST_SKIP() << "no /dev/full here";
+  test::TempDir dir;
+  const auto state = dir.path() / "state";
+  const auto full = run_redirected(dir, state, "1>/dev/full");
+  EXPECT_EQ(full.status, 1) << full.err;
+  EXPECT_NE(full.err.find("could not be written"), std::string::npos) << full.err;
+  EXPECT_NE(full.err.find("init may run again"), std::string::npos) << full.err;
+  EXPECT_FALSE(identity::KeyCustody::exists(state));
+
+  const auto made = run(dir, {"init", "--state", state.string(), "--credential", "dannan-root"});
+  EXPECT_EQ(made.status, 0) << made.err;
+  EXPECT_TRUE(identity::KeyCustody::exists(state));
+}
+
 // init keeps an id already there (a Macha node's, written before the cutover).
 TEST(CustodyTool, InitKeepsTheNodesIdAlreadyThere) {
   test::TempDir dir;

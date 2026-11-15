@@ -19,7 +19,13 @@
 //
 // Both refuse while a node holds the state directory's lock.
 
+#include <fcntl.h>
+#include <unistd.h>
+
+#include <cerrno>
+#include <csignal>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <iostream>
 #include <map>
@@ -28,6 +34,7 @@
 #include "dannan/identity/crypto.h"
 #include "dannan/identity/key_custody.h"
 #include "dannan/identity/node_identity.h"
+#include "dannan/identity/secure_memory.h"
 
 namespace {
 
@@ -76,6 +83,13 @@ int main(int argc, char** argv) {
     std::cerr << "dannan-custody: " << error.what() << "\n" << usage;
     return 2;
   }
+  // Standard output closed, the next file opened (the lock, the node's id, the
+  // custody) would be handed its descriptor, and the root written into it in
+  // clear: refused before anything is opened.
+  if (::fcntl(STDOUT_FILENO, F_GETFD) == -1) {
+    std::cerr << "dannan-custody: standard output is closed; nothing was made or read\n";
+    return 1;
+  }
   try {
     // show reads and never writes (Macha's review): a mistyped or fresh
     // directory must not gain an id it would print as the node's, nor a lock
@@ -85,13 +99,50 @@ int main(int argc, char** argv) {
     // or read beside one.
     const identity::StateLock lock(state);
     if (command == "init") {
-      // The new root goes to stdout and nowhere else. The node's id is made
-      // with its custody, as a node makes it at its first start; one there
-      // already (Macha's) is kept.
+      // The root is printed once and custody is never replaced, so a root lost
+      // after create() would leave custody nothing opens and an init that will
+      // not run again (Macha's review). Whatever can fail comes first: the
+      // node's id is made before the custody, as a node makes it at its first
+      // start (one there already, Macha's, is kept).
+      (void)identity::load_or_create_node_id(state);
       const auto root = identity::KeyCustody::create(state, source);
       if (!root) throw std::runtime_error("no root was made");
-      (void)identity::load_or_create_node_id(state);
-      std::printf("%s\n", identity::hex(root->reveal()).c_str());
+      // The new root goes to stdout and nowhere else. A write that fails (a
+      // closed stdout, a reader that went: no SIGPIPE, so EPIPE) takes the
+      // custody back: nothing has used the root, and the node is stopped.
+      std::signal(SIGPIPE, SIG_IGN);
+      // The hex line lives in secure memory and is written from there, past
+      // stdio's buffer, so the root is never in ordinary memory (Macha's review).
+      const auto bytes = root->reveal();
+      identity::SecureBytes line(bytes.size() * 2 + 1);
+      static constexpr char digits[] = "0123456789abcdef";
+      for (size_t i = 0; i < bytes.size(); ++i) {
+        line.data()[2 * i] = static_cast<uint8_t>(digits[bytes[i] >> 4]);
+        line.data()[2 * i + 1] = static_cast<uint8_t>(digits[bytes[i] & 0x0f]);
+      }
+      line.data()[line.size() - 1] = '\n';
+      size_t done = 0;
+      int why = 0;
+      while (done < line.size()) {
+        const auto wrote = ::write(STDOUT_FILENO, line.data() + done, line.size() - done);
+        if (wrote > 0) {
+          done += static_cast<size_t>(wrote);
+        } else if (wrote < 0 && errno == EINTR) {
+          continue;
+        } else {
+          why = wrote < 0 ? errno : EIO;
+          break;
+        }
+      }
+      if (done < line.size()) {
+        std::error_code removed;
+        std::filesystem::remove(state / "identity" / "custody", removed);
+        std::cerr << "dannan-custody: the new root could not be written to stdout (" << std::strerror(why) << "); "
+                  << (removed ? "the custody made could not be removed, " + (state / "identity" / "custody").string() + ": remove it before init again"
+                              : std::string("the custody made is removed, so init may run again"))
+                  << "\n";
+        return 1;
+      }
       return 0;
     }
     const auto custody = identity::KeyCustody::open(state, source);
