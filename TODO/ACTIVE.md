@@ -70,8 +70,13 @@ scheduler fix's first real test is the ASan job.
    - **Built** on `feature/agreement-reconfiguration` (`2329b9f`), with the gap's fix: per-slot records, `transfer()`,
      settle, `found()`, the proof rule, the laggard rule. The table is `NodeConfig::agreement_slots` and
      `agreement_genesis` (genesis at version 0).
-   - **Still to do:** the same table on every node; the slot bitmap advert as a hint, the refusal's `serving` being
-     the authority.
+   - **Built** at `c524a28`: every request carries the table's fingerprint and an acceptor with another table refuses
+     it; the slot advert (`agree.slots/<space>`) and `Agreement::hint()`. The suite on node-d ran 778 tests: 777
+     passed and 1 skipped (it is skipped when run as root). Not merged: hosted CI first.
+   - **For the maintainer:** the design said a node with another table is "refused at join". It is refused at every agreement
+     request instead, which keeps membership free of agreement's settings. Whether join-time refusal is still wanted
+     on top is his call.
+   - Left for step 2: the test "the fast path lost across a transfer".
 
    Tests are named there: one-node genesis grown to five, the root unreachable, the fast path lost across a
    transfer.
@@ -92,8 +97,19 @@ scheduler fix's first real test is the ASan job.
    - loader promotion at the peer.
 
    The wire additions are designed and reviewed first.
-7. Atomic commit across replica sets: Mimir and Kvasir will propose it. Mimir needs it for ruling 22's multi-slot
-   commands now that a change names one slot.
+7. Atomic commit across replica sets. Mimir needs it for ruling 22's multi-slot commands now that a change names one
+   slot. Mimir's proposal is `../mimir/TODO/2026-11-15-cross-slot-commit-proposal.md` (Proposed, not yet put to the maintainer):
+   - `transact(space, parts, f, deadline)`, with intents inside register values and one transaction-record register
+     as the commit point;
+   - older wins;
+   - three questions for Dannan at its end.
+
+   Kvasir's corrections (2026-11-16):
+   - commits of known values (its buffered SQL writes);
+   - intents at the hosted system's granularity, laid, found and resolved by the hosted system, with Dannan owning
+     the record, the decide and the finishing;
+   - a pluggable conflict rule (the maintainer ruled that a decided or replicated commit wins over an undecided one);
+   - a commit stamp by the hybrid clock at decide.
 8. **Export the fuzz harness** (Kvasir's ask, 2026-11-15; Mimir wants it too), so hosted systems link it rather than
    copy it (the stack's rule 3): `fuzz/fuzz.h`'s Target and Registration, `targets()`, the replay driver, and
    `fuzz_smoke_test.cpp`'s mutate and seeds-then-mutations-then-noise loop as a callable, installed header-only with
