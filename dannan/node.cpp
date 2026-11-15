@@ -113,8 +113,10 @@ class Node::NodesNoun final : public Nodes {
   }
   std::vector<NodeRecord> placement(std::span<const uint8_t> key, size_t copies, const placement::Scheme& scheme,
                                     const std::string& only_advertising) const override {
+    // One copy of the roster, narrowed in place: placement::with_advert's answer
+    // without its copy (Dagda's measurement).
     auto candidates = _node._members.active();
-    if (!only_advertising.empty()) candidates = placement::with_advert(candidates, only_advertising);
+    if (!only_advertising.empty()) std::erase_if(candidates, [&](const NodeRecord& node) { return !node.adverts.contains(only_advertising); });
     return placement::by_capacity(key, candidates, copies, scheme);
   }
   void advertise(const std::string& key, net::Bytes value) override { _node._members.set_advert(key, std::move(value)); }

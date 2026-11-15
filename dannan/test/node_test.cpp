@@ -1348,6 +1348,23 @@ TEST(Node, AdvertsReachPeersAndSteerPlacement) {
   ASSERT_EQ(placed.size(), 1u);
   EXPECT_EQ(placed.front().id, a);
   EXPECT_EQ(pair.b->context().nodes().placement(key, 2, scheme).size(), 2u);
+  // The node's placement is the pure function's over its roster, narrowed as
+  // with_advert narrows it, whatever the node copies or does not on the way
+  // (Dagda's measurement: one call copied every record about five times).
+  const auto ids = [](const std::vector<membership::NodeRecord>& nodes) {
+    std::vector<identity::NodeId> out;
+    for (const auto& node : nodes) out.push_back(node.id);
+    return out;
+  };
+  for (uint8_t seed = 0; seed < 16; ++seed) {
+    const std::vector<uint8_t> each(32, seed);
+    for (const size_t copies : {size_t{1}, size_t{2}, size_t{3}}) {
+      const auto roster = pair.b->context().nodes().active();
+      EXPECT_EQ(ids(pair.b->context().nodes().placement(each, copies, scheme)), ids(placement::by_capacity(each, roster, copies, scheme)));
+      EXPECT_EQ(ids(pair.b->context().nodes().placement(each, copies, scheme, "capacity")),
+                ids(placement::by_capacity(each, placement::with_advert(roster, "capacity"), copies, scheme)));
+    }
+  }
   EXPECT_THROW(pair.b->context().nodes().placement(key, 1, placement::Scheme{}), std::invalid_argument);
   pair.a->context().nodes().withdraw("capacity");
   EXPECT_TRUE(eventually([&] { return pair.b->context().nodes().placement(key, 1, scheme, "capacity").empty(); }));
