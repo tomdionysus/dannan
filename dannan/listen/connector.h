@@ -39,9 +39,10 @@ struct ListenerShared;
 // handshake reads a file (Lugh's review). Thread-safe.
 class ClientTrust {
  public:
-  // A PEM bundle of the CAs trusted; an empty path: the system's default store.
-  // Throws std::runtime_error naming the path when it cannot be read or holds no
-  // certificate. Waits on the device.
+  // A PEM bundle of the CAs trusted; an empty path: the system's default bundle file
+  // (SSL_CERT_FILE when set; Debian's /etc/ssl/certs/ca-certificates.crt), read now, not
+  // its lookup directory. Throws std::runtime_error naming the path when it cannot be
+  // read or holds no certificate. Waits on the device.
   explicit ClientTrust(std::filesystem::path bundle = {});
   ~ClientTrust();
   ClientTrust(const ClientTrust&) = delete;
@@ -72,7 +73,10 @@ struct ClientTls {
   // Required.
   std::shared_ptr<const ClientTrust> trust;
   // The name the server's certificate must carry, also sent as SNI; empty: the host
-  // connected to.
+  // connected to. An IPv6 address is given bare ("::1"), not bracketed: "[::1]" is
+  // refused as a name that cannot be checked (Lir's review), as is a scoped one
+  // ("fe80::1%eth0", Lugh's). A DNS name's trailing dot is allowed, and left out of the
+  // SNI.
   std::string server_name;
   // The client's own chain and key (CertificatePaths::client_ca unused), reloadable as
   // a listener's are; none: no client certificate is offered.
@@ -91,7 +95,8 @@ struct ConnectorConfig {
   size_t outbound_bound = 4u << 20;
   // True: each stream on its own strand of connect()'s executor. False: on that executor
   // as it is given, so a client passing its own strand shares it with its timers and
-  // callbacks (Lir's review); the executor must then serialise the stream itself.
+  // callbacks (Lir's review); the executor must then serialise the attempt and the stream
+  // itself, as a strand does.
   bool strand_per_stream = true;
   // For tests: resolves in place of the system's resolver. Empty: the system's.
   std::function<void(const std::string& host, const std::string& port,
@@ -99,6 +104,10 @@ struct ConnectorConfig {
       resolve;
 };
 
+// An attempt that runs its steps ends in exactly one of connected, refused_resolve,
+// refused_connect, handshakes_failed and timed_out (a handshake cut short by the
+// deadline is timed out); one refused before it starts (its TLS could not be set up) or
+// told that the connector closed is in none.
 struct ConnectorCounters {
   uint64_t attempts = 0;
   uint64_t connected = 0;
@@ -131,7 +140,9 @@ class StreamConnector {
   // Resolves `host`, connects to each address in turn, sets TCP_NODELAY, and with `tls`
   // takes the handshake, all within `deadline` on the injected time. `done` is posted to
   // `executor` once: the stream (on its own strand of `executor`, or on it as given), or
-  // none and why, naming the host and the step, never a value read. From any thread.
+  // none and why, naming the host and the step, never a value read. From any thread. With
+  // strand_per_stream off, `executor` must serialise the attempt and the stream (a strand),
+  // or its deadline and its steps race (Lugh's review).
   void connect(boost::asio::any_io_executor executor, std::string host, uint16_t port, std::optional<ClientTls> tls, std::chrono::milliseconds deadline,
                Connected done);
 
