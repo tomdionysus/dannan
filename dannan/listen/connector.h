@@ -72,7 +72,8 @@ struct ClientTls {
   // Required.
   std::shared_ptr<const ClientTrust> trust;
   // The name the server's certificate must carry, also sent as SNI; empty: the host
-  // connected to.
+  // connected to. An IPv6 address is given bare ("::1"), not bracketed: "[::1]" is
+  // refused as a name that cannot be checked (Lir's review).
   std::string server_name;
   // The client's own chain and key (CertificatePaths::client_ca unused), reloadable as
   // a listener's are; none: no client certificate is offered.
@@ -91,7 +92,8 @@ struct ConnectorConfig {
   size_t outbound_bound = 4u << 20;
   // True: each stream on its own strand of connect()'s executor. False: on that executor
   // as it is given, so a client passing its own strand shares it with its timers and
-  // callbacks (Lir's review); the executor must then serialise the stream itself.
+  // callbacks (Lir's review); the executor must then serialise the attempt and the stream
+  // itself, as a strand does.
   bool strand_per_stream = true;
   // For tests: resolves in place of the system's resolver. Empty: the system's.
   std::function<void(const std::string& host, const std::string& port,
@@ -99,56 +101,61 @@ struct ConnectorConfig {
       resolve;
 };
 
+// An attempt that runs its steps ends in exactly one of connected, refused_resolve,
+// refused_connect, handshakes_failed and timed_out (a handshake cut short by the
+// deadline is timed out); one refused before it starts (its TLS could not be set up) or
+// told that the connector closed is in none.
 struct ConnectorCounters {
-  uint64_t attempts = 0;
-  uint64_t connected = 0;
-  uint64_t refused_resolve = 0;
-  uint64_t refused_connect = 0;
-  uint64_t handshakes_failed = 0;
-  uint64_t timed_out = 0;
-  uint64_t closed_clean = 0;
-  uint64_t closed_abrupt = 0;
-  uint64_t slow_readers = 0;
-  uint64_t open = 0;
-};
+  struct ConnectorCounters {
+    uint64_t attempts = 0;
+    uint64_t connected = 0;
+    uint64_t refused_resolve = 0;
+    uint64_t refused_connect = 0;
+    uint64_t handshakes_failed = 0;
+    uint64_t timed_out = 0;
+    uint64_t closed_clean = 0;
+    uint64_t closed_abrupt = 0;
+    uint64_t slow_readers = 0;
+    uint64_t open = 0;
+  };
 
-// Connects out. Connecting only: reconnect policy and backoff are the caller's protocol
-// state. Thread-safe.
-class StreamConnector {
- public:
-  using Connected = std::function<void(std::shared_ptr<Stream>, std::string)>;
+  // Connects out. Connecting only: reconnect policy and backoff are the caller's protocol
+  // state. Thread-safe.
+  class StreamConnector {
+   public:
+    using Connected = std::function<void(std::shared_ptr<Stream>, std::string)>;
 
-  StreamConnector(boost::asio::io_context& io, ConnectorConfig config, const contract::TimeSource* time = &contract::steady_time_source());
-  // On an executor of an io context, or a strand of one (Lir's review); any other
-  // executor throws std::invalid_argument.
-  StreamConnector(boost::asio::any_io_executor executor, ConnectorConfig config, const contract::TimeSource* time = &contract::steady_time_source());
-  // Closes what it made, and tells a connection still being made that it failed. Never
-  // waits.
-  ~StreamConnector();
-  StreamConnector(const StreamConnector&) = delete;
-  StreamConnector& operator=(const StreamConnector&) = delete;
+    StreamConnector(boost::asio::io_context& io, ConnectorConfig config, const contract::TimeSource* time = &contract::steady_time_source());
+    // On an executor of an io context, or a strand of one (Lir's review); any other
+    // executor throws std::invalid_argument.
+    StreamConnector(boost::asio::any_io_executor executor, ConnectorConfig config, const contract::TimeSource* time = &contract::steady_time_source());
+    // Closes what it made, and tells a connection still being made that it failed. Never
+    // waits.
+    ~StreamConnector();
+    StreamConnector(const StreamConnector&) = delete;
+    StreamConnector& operator=(const StreamConnector&) = delete;
 
-  // Resolves `host`, connects to each address in turn, sets TCP_NODELAY, and with `tls`
-  // takes the handshake, all within `deadline` on the injected time. `done` is posted to
-  // `executor` once: the stream (on its own strand of `executor`, or on it as given), or
-  // none and why, naming the host and the step, never a value read. From any thread.
-  void connect(boost::asio::any_io_executor executor, std::string host, uint16_t port, std::optional<ClientTls> tls, std::chrono::milliseconds deadline,
-               Connected done);
+    // Resolves `host`, connects to each address in turn, sets TCP_NODELAY, and with `tls`
+    // takes the handshake, all within `deadline` on the injected time. `done` is posted to
+    // `executor` once: the stream (on its own strand of `executor`, or on it as given), or
+    // none and why, naming the host and the step, never a value read. From any thread.
+    void connect(boost::asio::any_io_executor executor, std::string host, uint16_t port, std::optional<ClientTls> tls, std::chrono::milliseconds deadline,
+                 Connected done);
 
-  // Closes every connection it made, cleanly within the close bound.
-  void close_all();
-  // The same, and `done` posted to `executor` once every one of them has finished.
-  void close_all(boost::asio::any_io_executor executor, std::function<void()> done);
+    // Closes every connection it made, cleanly within the close bound.
+    void close_all();
+    // The same, and `done` posted to `executor` once every one of them has finished.
+    void close_all(boost::asio::any_io_executor executor, std::function<void()> done);
 
-  ConnectorCounters counters() const;
-  const ConnectorConfig& config() const noexcept { return _config; }
+    ConnectorCounters counters() const;
+    const ConnectorConfig& config() const noexcept { return _config; }
 
- private:
-  struct Attempts;
+   private:
+    struct Attempts;
 
-  const ConnectorConfig _config;
-  std::shared_ptr<ListenerShared> _shared;
-  std::shared_ptr<Attempts> _attempts;
-};
+    const ConnectorConfig _config;
+    std::shared_ptr<ListenerShared> _shared;
+    std::shared_ptr<Attempts> _attempts;
+  };
 
 }  // namespace dannan::listen

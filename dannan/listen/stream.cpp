@@ -137,7 +137,9 @@ void Stream::client_handshake(std::shared_ptr<detail::ServerTls> context, const 
         const long verdict = SSL_get_verify_result(self->_tls->native_handle());
         if (verdict != X509_V_OK) why = std::string("the server's certificate: ") + X509_verify_cert_error_string(verdict);
       }
-      {
+      // A handshake cut short by the connector's deadline is counted as timed out
+      // there, not here too: the counters partition the attempts (Lir's review).
+      if (!self->_closed.load()) {
         contract::Lock lock(self->_shared->mutex);
         ++self->_shared->counters.handshakes_failed;
       }

@@ -171,6 +171,8 @@ struct ConnectAttempt {
 
   void succeed(std::shared_ptr<Stream> made) {
     if (finished.exchange(true)) return made->abort();
+    // Counted when told, so an attempt is connected or failed, never both.
+    count(&ListenerCounters::accepted);
     timer->cancel();
     asio::post(reply, [done = std::move(done), made = std::move(made)] { done(made, {}); });
   }
@@ -233,13 +235,15 @@ void StreamConnector::connect(asio::any_io_executor executor, std::string host, 
     _attempts->pending.push_back(attempt);
   }
   const auto resolve = _config.resolve;
-  const auto& time = *_shared->time;
-  asio::post(attempt->executor, [attempt, context, name, resolve, deadline, &time] {
+  // The time source outlives every attempt; held by pointer, not a reference to a local
+  // (Lir's review).
+  const contract::TimeSource* time = _shared->time;
+  asio::post(attempt->executor, [attempt, context, name, resolve, deadline, time] {
     // One deadline over every step; a resolver that never answers is not waited for
     // (Lugh's review: getaddrinfo cannot be cancelled), and its late answer is dropped.
     // The deadline holds the attempt until it is told, whatever a step lets go of (a
     // resolver that drops its callback); telling it cancels the timer, which lets go.
-    detail::when_time_reaches(attempt->timer, time, time.now() + deadline, [attempt] {
+    detail::when_time_reaches(attempt->timer, *time, time->now() + deadline, [attempt] {
       if (attempt->finished.load()) return;
       attempt->count(&ListenerCounters::refused_address);
       attempt->fail(attempt->where() + ": did not " + attempt->step + " within the deadline");
@@ -263,7 +267,6 @@ void StreamConnector::connect(asio::any_io_executor executor, std::string host, 
           auto stream = std::make_shared<Stream>(Stream::Private{}, std::move(attempt->socket), attempt->shared);
           {
             contract::Lock lock(attempt->shared->mutex);
-            ++attempt->shared->counters.accepted;
             ++attempt->shared->counters.open;
             std::erase_if(attempt->shared->open, [](const std::weak_ptr<Stream>& each) { return each.expired(); });
             attempt->shared->open.push_back(stream);

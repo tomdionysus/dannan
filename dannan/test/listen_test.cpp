@@ -845,6 +845,14 @@ TEST(StreamConnector, TellsEachFailureOnceWithinTheDeadline) {
   auto quiet_said = silence.get_future();
   ASSERT_EQ(quiet_said.wait_for(10s), std::future_status::ready);
   EXPECT_NE(quiet_said.get().find("did not complete the TLS handshake within the deadline"), std::string::npos);
+  // A handshake cut short is timed out, not failed as well (Lir's review): each attempt
+  // in one counter.
+  EXPECT_TRUE(eventually([&] { return connector.counters().timed_out == 1u; }));
+  const auto counted = connector.counters();
+  EXPECT_EQ(counted.attempts, 2u);
+  EXPECT_EQ(counted.handshakes_failed, 0u);
+  EXPECT_EQ(counted.connected, 0u);
+  EXPECT_EQ(counted.attempts, counted.connected + counted.refused_resolve + counted.refused_connect + counted.handshakes_failed + counted.timed_out);
   quiet.close();
   EXPECT_EQ(told.load(), 1);
 }
