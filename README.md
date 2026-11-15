@@ -147,7 +147,7 @@ On Debian 13 (x86-64 or arm64), from the tomcully.com apt repository:
 sudo curl -fsSLo /etc/apt/sources.list.d/tomcully.sources https://tomcully.com/apt/tomcully.sources
 sudo apt update
 sudo apt install libdannan-dev    # the library, its headers and CMake package
-sudo apt install dannan-tools     # dannan-ca, dannan-import-macha, dannan-version
+sudo apt install dannan-tools     # dannan-ca, dannan-custody, dannan-import-macha, dannan-version
 ```
 
 Elsewhere, from a build:
@@ -268,6 +268,19 @@ dannan-ca issue --dir ./ca --passphrase-env CA_PASS \
 
 dannan-node --state ./a --custody-passphrase-env NODE_PASS \
   --ca ./ca/ca.pem --certificate ./a/node.pem --no-cluster-key ...
+```
+
+On a production node, `dannan-custody` makes custody under a systemd
+credential, with the node stopped, and prints the new root once for
+sealing; `show` proves the sealed credential opens it before the node is
+started on it:
+
+```
+dannan-custody init --state /var/lib/node --credential dannan-root \
+  | systemd-creds encrypt --name=dannan-root - /etc/credstore.encrypted/dannan-root
+dannan-custody show --state /var/lib/node --credential dannan-root \
+  --credentials-dir <where the credential is decrypted>
+#   {"id":"<node id>","public_key":"<hex>"}
 ```
 
 To remove a node, revoke it and hand the revocation to any node; it
