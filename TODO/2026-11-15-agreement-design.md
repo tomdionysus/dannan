@@ -127,11 +127,19 @@ foreground class (a client waits on them). One message carries every name of one
   change a key's state outside agreement, so two acceptors can hold one highest ballot with
   different states. The reduction of a majority's prepare answers into the current value
   is owner-supplied, defaulting to CASPaxos's highest-ballot rule. **Safety constraint,
-  in the contract:** the reduction is given the highest-ballot answer apart from the rest,
-  and its result must keep that value as its base, only joining in what the others carry
-  (a monotone join); a reduction that drops or overturns the highest-ballot value can lose
-  a committed value, and is outside the contract. Tested with a reducer that joins, and
-  stated, not prevented, for one that does not.
+  in the contract** (wording Mimir's, 2026-11-15): the reduction is given the
+  highest-ballot answer (the base) apart from the rest, and its result is the base with
+  zero or more operations applied, each later than the base's commit in the owner's total
+  order (Mimir's: the hybrid stamp, then node id) and not already reflected in the base.
+  The base is only ever advanced, never rolled back: a later delete or overwrite may remove
+  what it holds, an earlier state may never replace it. The reduction is deterministic over
+  its inputs, so two proposers given the same answers compute the same result. So a
+  committed value is never lost: it is the result, or an ancestor of it under later writes.
+  A merge write ordered before the base's commit that has not reached it is the owner's to
+  drop and count (Mimir's heal rule). Testable form: every operation applied carries an
+  owner order greater than the base's; the owner passes its orders through for the check,
+  which the tests make. Dannan cannot prevent a reduction that breaks this; the contract
+  states it.
 - **The store's own catch-up** (ask C). A restarted store catches up however it chooses
   (Mimir transfers a shard's state from a replica) and says through `ready()` when it may
   vote; the per-name majority read is the default helper, not assumed.
