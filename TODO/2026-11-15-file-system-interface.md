@@ -78,12 +78,32 @@ pending writes; `sync` moves pending writes to durable, or, as the seed says, fa
 or makes a prefix durable; a crash keeps only the durable images. Paths, renames and
 directory entries follow the same rule (an unsynced rename may be lost).
 
-## Open for review (Dagda)
+## Dagda's review, taken
 
-1. Is `Result` (a value or an error naming path and errno) right for Dagda's code, or does
-   it want exceptions for the device's errors, as `durable_replace_file` throws today?
-2. Does `LocalStoreFiles` map onto this without loss, its install and read_at included?
-3. Is `sync_all` (syncfs) needed beside per-file and per-directory syncs, or does the
-   durability domain only need the latter two?
-4. Any operation missing: `fallocate`, `O_DIRECT`, file locks (the state lock is Dannan's
-   own, `flock`)?
+- **Result, with the errno's class.** An error carries the path, the errno, and its class,
+  because callers act on each differently: `no_room` (ENOSPC, EDQUOT: a refusal, try the
+  next backend), `absent` (ENOENT on open or read: not a failure), `io` (EIO, and every
+  failed sync: Dagda latches its domain), `exists`, `denied`, `other`. Beside it one
+  throwing helper, `or_throw()`, raising an exception that carries the same error, so
+  code that throws today (`durable_replace_file`'s callers, Dagda's LocalStore) moves in
+  one step.
+- **list() returns entries with their type and size** (one stat each), and `stat(path)`
+  beside it: Dagda's presence-index warm-up and pack scan list thousands of files at start,
+  and a names-only list then a size per file would be a startup regression on a Pi.
+  `LocalStoreFiles` maps without loss: install is open(create, exclusive) a temporary,
+  write, rename, with no per-file sync (the domain's batch sync covers it).
+- **sync_all (syncfs) stays.** The durability domain makes a whole window's writes
+  durable with one syncfs per backend: the group commit behind the 500 ms window. In the
+  simulation, everything pending on that file system becomes durable, or fails, or lies, as
+  the seed says.
+- **space(path)**: available and total, statvfs-style, for the pool's room checks; the
+  simulation can fill a disk, which is how "no room" paths and Macha's full-node spill are
+  tested.
+- **lock(path)**: the advisory lock (flock), held for a handle's life, for the migration
+  manifest and a backend root held against a second process; the simulation runs two
+  processes' worth on one disk honestly. Dannan's own state lock moves onto it.
+- Not needed: fallocate, O_DIRECT.
+- Dagda's raw syncs in scope for its routing work, after its small-file and ack-level work:
+  the sealed journal, the durability domain and storage pool, `heads/replica.cpp`,
+  `heads/node_pack.cpp`, `store/local_store.cpp`, `migrate/migrate.cpp` and
+  `migrate/manifest.cpp`.
