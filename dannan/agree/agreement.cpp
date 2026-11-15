@@ -13,6 +13,7 @@
 #include <boost/asio/strand.hpp>
 #include <deque>
 #include <map>
+#include <memory>
 #include <random>
 #include <stdexcept>
 
@@ -66,7 +67,10 @@ struct Agreement::Core : std::enable_shared_from_this<Core> {
   Call call;
   Advertises advertises;
   const contract::TimeSource* time;
+  Schedule schedule;
   std::atomic<uint64_t> counter{0};
+  // Each change's own, so two on one node never share a backoff sequence.
+  std::atomic<uint64_t> runs{0};
   mutable contract::Mutex mutex;
   std::map<std::string, std::shared_ptr<Space>> spaces DANNAN_GUARDED_BY(mutex);
   // Set as the owner goes: `call` reaches into the node, so no change still in flight
@@ -186,9 +190,10 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
   size_t outstanding = 0;
   bool finished = false;
   uint32_t attempts = 0;
-  asio::steady_timer backoff;
-  asio::steady_timer watch;
-  std::mt19937 random{std::random_device{}()};
+  // Which backoff is current: a retry superseded by another does nothing.
+  uint64_t retries = 0;
+  // Seeded from the node and its epoch, so a simulation's run replays exactly.
+  std::mt19937_64 random;
 
   Run(std::shared_ptr<Core> owner, std::string space_name, std::vector<Name> registers, ReplicaSet replicas, Change changing, Reduce reducing,
       contract::TimePoint until, asio::any_io_executor told, std::function<void(Outcome)> then)
@@ -202,21 +207,28 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
         deadline(until),
         reply(std::move(told)),
         done(std::move(then)),
-        backoff(strand),
-        watch(strand) {}
+        random(seed(core->self, core->epoch, ++core->runs)) {}
+
+  static uint64_t seed(const identity::NodeId& node, const identity::NodeId& epoch, uint64_t counter) {
+    uint64_t out = counter;
+    for (const auto byte : node.bytes) out = out * 131 + byte;
+    for (const auto byte : epoch.bytes) out = out * 131 + byte;
+    return out;
+  }
 
   std::chrono::milliseconds left() const {
     return std::max(std::chrono::ceil<std::chrono::milliseconds>(deadline - core->time->now()), std::chrono::milliseconds(1));
   }
 
-  // The deadline on the injected time: looked at as the source says.
+  // The deadline on the injected time, through the core's schedule.
   void arm_watch() {
     const auto remaining = std::max(std::chrono::ceil<std::chrono::milliseconds>(deadline - core->time->now()), std::chrono::milliseconds(0));
-    watch.expires_after(core->time->wake_within(remaining));
-    watch.async_wait([self = shared_from_this()](const boost::system::error_code& error) {
-      if (error || self->finished) return;
-      if (self->core->time->now() >= self->deadline) return self->fail(self->attempt ? self->attempt->why() : std::string(), true);
-      self->arm_watch();
+    core->schedule(remaining, [self = shared_from_this()] {
+      asio::post(self->strand, [self] {
+        if (self->finished) return;
+        if (self->core->time->now() >= self->deadline) return self->fail(self->attempt ? self->attempt->why() : std::string(), true);
+        self->arm_watch();
+      });
     });
   }
 
@@ -282,10 +294,14 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
 
   // Jittered and growing, so two proposers duelling on one name pull apart.
   void retry(uint64_t above) {
-    const auto ceiling = std::min<int>(50, 1 << std::min<uint32_t>(attempts, 6));
-    backoff.expires_after(std::chrono::milliseconds(std::uniform_int_distribution<int>(1, ceiling)(random)));
-    backoff.async_wait([self = shared_from_this(), above](const boost::system::error_code& error) {
-      if (!error) self->begin(above);
+    const uint64_t ceiling = std::min<uint64_t>(50, uint64_t{1} << std::min<uint32_t>(attempts, 6));
+    // Drawn without the standard library's distributions, which differ between libraries.
+    const auto wait = std::chrono::milliseconds(1 + static_cast<int64_t>(random() % ceiling));
+    const auto current = ++retries;
+    core->schedule(wait, [self = shared_from_this(), above, current] {
+      asio::post(self->strand, [self, above, current] {
+        if (!self->finished && current == self->retries) self->begin(above);
+      });
     });
   }
 
@@ -305,8 +321,6 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
 
   void succeed() {
     finished = true;
-    backoff.cancel();
-    watch.cancel();
     auto out = evidence();
     out.committed = true;
     out.values = attempt->values();
@@ -318,8 +332,6 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
   void fail(std::string why, bool timed_out) {
     if (finished) return;
     finished = true;
-    backoff.cancel();
-    watch.cancel();
     auto out = evidence();
     out.serving = attempt ? attempt->serving() : std::nullopt;
     out.why = timed_out ? "not committed within the deadline" + (why.empty() ? std::string() : ": " + why) : std::move(why);
@@ -327,8 +339,25 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
   }
 };
 
+namespace {
+
+// The default schedule: a timer on the executor, looked at again as the time source says,
+// so a stepped source in a test moves it without a real wait.
+void after_on(const asio::any_io_executor& executor, const contract::TimeSource* time, contract::TimePoint at, std::function<void()> task) {
+  auto timer = std::make_shared<asio::steady_timer>(executor);
+  const auto remaining = std::max(std::chrono::ceil<std::chrono::milliseconds>(at - time->now()), std::chrono::milliseconds(0));
+  timer->expires_after(time->wake_within(remaining));
+  timer->async_wait([timer, executor, time, at, task = std::move(task)](const boost::system::error_code& error) mutable {
+    if (error) return;
+    if (time->now() >= at) return task();
+    after_on(executor, time, at, std::move(task));
+  });
+}
+
+}  // namespace
+
 Agreement::Agreement(asio::any_io_executor executor, identity::NodeId self, identity::NodeId epoch, Call call, Advertises advertises,
-                     const contract::TimeSource* time)
+                     const contract::TimeSource* time, Schedule schedule)
     : _core(std::make_shared<Core>()) {
   _core->executor = std::move(executor);
   _core->self = self;
@@ -336,6 +365,9 @@ Agreement::Agreement(asio::any_io_executor executor, identity::NodeId self, iden
   _core->call = std::move(call);
   _core->advertises = std::move(advertises);
   _core->time = time;
+  _core->schedule = schedule ? std::move(schedule) : Schedule([executor = _core->executor, time](std::chrono::milliseconds after, std::function<void()> task) {
+    after_on(executor, time, time->now() + after, std::move(task));
+  });
 }
 
 Agreement::~Agreement() {
