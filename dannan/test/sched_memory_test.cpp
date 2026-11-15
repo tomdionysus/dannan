@@ -30,6 +30,26 @@ constexpr auto hosted = static_cast<MemoryOwner>(256);
 // 1000 bytes: control reserve 100, foreground 200, loader 100, reassembly 50.
 RetainedMemoryLedger ledger() { return RetainedMemoryLedger(1000, 100, 200, 100, 50); }
 
+// Lir's TSan finding: a call completion still on a shared io context held a lease after
+// its node, and so its ledger, was destroyed, and the release read freed memory. A lease
+// that outlives its ledger now releases nothing; ASan and TSan would see it otherwise.
+TEST(RetainedMemory, ALeaseThatOutlivesItsLedgerReleasesNothing) {
+  std::optional<RetainedMemoryLedger::Lease> kept;
+  std::optional<RetainedMemoryLedger::Lease> moved;
+  {
+    auto memory = ledger();
+    kept = memory.try_acquire(WorkClass::foreground, hosted, 10);
+    moved = memory.try_acquire(WorkClass::foreground, hosted, 20);
+    ASSERT_TRUE(kept && *kept);
+    ASSERT_TRUE(moved && *moved);
+  }
+  RetainedMemoryLedger::Lease taken = std::move(**moved);
+  kept->reset();
+  EXPECT_FALSE(*kept);
+  taken.reset();
+  EXPECT_FALSE(taken);
+}
+
 TEST(RetainedMemory, RefusesReservesThatDoNotFitTheTotal) {
   EXPECT_THROW(RetainedMemoryLedger(0, 1, 1, 1, 1), std::invalid_argument);
   EXPECT_THROW(RetainedMemoryLedger(100, 0, 1, 1, 1), std::invalid_argument);

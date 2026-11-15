@@ -23,8 +23,7 @@ uint64_t charge(uint64_t bytes) { return std::max<uint64_t>(1, bytes); }
 
 }  // namespace
 
-RetainedMemoryLedger::Lease::Lease(Lease&& other) noexcept : _owner(other._owner), _id(other._id), _bytes(other._bytes) {
-  other._owner = nullptr;
+RetainedMemoryLedger::Lease::Lease(Lease&& other) noexcept : _anchor(std::move(other._anchor)), _id(other._id), _bytes(other._bytes) {
   other._id = 0;
   other._bytes = 0;
 }
@@ -32,10 +31,9 @@ RetainedMemoryLedger::Lease::Lease(Lease&& other) noexcept : _owner(other._owner
 RetainedMemoryLedger::Lease& RetainedMemoryLedger::Lease::operator=(Lease&& other) noexcept {
   if (this != &other) {
     reset();
-    _owner = other._owner;
+    _anchor = std::move(other._anchor);
     _id = other._id;
     _bytes = other._bytes;
-    other._owner = nullptr;
     other._id = 0;
     other._bytes = 0;
   }
@@ -43,11 +41,20 @@ RetainedMemoryLedger::Lease& RetainedMemoryLedger::Lease::operator=(Lease&& othe
 }
 
 void RetainedMemoryLedger::Lease::reset() {
-  if (!_owner) return;
-  _owner->release(_id);
-  _owner = nullptr;
+  if (!_anchor) return;
+  {
+    // The ledger gone, the lease goes quietly (Lir's TSan finding).
+    contract::ReadLock lock(_anchor->mutex);
+    if (_anchor->ledger) _anchor->ledger->release(_id);
+  }
+  _anchor.reset();
   _id = 0;
   _bytes = 0;
+}
+
+RetainedMemoryLedger::~RetainedMemoryLedger() {
+  contract::WriteLock lock(_anchor->mutex);
+  _anchor->ledger = nullptr;
 }
 
 RetainedMemoryLedger::RetainedMemoryLedger(uint64_t capacity_bytes, uint64_t control_reserve_bytes, uint64_t foreground_reserve_bytes,
@@ -112,7 +119,7 @@ RetainedMemoryLedger::Lease RetainedMemoryLedger::admit_locked(WorkClass work, M
   }
   _peak = std::max(_peak, _used);
   ++_admissions[index(work)];
-  return Lease(*this, id, bytes);
+  return Lease(_anchor, id, bytes);
 }
 
 std::optional<RetainedMemoryLedger::Lease> RetainedMemoryLedger::acquire(WorkClass work, MemoryOwner owner, uint64_t requested, TimePoint deadline,
