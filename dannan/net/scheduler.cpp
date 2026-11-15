@@ -36,9 +36,13 @@ struct Answer::State {
   sched::RetainedMemoryLedger::Lease memory;
   std::shared_ptr<std::array<std::atomic<size_t>, 4>> answering;
   size_t work = 0;
-  ~State() {
+  // Gives back the class's place and the request's bytes, once.
+  void release() noexcept {
+    memory.reset();
     if (answering) (*answering)[work].fetch_sub(1, std::memory_order_acq_rel);
+    answering.reset();
   }
+  ~State() { release(); }
 };
 
 Answer::Answer() noexcept = default;
@@ -54,10 +58,14 @@ Answer& Answer::operator=(Answer&& other) noexcept {
 Answer::~Answer() { abandon(); }
 
 void Answer::operator()(Message reply) {
-  // Taken first, so a later call finds nothing; the bound and the bytes are
-  // given back once the reply is sent.
+  // Taken first, so a later call finds nothing. The bound and the bytes are
+  // given back before the reply is sent: a caller that has its answer and asks
+  // again must not be refused for the place that answer held.
   auto state = std::move(_state);
-  if (state && state->reply) state->reply(std::move(reply));
+  if (!state) return;
+  auto send = std::move(state->reply);
+  state->release();
+  if (send) send(std::move(reply));
 }
 
 void Answer::fail(uint16_t status, std::string_view code, std::string_view why) { (*this)(error_reply(status, code, why)); }
