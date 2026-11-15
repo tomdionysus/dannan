@@ -61,6 +61,33 @@ TEST(NodeEvents, CountsPerKindAndWakesAWaiter) {
   EXPECT_FALSE(events.wait_for_change(events.total(), 10ms));
 }
 
+// A consumer's stop wakes its waiter at once, with no cadence to poll on and no
+// artificial kind (Macha's NodeEvents consumers, whose components stop by token).
+TEST(NodeEvents, AStopWakesAWaiterWithNoTimeout) {
+  NodeEvents events;
+  std::stop_source source;
+  const auto before = events.total();
+  std::thread stopper([&] { source.request_stop(); });
+  EXPECT_FALSE(events.wait_for_change(before, std::chrono::milliseconds::max(), source.get_token()));
+  stopper.join();
+  // Already stopped: answered at once, whatever the timeout.
+  EXPECT_FALSE(events.wait_for_change(before, std::chrono::milliseconds::max(), source.get_token()));
+}
+
+TEST(NodeEvents, AChangeWakesAStoppableWaiter) {
+  NodeEvents events;
+  const auto kind = events.kind("claims");
+  std::stop_source source;
+  const auto before = events.total();
+  std::thread producer([&] { events.notify(kind); });
+  EXPECT_TRUE(events.wait_for_change(before, std::chrono::milliseconds::max(), source.get_token()));
+  producer.join();
+  // A change already there is reported even once stopped; the timeout still bounds a wait.
+  source.request_stop();
+  EXPECT_TRUE(events.wait_for_change(before, 10ms, source.get_token()));
+  EXPECT_FALSE(events.wait_for_change(events.total(), 10ms, std::stop_token{}));
+}
+
 TEST(NodeEvents, KindsAreBounded) {
   NodeEvents events;
   for (size_t i = NodeEvents::dannan_kinds; i < NodeEvents::max_kinds; ++i) events.kind("kind " + std::to_string(i));
