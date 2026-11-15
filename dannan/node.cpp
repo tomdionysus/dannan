@@ -340,8 +340,26 @@ class Node::BudgetNoun final : public Budget {
   std::optional<sched::RetainedMemoryLedger::Lease> reserve(sched::WorkClass work, uint64_t bytes) override {
     return _node._memory.try_acquire(work, sched::MemoryOwner::hosted_first, bytes);
   }
+  std::optional<sched::RetainedMemoryLedger::Lease> reserve(sched::WorkClass work, sched::MemoryOwner owner, uint64_t bytes) override {
+    return _node._memory.try_acquire(work, hosted(owner), bytes);
+  }
+  std::optional<sched::RetainedMemoryLedger::Lease> acquire(sched::WorkClass work, sched::MemoryOwner owner, uint64_t bytes, contract::TimePoint deadline,
+                                                            std::atomic_bool* cancelled) override {
+    // No call waits without a deadline; the ledger reads none as forever.
+    if (deadline == contract::TimePoint{}) throw std::invalid_argument("a budget wait needs a deadline");
+    return _node._memory.acquire(work, hosted(owner), bytes, deadline, cancelled);
+  }
+  void wake() override { _node._memory.wake(); }
+  sched::RetainedMemoryStats stats() const override { return _node._memory.stats(); }
 
  private:
+  static sched::MemoryOwner hosted(sched::MemoryOwner owner) {
+    if (static_cast<uint16_t>(owner) < static_cast<uint16_t>(sched::MemoryOwner::hosted_first))
+      throw std::invalid_argument("memory owner " + std::to_string(static_cast<uint16_t>(owner)) + " is Dannan's; a hosted system numbers its own from " +
+                                  std::to_string(static_cast<uint16_t>(sched::MemoryOwner::hosted_first)));
+    return owner;
+  }
+
   Node& _node;
 };
 
