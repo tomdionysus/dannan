@@ -43,6 +43,13 @@ still running at the clear (macOS green): **check it first**. The fix's first re
 - Whether the scheduler fix (`0ce0b82`: a deferred answer gives back its place and bytes before its reply is sent;
   it shipped in 0.8 and ASan caught it) also goes out as **0.8.4**. It is internal to `net/scheduler.cpp`, so it
   keeps the ABI. Stage it only at his word.
+- Whether 0.8.4 also carries **Kvasir's ask, `Stream::start_tls_unanswered(done)`**, for MySQL's in-place TLS. The
+  client sends SSLRequest and then its ClientHello at once, with no server answer between them, so today's
+  `start_tls` (`listen/stream.h:124`) refuses it: its waiting-bytes check finds the ClientHello. The variant writes
+  no answer and makes no waiting-bytes check. It goes straight to the server handshake under the listener's deadline,
+  keeping every other check: certificates present, once only, nothing queued by send(). The new member is additive,
+  so the ABI is kept. Write it test first, with a client that sends its ClientHello right behind the request. Kvasir
+  pins 0.8.2 and moves to the first tag carrying it.
 
 **Built for 0.9.0 so far** (see `COMPLETED.md`):
 - Agreement: the CASPaxos core (`agree/caspaxos.h`), its wire (types 22 to 24, replies 110 to 112) and fuzz target,
