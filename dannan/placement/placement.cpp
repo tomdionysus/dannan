@@ -148,45 +148,52 @@ std::vector<size_t> sample(std::span<const uint8_t> key, const std::vector<uint6
   return picked;
 }
 
+// Placement ranks pointers into the caller's roster and copies only the answer:
+// a record carries its whole advert map, and a hosted system places on every
+// write (Dagda's measurement: one call copied every record about five times).
+using Node = const NodeRecord*;
+
 struct Domain {
   std::string name;
   uint64_t capacity = 0;
-  std::vector<NodeRecord> nodes;
+  std::vector<Node> nodes;
 };
 
 // Failure domains in name order, each node alone in one if it names none;
 // nodes within a domain in id order.
-std::vector<Domain> domains_of(const std::vector<NodeRecord>& nodes, const std::string& advert) {
+std::vector<Domain> domains_of(const std::vector<Node>& nodes, const std::string& advert) {
   std::vector<Domain> out;
-  for (const auto& node : nodes) {
-    const auto capacity = capacity_of(node, advert);
-    const auto name = node.failure_domain.empty() ? "node:" + identity::to_string(node.id) : "domain:" + node.failure_domain;
+  for (const auto node : nodes) {
+    const auto capacity = capacity_of(*node, advert);
+    auto name = node->failure_domain.empty() ? "node:" + identity::to_string(node->id) : "domain:" + node->failure_domain;
     const auto found = std::find_if(out.begin(), out.end(), [&](const Domain& d) { return d.name == name; });
     if (found == out.end()) {
-      out.push_back({name, capacity, {node}});
+      out.push_back({std::move(name), capacity, {node}});
     } else {
       found->capacity = saturating_add(found->capacity, capacity);
       found->nodes.push_back(node);
     }
   }
   std::sort(out.begin(), out.end(), [](const Domain& a, const Domain& b) { return a.name < b.name; });
-  for (auto& domain : out) std::sort(domain.nodes.begin(), domain.nodes.end(), [](const auto& a, const auto& b) { return a.id < b.id; });
+  for (auto& domain : out) std::sort(domain.nodes.begin(), domain.nodes.end(), [](Node a, Node b) { return a->id < b->id; });
   return out;
 }
 
 std::vector<uint64_t> capacities(const std::vector<Domain>& domains) {
   std::vector<uint64_t> out;
+  out.reserve(domains.size());
   for (const auto& domain : domains) out.push_back(domain.capacity);
   return out;
 }
 
-std::vector<uint64_t> capacities(const std::vector<NodeRecord>& nodes, const std::string& advert) {
+std::vector<uint64_t> capacities(const std::vector<Node>& nodes, const std::string& advert) {
   std::vector<uint64_t> out;
-  for (const auto& node : nodes) out.push_back(capacity_of(node, advert));
+  out.reserve(nodes.size());
+  for (const auto node : nodes) out.push_back(capacity_of(*node, advert));
   return out;
 }
 
-NodeRecord within(std::span<const uint8_t> key, const Domain& domain, const std::string& advert) {
+Node within(std::span<const uint8_t> key, const Domain& domain, const std::string& advert) {
   if (domain.nodes.size() == 1) return domain.nodes.front();
   const auto inner = identity::sha256(concat(key, text(domain.name)));
   const auto picked = sample(inner.bytes, capacities(domain.nodes, advert), 1);
@@ -205,12 +212,71 @@ long double fallback_score(std::span<const uint8_t> key, const NodeRecord& node,
   return -std::log(u) / weight;
 }
 
-void sort_by_fallback(std::vector<NodeRecord>& nodes, std::span<const uint8_t> key, std::string_view salt, const std::string& advert) {
-  std::sort(nodes.begin(), nodes.end(), [&](const NodeRecord& a, const NodeRecord& b) {
-    const auto as = fallback_score(key, a, salt, advert);
-    const auto bs = fallback_score(key, b, salt, advert);
-    return as != bs ? as < bs : a.id < b.id;
-  });
+// Each node's score is hashed once, not at every comparison.
+void sort_by_fallback(std::vector<Node>& nodes, std::span<const uint8_t> key, std::string_view salt, const std::string& advert) {
+  std::vector<std::pair<long double, Node>> scored;
+  scored.reserve(nodes.size());
+  for (const auto node : nodes) scored.emplace_back(fallback_score(key, *node, salt, advert), node);
+  std::sort(scored.begin(), scored.end(), [](const auto& a, const auto& b) { return a.first != b.first ? a.first < b.first : a.second->id < b.second->id; });
+  for (size_t i = 0; i < scored.size(); ++i) nodes[i] = scored[i].second;
+}
+
+std::vector<Node> ranked(std::span<const uint8_t> key, const std::vector<Node>& nodes, size_t count, const Scheme& scheme) {
+  if (nodes.empty() || !count) return {};
+  if (scheme.demote_relay_only) {
+    std::vector<Node> reachable;
+    std::vector<Node> relayed;
+    for (const auto node : nodes) (node->path_class == membership::PathClass::relay_only ? relayed : reachable).push_back(node);
+    if (!relayed.empty() && reachable.size() >= std::min(count, nodes.size())) {
+      auto plain = scheme;
+      plain.demote_relay_only = false;
+      auto out = ranked(key, reachable, count, plain);
+      const auto preferred = std::min(count, out.size());
+      // The relay-only nodes lead the fallbacks, in their own placement
+      // order, so a full or offline owner still spills to them first.
+      const auto spill = ranked(key, relayed, relayed.size(), plain);
+      out.insert(out.begin() + static_cast<std::ptrdiff_t>(preferred), spill.begin(), spill.end());
+      return out;
+    }
+  }
+  const auto& advert = scheme.capacity_advert;
+  count = std::min(count, nodes.size());
+  if (count == 1) {
+    auto out = nodes;
+    sort_by_fallback(out, shard_bytes(key), scheme.fallback_salt, advert);
+    return out;
+  }
+  const auto domains = domains_of(nodes, advert);
+  std::vector<Node> out;
+  std::set<identity::NodeId> chosen;
+  for (const auto index : sample(key, capacities(domains), std::min(count, domains.size()))) {
+    const auto node = within(key, domains[index], advert);
+    if (chosen.insert(node->id).second) out.push_back(node);
+  }
+  // Fewer domains than copies: one node from every domain is in; the rest
+  // come from the unused nodes, by capacity.
+  if (out.size() < count) {
+    std::vector<Node> remaining;
+    for (const auto node : nodes)
+      if (!chosen.contains(node->id)) remaining.push_back(node);
+    std::sort(remaining.begin(), remaining.end(), [](Node a, Node b) { return a->id < b->id; });
+    const auto extra_key = identity::sha256(concat(key, text(scheme.extra_domain_salt)));
+    for (const auto index : sample(extra_key.bytes, capacities(remaining, advert), count - out.size()))
+      if (chosen.insert(remaining[index]->id).second) out.push_back(remaining[index]);
+  }
+  std::vector<Node> fallback;
+  for (const auto node : nodes)
+    if (!chosen.contains(node->id)) fallback.push_back(node);
+  sort_by_fallback(fallback, key, scheme.fallback_salt, advert);
+  out.insert(out.end(), fallback.begin(), fallback.end());
+  return out;
+}
+
+std::vector<Node> pointers(const std::vector<NodeRecord>& nodes) {
+  std::vector<Node> out;
+  out.reserve(nodes.size());
+  for (const auto& node : nodes) out.push_back(&node);
+  return out;
 }
 
 }  // namespace
@@ -242,61 +308,20 @@ std::vector<NodeRecord> rendezvous(std::span<const uint8_t> key, const std::vect
 
 std::vector<NodeRecord> by_capacity(std::span<const uint8_t> key, const std::vector<NodeRecord>& nodes, size_t count, const Scheme& scheme) {
   if (scheme.fallback_salt.empty() || scheme.extra_domain_salt.empty()) throw std::invalid_argument("a placement scheme names both its salts");
-  if (nodes.empty() || !count) return {};
-  if (scheme.demote_relay_only) {
-    std::vector<NodeRecord> reachable;
-    std::vector<NodeRecord> relayed;
-    for (const auto& node : nodes) (node.path_class == membership::PathClass::relay_only ? relayed : reachable).push_back(node);
-    if (!relayed.empty() && reachable.size() >= std::min(count, nodes.size())) {
-      auto plain = scheme;
-      plain.demote_relay_only = false;
-      auto out = by_capacity(key, reachable, count, plain);
-      const auto preferred = std::min(count, out.size());
-      // The relay-only nodes lead the fallbacks, in their own placement
-      // order, so a full or offline owner still spills to them first.
-      auto spill = by_capacity(key, relayed, relayed.size(), plain);
-      out.insert(out.begin() + static_cast<std::ptrdiff_t>(preferred), spill.begin(), spill.end());
-      return out;
-    }
-  }
-  const auto& advert = scheme.capacity_advert;
-  count = std::min(count, nodes.size());
-  if (count == 1) {
-    auto out = nodes;
-    sort_by_fallback(out, shard_bytes(key), scheme.fallback_salt, advert);
-    return out;
-  }
-  const auto domains = domains_of(nodes, advert);
+  // Ranked over pointers; each record copied once, into the answer.
+  const auto order = ranked(key, pointers(nodes), count, scheme);
   std::vector<NodeRecord> out;
-  std::set<identity::NodeId> chosen;
-  for (const auto index : sample(key, capacities(domains), std::min(count, domains.size()))) {
-    auto node = within(key, domains[index], advert);
-    if (chosen.insert(node.id).second) out.push_back(std::move(node));
-  }
-  // Fewer domains than copies: one node from every domain is in; the rest
-  // come from the unused nodes, by capacity.
-  if (out.size() < count) {
-    std::vector<NodeRecord> remaining;
-    for (const auto& node : nodes)
-      if (!chosen.contains(node.id)) remaining.push_back(node);
-    std::sort(remaining.begin(), remaining.end(), [](const auto& a, const auto& b) { return a.id < b.id; });
-    const auto extra_key = identity::sha256(concat(key, text(scheme.extra_domain_salt)));
-    for (const auto index : sample(extra_key.bytes, capacities(remaining, advert), count - out.size()))
-      if (chosen.insert(remaining[index].id).second) out.push_back(remaining[index]);
-  }
-  std::vector<NodeRecord> fallback;
-  for (const auto& node : nodes)
-    if (!chosen.contains(node.id)) fallback.push_back(node);
-  sort_by_fallback(fallback, key, scheme.fallback_salt, advert);
-  out.insert(out.end(), fallback.begin(), fallback.end());
+  out.reserve(order.size());
+  for (const auto node : order) out.push_back(*node);
   return out;
 }
 
 uint64_t logical_capacity(const std::vector<NodeRecord>& nodes, size_t replicas, const std::string& capacity_advert) {
   if (nodes.empty() || !replicas) return 0;
   replicas = std::min(replicas, nodes.size());
-  const auto domains = domains_of(nodes, capacity_advert);
-  const auto level = water_level(domains.size() >= replicas ? capacities(domains) : capacities(nodes, capacity_advert), replicas);
+  const auto all = pointers(nodes);
+  const auto domains = domains_of(all, capacity_advert);
+  const auto level = water_level(domains.size() >= replicas ? capacities(domains) : capacities(all, capacity_advert), replicas);
   if (!level.numerator) return 0;
   const u128 value = level.numerator / level.denominator;
   return value > std::numeric_limits<uint64_t>::max() ? std::numeric_limits<uint64_t>::max() : static_cast<uint64_t>(value);
