@@ -127,6 +127,17 @@ class Stream : public std::enable_shared_from_this<Stream> {
   // zero (the default): never. Set at any time.
   void set_idle(std::chrono::milliseconds idle);
 
+  // Whether a write goes out at once (TCP_NODELAY), as every accepted socket does: a
+  // public protocol's small packets must not wait on Nagle behind the peer's delayed
+  // ACK (Lir: about 40 ms on an MQTT PUBACK). False turns Nagle back on, for a
+  // protocol that writes many tiny pieces of one message. From any thread; applied
+  // on the stream's executor.
+  void set_no_delay(bool on);
+  // Whether it is set; false once the socket is closed. On the stream's executor
+  // only, as every reader of the socket (Lir's review: off it, a read racing a close
+  // could meet a reused descriptor).
+  bool no_delay() const;
+
   // Ends the connection cleanly: what send() queued is written first, then TLS's
   // close_notify, then the socket, all within the listener's close bound (Lir's
   // review: its DISCONNECT goes by send() and must not be lost). A read still pending

@@ -143,6 +143,20 @@ void Stream::set_idle(std::chrono::milliseconds idle) {
   arm_idle();
 }
 
+void Stream::set_no_delay(bool on) {
+  asio::dispatch(get_executor(), [self = shared_from_this(), on] {
+    boost::system::error_code ignored;
+    if (self->_socket.is_open()) self->_socket.set_option(Socket::protocol_type::no_delay(on), ignored);
+  });
+}
+
+bool Stream::no_delay() const {
+  Socket::protocol_type::no_delay option;
+  boost::system::error_code error;
+  _socket.get_option(option, error);
+  return !error && option.value();
+}
+
 void Stream::arm_idle() {
   const auto last = contract::TimePoint(contract::Clock::duration(_last_read.load()));
   const auto due = last + _idle;

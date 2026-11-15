@@ -255,6 +255,99 @@ TEST(StreamListener, HandsUpAPlaintextConnectionThatWorksAsASocket) {
   listener.stop();
 }
 
+// Every accepted socket sends at once (TCP_NODELAY): a public protocol's small
+// packets, MQTT's PUBACK among them, never wait on Nagle behind the peer's
+// delayed ACK (Lir: about 40 ms). A protocol that wants Nagle back says so.
+TEST(StreamListener, AnAcceptedStreamSendsWithoutDelayUnlessToldOtherwise) {
+  Io io;
+  Served served;
+  StreamListener listener(io.context, plain_config());
+  listener.start(io.context.get_executor(), [&](std::shared_ptr<Stream> stream) {
+    echo(stream);
+    served.handler()(std::move(stream));
+  });
+  Client client;
+  client.connect_plain(listener.port());
+  EXPECT_EQ(client.round_trip(client.plain, "small"), "small");
+  ASSERT_TRUE(eventually([&] { return served.count() == 1; }));
+  const auto stream = served.at(0);
+  const auto on_strand = [&](auto read) {
+    std::promise<bool> got;
+    asio::post(stream->get_executor(), [&] { got.set_value(read()); });
+    return got.get_future().get();
+  };
+  EXPECT_TRUE(on_strand([&] { return stream->no_delay(); }));
+  stream->set_no_delay(false);
+  EXPECT_FALSE(on_strand([&] { return stream->no_delay(); }));
+  stream->set_no_delay(true);
+  EXPECT_TRUE(on_strand([&] { return stream->no_delay(); }));
+  EXPECT_EQ(client.round_trip(client.plain, "still"), "still");
+  listener.stop();
+}
+
+// Lugh's review: stop() from a handler on a one-thread io context (a signal
+// handler's place) deadlocked on the acceptor's strand. It returns, nothing is
+// handed up after it, and what was open is closed.
+TEST(StreamListener, StopsFromAHandlerOnAOneThreadContext) {
+  asio::io_context io;
+  auto work = asio::make_work_guard(io);
+  std::thread runner([&] { io.run(); });
+  Served served;
+  StreamListener listener(io, plain_config());
+  listener.start(io.get_executor(), [&](std::shared_ptr<Stream> stream) {
+    echo(stream);
+    served.handler()(std::move(stream));
+  });
+  Client client;
+  client.connect_plain(listener.port());
+  EXPECT_EQ(client.round_trip(client.plain, "before"), "before");
+  ASSERT_TRUE(eventually([&] { return served.count() == 1; }));
+  std::promise<void> stopped;
+  asio::post(io, [&] {
+    listener.stop();
+    stopped.set_value();
+  });
+  EXPECT_EQ(stopped.get_future().wait_for(10s), std::future_status::ready);
+  EXPECT_TRUE(eventually([&] { return listener.counters().open == 0; }));
+  EXPECT_EQ(served.count(), 1u);
+  work.reset();
+  io.stop();
+  runner.join();
+}
+
+// Lugh's review: a listener destroyed after its io context stopped, with no stop()
+// before (a node's usual teardown order), hung on a close nothing could run.
+TEST(StreamListener, IsDestroyedAfterItsContextStopped) {
+  asio::io_context io;
+  auto work = asio::make_work_guard(io);
+  std::thread runner([&] { io.run(); });
+  auto listener = std::make_unique<StreamListener>(io, plain_config());
+  listener->start(io.get_executor(), [](std::shared_ptr<Stream> stream) { echo(stream); });
+  work.reset();
+  io.stop();
+  runner.join();
+  auto gone = std::async(std::launch::async, [&] { listener.reset(); });
+  EXPECT_EQ(gone.wait_for(10s), std::future_status::ready);
+}
+
+// Lugh's review: a node whose start fails returns before its io context ever runs,
+// and a listener started there waited its whole bound for a close nothing would
+// run. It stops at once, and a connect after it is refused.
+TEST(StreamListener, StopsAtOnceOnAContextThatNeverRan) {
+  asio::io_context io;
+  StreamListener listener(io, plain_config());
+  listener.start(io.get_executor(), [](std::shared_ptr<Stream> stream) { echo(stream); });
+  const auto port = listener.port();
+  const auto started = std::chrono::steady_clock::now();
+  listener.stop();
+  EXPECT_LT(std::chrono::steady_clock::now() - started, 1s);
+  asio::io_context client_io;
+  asio::ip::tcp::socket late(client_io);
+  boost::system::error_code refused;
+  late.connect({asio::ip::make_address("127.0.0.1"), port}, refused);
+  EXPECT_TRUE(refused);
+}
+
 // TLS at accept, with the listener's minimum version: 1.3 only refuses a 1.2 client.
 TEST(StreamListener, ServesTlsAtItsMinimumVersion) {
   Io io;

@@ -3,6 +3,29 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
+## Handoff, 2026-11-15: 0.8.1 prepared
+
+Two findings from moving Lir's and Lugh's listeners onto `dannan::listen` 0.8.0; the maintainer approved a 0.8.1 patch. On
+`feature/no-delay`, merged at `949d119`:
+- Lir: no accepted socket had TCP_NODELAY, and Nagle behind the peer's delayed ACK cost an MQTT PUBACK about 40 ms
+  against the 50 ms p99 target. Lir asked for a `ListenerConfig` field, which would change a struct's layout within the
+  minor. Instead every accepted socket gets it in `served()`, and `Stream::set_no_delay`/`no_delay` (new members,
+  additions) let a stream opt out.
+- Lugh: `stop_accepting()` (so `stop()` and `~StreamListener`) waited without a bound on the acceptor's strand, and hung
+  from a handler on a one-thread io context, after the io context stopped, and (Lugh's second review) on one that never
+  ran. The hand-up is behind a gate kept in the `std::function` (found by `target<Gate>()`, so `ListenerShared`'s
+  layout in an installed header is unchanged), and the accept loop's first step and `stop_accepting()` claim one state.
+  Never ran or stopped: closed inline. On one of its threads: the close queued, not waited for. Otherwise: closed
+  before returning, at most five seconds. Lir's review: the io context is found by the strand's type, not cast to; the
+  stopped-then-restarted race is stated; `no_delay()` is on the stream's executor only.
+- Lir's notes stated: where `stop_accepting()` may be called; under optional client certificates, check `verified`.
+- The ABI check failed on one removed `std::promise<void>::~promise()`, a weak instance 0.8.0 emitted only because the
+  old code destroyed a promise in line. the maintainer: leave the standard library's instances out
+  (`tools/abi-suppressions.ini`); Dannan's own are judged as before.
+Four tests: no-delay on and off; stop from a handler on a one-thread context; destroyed after the context stopped;
+stopped at once on a context that never ran. Lir and Lugh approved. CI run 43732182583 green on every job, `abi`
+against 0.8.0 included.
+
 ## Handoff, 2026-11-15: 0.8.0 prepared again, with the custody tool and the budget's wait
 
 The approved batch is in: P6's three, P4, P3's stream side, `DANNAN_BUILD_TOOLS`, the sealed counters, and P5's
