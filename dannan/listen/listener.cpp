@@ -9,8 +9,13 @@
 
 #include <sys/socket.h>
 
+#include <atomic>
+#include <boost/asio/dispatch.hpp>
+#include <boost/asio/io_context.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/asio/strand.hpp>
+#include <chrono>
+#include <functional>
 #include <future>
 #include <stdexcept>
 #include <system_error>
@@ -21,6 +26,33 @@ namespace dannan::listen {
 
 namespace asio = boost::asio;
 using tcp = asio::ip::tcp;
+
+namespace {
+
+// The hosted system's hand-up behind a gate stop_accepting() shuts, so nothing is
+// handed up once it has returned, whether or not the acceptor's close has run yet.
+// Kept inside the std::function and found again by its type, so the shared state's
+// layout (an installed header's) is unchanged within the minor.
+struct Gate {
+  // Whether the accept loop has begun: claimed once, by the loop's first step or by
+  // a stop_accepting() that came first (Lugh: a node whose start failed returns
+  // before its io context ever runs).
+  enum Loop : int { waiting, running, never };
+  std::shared_ptr<std::atomic<bool>> shut;
+  std::shared_ptr<std::atomic<int>> loop;
+  std::function<void(std::shared_ptr<Stream>)> accepted;
+  void operator()(std::shared_ptr<Stream> stream) const {
+    if (shut->load()) return stream->abort();
+    if (accepted) accepted(std::move(stream));
+  }
+};
+
+bool gate_shut(const ListenerShared& shared) {
+  const auto* gate = shared.accepted.target<Gate>();
+  return gate && gate->shut->load();
+}
+
+}  // namespace
 
 std::shared_ptr<detail::ServerTls> ListenerShared::current_tls() {
   if (!config.certificates) return nullptr;
@@ -50,7 +82,8 @@ void StreamListener::start(asio::any_io_executor executor, Accepted accepted) {
   // Fails here, not at the first connection, for TLS that cannot be set up.
   (void)_shared->current_tls();
   _shared->executor = std::move(executor);
-  _shared->accepted = std::move(accepted);
+  auto loop = std::make_shared<std::atomic<int>>(Gate::waiting);
+  _shared->accepted = Gate{std::make_shared<std::atomic<bool>>(false), loop, std::move(accepted)};
   auto& acceptor = _shared->acceptor;
   const auto& settings = _shared->config;
   if (settings.inherited) {
@@ -68,7 +101,12 @@ void StreamListener::start(asio::any_io_executor executor, Accepted accepted) {
   }
   _port = acceptor.local_endpoint().port();
   _accepting = true;
-  asio::post(acceptor.get_executor(), [shared = _shared] { accept(shared); });
+  asio::post(acceptor.get_executor(), [shared = _shared, loop] {
+    // A stop_accepting() that came first has closed the acceptor itself.
+    int expected = Gate::waiting;
+    if (!loop->compare_exchange_strong(expected, Gate::running)) return;
+    accept(shared);
+  });
 }
 
 void StreamListener::accept(const std::shared_ptr<ListenerShared>& shared) {
@@ -83,6 +121,11 @@ void StreamListener::accept(const std::shared_ptr<ListenerShared>& shared) {
 
 void StreamListener::served(const std::shared_ptr<ListenerShared>& shared, tcp::socket socket) {
   boost::system::error_code ignored;
+  // Accepted before the acceptor's close ran, after stop_accepting() returned.
+  if (gate_shut(*shared)) {
+    socket.close(ignored);
+    return;
+  }
   const auto peer = socket.remote_endpoint(ignored);
   const auto& settings = shared->config;
   // What refuses at accept closes at once: a hosted system that answers its own
@@ -117,6 +160,9 @@ void StreamListener::served(const std::shared_ptr<ListenerShared>& shared, tcp::
         return refuse(&ListenerCounters::refused_caller);
     }
   }
+  // Every public protocol's small packets go out at once (Lir: Nagle behind the
+  // peer's delayed ACK cost an MQTT PUBACK about 40 ms); Stream::set_no_delay undoes it.
+  socket.set_option(tcp::no_delay(true), ignored);
   auto stream = std::make_shared<Stream>(Stream::Private{}, std::move(socket), shared);
   {
     contract::Lock lock(shared->mutex);
@@ -144,16 +190,46 @@ void StreamListener::stop_accepting() {
   // Once: a later call (the destructor's, after stop()) waits on nothing, so a
   // listener outliving its io context's run does not hang.
   if (!_accepting.exchange(false)) return;
-  auto& acceptor = _shared->acceptor;
-  // On the acceptor's strand, and done when this returns: no connection after it.
-  std::promise<void> closed;
-  auto done = closed.get_future();
-  asio::post(acceptor.get_executor(), [&acceptor, &closed] {
+  auto shared = _shared;
+  const auto close = [shared] {
     boost::system::error_code ignored;
-    acceptor.close(ignored);
-    closed.set_value();
+    shared->acceptor.close(ignored);
+  };
+  // Nothing is handed up after this, whenever the acceptor's close runs.
+  if (auto* gate = shared->accepted.target<Gate>()) {
+    gate->shut->store(true);
+    // The accept loop never began (its io context has not run since start(), Lugh's
+    // failed start): it never will touch the acceptor now, so it is closed here.
+    int expected = Gate::waiting;
+    if (gate->loop->compare_exchange_strong(expected, Gate::never)) return close();
+  }
+  // The acceptor's strand is on the io context the listener was made with; checked,
+  // not assumed (Lir's review), and without one the bounded wait below is taken.
+  const auto executor = shared->acceptor.get_executor();
+  const auto* strand = executor.target<asio::strand<asio::io_context::executor_type>>();
+  asio::io_context* io = strand ? &strand->get_inner_executor().context() : nullptr;
+  // Lugh's review: waiting on the acceptor's strand deadlocked where nothing else
+  // could run it. With the io context stopped (a listener destroyed after it), no
+  // handler runs beside this: closed here. A context stopped for want of work and
+  // later restarted on another thread would race this close (Lir's review): a
+  // listener is stopped before its io context is run again, not during.
+  if (io && io->stopped()) return close();
+  // Called on a thread running the io context (a signal handler there, a one-thread
+  // context): the close goes on the strand, at once if this is it, and is not waited
+  // for; until it runs a connection may reach the backlog, and is closed unserved.
+  if (io && io->get_executor().running_in_this_thread()) {
+    asio::dispatch(shared->acceptor.get_executor(), close);
+    return;
+  }
+  // From any other thread the acceptor is closed when this returns, so a connect
+  // after it is refused; within a bound, as no call waits without one.
+  auto closed = std::make_shared<std::promise<void>>();
+  auto done = closed->get_future();
+  asio::post(shared->acceptor.get_executor(), [close, closed] {
+    close();
+    closed->set_value();
   });
-  done.wait();
+  (void)done.wait_for(std::chrono::seconds(5));
 }
 
 void StreamListener::close_all() { close_all({}, {}); }

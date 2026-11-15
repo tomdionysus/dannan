@@ -34,6 +34,9 @@ Dagda tag and takes the Dannan minor that Dagda was built on.
   functions and the public headers. A changed behaviour inside an inline or
   template function in a header is compiled into the host, which a relink picks
   up. abidiff cannot see that, so such a change goes in the changelog.
+- The standard library's template instances the library happens to emit are
+  left out (`tools/abi-suppressions.ini`, the maintainer, 2026-11-15): a host instantiates
+  them itself and never links against Dannan's copy.
 
 A consumer's packaging, for example Dagda's:
 
