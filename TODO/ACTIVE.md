@@ -32,12 +32,14 @@ live cluster is live-a and live-b, both Pi 5 on Debian 13 with Boost
 contract `API_VERSION` 24. The laptop is on MacPorts for everything. Macha's
 current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluation.md`.
 
-## Resume here (2026-11-15, end of session)
+## Resume here (2026-11-16, in session)
 
-**State.** `develop` is 0.9 (CMake 0.9.0, `libdannan0.9`), at `042d2db` or later. 0.8.3 is the last release (`main`
-and tag at `00a3a12`; every 0.8 release's record is in `COMPLETED.md`). The branches are merged and no work is in
-flight. Develop's CI run 43765614152, for the agreement merge (`6f17bea`) and the scheduler fix (`0ce0b82`), was
-still running at the clear (macOS green): **check it first**. The fix's first real test is that run's ASan job.
+**State.** `develop` is 0.9 (CMake 0.9.0, `libdannan0.9`), at `a5d12df`, not pushed. 0.8.3 is the last release
+(`main` and tag at `00a3a12`; every 0.8 release's record is in `COMPLETED.md`). In flight:
+`feature/agreement-reconfiguration`, at `2329b9f`. Its suite on node-d ran 776 tests: 775 passed and 1 skipped (it is
+skipped when run as root). See the handoff in `COMPLETED.md`. Develop's CI runs from 43765614152 on were still
+queued at 2026-11-15 23:00Z, because hosted CI was not running (Kvasir saw the same): **check them first**. The
+scheduler fix's first real test is the ASan job.
 
 **Waiting on the maintainer:**
 - Whether the scheduler fix (`0ce0b82`: a deferred answer gives back its place and bytes before its reply is sent;
@@ -50,6 +52,9 @@ still running at the clear (macOS green): **check it first**. The fix's first re
   keeping every other check: certificates present, once only, nothing queued by send(). The new member is additive,
   so the ABI is kept. Write it test first, with a client that sends its ClientHello right behind the request. Kvasir
   pins 0.8.2 and moves to the first tag carrying it.
+- Whether 0.8.4 also carries **`NodeEvents::wait_for_change(seen, timeout, std::stop_token)`** (`fbcbb90`, merged at
+  `a5d12df`), Macha Server's ask so its NodeEvents become Dannan's. It is additive, with the member layout unchanged,
+  so it keeps the ABI. The suite on node-d ran 767 tests: 766 passed and 1 skipped (it is skipped when run as root).
 
 **Built for 0.9.0 so far** (see `COMPLETED.md`):
 - Agreement: the CASPaxos core (`agree/caspaxos.h`), its wire (types 22 to 24, replies 110 to 112) and fuzz target,
@@ -62,11 +67,11 @@ still running at the clear (macOS green): **check it first**. The fix's first re
 **Next, in order** (the maintainer: agreement first, half the stack waits on it):
 1. **Reconfiguration, as the maintainer ruled** (2026-11-15: "No root except at genesis. A root may start with only one
    node."). The design is `2026-11-15-agreement-design.md`, "Reconfiguration", agreed by Mimir and Kvasir:
-   - a fixed slot table, its count configurable (256 by default, at most 8192) and carried in the cluster's identity
-     beside the genesis members;
-   - every slot touched at founding;
-   - `transfer()`, a joint change on majorities of both sets;
-   - the slot bitmap advert as a hint, the refusal's `serving` being the authority.
+   - **Built** on `feature/agreement-reconfiguration` (`2329b9f`), with the gap's fix: per-slot records, `transfer()`,
+     settle, `found()`, the proof rule, the laggard rule. The table is `NodeConfig::agreement_slots` and
+     `agreement_genesis` (genesis at version 0).
+   - **Still to do:** the same table on every node; the slot bitmap advert as a hint, the refusal's `serving` being
+     the authority.
 
    Tests are named there: one-node genesis grown to five, the root unreachable, the fast path lost across a
    transfer.
@@ -87,7 +92,13 @@ still running at the clear (macOS green): **check it first**. The fix's first re
    - loader promotion at the peer.
 
    The wire additions are designed and reviewed first.
-7. Atomic commit across replica sets: Mimir and Kvasir will propose it.
+7. Atomic commit across replica sets: Mimir and Kvasir will propose it. Mimir needs it for ruling 22's multi-slot
+   commands now that a change names one slot.
+8. **Export the fuzz harness** (Kvasir's ask, 2026-11-15; Mimir wants it too), so hosted systems link it rather than
+   copy it (the stack's rule 3): `fuzz/fuzz.h`'s Target and Registration, `targets()`, the replay driver, and
+   `fuzz_smoke_test.cpp`'s mutate and seeds-then-mutations-then-noise loop as a callable, installed header-only with
+   the test fixtures. A hosted system then runs its targets in its own test binary with no clang, which no build Pi
+   has.
 
 **Standing, from the maintainer's rulings (2026-11-15):**
 - Anything that can use agreement waits for it: no stack project builds its own consensus meanwhile.
