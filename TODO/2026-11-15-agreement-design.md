@@ -202,6 +202,42 @@ two values for one name. So the set is part of the agreed state, not each propos
   hosted system's placement proposes the change; it takes effect when committed.
 - Test: two proposers naming different sets for one name never both commit.
 
+## Reconfiguration, proposed in full (2026-11-15, for review)
+
+Built so far: each acceptor records the set a name is served by and refuses a request
+naming another. That closes a change of set only where the two sets' majorities overlap.
+Two pieces close the rest.
+
+**1. Moving a name between sets: a joint change, in Dannan.** `transfer(space, names,
+from = {S, v}, to = {S', v+1})` runs one change whose prepare and accept must each reach a
+majority of S *and* a majority of S'; its accept marks every name served by S' at v+1 at
+every acceptor that takes it, in both sets, and carries the current value across (the new
+acceptors catch up in the same round). After it commits, a proposer still naming S must
+reach a majority of S, which overlaps the moved majority of S, so it meets an acceptor
+serving S' and is refused, told the set (the existing `serving` refusal): it re-reads its
+placement and retries on S'. Acceptors in S and not in S' keep refusing the name, and may
+forget it once the transfer is committed (`forget` scoped to themselves). Grow-then-shrink
+one node at a time is the hosted system's choice, not required: the joint change is safe
+for any S and S'.
+
+**2. A name no acceptor has seen: its set from an agreed map, the hosted system's.** With
+no served set recorded anywhere, two proposers whose rosters differ can name disjoint
+majorities, and both commit. No rule at the acceptors can see this (nothing is there to
+compare against), so the set a never-touched name starts on must itself be agreed. The
+hosted system keeps its placement (Mimir's shard map, Kvasir's range map) as registers in
+a space of its own, on a **root set** the operator declares (three or five nodes, named in
+configuration, changed only by an operator's `transfer` of the root registers). A proposer
+takes a name's set from the agreed map, and the map changes only by agreement, with the
+transfers it implies. Placement over each node's own roster (Dannan's `by_capacity`) stays
+the way to *propose* a new map, never the map itself.
+
+So Dannan provides `transfer()` and states the rule for untouched names; the agreed map is
+each hosted system's (Mimir, Kvasir), on the root set they configure. Tests: two proposers
+naming different sets for one never-touched name, each from its own roster, can both
+commit without the map (the simulator shows it, as the broken protocol the design names);
+with sets read from the agreed map, never; and a transfer under every fault keeps the value
+and refuses the old set afterwards.
+
 ## Deleting a name (Dagda's review, safety 2)
 
 Acceptor state otherwise grows without bound (Mimir's `DEL` and expiry), and removing it
