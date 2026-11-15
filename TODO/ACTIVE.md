@@ -47,6 +47,19 @@ green on every job. The `.deb`s are staged in `../tomcully-apt/incoming/dannan/0
 `libdannan.so.0.8`, shlibs `libdannan0.8 (>= 0.8.0)`, `dannan-custody` and its page in `dannan-tools`), for the maintainer to
 publish. Dagda, Lir, Lugh and Macha were told; Dagda gated on the tag (1106 ran, 1103 passed), Lir runs on it.
 
+the maintainer's rulings, 2026-11-15, directly:
+- **0.8.3 (a patch): the stream connector**, `dannan::listen`'s outbound side, for Lir's client library, Lugh's
+  publisher and `https.cpp`, and Mimir. Designed in `2026-11-15-p3-stream-connector.md`, reviewed by Lir and Lugh
+  (both reviews taken in it); keeps 0.8's layout.
+- **0.9.0: leaderless per-key agreement in Dannan** (Mimir's ruling 6, confirmed to Dannan directly): CASPaxos-shaped,
+  a linearizable change to a named register over a caller-supplied replica set, majority commit, no leader, several
+  registers of one set in one round; acceptor state behind a hosted system's interface, so Dannan stores nothing; new
+  wire messages. Design first, reviewed by Mimir, Lugh and Dagda.
+- **0.9.0: a hybrid logical clock in Dannan**, since Dagda will adopt it (the maintainer: in Dannan if another project would).
+  Dagda's conditions are requirements: one clock per node shared by every hosted system; never backwards across a
+  restart (a persisted high-water mark); a stated bound on a received stamp ahead of local wall time, refused or
+  clamped and counted. Lir would adopt it too, if the maintainer reopens the 2026-11-04 retained-ordering decision (Lir's to ask).
+
 For 0.9.0, an ABI change so not a patch (Dagda's after-profile of 0.8.2): every call still copies its peer's whole
 record, adverts and all, in `Client::handlers_for`'s capture, `CallOutcome::peer` and `RequestScheduler::Job`;
 carry a `shared_ptr<const NodeRecord>` or the id instead. Then 0.9.0: DTLS and plain UDP for `dannan::listen`; the peer-witnessed
