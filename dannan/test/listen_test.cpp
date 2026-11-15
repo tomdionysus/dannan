@@ -10,6 +10,7 @@
 // far end here is an ordinary client: Asio's TLS, as a browser or a device would be.
 
 #include <gtest/gtest.h>
+#include <openssl/bio.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
 #include <openssl/sha.h>
@@ -33,6 +34,7 @@
 #include <chrono>
 #include <fstream>
 #include <future>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -556,15 +558,39 @@ TEST(Certificates, AReloadReachesEveryListenerItServesAndAFailureKeepsTheOld) {
     EXPECT_NE(served_der(after), old_certificate);
   }
 
-  // A key that is not the chain's, and a missing file: refused, the old kept.
+  // A key that is not the chain's, one that is not a key at all, and a missing
+  // file: refused, each said for what it is (Lugh: a mismatched key was reported
+  // as not a key), the old kept.
+  const auto refused = [&](const std::string& said) {
+    try {
+      certificates->reload();
+      ADD_FAILURE() << "taken: " << said;
+    } catch (const std::runtime_error& error) {
+      const std::string what = error.what();
+      EXPECT_NE(what.find(paths.key.string()), std::string::npos) << what;
+      EXPECT_NE(what.find(said), std::string::npos) << what;
+      EXPECT_EQ(what.find("BEGIN"), std::string::npos) << what;
+    }
+  };
   write(paths.key, pki.issue(3).key);
-  try {
-    certificates->reload();
-    ADD_FAILURE() << "a mismatched key was taken";
-  } catch (const std::runtime_error& error) {
-    EXPECT_NE(std::string(error.what()).find(paths.key.string()), std::string::npos) << error.what();
-    EXPECT_EQ(std::string(error.what()).find("BEGIN"), std::string::npos) << error.what();
+  refused("not the key of " + paths.chain.string());
+  write(paths.key, "-----BEGIN PRIVATE KEY-----\nnot base64 at all\n-----END PRIVATE KEY-----\n");
+  refused("not a PEM private key");
+  // An encrypted key is refused as one, and no passphrase is asked for.
+  {
+    std::unique_ptr<BIO, decltype(&BIO_free)> in(BIO_new_mem_buf(renewed.key.data(), static_cast<int>(renewed.key.size())), BIO_free);
+    std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> plain(PEM_read_bio_PrivateKey(in.get(), nullptr, nullptr, nullptr), EVP_PKEY_free);
+    ASSERT_TRUE(plain);
+    std::unique_ptr<BIO, decltype(&BIO_free)> out(BIO_new(BIO_s_mem()), BIO_free);
+    char passphrase[] = "a passphrase";
+    ASSERT_EQ(PEM_write_bio_PKCS8PrivateKey(out.get(), plain.get(), EVP_aes_256_cbc(), passphrase, static_cast<int>(sizeof(passphrase) - 1), nullptr, nullptr),
+              1);
+    char* bytes = nullptr;
+    const auto size = BIO_get_mem_data(out.get(), &bytes);
+    write(paths.key, std::string(bytes, static_cast<size_t>(size)));
   }
+  refused("an encrypted key, which is not supported");
+  write(paths.key, renewed.key);
   std::filesystem::remove(paths.client_ca);
   EXPECT_THROW(certificates->reload(), std::runtime_error);
   EXPECT_EQ(certificates->generation(), 2u);
