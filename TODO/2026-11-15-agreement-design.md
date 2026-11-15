@@ -229,6 +229,29 @@ a space of its own. A proposer takes a name's set from the agreed map, and the m
 only by agreement, with the transfers it implies. Placement over each node's own roster
 (Dannan's `by_capacity`) stays the way to *propose* a new map, never the map itself.
 
+**Open: waits on the maintainer.** the maintainer asked of the root: "Dannan, and its predecessor code in Macha,
+were explicitly written to avoid this. What went wrong?" What went wrong: the draft took a
+conventional consensus system's shape (a metadata root) where the stack's rule is that no
+node is special. The need underneath is real and new: Macha's writes merge, so nodes with
+differing rosters are harmless, while agreement on a majority needs every proposer to agree
+which set it is a majority of. Dannan's recommended answer has no root at all:
+
+- **A fixed slot table** (Mimir's 256 shards generalised: every name hashes to one of a
+  fixed number of slots, fixed for the cluster's life).
+- **An untouched slot's set is the genesis members**, a constant fixed when the cluster is
+  made and carried with its identity, so every node, however late it joins, computes the
+  same set for a slot no acceptor has recorded. No touch, no map, no proposer choice.
+- **Each slot's set is recorded in its own acceptors** and moved by `transfer()`, proposed
+  by placement as the roster changes, the refusal redirecting a stale proposer. Placement
+  moves every slot off the genesis set as members come and go, so after the first moves
+  the genesis members are ordinary.
+- A hosted system's own map (Kvasir's ranges) lives in slot registers, and its names are
+  first touched only after that map commits.
+
+Nothing is a role after genesis; an operator is needed only when a slot's majority is lost
+for ever, which no design avoids. The paragraph below is the form reviewed before the maintainer's
+question, kept until he rules.
+
 **The root is a genesis value, not a role** (Mimir's condition and Kvasir's concern, both
 from the maintainer's rule of no designated nodes). The map registers' first set is the cluster's
 founding members, listed in configuration (the list a node joins by). From then on it is an
