@@ -1,6 +1,6 @@
 # Dannan - Active Work
 
-Last updated: 2026-11-14 (rationalised: history to `COMPLETED.md`). Dannan is written in this repository as its own
+Last updated: 2026-11-15 (rationalised: history to `COMPLETED.md`). Dannan is written in this repository as its own
 library, Macha's code at `00861dd` being the source of truth, and Macha is ported
 onto it.
 That reverses the morning's "in-tree first" (the maintainer, 2026-11-03: "I
@@ -32,122 +32,81 @@ live cluster is live-a and live-b, both Pi 5 on Debian 13 with Boost
 contract `API_VERSION` 24. The laptop is on MacPorts for everything. Macha's
 current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluation.md`.
 
-## Resume here (2026-11-15)
+## Resume here (2026-11-15, end of session)
 
-**0.9 is open on `develop`** (CMake 0.9.0, `libdannan0.9`). In progress, first (the maintainer: half the stack waits on it):
-agreement, merged at `dc9ede1`: the pure core (`agree/caspaxos.h`), the wire with a fuzz target, the runtime
-(`agree/agreement.h`, an injectable Schedule), the node's wiring and `Context::agreement()`; Lir's lease
-use-after-free fix. The simulation harness's first phase (the maintainer: within 0.9.0), merged at `2785ab6`:
-`test/fixtures/sim/world.h` and `agreement.h`; five real nodes linearizable under lost, delayed, duplicated and one-way
-messages and crash-restarts over 150 seeds; the broken protocol (voting after losing state) refused.
-Next, in order: agreement's stores' catch-up and `forget()`; reconfiguration through a configuration register (until
-then a name's replica set must be fixed for its life: two proposers naming disjoint majorities for a name nobody has
-touched could both commit); the fast path, value-less prepare and deltas; the harness's membership, Routes, placement,
-correlated kills and the history with faults and resolutions, then the checkers (`2026-11-15-simulation-harness.md`);
-the file-system interface (`2026-11-15-file-system-interface.md`, with Dagda for review); the hybrid clock
-(`2026-11-15-hlc-design.md`, reviewed); the datagram listener; the per-call record copies.
+**State.** `develop` is 0.9 (CMake 0.9.0, `libdannan0.9`), at `042d2db` or later. 0.8.3 is the last release (`main`
+and tag at `00a3a12`; every 0.8 release's record is in `COMPLETED.md`). The branches are merged and no work is in
+flight. Develop's CI run 43765614152, for the agreement merge (`6f17bea`) and the scheduler fix (`0ce0b82`), was
+still running at the clear (macOS green): **check it first**. The fix's first real test is that run's ASan job.
 
-**0.8.3 is released** (`main` and tag at `00a3a12`, pushed at the maintainer's word, 2026-11-15; main's CI run 43757309649 green).
-The `.deb`s are staged in `../tomcully-apt/incoming/dannan/0.8.3/` and checked (shlibs `libdannan0.8 (>= 0.8.3)`). Lir
-runs on it with lir::client on the connector (351 passed on node-b); Mimir pins it.
+**Waiting on the maintainer:**
+- Whether the scheduler fix (`0ce0b82`: a deferred answer gives back its place and bytes before its reply is sent;
+  it shipped in 0.8 and ASan caught it) also goes out as **0.8.4**. It is internal to `net/scheduler.cpp`, so it
+  keeps the ABI. Stage it only at his word.
 
-**0.8.2 is released** (`main` and tag at `20771a6`, pushed at the maintainer's word, 2026-11-15; main's CI run 43737550419
-green). The `.deb`s are staged in `../tomcully-apt/incoming/dannan/0.8.2/` and checked. Lir and Lugh run on it.
+**Built for 0.9.0 so far** (see `COMPLETED.md`):
+- Agreement: the CASPaxos core (`agree/caspaxos.h`), its wire (types 22 to 24, replies 110 to 112) and fuzz target,
+  the runtime (`agree/agreement.h`), the node's wiring and `Context::agreement()`, `forget()` with tombstones and a
+  per-space floor, and `catch_up()` for a store that lost its state.
+- The simulation harness, phase one (`test/fixtures/sim/`): five real nodes stay linearizable under lost, delayed,
+  duplicated and one-way messages and crash-restarts. The broken protocol (voting after losing state) is caught, and
+  catch-up holds while a minority is wiped.
 
-**0.8.1 is released** (`main` and tag at `53cc933`, pushed at the maintainer's word, 2026-11-15; main's CI run 43734647887 green).
-The `.deb`s are staged in `../tomcully-apt/incoming/dannan/0.8.1/` and checked (shlibs `libdannan0.8 (>= 0.8.1)`).
-Lir runs on it (337 passed on node-c, no code change); Lugh is moving.
+**Next, in order** (the maintainer: agreement first, half the stack waits on it):
+1. **Reconfiguration, as the maintainer ruled** (2026-11-15: "No root except at genesis. A root may start with only one
+   node."). The design is `2026-11-15-agreement-design.md`, "Reconfiguration", agreed by Mimir and Kvasir:
+   - a fixed slot table, its count configurable (256 by default, at most 8192) and carried in the cluster's identity
+     beside the genesis members;
+   - every slot touched at founding;
+   - `transfer()`, a joint change on majorities of both sets;
+   - the slot bitmap advert as a hint, the refusal's `serving` being the authority.
 
-**0.8.0 is released** (`main` at `6c240cc`, tag `0.8.0`, pushed at the maintainer's word, 2026-11-15). Main's CI run 43721335614
-green on every job. The `.deb`s are staged in `../tomcully-apt/incoming/dannan/0.8.0/` and checked (SONAME
-`libdannan.so.0.8`, shlibs `libdannan0.8 (>= 0.8.0)`, `dannan-custody` and its page in `dannan-tools`), for the maintainer to
-publish. Dagda, Lir, Lugh and Macha were told; Dagda gated on the tag (1106 ran, 1103 passed), Lir runs on it.
+   Tests are named there: one-node genesis grown to five, the root unreachable, the fast path lost across a
+   transfer.
+2. **The fast path** (one round uncontended), then **value-less prepare and deltas**. These come before a transfer of
+   large values (Kvasir's ranges: new acceptors are caught up by the store first, and the joint round then carries a
+   version or a delta).
+3. **The harness's next phase** (`2026-11-15-simulation-harness.md`):
+   - membership, Routes, placement and correlated kills in the world;
+   - the history with faults and resolutions;
+   - the checkers and the broken-protocol list;
+   - `dannan_sim_checkers`.
+4. **The file-system interface** (`2026-11-15-file-system-interface.md`, Dagda's review taken).
+5. **The hybrid clock** (`2026-11-15-hlc-design.md`, reviewed).
+6. **The rest of 0.9.0:**
+   - the per-call record copies (carry `shared_ptr<const NodeRecord>`; Dagda's profile);
+   - DTLS and UDP for `dannan::listen`;
+   - the peer-witnessed high-water mark;
+   - loader promotion at the peer.
 
-the maintainer's rulings, 2026-11-15, directly:
-- **0.8.3 (a patch): the stream connector**, `dannan::listen`'s outbound side, for Lir's client library, Lugh's
-  publisher and `https.cpp`, and Mimir. Designed in `2026-11-15-p3-stream-connector.md`, reviewed by Lir and Lugh
-  (both reviews taken in it); keeps 0.8's layout.
-- **Anything that can use agreement waits for it** (the maintainer, 2026-11-15, directly: "consensus/agreement is a huge part
-  of higher order behaviour"): no stack project builds its own consensus, lease-for-consensus or workaround in the
-  meantime. So agreement leads 0.9.0's work. Told to Dagda, Lugh, Lir, Macha Server, Mimir, Kvasir and Louhi.
-- **0.9.0: leaderless per-key agreement in Dannan** (Mimir's ruling 6, confirmed to Dannan directly): CASPaxos-shaped,
-  a linearizable change to a named register over a caller-supplied replica set, majority commit, no leader, several
-  registers of one set in one round; acceptor state behind a hosted system's interface, so Dannan stores nothing; new
-  wire messages. Design first, reviewed by Mimir, Lugh and Dagda.
-- **0.9.0: a hybrid logical clock in Dannan**, since Dagda will adopt it (the maintainer: in Dannan if another project would).
-  Dagda's conditions are requirements: one clock per node shared by every hosted system; never backwards across a
-  restart (a persisted high-water mark); a stated bound on a received stamp ahead of local wall time, refused or
-  clamped and counted. Lir would adopt it too, if the maintainer reopens the 2026-11-04 retained-ordering decision (Lir's to ask).
+   The wire additions are designed and reviewed first.
+7. Atomic commit across replica sets: Mimir and Kvasir will propose it.
 
-For 0.9.0, an ABI change so not a patch (Dagda's after-profile of 0.8.2): every call still copies its peer's whole
-record, adverts and all, in `Client::handlers_for`'s capture, `CallOutcome::peer` and `RequestScheduler::Job`;
-carry a `shared_ptr<const NodeRecord>` or the id instead. Then 0.9.0: DTLS and plain UDP for `dannan::listen`; the peer-witnessed
-high-water mark; and loader promotion at the peer (Dagda's ask, the maintainer: with the wire batch), a new message beside
-promote_read_ahead and promote_foreground. The wire additions are designed and reviewed first.
+**Standing, from the maintainer's rulings (2026-11-15):**
+- Anything that can use agreement waits for it: no stack project builds its own consensus meanwhile.
+- Lugh's TOTP, recovery codes and key rotation use agreement registers on 0.9.0 (relayed by Lugh).
+- The `ack_level` names are standard: ephemeral, persisted, decided, replicated (relayed by Kvasir).
+- The sim harness is built once, in Dannan (relayed by Kvasir).
 
-**0.7.0 is released** (`main` at `6ce0349`, tag `0.7.0`, both pushed at the maintainer's word). Main's CI was green on every job. The
-`.deb`s are in `../tomcully-apt/incoming/dannan/0.7.0/`; both library packages were checked: SONAME `libdannan.so.0.7`
-and shlibs `libdannan0.7 (>= 0.7.0)`. the maintainer published them to the apt repository (2026-11-14). Dagda, Lir, Lugh and Macha Server were told. Lugh has 0.7.0 (P2 shows in its
-Status with its P8.1). Lir is repinned with P2 wired in (`--minority degrade|refuse`), waiting on a Pi for its gate.
-
-**0.8.0 is open**: the tree and the library's package say 0.8 (`e839322`). The approved batch, in order, each on its own
-`feature/` branch, tests first, hosted CI, reviewed by the session that asked. the maintainer, 2026-11-14, to every session: no
-test run is repeated without a flake or odd behaviour to justify it, and ASan and TSan are for releases (hosted CI's
-jobs on push are the gate, not extra runs).
-1. P6's remaining three, for Macha: **done** on `feature/owner-test-seam` and merged into `develop`. Macha reviewed
-   it and every follow-up; all passed. CI run 43548808618 was green on every job. See `COMPLETED.md`.
-2. P4, the class-aware worker pool with CPU pacing: **done**, merged into `develop` (see `COMPLETED.md`). Still to
-   come, Macha's: its maintenance moves onto the node's gate, proved by its pacing cases
-   (`test_repair_is_paced_not_stopped_while_higher_classes_stay_busy`, `maintenance_trace`), then the baseline run
-   on the nodes. Also merged: Lugh's `DANNAN_BUILD_TOOLS` (`feature/tools-option`, CI green on every job).
-3. P3, the shared public listener (`2026-11-14-p3-public-listener.md`): the stream side, `dannan::listen`, is
-   **done**, merged into `develop` (see `COMPLETED.md`). DTLS and plain UDP associations are 0.9.0.
-4. P5: small-message figures in `dannan-bench`, on the Pi cluster between two real machines. It covers notify fan-out,
-   batched calls of 1 to 64 envelopes at 64 B to 1 KiB, msgs/s and p50/p99/p99.9, and the io thread count. Its stress
-   case is the call path's ceiling, about 6,000 calls/s per peer pair, where calls are refused at
-   `max_pending_replies` = 512 (`net/outbound.h:27`). Measure, then raise the cap, make it per class, or cheapen the
-   per-call path. Dagda's bench reproduces it (`2026-11-13-stack-needs.md`, P5, has the build and the commands).
-   Lir's target: PUBACK p99 under 50 ms at QoS 1 with k = 2.
-   the maintainer, 2026-11-14: run it on the build cluster (node-a, node-b, node-c, node-d), claimed on the board; and
-   0.8.0 waits for P5. **Done**, merged (see `COMPLETED.md`, `2026-11-14-p5-figures.md`): measured, the ceiling is
-   CPU near 14,800 calls/s on one Pi, not the cap, which stays at 512. the maintainer: enough, cut 0.8.0.
-5. Node-local rollback (the maintainer, 2026-11-14, ruled in Dagda's session on Dannan's proposal), for Dagda's and Lugh's
-   node-local state:
-   - 0.8.0, **done** and merged (see `COMPLETED.md`): the sealed per-label counter beside custody, on the Context's
-     `Identity` (`counter`, `advance_counter`, `advance_counters`, `note_counter`), sealed under HKDF(seal root,
-     "dannan/counter/1"). It refuses one directory restored alone, not a whole state restored together.
-   - 0.9.0: the peer-witnessed high-water mark, the rollback defence. Each label's mark is gossiped, peers keep the
-     highest they have seen of each node, and at open a node refuses a label below its peers' witness. A lone node
-     has only its local counter, and the limit is stated. A wire addition, so its own design and review first.
-the maintainer, 2026-11-14, answering directly: P4 and P3 as built on the notes' recommendations stand (all four P4 pieces in
-0.8.0, the CPU rest by task CPU time; `dannan::listen`, TCP and TLS in 0.8.0, DTLS in 0.9.0); push the reviewed
-branches for hosted CI.
-P7, Alpine in CI: not now (the maintainer). The 0.6 and 0.7 work's detailed notes (each fix, each finding, each review) are in
-`COMPLETED.md`, under "ACTIVE.md's history to 2026-11-14".
+**Peers' open threads:** Mimir and Kvasir are building on the slot table. Lir was told 0.7.0 and 0.8.3 interoperate,
+so it may roll its upgrade one node at a time.
 
 **Where things are built and tested** (the maintainer, 2026-11-14: "STOP all builds on the Mac now. Use the RPi cluster only."):
-- Never build or run tests on the Mac. Editing, git, gh and reading CI logs are fine, and so is clang-format.
+- Never build or run tests on the Mac. Editing, git, gh, reading CI logs and clang-format are fine.
 - Hosted CI (`.github/workflows/ci.yml`) is the gate: 15 jobs on Debian x86-64 and arm64 and macOS, with `abi`
-  against the minor's last tag.
-- To run CI on a feature branch, add a temporary commit putting the branch in `on.push.branches`. Drop it before the
-  merge, with `git rebase --onto X^ X`.
-- The shared Pi 5 cluster: node-a 192.0.2.11, node-b 192.0.2.12, node-c 192.0.2.13. Debian
-  13 arm64, 16 GB, NVMe, `ssh root@<ip>`.
-  - Nobody schedules them (the maintainer): claim a free one first, first come, first served, then release it the moment the
-    job ends.
-  - From the next session start, the maintainer's claim-board plugin gives `claims_list`, `claim_take` and `claim_release`, and
-    blocks heavy ssh commands without a claim. Before it: post `stack/pis/<host>/claims/Dannan` on
-    http://192.0.2.11:8183 (`../lir/deploy/pi-cluster/README.md`).
-  - One heavy job per Pi, a modest `-j`, nice 19: the Pis brown out under two.
-  - Lir's standing cluster uses ports 7537, 1983 and 8183 there.
-  - live-a and live-b, which run Macha, still need the maintainer's word.
+  against the minor's last tag. To run it on a feature branch, add a temporary commit putting the branch in
+  `on.push.branches`, and drop it before the merge with `git rebase --onto X^ X`. Its logs come down with
+  `curl` and `gh auth token` into `build/ci/` (`gh run view --log` waits for the whole run). CodeQL is a separate run
+  on the same commit: don't take it for the tests.
+- The Pi 5 cluster: node-a, -node-b, -node-c and -node-d, reached as `ssh root@<ip>`. Claim cores on the
+  claim board first and release them when the job ends. Use nice 19 and a modest `-j`.
+- live-a and live-b, which run Macha, still need the maintainer's word.
 
-**Release rules unchanged:**
+**Release rules:**
 - Tags need the maintainer's direct word.
 - The version commit changes CMake, README, CHANGELOG, COMPLETED and ACTIVE, and `debian/control`'s library package
   when a minor starts.
 - Within a minor the ABI is kept, and `tools/ci.sh abi` enforces it. An interface change waits for the next minor.
-
 
 ## The one rule
 
