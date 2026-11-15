@@ -90,12 +90,61 @@ over the world's network and time).
 
 ## Order
 
-1. The world, `SimTime`, `SimNetwork`, `SimDisk`, the history; agreement's timers onto the
-   injected time; agreement under every fault with its own invariants checked; the broken
-   protocols refused. The existing simulator moved onto it.
-2. The linearizability checker, with owner-supplied models; Mimir's reducer case.
-3. The serializability checker, with Kvasir's sequential model.
+1. The world (its own generator), `SimTime`, `SimNetwork` with Routes and simulated
+   membership and placement, `SimDisk` on the stack's durable-file contract, the simulated
+   worker pool, client actors, the history with faults and resolutions; agreement's timers
+   onto the injected time; agreement under every fault, correlated kills included, with its
+   own invariants checked; the broken protocols refused. The existing simulator moved onto
+   it.
+2. The linearizability checker, with owner-supplied models and the per-level durability
+   rules; Mimir's reducer case.
+3. The transaction checker by isolation level (dependency cycles), with Kvasir's model and
+   order options.
 4. Clock skew on the hybrid clock, once it is built.
+
+## Kvasir's review, taken
+
+- **Isolation levels, not only serial order.** Snapshot isolation (Kvasir's REPEATABLE
+  READ) permits write skew, so a serial-order search would refuse correct histories. The
+  transaction checker takes the level: serializable, snapshot (no G0, G1 or G-single
+  cycle; G2 allowed) and read committed, by cycle detection over Adya's dependency graph.
+  The world's clients write values unique per write, so every read names its writer and
+  the graph is read off the history, not searched for. The serial-order search stays as
+  the plain reading of SERIALIZABLE on small histories. An order option: real time,
+  session order (a session sees its own earlier commits), or none.
+- **A resolution event.** An operation records its invocation, its answer, and an
+  optional later resolution: at `ephemeral` and `persisted` a commit is answered before the
+  cluster decides it, and later decided or refused. An answered-and-unresolved commit is
+  treated as a missing response: it may or may not have taken effect. Mimir's blocking
+  commands use the same shape (an invocation, then its answer when it comes).
+- **Faults in the history; durability judged against them.** Every fault (a node killed,
+  a sync that lied, a disk torn, when) is an event in the history, and the checker has a
+  rule per `ack_level`: a `replicated` write survives any loss leaving a majority's disks;
+  a `decided` one may be lost only if a majority stopped together before syncing; a
+  `persisted` one only with its node's disk; an `ephemeral` one with its node. A loss the
+  faults do not excuse is a defect; one they excuse is not.
+- **Correlated faults.** "These nodes all killed at this step" is one fault the seed draws,
+  a whole majority included: the Pi cluster's real failure is several nodes losing power
+  at once under load.
+- **Real Dagda above the seam.** `SimDisk` implements the durable-file contract the stack
+  writes through, so Dagda's node-local log runs unmodified above it and Kvasir's store on
+  it is real, not a fake. Which contract that is (Dannan's `identity/durable_file.h`, or
+  Dagda's own file layer) is Dagda's to say; asked.
+- **Routes, roster and placement in phase 1.** Simulated membership (a node seen leaving by
+  some and not others, rosters that differ briefly), `Routes::call` through the world, and
+  placement over each node's own roster come with the first phase, not later. The broken
+  protocols gain "two proposers with different rosters naming different replica sets",
+  aimed at the reconfiguration register.
+- **The worker pool in the world.** A simulated `WorkerPool` whose tasks are events in the
+  world's queue, so nothing a hosted system runs on it escapes the seed.
+- **Seeds that replay anywhere.** The harness's own generator and distributions, fixed in
+  its header, never the standard library's (libc++ and libstdc++ differ): a seed found on a
+  Pi replays on the Mac.
+- **Clients as actors.** A client is a coroutine-like actor taking several steps (a
+  transaction is statements with other work between), so the world interleaves at
+  statement granularity.
+- **Header-only, kept light.** The checkers in their own headers, included only by the
+  tests that check (a build Pi has 3 GB).
 
 ## Open for review
 
