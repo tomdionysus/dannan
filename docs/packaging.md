@@ -10,7 +10,7 @@ Dannan is packaged for Debian trixie, on x86-64 and arm64, as:
   configuration. It depends on exactly its own release's library.
   `find_package(dannan <version> CONFIG)` accepts that version or any later
   patch of its minor.
-- `dannan-tools`: `dannan-ca`, `dannan-import-macha` and `dannan-version`.
+- `dannan-tools`: `dannan-ca`, `dannan-custody`, `dannan-import-macha` and `dannan-version`.
 - Debug symbols for each, as `-dbgsym` packages.
 
 The packages are built with debhelper from `debian/`, driving the CMake build;

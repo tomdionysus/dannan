@@ -82,7 +82,7 @@ case "$step" in
     # built, and tests without the tools they run are refused at configure.
     cmake -S "$top" -B "$out/package/library-only" -G Ninja -DCMAKE_BUILD_TYPE=Release -DDANNAN_BUILD_TOOLS=OFF
     cmake --build "$out/package/library-only" -j "$jobs"
-    for tool in dannan-node dannan-ca dannan-bench dannan-import-macha dannan-version; do
+    for tool in dannan-node dannan-ca dannan-custody dannan-bench dannan-import-macha dannan-version; do
       if [ -e "$out/package/library-only/$tool" ]; then
         echo "package: DANNAN_BUILD_TOOLS=OFF still built $tool" >&2
         exit 1

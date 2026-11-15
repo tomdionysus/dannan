@@ -1,0 +1,100 @@
+.\" Dannan - The Distributed Substrate
+.\" Copyright (C) 2026 Tom Cully <mail@tomcully.com>
+.\" Licensed under the GNU GPLv3 - see <https://www.gnu.org/licenses/gpl-3.0.html>
+.TH DANNAN-CUSTODY 1 2026-11-15 Dannan "Dannan tools"
+.SH NAME
+dannan-custody \- make and check a node's key custody under a systemd credential
+.SH SYNOPSIS
+.B dannan-custody init
+.B \-\-state
+.I DIR
+.B \-\-credential
+.I NAME
+.br
+.B dannan-custody show
+.B \-\-state
+.I DIR
+.B \-\-credential
+.I NAME
+.RB [ \-\-credentials-dir
+.IR DIR ]
+.SH DESCRIPTION
+A node's private key and seal root are held in key custody,
+.IR DIR /identity/custody,
+sealed under a root that is never on disk in clear. The root reaches the node
+as the systemd credential
+.IR NAME ,
+which the unit decrypts into
+.B $CREDENTIALS_DIRECTORY
+at each start.
+.B dannan-custody
+runs on the node, with the node stopped: both commands refuse while a node
+holds the state directory's lock
+.RI ( DIR /.dannan.lock),
+saying the path is in use.
+.TP
+.B init
+Makes custody for the state directory
+.IR DIR :
+a fresh node key and seal root under a new root. The new root is printed once,
+as 64 hex digits and a line end, and nothing else is written to standard
+output, so it may be piped straight to
+.BR systemd-creds (1)
+.BR encrypt .
+It is never stored in clear. The node's id,
+.IR DIR /node-id,
+is made with it, as a node makes it at its first start; an id already there is
+kept. Custody that exists is never replaced: init then refuses and changes
+nothing.
+.TP
+.B show
+Opens custody with the credential as the unit will find it and prints the
+node's id and public key as one JSON line,
+.BR {"id":"...","public_key":"..."} ,
+for
+.BR dannan-ca (1)
+.BR issue .
+It proves the sealed credential opens custody before the node is started on
+it, and writes nothing: a directory with no node id, mistyped or fresh, is
+refused. A root that does not open custody, or a custody file altered, is
+refused.
+.SH OPTIONS
+.TP
+.BI \-\-state " DIR"
+The node's state directory.
+.TP
+.BI \-\-credential " NAME"
+The systemd credential's name, as the unit's
+.B LoadCredentialEncrypted=
+names it.
+.TP
+.BI \-\-credentials-dir " DIR"
+For show: where the decrypted credential is, instead of
+.BR $CREDENTIALS_DIRECTORY .
+.SH SEALING WITHOUT A TPM
+Where the host has no TPM,
+.B systemd-creds encrypt
+seals the root with the host's key,
+.IR /var/lib/systemd/credential.secret ,
+alone. A root sealed that way opens only on the host that sealed it. An
+off-node backup must keep either the plain root, offline, or the sealed root
+together with that host's
+.IR credential.secret ;
+the sealed root without it cannot be opened anywhere else, and custody with it.
+.SH EXAMPLE
+.nf
+systemctl stop node
+dannan-custody init --state /var/lib/node --credential dannan-root \\
+  | systemd-creds encrypt --name=dannan-root - /etc/credstore.encrypted/dannan-root
+systemd-run --wait --pipe -p LoadCredentialEncrypted=dannan-root \\
+  dannan-custody show --state /var/lib/node --credential dannan-root
+systemctl start node
+.fi
+.SH EXIT STATUS
+0 on success, 1 when custody cannot be made or opened (custody that exists,
+the state in use, a wrong root, a missing credential), 2 for a usage error.
+.SH SEE ALSO
+.BR dannan-ca (1),
+.BR dannan-import-macha (1),
+.BR dannan-version (1),
+.BR systemd-creds (1)

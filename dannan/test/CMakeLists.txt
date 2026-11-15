@@ -15,6 +15,7 @@ target_compile_definitions(dannan_test_fixtures INTERFACE DANNAN_TEST_TEMP_ROOT=
 
 add_executable(dannan_tests
   contract_test.cpp
+  custody_tool_test.cpp
   fixtures_test.cpp
   fuzz_smoke_test.cpp
   identity_certificate_test.cpp
@@ -87,6 +88,8 @@ target_compile_definitions(dannan_tests PRIVATE DANNAN_TEST_PLUGIN_DIR="${DANNAN
 # Its fsync, on Linux, is the one the library calls (membership_test.cpp).
 set_target_properties(dannan_tests PROPERTIES ENABLE_EXPORTS ON)
 
-# The two-process test runs dannan-node as a child.
-target_compile_definitions(dannan_tests PRIVATE DANNAN_NODE_BINARY="$<TARGET_FILE:dannan-node>" DANNAN_CA_BINARY="$<TARGET_FILE:dannan-ca>")
-add_dependencies(dannan_tests dannan-node dannan-ca)
+# The two-process test runs dannan-node as a child, and the custody tool's
+# test dannan-custody.
+target_compile_definitions(dannan_tests PRIVATE DANNAN_NODE_BINARY="$<TARGET_FILE:dannan-node>" DANNAN_CA_BINARY="$<TARGET_FILE:dannan-ca>"
+                                                DANNAN_CUSTODY_BINARY="$<TARGET_FILE:dannan-custody>")
+add_dependencies(dannan_tests dannan-node dannan-ca dannan-custody)
