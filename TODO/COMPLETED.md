@@ -3,6 +3,21 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
+## Handoff, 2026-11-15: 0.8.3 prepared
+
+- The stream connector (the maintainer: a 0.8 patch), designed in `2026-11-15-p3-stream-connector.md` with Lir's and Lugh's
+  reviews, merged at `1fd3ba6`; both reviews of the code taken on `feature/connector-review`, merged at `4eac5f7`:
+  attempts counted once (connected when told), the time source by pointer, the system trust read at once (no lookup
+  directory), a trailing dot checked and left out of the SNI. CI found on the way: an attempt freed untold when its
+  resolver dropped the callback (the deadline now holds it); the trailing dot not stripped by OpenSSL's check (macOS);
+  a sealed counters test that overwrote a random tag byte with a fixed one and so altered nothing one time in 256.
+  CI run 43747026240 green on every job.
+- RS256 verification, verify only (Lugh's P11, the maintainer's ruling; in 0.8.3 at the maintainer's word): `verify_rs256(n, e, message,
+  signature)`, merged at `22bf306`, tested with generated keys (no Wycheproof file here, none written from memory).
+  CI run 43747779212 green on every job. Lugh approved.
+- Not in it, 0.9's (Lease's layout changes): Lir's TSan finding, a Lease released after its node's ledger was
+  destroyed; fixed on `feature/agreement`. Lir suppresses that one race under TSan until 0.9.0.
+
 ## Handoff, 2026-11-15: 0.8.2 prepared; 0.8.1 released
 
 0.8.1: tagged at the maintainer's word (`53cc933`), main's CI run 43734647887 green, `.deb`s staged and checked. Lir moved with

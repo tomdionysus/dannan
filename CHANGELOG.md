@@ -1,5 +1,27 @@
 # Current release
 
+## 0.8.3: connecting out, and RS256 for WebAuthn
+
+`dannan::listen`'s outbound side, `StreamConnector`: connects over TCP or TLS and hands
+up the same `Stream` an accepted connection is, so a protocol's framing serves both ends
+(Lir's MQTT client library, Lugh's publisher and HTTPS exchange, Mimir). One deadline on
+the injected time covers resolution, connection and the handshake, a resolver that never
+answers included; `done` is told once with the stream or why. TLS: `ClientTrust` reads
+the CAs once (a named bundle, or the system's default file), so a bad bundle is found at
+start and no handshake reads a file; the server's name is checked with no partial
+wildcards, an IP literal against the certificate's addresses with no SNI, a trailing dot
+allowed; a client certificate may be offered; there is no option that turns verification
+off. TCP_NODELAY is on. `Stream::peer_certificate()` names the other end's certificate at
+either end.
+
+Identity: `verify_rs256(n, e, message, signature)`, RSASSA-PKCS1-v1_5 with SHA-256 under a
+COSE RSA key (Lugh's WebAuthn), verify only: a modulus outside 2048 to 8192 bits, an even
+or small exponent, or malformed input is false, never an exception.
+
+Fixed: a sealed counters test that altered nothing one time in 256.
+
+The ABI is 0.8.0's.
+
 ## 0.8.2: placement copies only its answer, and a listener's key is refused for what is wrong with it
 
 Placement: `Nodes::placement` takes one copy of the roster and narrows it in place,

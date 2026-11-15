@@ -34,9 +34,21 @@ current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluat
 
 ## Resume here (2026-11-15)
 
-**0.8.2 is prepared on `develop`** (the maintainer approved it, 2026-11-15): Dagda's placement copies, and Lugh's two key
-messages (a mismatched key, an encrypted key), each reviewed and approved. Waiting on the maintainer: the tag `0.8.2` and the push
-of `main`. Then stage the `.deb`s and tell Dagda, Lugh, Lir and Macha.
+**0.8.3 is prepared on `develop`** (the maintainer approved it, 2026-11-15): the stream connector (Lir and Lugh reviewed and
+approved, `2026-11-15-p3-stream-connector.md`) and RS256 verification (Lugh's WebAuthn, the maintainer's ruling; the maintainer put it in
+0.8.3). Waiting on the maintainer: the tag `0.8.3` and the push of `main`. Then stage the `.deb`s and tell Lir (lir::client moves
+onto the connector), Lugh (https.cpp and W2), Mimir, Dagda and Macha.
+
+**In progress, first (the maintainer: half the stack waits on it): agreement, on `feature/agreement`**, which opens 0.9 (CMake
+0.9.0, `libdannan0.9`) and so merges after 0.8.3 is tagged. Built: the pure core (`agree/caspaxos.h`, tested by a
+3000-order simulator), the wire with a fuzz target, the runtime (`agree/agreement.h`), the node's wiring and
+`Context::agreement()`; also Lir's lease use-after-free fix (0.9's, the Lease's layout changes). Not yet: the fast path,
+value-less prepare and deltas, `forget()`, reconfiguration through a configuration register, the stores' catch-up.
+Until reconfiguration, a name's replica set must be fixed for its life: two proposers naming disjoint majorities for a
+name nobody has touched could both commit.
+
+**0.8.2 is released** (`main` and tag at `20771a6`, pushed at the maintainer's word, 2026-11-15; main's CI run 43737550419
+green). The `.deb`s are staged in `../tomcully-apt/incoming/dannan/0.8.2/` and checked. Lir and Lugh run on it.
 
 **0.8.1 is released** (`main` and tag at `53cc933`, pushed at the maintainer's word, 2026-11-15; main's CI run 43734647887 green).
 The `.deb`s are staged in `../tomcully-apt/incoming/dannan/0.8.1/` and checked (shlibs `libdannan0.8 (>= 0.8.1)`).
