@@ -61,5 +61,5 @@ Description: network layer for a cluster of trusted machines (operator tools)
  .
  This package holds dannan-ca, the cluster's certificate authority;
  dannan-custody, which makes and checks a node's key custody under a systemd
- credential; dannan-import-macha, which turns Macha's state files into Dannan's once at
- the first cutover; and dannan-version.
+ credential; dannan-import-macha, which turns Macha's state files into
+ Dannan's once at the first cutover; and dannan-version.
