@@ -309,6 +309,91 @@ commit without the map (the simulator shows it, as the broken protocol the desig
 with sets read from the agreed map, never; and a transfer under every fault keeps the value
 and refuses the old set afterwards.
 
+## Reconfiguration: the gap found in building it, and the fix (the maintainer, 2026-11-15)
+
+**The gap.** An acceptor with no record for a name admits a request naming any set
+(`agree/caspaxos.cpp`, `admitted`). Suppose a transfer S to S' has its accept reach one node
+of S' and a minority of S, and so does not commit. That node now advertises the slot. A
+proposer that takes S' from the hint reaches two unrecorded nodes of S' and commits from
+nothing. Meanwhile a proposer on S commits on the rest of S. That gives two histories and a
+lost value, with no stale proposer at all. A second form: the design records the set per
+slot, but the code records it per name, so a name never written inside a moved slot has no
+record anywhere and meets the same gap. the maintainer chose the fix below over a review round first.
+
+**The fix, as built:**
+
+1. **The record is per slot.** Every name belongs to one slot, and a change names one slot,
+   so its names share one. The caller names the slot (Mimir, 2026-11-15: keys sharing a hash
+   tag must land in one shard, so Mimir maps CRC16 of the tag or key onto the slot count).
+   `slot_of`, FNV-1a 64 of the name's bytes modulo the count, is the default for a system with
+   no scheme of its own. Changes across slots are the atomic commit across replica sets, item 7
+   of the plan, which Mimir and Kvasir will propose. The store keeps, beside each slot's names, a slot record that holds:
+   - the set the slot is served by;
+   - `pending_from`, the set it is moving from, while a transfer is not known to be
+     committed;
+   - the slot's promise, the highest transfer ballot promised.
+
+   The store loads and keeps the record together with the names, in one call.
+2. **A transfer is a change to the whole slot.** Its prepare must be above every promise
+   and acceptance held for any name in the slot, and above the slot's promise. It raises
+   the slot's promise, and each acceptor answers with every name it holds in the slot. The
+   proposer reduces those answers per name and its accept carries them all, so the new
+   acceptors catch up in the same round. The accept is refused where any name in the slot
+   holds a ballot above it, including names it did not carry. It records S' with
+   `pending_from` S. A plain change's ballot must be above the slot's promise, but it does
+   not raise that promise, so plain changes to different names in one slot never contend.
+3. **Settle.** Once a transfer commits on majorities of both sets, the proposer sends
+   `settle` to both sets, which clears `pending_from`. Only a settled record is proof that
+   the slot moved.
+4. **Admission at an acceptor:**
+   - A plain request naming set X:
+     - is refused, naming the record, where the slot is recorded for another set, or is
+       pending away from X;
+     - is promised and answered, saying what the acceptor holds, where the slot is recorded
+       for X (settled or pending to X) or not recorded at all.
+   - A transfer from S to S' is admitted at a member of S where its record is S settled,
+     S' pending from S, or S' settled (finishing it again is harmless), or, if the slot is
+     recorded nowhere, only where S is the genesis set. A node only in S' is admitted
+     whatever it holds: it is joining, and takes what a majority of S gives it. The old
+     set's members vouch for the slot, and a majority of them must promise.
+5. **The proposer's rule for a plain change on X**, once a majority of X has promised:
+   - It goes on only if a promiser holds X settled, or if X is the genesis set and no
+     promiser holds any record. Founding makes the second case one moment's.
+   - If a promiser holds X pending from S, the transfer is unfinished: the runtime runs the
+     joint change S to X again, settles it, and retries.
+   - Otherwise the slot is not served by X (a stale hint), and the change is refused,
+     saying so.
+
+   An accept of a plain change on X records X as settled at an acceptor that had no record
+   or held it pending, because the proposer has seen the proof.
+6. **Founding** is a plain change with no names on the genesis set, once per slot. It
+   records the genesis set as settled at each genesis acceptor.
+
+Why it holds:
+- A plain commit on X needs a settled record of X in its majority. A record is settled only
+  after a transfer committed on majorities of both sets (or at founding).
+- A committed transfer's accept reached a majority of S. So a later plain proposer on S
+  meets an acceptor in that majority, which refuses it.
+- Any S commit ordered before the transfer is either refused by the transfer's accept or
+  carried by its prepare, by Paxos's intersection over the slot's ballots.
+- An acceptor that missed the transfer only lacks names. Every committed value is still
+  held by some acceptor in any majority of S', since the transfer's accept and every later
+  commit reached a majority of S'.
+
+Limits, stated:
+- A transfer carries whole values. A slot too large for one message is refused, saying so,
+  until value-less prepare and deltas let the store catch up beforehand.
+- A transfer committed but never settled, whose old set then loses its majority for ever,
+  is stuck. That is the "no forced transfer" case, for the hosted system's operator.
+
+Tests:
+- the gap's own case (fails on the old rule, passes on this one);
+- a plain change on a stale hint is refused;
+- an unfinished transfer is finished by the next proposer;
+- a name never written in a moved slot is found on the new set;
+- a plain change racing a transfer either is carried or refuses the transfer;
+- one-node genesis grown to five under the simulator's faults.
+
 ## Deleting a name (Dagda's review, safety 2)
 
 Acceptor state otherwise grows without bound (Mimir's `DEL` and expiry), and removing it
