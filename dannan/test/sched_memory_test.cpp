@@ -43,7 +43,7 @@ TEST(RetainedMemory, ALeaseThatOutlivesItsLedgerReleasesNothing) {
     ASSERT_TRUE(kept && *kept);
     ASSERT_TRUE(moved && *moved);
   }
-  RetainedMemoryLedger::Lease taken = std::move(**moved);
+  RetainedMemoryLedger::Lease taken = std::move(*moved);
   kept->reset();
   EXPECT_FALSE(*kept);
   taken.reset();
