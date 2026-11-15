@@ -351,8 +351,22 @@ class Budget {
   // std::invalid_argument if the node's budget cannot hold one.
   virtual void declare(sched::WorkClass work, uint64_t unit_bytes) = 0;
   // Bytes held until the lease goes; nothing when the class has no room
-  // now. Waits on nothing.
+  // now. Waits on nothing. Charged to MemoryOwner::hosted_first.
   virtual std::optional<sched::RetainedMemoryLedger::Lease> reserve(sched::WorkClass work, uint64_t bytes) = 0;
+  // As reserve(), charged to `owner`, which is the hosted system's: one below
+  // MemoryOwner::hosted_first throws std::invalid_argument.
+  virtual std::optional<sched::RetainedMemoryLedger::Lease> reserve(sched::WorkClass work, sched::MemoryOwner owner, uint64_t bytes) = 0;
+  // Waits until `bytes` may be held, as the node's ledger does: nothing once
+  // the deadline passes, or once `cancelled` is set and wake() is called, and
+  // at once when the class could never hold that much. Charged to `owner`, as
+  // reserve(). No deadline (a default TimePoint) throws std::invalid_argument.
+  // Waits on other holders and on the deadline; thread-safe.
+  virtual std::optional<sched::RetainedMemoryLedger::Lease> acquire(sched::WorkClass work, sched::MemoryOwner owner, uint64_t bytes,
+                                                                    contract::TimePoint deadline, std::atomic_bool* cancelled = nullptr) = 0;
+  // Wakes every acquire() to re-check its cancel flag. Never waits.
+  virtual void wake() = 0;
+  // The node's ledger as it stands, every owner's bytes among it.
+  virtual sched::RetainedMemoryStats stats() const = 0;
 };
 
 // Faults are values: raised, counted in Status, and handed to the sink the

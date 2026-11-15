@@ -953,6 +953,62 @@ TEST(Node, ABudgetBelowOneUnitIsRefused) {
   EXPECT_EQ(lease->bytes(), 4096u);
 }
 
+// A hosted system's charges show under its own owner; Dannan's owners are not
+// its to name (Dagda's ask: its reads show as object payload).
+TEST(Node, ABudgetChargesTheHostedOwnerNamed) {
+  Pair pair;
+  auto& budget = pair.a->context().budget();
+  const auto payload = static_cast<sched::MemoryOwner>(static_cast<uint16_t>(sched::MemoryOwner::hosted_first) + 3);
+  auto lease = budget.reserve(sched::WorkClass::foreground, payload, 4096);
+  ASSERT_TRUE(lease);
+  EXPECT_EQ(budget.stats().owner_bytes.at(payload), 4096u);
+  lease.reset();
+  const auto after = budget.stats().owner_bytes;
+  EXPECT_TRUE(!after.contains(payload) || after.at(payload) == 0u);
+  EXPECT_THROW((void)budget.reserve(sched::WorkClass::foreground, sched::MemoryOwner::rpc_frame, 1), std::invalid_argument);
+  EXPECT_THROW((void)budget.acquire(sched::WorkClass::foreground, sched::MemoryOwner::rpc_frame, 1, contract::Clock::now() + 1s), std::invalid_argument);
+  // No call waits without a deadline.
+  EXPECT_THROW((void)budget.acquire(sched::WorkClass::foreground, payload, 1, contract::TimePoint{}), std::invalid_argument);
+}
+
+// A read waits for room under its deadline and its cancel flag, as Macha's do
+// on the ledger (distributed_store.cpp:1744): room let go admits the waiter,
+// a deadline that passes or a cancel ends the wait empty.
+TEST(Node, ABudgetWaitsForRoomUnderADeadlineAndACancel) {
+  Pair pair([](NodeConfig& c) {
+    c.memory_bytes = 64ull << 20;
+    c.control_reserve_bytes = 8ull << 20;
+    c.foreground_reserve_bytes = 8ull << 20;
+    c.loader_reserve_bytes = 8ull << 20;
+    c.reassembly_reserve_bytes = 8ull << 20;
+  });
+  auto& budget = pair.a->context().budget();
+  const auto owner = sched::MemoryOwner::hosted_first;
+  // Take all the loader class may hold, a MiB at a time.
+  std::vector<sched::RetainedMemoryLedger::Lease> held;
+  while (auto lease = budget.reserve(sched::WorkClass::loader, owner, 1ull << 20)) held.push_back(std::move(*lease));
+  ASSERT_FALSE(held.empty());
+
+  EXPECT_FALSE(budget.acquire(sched::WorkClass::loader, owner, 1ull << 20, contract::Clock::now() + 50ms));
+
+  std::atomic_bool cancelled{false};
+  auto cancelled_wait = std::async(
+      std::launch::async, [&] { return budget.acquire(sched::WorkClass::loader, owner, 1ull << 20, contract::Clock::now() + 60s, &cancelled).has_value(); });
+  EXPECT_EQ(cancelled_wait.wait_for(50ms), std::future_status::timeout);
+  cancelled = true;
+  budget.wake();
+  ASSERT_EQ(cancelled_wait.wait_for(10s), std::future_status::ready);
+  EXPECT_FALSE(cancelled_wait.get());
+
+  auto admitted = std::async(std::launch::async, [&] { return budget.acquire(sched::WorkClass::loader, owner, 1ull << 20, contract::Clock::now() + 60s); });
+  EXPECT_EQ(admitted.wait_for(50ms), std::future_status::timeout);
+  held.pop_back();
+  ASSERT_EQ(admitted.wait_for(10s), std::future_status::ready);
+  auto lease = admitted.get();
+  ASSERT_TRUE(lease);
+  EXPECT_EQ(lease->bytes(), 1ull << 20);
+}
+
 TEST(Node, StoppingIsPromptAndCallsFailAfter) {
   Pair pair;
   pair.b->start();
