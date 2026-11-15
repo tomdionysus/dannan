@@ -55,6 +55,12 @@ struct ServerTls {
 // Throws std::runtime_error naming the listener, never a value.
 std::shared_ptr<ServerTls> server_tls(const Certificates::Material& material, const TlsPolicy& policy, const std::string& listener);
 
+// A client context (the connector's): verifying the server against `store`, offering
+// `alpn` and, with `material`, a client certificate. Throws std::runtime_error naming
+// the connector, never a value.
+std::shared_ptr<ServerTls> client_tls(const std::shared_ptr<X509_STORE>& store, TlsVersion minimum, const std::vector<std::string>& alpn,
+                                      const Certificates::Material* material, const std::string& connector);
+
 // Runs `fire` on `timer`'s executor once `time` reaches `at`, unless the timer is
 // cancelled first. Looks again as the source says (a stepped source moves without
 // waking a timer).
@@ -84,5 +90,14 @@ struct ListenerShared {
   std::shared_ptr<detail::ServerTls> tls DANNAN_GUARDED_BY(mutex);
   uint64_t tls_generation DANNAN_GUARDED_BY(mutex) = 0;
 };
+
+namespace detail {
+
+// Closes every stream `shared` still holds, cleanly within its close bound, and with
+// `done` posts it to `executor` once every one has finished: the listener's and the
+// connector's close_all.
+void close_open(ListenerShared& shared, boost::asio::any_io_executor executor, std::function<void()> done);
+
+}  // namespace detail
 
 }  // namespace dannan::listen

@@ -16,6 +16,7 @@
 #include <openssl/sha.h>
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
+#include <openssl/x509v3.h>
 #include <stdlib.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -27,6 +28,7 @@
 #include <boost/asio/read.hpp>
 #include <boost/asio/ssl.hpp>
 #include <boost/asio/strand.hpp>
+#include <boost/asio/thread_pool.hpp>
 #include <boost/asio/write.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
@@ -44,6 +46,7 @@
 #include "dannan/identity/signing.h"
 #include "dannan/listen/beast.h"
 #include "dannan/listen/certificates.h"
+#include "dannan/listen/connector.h"
 #include "dannan/listen/limits.h"
 #include "dannan/listen/listener.h"
 #include "dannan/listen/stream.h"
@@ -603,6 +606,289 @@ TEST(Certificates, AReloadReachesEveryListenerItServesAndAFailureKeepsTheOld) {
 }
 
 // --- Deadlines and the outbound bound -------------------------------------------
+
+// --- The connector ---------------------------------------------------------------
+
+// A server certificate under the test CA carrying `san` ("DNS:localhost,IP:127.0.0.1"),
+// written beside the PKI's files: the connector checks names, which the CA's node
+// certificates do not carry.
+CertificatePaths named_server(Pki& pki, const std::string& name, const std::string& san) {
+  const auto key = identity::SigningKey::generate(identity::SigningAlgorithm::es256);
+  const auto ca_der = pki.ca.certificate().der();
+  const unsigned char* cursor = ca_der.data();
+  std::unique_ptr<X509, decltype(&X509_free)> ca(d2i_X509(nullptr, &cursor, static_cast<long>(ca_der.size())), X509_free);
+  std::unique_ptr<X509, decltype(&X509_free)> certificate(X509_new(), X509_free);
+  X509_set_version(certificate.get(), 2);
+  ASN1_INTEGER_set(X509_get_serialNumber(certificate.get()), 77);
+  X509_gmtime_adj(X509_getm_notBefore(certificate.get()), -60);
+  X509_gmtime_adj(X509_getm_notAfter(certificate.get()), 3600);
+  X509_NAME_add_entry_by_txt(X509_get_subject_name(certificate.get()), "CN", MBSTRING_ASC, reinterpret_cast<const unsigned char*>("connector test"), -1, -1, 0);
+  X509_set_issuer_name(certificate.get(), X509_get_subject_name(ca.get()));
+  X509_set_pubkey(certificate.get(), key.native_handle());
+  X509V3_CTX context;
+  X509V3_set_ctx_nodb(&context);
+  X509V3_set_ctx(&context, ca.get(), certificate.get(), nullptr, nullptr, 0);
+  X509_EXTENSION* names = X509V3_EXT_conf_nid(nullptr, &context, NID_subject_alt_name, san.c_str());
+  X509_add_ext(certificate.get(), names, -1);
+  X509_EXTENSION_free(names);
+  X509_sign(certificate.get(), pki.ca.key().native_handle(), EVP_sha256());
+  std::unique_ptr<BIO, decltype(&BIO_free)> out(BIO_new(BIO_s_mem()), BIO_free);
+  PEM_write_bio_X509(out.get(), certificate.get());
+  char* data = nullptr;
+  const auto size = BIO_get_mem_data(out.get(), &data);
+  write(pki.dir.path() / (name + ".crt"), std::string(data, static_cast<size_t>(size)) + pki.ca.certificate().pem());
+  write(pki.dir.path() / (name + ".key"), key_pem(key));
+  write(pki.dir.path() / "client-ca.pem", pki.ca.certificate().pem());
+  return {pki.dir.path() / (name + ".crt"), pki.dir.path() / (name + ".key"), pki.dir.path() / "client-ca.pem"};
+}
+
+struct Connected {
+  std::shared_ptr<Stream> stream;
+  std::string why;
+};
+
+Connected connect_now(StreamConnector& connector, Io& io, const std::string& host, uint16_t port, std::optional<ClientTls> tls,
+                      std::chrono::milliseconds deadline = 10s) {
+  auto told = std::make_shared<std::promise<Connected>>();
+  connector.connect(io.context.get_executor(), host, port, std::move(tls), deadline,
+                    [told](std::shared_ptr<Stream> stream, std::string why) { told->set_value({std::move(stream), std::move(why)}); });
+  auto future = told->get_future();
+  if (future.wait_for(30s) != std::future_status::ready) return {nullptr, "not told"};
+  return future.get();
+}
+
+// Sends `text` with send() and reads as many bytes back, on the stream's executor.
+std::string ask(const std::shared_ptr<Stream>& stream, const std::string& text) {
+  auto back = std::make_shared<std::string>(text.size(), '\0');
+  auto read = std::make_shared<std::promise<bool>>();
+  asio::post(stream->get_executor(), [stream, text, back, read] {
+    stream->send(text);
+    asio::async_read(*stream, asio::buffer(*back), [read](boost::system::error_code error, std::size_t) { read->set_value(!error); });
+  });
+  auto future = read->get_future();
+  if (future.wait_for(10s) != std::future_status::ready || !future.get()) return {};
+  return *back;
+}
+
+uint16_t nothing_listens() {
+  asio::io_context io;
+  tcp::acceptor acceptor(io, {asio::ip::make_address("127.0.0.1"), 0});
+  const auto port = acceptor.local_endpoint().port();
+  acceptor.close();
+  return port;
+}
+
+// Out in plaintext: the same Stream an accepted connection is, carrying bytes, with the
+// server as its peer and TCP_NODELAY on (Lir's ask).
+TEST(StreamConnector, ConnectsOutInPlaintextAndCarriesAsAnAcceptedStreamDoes) {
+  Io io;
+  StreamListener listener(io.context, plain_config());
+  listener.start(io.context.get_executor(), [](std::shared_ptr<Stream> stream) { echo(stream); });
+  ConnectorConfig config;
+  config.name = "out";
+  StreamConnector connector(io.context, config);
+  const auto made = connect_now(connector, io, "127.0.0.1", listener.port(), std::nullopt);
+  ASSERT_TRUE(made.stream) << made.why;
+  EXPECT_FALSE(made.stream->is_tls());
+  EXPECT_EQ(made.stream->peer().port(), listener.port());
+  EXPECT_EQ(made.stream->listener(), "out");
+  std::promise<bool> no_delay;
+  asio::post(made.stream->get_executor(), [&] { no_delay.set_value(made.stream->no_delay()); });
+  EXPECT_TRUE(no_delay.get_future().get());
+  EXPECT_EQ(ask(made.stream, "ping"), "ping");
+  EXPECT_EQ(connector.counters().connected, 1u);
+  EXPECT_EQ(connector.counters().open, 1u);
+  std::promise<void> closed;
+  connector.close_all(io.context.get_executor(), [&] { closed.set_value(); });
+  EXPECT_EQ(closed.get_future().wait_for(10s), std::future_status::ready);
+  EXPECT_TRUE(eventually([&] { return connector.counters().open == 0 && connector.counters().closed_clean == 1; }));
+  listener.stop();
+}
+
+// TLS out (Lir's and Lugh's reviews): the chain against the trust, the name against the
+// certificate (an IP literal against its addresses, a DNS name against its names, one
+// that matches neither refused), ALPN chosen, the server's certificate as the peer's,
+// and a client certificate offered reaching the listener verified.
+TEST(StreamConnector, ChecksTheServersChainAndNameOverTls) {
+  Io io;
+  Pki pki;
+  auto server = std::make_shared<Certificates>(named_server(pki, "named", "DNS:localhost,IP:127.0.0.1"));
+  auto config = tls_config(server, "mqtts");
+  config.tls.alpn = {"mqtt"};
+  config.tls.client_certificates = ClientCertificates::optional;
+  Served served;
+  StreamListener listener(io.context, config);
+  listener.start(io.context.get_executor(), [&](std::shared_ptr<Stream> stream) {
+    echo(stream);
+    served.handler()(std::move(stream));
+  });
+  write(pki.dir.path() / "trust.pem", pki.ca.certificate().pem());
+  const auto trust = std::make_shared<ClientTrust>(pki.dir.path() / "trust.pem");
+  ConnectorConfig settings;
+  settings.name = "client";
+  StreamConnector connector(io.context.get_executor(), settings);
+  const auto tls = [&](std::string name = {}) {
+    ClientTls out;
+    out.trust = trust;
+    out.server_name = std::move(name);
+    out.alpn = {"mqtt"};
+    return out;
+  };
+
+  const auto by_address = connect_now(connector, io, "127.0.0.1", listener.port(), tls());
+  ASSERT_TRUE(by_address.stream) << by_address.why;
+  EXPECT_TRUE(by_address.stream->is_tls());
+  EXPECT_EQ(by_address.stream->alpn(), "mqtt");
+  ASSERT_TRUE(by_address.stream->peer_certificate());
+  EXPECT_TRUE(by_address.stream->peer_certificate()->verified);
+  EXPECT_NE(by_address.stream->peer_certificate()->subject.find("connector test"), std::string::npos);
+  EXPECT_EQ(ask(by_address.stream, "secret"), "secret");
+
+  const auto by_name = connect_now(connector, io, "127.0.0.1", listener.port(), tls("localhost"));
+  ASSERT_TRUE(by_name.stream) << by_name.why;
+
+  const auto wrong_name = connect_now(connector, io, "127.0.0.1", listener.port(), tls("other.example"));
+  EXPECT_FALSE(wrong_name.stream);
+  EXPECT_NE(wrong_name.why.find("127.0.0.1:"), std::string::npos) << wrong_name.why;
+  EXPECT_NE(wrong_name.why.find("certificate"), std::string::npos) << wrong_name.why;
+
+  // A certificate without the address is refused for it.
+  auto no_address = tls_config(std::make_shared<Certificates>(named_server(pki, "dns-only", "DNS:localhost")), "dns-only");
+  StreamListener plain_names(io.context, no_address);
+  plain_names.start(io.context.get_executor(), [](std::shared_ptr<Stream> stream) { echo(stream); });
+  EXPECT_FALSE(connect_now(connector, io, "127.0.0.1", plain_names.port(), tls()).stream);
+  EXPECT_TRUE(connect_now(connector, io, "127.0.0.1", plain_names.port(), tls("localhost")).stream);
+
+  // A chain the trust does not vouch for.
+  write(pki.dir.path() / "stranger.pem", pki.stranger.certificate().pem());
+  ClientTls untrusted = tls();
+  untrusted.trust = std::make_shared<ClientTrust>(pki.dir.path() / "stranger.pem");
+  const auto refused = connect_now(connector, io, "127.0.0.1", listener.port(), untrusted);
+  EXPECT_FALSE(refused.stream);
+  EXPECT_GE(connector.counters().handshakes_failed, 2u);
+
+  // A client certificate offered reaches the listener, verified against its bundle.
+  const auto issued = pki.issue(9);
+  write(pki.dir.path() / "client.crt", issued.chain);
+  write(pki.dir.path() / "client.key", issued.key);
+  ClientTls offering = tls();
+  offering.certificate = std::make_shared<Certificates>(CertificatePaths{pki.dir.path() / "client.crt", pki.dir.path() / "client.key", {}});
+  const auto mutual = connect_now(connector, io, "127.0.0.1", listener.port(), offering);
+  ASSERT_TRUE(mutual.stream) << mutual.why;
+  EXPECT_EQ(ask(mutual.stream, "both"), "both");
+  ASSERT_TRUE(eventually([&] {
+    for (size_t i = 0; i < served.count(); ++i)
+      if (const auto& presented = served.at(i)->client_certificate(); presented && presented->verified && presented->thumbprint == sha256(issued.der))
+        return true;
+    return false;
+  }));
+  connector.close_all();
+  plain_names.stop();
+  listener.stop();
+}
+
+// Each failure is told once, naming the host and the step, within the deadline on the
+// injected time: nothing listening, a resolver that never answers (Lugh's review:
+// getaddrinfo cannot be cancelled), and a server that never answers the handshake.
+TEST(StreamConnector, TellsEachFailureOnceWithinTheDeadline) {
+  Io io;
+  test::SteppedTime time;
+  ConnectorConfig plain;
+  plain.name = "out";
+  StreamConnector connector(io.context, plain, &time);
+  const auto refused = connect_now(connector, io, "127.0.0.1", nothing_listens(), std::nullopt);
+  EXPECT_FALSE(refused.stream);
+  EXPECT_NE(refused.why.find("did not connect"), std::string::npos) << refused.why;
+  EXPECT_EQ(connector.counters().refused_connect, 1u);
+
+  ConnectorConfig silent_resolver = plain;
+  std::atomic<int> asked{0};
+  silent_resolver.resolve = [&](const std::string&, const std::string&, auto) { ++asked; };
+  StreamConnector stalled(io.context, silent_resolver, &time);
+  std::atomic<int> told{0};
+  std::promise<std::string> reason;
+  stalled.connect(io.context.get_executor(), "never.example", 1883, std::nullopt, 500ms, [&](std::shared_ptr<Stream> stream, std::string why) {
+    EXPECT_FALSE(stream);
+    if (++told == 1) reason.set_value(why);
+  });
+  ASSERT_TRUE(eventually([&] { return asked.load() == 1; }));
+  std::this_thread::sleep_for(50ms);
+  time.advance(600ms);
+  auto said = reason.get_future();
+  ASSERT_EQ(said.wait_for(10s), std::future_status::ready);
+  EXPECT_NE(said.get().find("never.example:1883: did not resolve within the deadline"), std::string::npos);
+  EXPECT_EQ(stalled.counters().timed_out, 1u);
+
+  // A server that takes the connection and never answers the handshake.
+  tcp::acceptor quiet(io.context, {asio::ip::make_address("127.0.0.1"), 0});
+  std::vector<tcp::socket> taken;
+  std::mutex taken_mutex;
+  quiet.async_accept([&](boost::system::error_code error, tcp::socket socket) {
+    std::lock_guard lock(taken_mutex);
+    if (!error) taken.push_back(std::move(socket));
+  });
+  Pki pki;
+  write(pki.dir.path() / "trust.pem", pki.ca.certificate().pem());
+  ClientTls tls;
+  tls.trust = std::make_shared<ClientTrust>(pki.dir.path() / "trust.pem");
+  std::promise<std::string> silence;
+  connector.connect(io.context.get_executor(), "127.0.0.1", quiet.local_endpoint().port(), tls, 500ms, [&](std::shared_ptr<Stream> stream, std::string why) {
+    EXPECT_FALSE(stream);
+    silence.set_value(why);
+  });
+  ASSERT_TRUE(eventually([&] {
+    std::lock_guard lock(taken_mutex);
+    return !taken.empty();
+  }));
+  std::this_thread::sleep_for(50ms);
+  time.advance(600ms);
+  auto quiet_said = silence.get_future();
+  ASSERT_EQ(quiet_said.wait_for(10s), std::future_status::ready);
+  EXPECT_NE(quiet_said.get().find("did not complete the TLS handshake within the deadline"), std::string::npos);
+  quiet.close();
+  EXPECT_EQ(told.load(), 1);
+}
+
+// A connector destroyed while it is still making a connection tells it once, and never
+// after.
+TEST(StreamConnector, ADestroyedConnectorTellsWhatItWasMaking) {
+  Io io;
+  ConnectorConfig config;
+  config.name = "out";
+  std::atomic<int> asked{0};
+  config.resolve = [&](const std::string&, const std::string&, auto) { ++asked; };
+  auto connector = std::make_unique<StreamConnector>(io.context, config);
+  std::atomic<int> told{0};
+  std::promise<std::string> reason;
+  connector->connect(io.context.get_executor(), "never.example", 80, std::nullopt, 60s, [&](std::shared_ptr<Stream>, std::string why) {
+    if (++told == 1) reason.set_value(why);
+  });
+  ASSERT_TRUE(eventually([&] { return asked.load() == 1; }));
+  connector.reset();
+  auto said = reason.get_future();
+  ASSERT_EQ(said.wait_for(10s), std::future_status::ready);
+  EXPECT_NE(said.get().find("the connector was closed"), std::string::npos);
+  std::this_thread::sleep_for(50ms);
+  EXPECT_EQ(told.load(), 1);
+}
+
+// Trust is read when it is made (Lugh's review): a bad bundle is found then, naming the
+// path; and a connector runs only on an io context's executor or a strand of one.
+TEST(StreamConnector, FindsABadTrustAtOnceAndRefusesAnExecutorNotOfAnIoContext) {
+  test::TempDir dir;
+  const auto missing = dir.path() / "missing.pem";
+  try {
+    ClientTrust trust(missing);
+    ADD_FAILURE() << "a missing bundle was taken";
+  } catch (const std::runtime_error& error) {
+    EXPECT_NE(std::string(error.what()).find(missing.string()), std::string::npos) << error.what();
+  }
+  write(dir.path() / "junk.pem", "not a certificate\n");
+  EXPECT_THROW(ClientTrust(dir.path() / "junk.pem"), std::runtime_error);
+  asio::thread_pool pool(1);
+  EXPECT_THROW(StreamConnector(pool.get_executor(), ConnectorConfig{}), std::invalid_argument);
+  pool.join();
+}
 
 // A handshake that does not finish within its deadline is ended.
 TEST(StreamListener, AHandshakeThatStallsIsEndedAtItsDeadline) {
