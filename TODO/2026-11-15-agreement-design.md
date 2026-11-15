@@ -10,7 +10,8 @@ is built. Mimir's statement of what it needs is `../mimir/TODO/2026-11-15-mimir-
 
 CASPaxos (Rystsov, 2018): a linearizable register per name, changed by a function of its
 current value, committed by a majority of a replica set the caller names, with no leader
-and no log. Two phases per change; one when the proposer's ballot is already accepted
+and no log. Users: Mimir (every agreement-class command), Lugh (TOTP replay, recovery
+codes, key rotation, all as registers), Louhi (its scheduler, to answer). Two phases per change; one when the proposer's ballot is already accepted
 (the fast path below). Dannan stores nothing: each acceptor's state is behind an interface
 the hosted system implements, in memory or durably, its choice.
 
@@ -144,6 +145,26 @@ foreground class (a client waits on them). One message carries every name of one
   (Mimir transfers a shard's state from a replica) and says through `ready()` when it may
   vote; the per-name majority read is the default helper, not assumed.
 - **Names are bytes** (ask D): any byte, NUL included, on the wire and in the interface.
+
+## Lugh's review, taken
+
+- **Who may take part** (point 1). An acceptor refuses `agree_prepare` and `agree_accept`
+  from a node outside the replica set's configuration, and a space is served only to
+  nodes advertising its owner's capability (`lugh` for `"lugh/totp"`), declared with
+  `serve()`; otherwise any member could vote in, or write, another system's registers.
+  Test: a non-member's prepare is refused; a member without the capability is refused.
+- **TOTP is a register, not a lease** (Q2). A code's time step is accepted at most once
+  per user: `change("lugh/totp", [user], replicas, f)`, with
+  `f(last) = step > last ? (step, accepted) : (last, replayed)`; Lugh accepts the code
+  only when the committed attempt's result says accepted. No holder, no time, no fence;
+  a minority side is refused, so sign-in fails closed. Recovery codes the same way.
+- **Singletons as register changes**. Lugh's key rotation is itself a register change
+  ("the next key's id and when it signs"), so any node proposes and agreement picks one;
+  no lease and no fence. Louhi's scheduler answers for itself; if it needs a fence, the
+  committing ballot serves as one.
+- A store that persists before answering is within the contract (Lugh will, against a
+  majority restarting inside a code's window); `forget()` on user deletion as designed;
+  one round uncontended is ample for a sign-in's 15 s step.
 
 ## One replica set at a time (Dagda's review, safety 1)
 
