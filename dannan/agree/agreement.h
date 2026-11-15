@@ -70,11 +70,15 @@ class Agreement {
                                   std::function<void(std::optional<net::Bytes>, std::string)> done)>;
   // Whether a node advertises `capability` (a space's owner's).
   using Advertises = std::function<bool(const identity::NodeId& node, const std::string& capability)>;
+  // Runs `task` once `after` has passed on the injected time: retries' backoff and the
+  // deadline. Empty: a timer on `executor` reading `time`. The simulation harness gives its
+  // own, so a run's every wait is an event in its world.
+  using Schedule = std::function<void(std::chrono::milliseconds after, std::function<void()> task)>;
 
   // `executor` runs the proposers' and acceptors' steps; `epoch` is the node's durability
   // epoch, so a restart never reuses a ballot.
   Agreement(boost::asio::any_io_executor executor, identity::NodeId self, identity::NodeId epoch, Call call, Advertises advertises,
-            const contract::TimeSource* time = &contract::steady_time_source());
+            const contract::TimeSource* time = &contract::steady_time_source(), Schedule schedule = {});
   ~Agreement();
   Agreement(const Agreement&) = delete;
   Agreement& operator=(const Agreement&) = delete;
