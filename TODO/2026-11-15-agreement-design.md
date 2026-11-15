@@ -11,7 +11,8 @@ is built. Mimir's statement of what it needs is `../mimir/TODO/2026-11-15-mimir-
 CASPaxos (Rystsov, 2018): a linearizable register per name, changed by a function of its
 current value, committed by a majority of a replica set the caller names, with no leader
 and no log. Users: Mimir (every agreement-class command), Lugh (TOTP replay, recovery
-codes, key rotation, all as registers), Louhi (its scheduler, to answer). Two phases per change; one when the proposer's ballot is already accepted
+codes and key rotation as registers, if the maintainer takes Lugh's recommendation over his
+2026-11-13 lease ruling), Louhi (its scheduler, to answer). Two phases per change; one when the proposer's ballot is already accepted
 (the fast path below). Dannan stores nothing: each acceptor's state is behind an interface
 the hosted system implements, in memory or durably, its choice.
 
@@ -153,7 +154,8 @@ foreground class (a client waits on them). One message carries every name of one
   nodes advertising its owner's capability (`lugh` for `"lugh/totp"`), declared with
   `serve()`; otherwise any member could vote in, or write, another system's registers.
   Test: a non-member's prepare is refused; a member without the capability is refused.
-- **TOTP is a register, not a lease** (Q2). A code's time step is accepted at most once
+- **TOTP as a register, not a lease: Lugh's recommendation to the maintainer**, whose 2026-11-13
+  ruling is a per-user TOTP lease in Dagda; Lugh is asking him (Q2). A code's time step is accepted at most once
   per user: `change("lugh/totp", [user], replicas, f)`, with
   `f(last) = step > last ? (step, accepted) : (last, replayed)`; Lugh accepts the code
   only when the committed attempt's result says accepted. No holder, no time, no fence;
