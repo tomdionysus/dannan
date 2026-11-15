@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <functional>
 #include <optional>
 #include <set>
 #include <string>
@@ -90,9 +91,17 @@ struct Run {
   size_t committed = 0;
 };
 
-// One seeded run. `broken`: a crashed node may restart with its state lost and vote at
-// once, which the design forbids.
-Run simulate(uint64_t seed, bool broken) {
+// One seeded run; `mode` says how a crashed node comes back.
+enum class Mode {
+  // A crashed node restarts with its durable state.
+  keep,
+  // It restarts with its state lost and votes at once: the design forbids it.
+  broken,
+  // It restarts with its state lost and refuses to vote until caught up (the design's rule).
+  catch_up,
+};
+
+Run simulate(uint64_t seed, Mode mode) {
   World world(seed);
   NetworkFaults faults;
   faults.drop_one_in = 8;
@@ -100,6 +109,38 @@ Run simulate(uint64_t seed, bool broken) {
   faults.max_delay_ms = 30;
   Cluster cluster(world, 5, faults);
   std::vector<Op> history(40);
+  // How a crashed node comes back, by the mode.
+  std::vector<uint64_t> incarnation(cluster.size(), 0);
+  std::function<void(size_t, uint64_t)> catch_up = [&](size_t a, uint64_t at) {
+    if (!cluster.up(a) || incarnation[a] != at) return;
+    cluster.agreement(a).catch_up(Cluster::space, {agree::Name{'c'}}, cluster.ids(), 1, 1000ms, world.io.get_executor(), [&, a, at](agree::Outcome outcome) {
+      if (!cluster.up(a) || incarnation[a] != at) return;
+      if (outcome.committed) return cluster.store(a).set_ready(true);
+      world.after(100, [&, a, at] { catch_up(a, at); });
+    });
+  };
+  const auto back = [&](size_t a) {
+    ++incarnation[a];
+    switch (mode) {
+      case Mode::keep:
+        return cluster.restart(a);
+      case Mode::broken:
+        // Its state lost, it votes at once: what the design forbids.
+        return cluster.restart(a, true, true);
+      case Mode::catch_up: {
+        // Its state lost, it refuses to vote until it has caught up. The rule assumes a
+        // minority loses its state at once: a majority wiped has nothing left to catch up
+        // from, and correctly never commits again. So a node is wiped only while those not
+        // yet caught up stay a minority; otherwise it comes back with its state.
+        size_t behind = 0;
+        for (size_t i = 0; i < cluster.size(); ++i)
+          if (!cluster.store(i).ready()) ++behind;
+        if (behind + 1 > (cluster.size() - 1) / 2) return cluster.restart(a);
+        cluster.restart(a, true, false);
+        return catch_up(a, incarnation[a]);
+      }
+    }
+  };
   // Clients on every node, at random times over two simulated seconds.
   for (size_t n = 0; n < history.size(); ++n) {
     world.after(world.random.below(2000), [&, n] {
@@ -133,14 +174,7 @@ Run simulate(uint64_t seed, bool broken) {
           if (cluster.up(a)) cluster.crash(a);
           break;
         default:
-          if (!cluster.up(a)) {
-            // The broken protocol wipes and votes at once; the correct one keeps its state.
-            if (broken) {
-              cluster.restart(a, true, true);
-            } else {
-              cluster.restart(a);
-            }
-          }
+          if (!cluster.up(a)) back(a);
           break;
       }
     });
@@ -151,7 +185,7 @@ Run simulate(uint64_t seed, bool broken) {
     cluster.faults().drop_one_in = 0;
     cluster.faults().duplicate_one_in = 0;
     for (size_t i = 0; i < cluster.size(); ++i)
-      if (!cluster.up(i)) cluster.restart(i, broken, true);
+      if (!cluster.up(i)) back(i);
   });
   const auto all_answered = [&] { return std::all_of(history.begin(), history.end(), [](const Op& op) { return op.answered || op.invoked == 0; }); };
   Run run;
@@ -189,7 +223,7 @@ uint64_t seeds(uint64_t fallback) {
 TEST(Simulation, AgreementStaysLinearizableUnderFaults) {
   size_t committed = 0;
   for (uint64_t seed = 1; seed <= seeds(150); ++seed) {
-    const auto run = simulate(seed, false);
+    const auto run = simulate(seed, Mode::keep);
     ASSERT_FALSE(run.violation) << "seed " << seed << ": " << *run.violation;
     committed += run.committed;
   }
@@ -203,7 +237,7 @@ TEST(Simulation, TheCheckerCatchesAnAcceptorThatVotesAfterLosingItsState) {
   std::optional<std::string> caught;
   uint64_t at = 0;
   for (uint64_t seed = 1; seed <= 400 && !caught; ++seed) {
-    const auto run = simulate(seed, true);
+    const auto run = simulate(seed, Mode::broken);
     // A refusal by the checker, not a run that merely failed to finish.
     if (run.violation && !run.unsettled) {
       caught = run.violation;
@@ -214,10 +248,19 @@ TEST(Simulation, TheCheckerCatchesAnAcceptorThatVotesAfterLosingItsState) {
   SUCCEED() << "seed " << at << ": " << *caught;
 }
 
+// The design's restart rule: a node that lost its state refuses to vote, catches up by a
+// strict read at a majority of the others, and only then votes. Linearizable throughout.
+TEST(Simulation, ANodeThatLostItsStateCatchesUpBeforeItVotes) {
+  for (uint64_t seed = 1; seed <= seeds(100); ++seed) {
+    const auto run = simulate(seed, Mode::catch_up);
+    ASSERT_FALSE(run.violation) << "seed " << seed << ": " << *run.violation;
+  }
+}
+
 // A seed replays exactly.
 TEST(Simulation, ASeedReplaysExactly) {
-  const auto first = simulate(42, false);
-  const auto again = simulate(42, false);
+  const auto first = simulate(42, Mode::keep);
+  const auto again = simulate(42, Mode::keep);
   EXPECT_EQ(first.committed, again.committed);
   EXPECT_EQ(first.violation, again.violation);
 }

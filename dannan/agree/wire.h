@@ -33,14 +33,21 @@ struct AcceptMessage {
   std::string space;
   Accept accept;
 };
+struct PurgeMessage {
+  std::string space;
+  Purge purge;
+};
 
 net::Bytes encode(const PrepareMessage& message);
 net::Bytes encode(const AcceptMessage& message);
+net::Bytes encode(const PurgeMessage& message);
 net::Bytes encode(const PrepareAnswer& answer);
 net::Bytes encode(const AcceptAnswer& answer);
 
 PrepareMessage decode_prepare(std::span<const uint8_t> bytes);
 AcceptMessage decode_accept(std::span<const uint8_t> bytes);
+// A purge is answered as an accept is: refused, or done.
+PurgeMessage decode_purge(std::span<const uint8_t> bytes);
 PrepareAnswer decode_prepare_answer(std::span<const uint8_t> bytes);
 AcceptAnswer decode_accept_answer(std::span<const uint8_t> bytes);
 

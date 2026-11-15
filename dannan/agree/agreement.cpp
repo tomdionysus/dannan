@@ -14,6 +14,7 @@
 #include <deque>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <random>
 #include <stdexcept>
 
@@ -96,17 +97,25 @@ struct Agreement::Core : std::enable_shared_from_this<Core> {
 
   // Serves a request: an answer at once, or nothing when `answer` will be called.
   std::optional<net::Message> serve(const identity::NodeId& from, const net::Message& request, std::function<void(net::Message)> answer) {
-    const bool preparing = request.type == net::message::agree_prepare;
+    enum class Kind { prepare, accept, purge };
+    const Kind kind = request.type == net::message::agree_prepare ? Kind::prepare : request.type == net::message::agree_accept ? Kind::accept : Kind::purge;
+    const auto reply_type = kind == Kind::prepare  ? net::message::agree_prepare_reply
+                            : kind == Kind::accept ? net::message::agree_accept_reply
+                                                   : net::message::agree_purge_reply;
     std::string space_name;
     std::optional<PrepareMessage> prepare;
     std::optional<AcceptMessage> accept;
+    std::optional<PurgeMessage> purge;
     try {
-      if (preparing) {
+      if (kind == Kind::prepare) {
         prepare = decode_prepare(request.payload);
         space_name = prepare->space;
-      } else {
+      } else if (kind == Kind::accept) {
         accept = decode_accept(request.payload);
         space_name = accept->space;
+      } else {
+        purge = decode_purge(request.payload);
+        space_name = purge->space;
       }
     } catch (const net::DecodeError& error) {
       return net::error_reply(400, "invalid_request", error.what());
@@ -116,40 +125,55 @@ struct Agreement::Core : std::enable_shared_from_this<Core> {
     // Only the owner's nodes vote or write (Lugh's review).
     if (from != self && !advertises(from, space->capability))
       return net::error_reply(403, "not_permitted", "the sender does not advertise " + space->capability);
-    const auto refuse = [&](std::string why) {
-      return preparing ? net::Message{net::message::agree_prepare_reply, encode(PrepareAnswer{Refusal{std::move(why), {}, {}}, {}}), {}}
-                       : net::Message{net::message::agree_accept_reply, encode(AcceptAnswer{Refusal{std::move(why), {}, {}}}), {}};
+    const auto refusal = [kind, reply_type](std::string why) {
+      return kind == Kind::prepare ? net::Message{reply_type, encode(PrepareAnswer{Refusal{std::move(why), {}, {}}, {}}), {}}
+                                   : net::Message{reply_type, encode(AcceptAnswer{Refusal{std::move(why), {}, {}}}), {}};
     };
-    if (!space->store->ready()) return refuse("this acceptor is catching up");
+    if (!space->store->ready()) return refusal("this acceptor is catching up");
     const auto me = self;
     space->enqueue(
-        [space, me, from, preparing, prepare = std::move(prepare), accept = std::move(accept), answer = std::move(answer)](std::function<void()> done) mutable {
-          const auto& names = preparing ? prepare->prepare.names : accept->accept.names;
-          space->store->load(names, [space, me, from, preparing, prepare, accept, answer, done, names](std::vector<AcceptorState> held) mutable {
-            if (preparing) {
-              auto step = on_prepare(me, from, prepare->prepare, held);
-              if (!step.keep) {
-                answer({net::message::agree_prepare_reply, encode(step.answer), {}});
-                return done();
-              }
-              space->store->keep(names, *step.keep, [answer, done, reply = encode(step.answer)](bool kept) {
-                answer(kept ? net::Message{net::message::agree_prepare_reply, reply, {}}
-                            : net::Message{net::message::agree_prepare_reply, encode(PrepareAnswer{Refusal{"the store could not keep", {}, {}}, {}}), {}});
-                done();
+        [space, me, from, kind, reply_type, refusal, prepare = std::move(prepare), accept = std::move(accept), purge = std::move(purge),
+         answer = std::move(answer)](std::function<void()> done) mutable {
+          // The request's names, then the reserved empty name the space's floor is kept under.
+          auto names = kind == Kind::prepare ? prepare->prepare.names : kind == Kind::accept ? accept->accept.names : purge->purge.names;
+          names.push_back(Name{});
+          space->store->load(
+              names, [space, me, from, kind, reply_type, refusal, prepare, accept, purge, answer, done, names](std::vector<AcceptorState> loaded) mutable {
+                if (loaded.size() != names.size()) {
+                  answer(refusal("the store loaded a different count"));
+                  return done();
+                }
+                auto floor_state = loaded.back();
+                loaded.pop_back();
+                const Ballot floor = floor_state.promised;
+                std::optional<std::vector<AcceptorState>> keep;
+                net::Bytes reply;
+                if (kind == Kind::prepare) {
+                  auto step = on_prepare(me, from, prepare->prepare, loaded, floor);
+                  keep = std::move(step.keep);
+                  reply = encode(step.answer);
+                } else if (kind == Kind::accept) {
+                  auto step = on_accept(me, from, accept->accept, loaded, floor);
+                  keep = std::move(step.keep);
+                  reply = encode(step.answer);
+                } else {
+                  auto step = on_purge(me, from, purge->purge, loaded, floor);
+                  reply = encode(AcceptAnswer{step.refused});
+                  if (!step.refused) {
+                    keep = std::move(step.keep);
+                    floor_state.promised = step.floor;
+                  }
+                }
+                if (!keep) {
+                  answer({reply_type, std::move(reply), {}});
+                  return done();
+                }
+                keep->push_back(floor_state);
+                space->store->keep(names, *keep, [answer, done, reply_type, refusal, reply = std::move(reply)](bool kept) {
+                  answer(kept ? net::Message{reply_type, reply, {}} : refusal("the store could not keep"));
+                  done();
+                });
               });
-            } else {
-              auto step = on_accept(me, from, accept->accept, held);
-              if (!step.keep) {
-                answer({net::message::agree_accept_reply, encode(step.answer), {}});
-                return done();
-              }
-              space->store->keep(names, *step.keep, [answer, done, reply = encode(step.answer)](bool kept) {
-                answer(kept ? net::Message{net::message::agree_accept_reply, reply, {}}
-                            : net::Message{net::message::agree_accept_reply, encode(AcceptAnswer{Refusal{"the store could not keep", {}, {}}}), {}});
-                done();
-              });
-            }
-          });
         },
         space);
     return std::nullopt;
@@ -407,6 +431,102 @@ void Agreement::read(std::string space, std::vector<Name> names, std::vector<ide
       std::move(space), std::move(names), std::move(replicas), version,
       [](std::span<const std::optional<Bytes>> current) { return Changed{std::vector<std::optional<Bytes>>(current.begin(), current.end()), {}}; },
       std::move(reduce), deadline, std::move(executor), std::move(done));
+}
+
+namespace {
+
+// Sends one request to every node and collects each answer (none for a node that did not
+// answer), told once all are in.
+void fan_out(const std::function<void(const identity::NodeId&, net::MessageType, net::Bytes, std::chrono::milliseconds,
+                                      std::function<void(std::optional<net::Bytes>, std::string)>)>& send,
+             const std::vector<identity::NodeId>& nodes, net::MessageType type, const net::Bytes& payload, std::chrono::milliseconds deadline,
+             asio::any_io_executor executor, std::function<void(std::vector<std::optional<net::Bytes>>)> done) {
+  struct Gathered {
+    std::mutex mutex;
+    std::vector<std::optional<net::Bytes>> answers;
+    size_t left;
+  };
+  auto gathered = std::make_shared<Gathered>();
+  gathered->answers.resize(nodes.size());
+  gathered->left = nodes.size();
+  auto shared = std::make_shared<std::function<void(std::vector<std::optional<net::Bytes>>)>>(std::move(done));
+  for (size_t i = 0; i < nodes.size(); ++i)
+    send(nodes[i], type, payload, deadline, [gathered, shared, executor, i](std::optional<net::Bytes> answer, std::string) {
+      bool last = false;
+      {
+        std::lock_guard lock(gathered->mutex);
+        gathered->answers[i] = std::move(answer);
+        last = --gathered->left == 0;
+      }
+      if (last) asio::post(executor, [gathered, shared] { (*shared)(std::move(gathered->answers)); });
+    });
+}
+
+}  // namespace
+
+void Agreement::forget(std::string space, std::vector<Name> names, std::vector<identity::NodeId> replicas, uint64_t version, std::chrono::milliseconds deadline,
+                       asio::any_io_executor executor, std::function<void(Outcome)> done) {
+  const auto set = ReplicaSet::of(replicas, version);
+  auto core = _core;
+  const auto send = [core](const identity::NodeId& to, net::MessageType type, net::Bytes payload, std::chrono::milliseconds within, Reply reply) {
+    core->send(to, type, std::move(payload), within, std::move(reply));
+  };
+  change(
+      space, names, replicas, version,
+      [](std::span<const std::optional<Bytes>> current) { return Changed{std::vector<std::optional<Bytes>>(current.size()), {}}; }, {}, deadline, executor,
+      [space, names, set, send, deadline, executor, done = std::move(done)](Outcome tombstone) mutable {
+        if (!tombstone.committed) return done(std::move(tombstone));
+        // Every replica must hold the tombstone before any forgets it: sent again, the same
+        // accept, to all.
+        const Accept again{set, tombstone.ballot, names, std::vector<std::optional<Bytes>>(names.size()), tombstone.changed_at};
+        fan_out(send, set.nodes, net::message::agree_accept, encode(AcceptMessage{space, again}), deadline, executor,
+                [space, names, set, send, deadline, executor, done = std::move(done), tombstone](std::vector<std::optional<net::Bytes>> answers) mutable {
+                  for (const auto& answer : answers) {
+                    bool held = false;
+                    if (answer) try {
+                        held = !decode_accept_answer(*answer).refused;
+                      } catch (const net::DecodeError&) {
+                      }
+                    if (!held) {
+                      tombstone.why = "the tombstone is committed but not every replica holds it; it stays, and reads as absent";
+                      return done(std::move(tombstone));
+                    }
+                  }
+                  fan_out(send, set.nodes, net::message::agree_purge, encode(PurgeMessage{space, Purge{set, tombstone.ballot, names}}), deadline, executor,
+                          [done = std::move(done), tombstone](std::vector<std::optional<net::Bytes>> purged) mutable {
+                            tombstone.forgotten = std::all_of(purged.begin(), purged.end(), [](const std::optional<net::Bytes>& answer) {
+                              try {
+                                return answer && !decode_accept_answer(*answer).refused;
+                              } catch (const net::DecodeError&) {
+                                return false;
+                              }
+                            });
+                            if (!tombstone.forgotten) tombstone.why = "some replicas did not purge; the tombstone stays there, and reads as absent";
+                            done(std::move(tombstone));
+                          });
+                });
+      });
+}
+
+void Agreement::catch_up(std::string space, std::vector<Name> names, std::vector<identity::NodeId> replicas, uint64_t version,
+                         std::chrono::milliseconds deadline, asio::any_io_executor executor, std::function<void(Outcome)> done) {
+  const auto set = ReplicaSet::of(replicas, version);
+  auto core = _core;
+  // This node's store refuses to vote while catching up, so the read commits on a majority
+  // of the others; what committed is installed here at its ballot.
+  read(space, names, replicas, version, {}, deadline, executor, [core, space, names, set, done = std::move(done)](Outcome outcome) mutable {
+    const auto served = core->find(space);
+    if (!outcome.committed || !served) return done(std::move(outcome));
+    std::vector<AcceptorState> states;
+    for (size_t i = 0; i < names.size(); ++i) states.push_back(AcceptorState{outcome.ballot, outcome.ballot, outcome.values[i], outcome.changed_at[i], set});
+    served->store->keep(names, states, [done = std::move(done), outcome = std::move(outcome)](bool kept) mutable {
+      if (!kept) {
+        outcome.committed = false;
+        outcome.why = "the store could not keep what was caught up";
+      }
+      done(std::move(outcome));
+    });
+  });
 }
 
 std::optional<net::Message> Agreement::serve_request(const identity::NodeId& from, const net::Message& request, std::function<void(net::Message)> answer) {

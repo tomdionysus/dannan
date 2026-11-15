@@ -74,7 +74,11 @@ std::vector<Name> get_names(Reader& in) {
   if (count == 0 || count > max_names) throw DecodeError("a request naming " + std::to_string(count) + " registers");
   std::vector<Name> out;
   out.reserve(count);
-  for (uint32_t i = 0; i < count; ++i) out.push_back(in.bytes(max_name));
+  for (uint32_t i = 0; i < count; ++i) {
+    out.push_back(in.bytes(max_name));
+    // The empty name is reserved: an acceptor keeps its space's floor under it.
+    if (out.back().empty()) throw DecodeError("an empty register name");
+  }
   return out;
 }
 
@@ -130,6 +134,28 @@ net::Bytes encode(const AcceptMessage& message) {
   for (const auto& value : message.accept.values) put(out, value);
   for (const auto& changed : message.accept.changed_at) put(out, changed);
   return out.take();
+}
+
+net::Bytes encode(const PurgeMessage& message) {
+  Writer out;
+  out.u8(message_version);
+  out.string(message.space);
+  put(out, message.purge.set);
+  put(out, message.purge.ballot);
+  put_names(out, message.purge.names);
+  return out.take();
+}
+
+PurgeMessage decode_purge(std::span<const uint8_t> bytes) {
+  Reader in(bytes);
+  open(in);
+  PurgeMessage out;
+  out.space = in.string(max_space);
+  out.purge.set = get_set(in);
+  out.purge.ballot = get_ballot(in);
+  out.purge.names = get_names(in);
+  in.finish();
+  return out;
 }
 
 net::Bytes encode(const PrepareAnswer& answer) {
