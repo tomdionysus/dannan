@@ -1,5 +1,25 @@
 # Current release
 
+## 0.8.1: public sockets send at once, and a listener stops from anywhere
+
+`dannan::listen`: every accepted socket sends at once (TCP_NODELAY), so a public
+protocol's small packets never wait on Nagle behind the peer's delayed ACK, which
+cost an MQTT PUBACK about 40 ms. `Stream::set_no_delay(false)` turns Nagle back on
+for a stream; `Stream::no_delay()` reads it on the stream's executor.
+
+`StreamListener::stop_accepting()`, and so `stop()` and the destructor, no longer
+hang. It waited without a bound on the acceptor's strand, so it never returned
+from a handler on a one-thread io context (a signal handler's place), after the io
+context stopped (a node's usual teardown), or on one that never ran (a failed
+start). Nothing is handed up once it returns; from a thread outside the io context
+it still closes the acceptor first, waiting at most five seconds.
+
+Stated: under optional client certificates a hosted system checks `verified`, not
+only that a certificate is present.
+
+The ABI is 0.8.0's; the ABI check now leaves out the standard library's template
+instances, which a host instantiates itself.
+
 ## 0.8.0: work by class, a public listener, and counters that only go up
 
 Scheduling: `sched::WorkerPool` runs tasks on supervised threads by work class
