@@ -638,6 +638,7 @@ CertificatePaths named_server(Pki& pki, const std::string& name, const std::stri
   const auto size = BIO_get_mem_data(out.get(), &data);
   write(pki.dir.path() / (name + ".crt"), std::string(data, static_cast<size_t>(size)) + pki.ca.certificate().pem());
   write(pki.dir.path() / (name + ".key"), key_pem(key));
+  write(pki.dir.path() / "client-ca.pem", pki.ca.certificate().pem());
   return {pki.dir.path() / (name + ".crt"), pki.dir.path() / (name + ".key"), pki.dir.path() / "client-ca.pem"};
 }
 

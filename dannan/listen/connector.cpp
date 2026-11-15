@@ -237,12 +237,12 @@ void StreamConnector::connect(asio::any_io_executor executor, std::string host, 
   asio::post(attempt->executor, [attempt, context, name, resolve, deadline, &time] {
     // One deadline over every step; a resolver that never answers is not waited for
     // (Lugh's review: getaddrinfo cannot be cancelled), and its late answer is dropped.
-    std::weak_ptr<Attempt> weak = attempt;
-    detail::when_time_reaches(attempt->timer, time, time.now() + deadline, [weak] {
-      auto self = weak.lock();
-      if (!self || self->finished.load()) return;
-      self->count(&ListenerCounters::refused_address);
-      self->fail(self->where() + ": did not " + self->step + " within the deadline");
+    // The deadline holds the attempt until it is told, whatever a step lets go of (a
+    // resolver that drops its callback); telling it cancels the timer, which lets go.
+    detail::when_time_reaches(attempt->timer, time, time.now() + deadline, [attempt] {
+      if (attempt->finished.load()) return;
+      attempt->count(&ListenerCounters::refused_address);
+      attempt->fail(attempt->where() + ": did not " + attempt->step + " within the deadline");
     });
     const auto resolved = [attempt, context, name](boost::system::error_code error, tcp::resolver::results_type addresses) {
       asio::post(attempt->executor, [attempt, context, name, error, addresses = std::move(addresses)] {
