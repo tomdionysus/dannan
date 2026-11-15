@@ -41,7 +41,7 @@ struct Ballot {
   bool zero() const noexcept { return counter == 0; }
 };
 
-// The nodes a name's acceptors are, and the configuration's version. Sorted and unique.
+// The nodes a slot's acceptors are, and the configuration's version. Sorted and unique.
 struct ReplicaSet {
   std::vector<identity::NodeId> nodes;
   uint64_t version = 0;
@@ -53,6 +53,16 @@ struct ReplicaSet {
   bool contains(const identity::NodeId& node) const noexcept;
 };
 
+// Every name belongs to one slot of a fixed table, and a slot's record says which set
+// serves it (the design's "Reconfiguration"). The caller names the slot: a hosted system
+// with its own scheme (Mimir's hash tags) computes it; slot_of is the default, FNV-1a 64
+// over the name's bytes modulo `count`, fixed for the cluster's life.
+using Slot = uint32_t;
+inline constexpr uint32_t default_slots = 256;
+inline constexpr uint32_t max_slots = 8192;
+// Throws std::invalid_argument for a count of zero or above max_slots.
+Slot slot_of(std::span<const uint8_t> name, uint32_t count);
+
 // What one acceptor keeps for one name: the hosted system's to hold, in memory or
 // durably, and the protocol's to change.
 struct AcceptorState {
@@ -62,8 +72,31 @@ struct AcceptorState {
   // The ballot of the last change that altered the value: a fencing token, stable across
   // identity changes and strict reads (Louhi's review).
   Ballot changed_at;
-  // The replica set this name is served by, once accepted (Dagda's review, safety 1).
+  auto operator<=>(const AcceptorState&) const = default;
+};
+
+// What one acceptor keeps for one slot. Unrecorded (no `served`) until a change or a
+// transfer is accepted for it.
+struct SlotState {
+  // The set the slot is served by.
   std::optional<ReplicaSet> served;
+  // The set it is moving from while a transfer is not known to be committed; cleared by
+  // settle, or by a plain change accepted on `served`.
+  std::optional<ReplicaSet> pending_from;
+  // The highest transfer ballot promised: a plain change must be above it.
+  Ballot promised;
+  auto operator<=>(const SlotState&) const = default;
+};
+
+// What one acceptor holds for one request: the slot's record, the space's floor (the
+// highest ballot any name this acceptor has forgotten held), and the names' states, one per
+// name. For a transfer, `names` is the request's names and then every other name held in
+// the slot.
+struct Held {
+  SlotState slot;
+  Ballot floor;
+  std::vector<Name> names;
+  std::vector<AcceptorState> states;
 };
 
 // One name's state as a prepare answer carries it.
@@ -73,27 +106,40 @@ struct NameState {
   Ballot changed_at;
 };
 
+// A plain change names `set`; a transfer names the set it moves from as `set`, and `to`.
 struct Prepare {
   ReplicaSet set;
+  std::optional<ReplicaSet> to;
+  Slot slot = 0;
   Ballot ballot;
+  // A plain change's names; empty for a transfer, which is answered with every name held.
   std::vector<Name> names;
 };
 
-// A refusal names why: a higher ballot to pass, or the replica set this acceptor serves.
+// A refusal names why: a higher ballot to pass, or the set this acceptor serves the slot by
+// (and, while a transfer is unfinished, the set it is moving from).
 struct Refusal {
   std::string why;
   std::optional<Ballot> higher;
   std::optional<ReplicaSet> serving;
+  std::optional<ReplicaSet> pending_from;
 };
 
 struct PrepareAnswer {
   std::optional<Refusal> refused;
-  // One per name, in the request's order, when promised.
+  // The slot's record at this acceptor: the proposer's proof of which set serves it.
+  std::optional<ReplicaSet> served;
+  std::optional<ReplicaSet> pending_from;
+  // A transfer's: every name held in the slot. A plain change's: empty.
+  std::vector<Name> names;
+  // One per name, in the request's order (a transfer's: in `names`' order), when promised.
   std::vector<NameState> states;
 };
 
 struct Accept {
   ReplicaSet set;
+  std::optional<ReplicaSet> to;
+  Slot slot = 0;
   Ballot ballot;
   std::vector<Name> names;
   std::vector<std::optional<Bytes>> values;
@@ -104,14 +150,27 @@ struct AcceptAnswer {
   std::optional<Refusal> refused;
 };
 
-// The acceptor's rules. Given the state held for the request's names (in its order) and
-// who sent it, the answer and the state to keep: the hosted system keeps it, durably if
-// it is durable, before the answer goes. A request from a node outside the set, to a node
-// outside it, or for a name served by another set, is refused (Lugh's and Dagda's
-// reviews); a ballot not above every promise is refused naming the highest held.
+// After a transfer committed on majorities of both sets: the slot's move is settled.
+struct Settle {
+  ReplicaSet from;
+  ReplicaSet to;
+  Slot slot = 0;
+  Ballot ballot;
+};
+
+// The acceptor's rules. Given what is held for the request and who sent it, the answer and
+// what to keep: the hosted system keeps it, durably if it is durable, before the answer
+// goes. Refused, and nothing kept: a request from a node outside the set, or to one; a
+// plain request for a slot served by another set or moving away from it; a transfer
+// from a set the slot is not served by (or, for a slot recorded nowhere, from any set but
+// `genesis`); a ballot not above every promise held, naming the highest (Lugh's and
+// Dagda's reviews, and the design's "Reconfiguration: the gap ... and the fix").
+//
+// Every request must be above the floor, so a forgotten name behaves as though still
+// promised at the floor and no stale proposer brings a forgotten value back.
 struct Step {
   // None: refused, and nothing is to be kept.
-  std::optional<std::vector<AcceptorState>> keep;
+  std::optional<Held> keep;
 };
 struct PrepareStep : Step {
   PrepareAnswer answer;
@@ -119,33 +178,29 @@ struct PrepareStep : Step {
 struct AcceptStep : Step {
   AcceptAnswer answer;
 };
-//
-// `floor`: the space's floor, the highest ballot any name this acceptor has forgotten
-// held. Every request must be above it, so a forgotten name behaves as though still
-// promised at the floor and no stale proposer brings a forgotten value back.
-PrepareStep on_prepare(const identity::NodeId& self, const identity::NodeId& from, const Prepare& request, std::span<const AcceptorState> held,
-                       const Ballot& floor = {});
-AcceptStep on_accept(const identity::NodeId& self, const identity::NodeId& from, const Accept& request, std::span<const AcceptorState> held,
-                     const Ballot& floor = {});
+PrepareStep on_prepare(const identity::NodeId& self, const identity::NodeId& from, const Prepare& request, const Held& held, const ReplicaSet& genesis);
+AcceptStep on_accept(const identity::NodeId& self, const identity::NodeId& from, const Accept& request, const Held& held, const ReplicaSet& genesis);
+// Clears a pending move to `to` from `from`. A record already elsewhere is left alone.
+AcceptStep on_settle(const identity::NodeId& self, const identity::NodeId& from, const Settle& request, const Held& held);
 
 // Forgetting names (the design's "Deleting a name", Dagda's review), once a tombstone (no
 // value) was committed at `ballot` and every acceptor of the set was seen to hold it. Each
 // name is forgotten only where it holds exactly that tombstone, so a newer write, or an
 // acceptor that missed the tombstone, keeps its state. `keep` holds a default state for each
-// name forgotten (a store may drop such entries) and the rest unchanged; `floor` the floor
+// name forgotten (a store may drop such entries) and the rest unchanged, and the floor
 // raised past every ballot a forgotten name held.
 struct Purge {
   ReplicaSet set;
+  Slot slot = 0;
   Ballot ballot;
   std::vector<Name> names;
 };
 struct PurgeStep {
   std::optional<Refusal> refused;
-  std::vector<AcceptorState> keep;
-  Ballot floor;
+  Held keep;
   size_t forgotten = 0;
 };
-PurgeStep on_purge(const identity::NodeId& self, const identity::NodeId& from, const Purge& request, std::span<const AcceptorState> held, const Ballot& floor);
+PurgeStep on_purge(const identity::NodeId& self, const identity::NodeId& from, const Purge& request, const Held& held);
 
 // What a change makes of the current values: the new values, one per name (none: absent),
 // and an opaque result for the caller (a popped element, SET NX's answer). It may run more
@@ -164,44 +219,68 @@ using Change = std::function<Changed(std::span<const std::optional<Bytes>> curre
 // never rolled back to an earlier state; deterministic over its input.
 using Reduce = std::function<std::optional<Bytes>(const NameState& base, std::span<const NameState> answers)>;
 
-// One proposer's attempt at one change under one ballot: prepare, reduce, change, accept.
-// Fed each answer as it arrives, in any order; once committed or refused it ignores more.
+// One proposer's attempt under one ballot: prepare, reduce, change, accept. Fed each answer
+// as it arrives, in any order; once committed or refused it ignores more.
+//
+// A plain change goes on to its accept only with proof that its set serves the slot: a
+// promiser holding the set settled, or, for a slot no promiser has recorded, the set being
+// `genesis`. A promiser holding the set pending from another means a transfer is
+// unfinished: the attempt is refused naming it (`unfinished()`), for the runtime to finish.
+//
+// A transfer moves a whole slot: prepare and accept must each reach a majority of both
+// sets, and its accept carries every name the promisers hold, reduced, unchanged.
 class Attempt {
  public:
   enum class Phase : uint8_t { preparing, accepting, committed, refused };
 
-  // Throws std::invalid_argument for no names or a ballot of zero.
-  Attempt(ReplicaSet set, Ballot ballot, std::vector<Name> names, Change change, Reduce reduce = {});
+  // A plain change of `names` (none: the slot's record alone, as founding writes it).
+  // Throws std::invalid_argument for a ballot of zero or no change.
+  Attempt(ReplicaSet set, Slot slot, Ballot ballot, std::vector<Name> names, Change change, Reduce reduce, ReplicaSet genesis);
+  // A transfer of `slot` from `from` to `to`. Throws std::invalid_argument for a ballot of
+  // zero, or a `to` whose version is not above `from`'s.
+  static Attempt transfer(ReplicaSet from, ReplicaSet to, Slot slot, Ballot ballot, Reduce reduce = {});
 
   const Prepare& prepare() const noexcept { return _prepare; }
-  // An answer to the prepare; the accept to send to every replica once a majority has
+  // Every node the attempt's messages go to: the set, or both sets of a transfer.
+  const std::vector<identity::NodeId>& recipients() const noexcept { return _recipients; }
+  // An answer to the prepare; the accept to send to every recipient once enough have
   // promised, and only then.
   std::optional<Accept> on_prepare(const identity::NodeId& from, const PrepareAnswer& answer);
   void on_accept(const identity::NodeId& from, const AcceptAnswer& answer);
 
   Phase phase() const noexcept { return _phase; }
-  // Committed: the values and the change's result. Refused: why, and the highest ballot a
-  // refusal named, for the next attempt to pass.
+  // Committed: the names (a transfer's: every name it carried), the values and the change's
+  // result. Refused: why, and the highest ballot a refusal named, for the next attempt.
+  const std::vector<Name>& names() const noexcept { return _accept ? _accept->names : _prepare.names; }
   const std::vector<std::optional<Bytes>>& values() const noexcept { return _accept ? _accept->values : _none; }
   const std::vector<Ballot>& changed_at() const noexcept { return _accept ? _accept->changed_at : _no_ballots; }
   const Bytes& result() const noexcept { return _result; }
   const std::string& why() const noexcept { return _why; }
   const std::optional<Ballot>& higher() const noexcept { return _higher; }
   const std::optional<ReplicaSet>& serving() const noexcept { return _serving; }
+  // Refused because a transfer to this set from the set named is unfinished.
+  const std::optional<ReplicaSet>& unfinished() const noexcept { return _unfinished; }
   // Evidence: who promised or accepted, who refused.
   const std::vector<identity::NodeId>& accepted() const noexcept { return _accepted; }
   const std::vector<identity::NodeId>& refused() const noexcept { return _refusers; }
 
  private:
+  Attempt() = default;
   bool counted(const identity::NodeId& from);
   void refuse(const identity::NodeId& from, const Refusal& refusal);
+  // Whether `nodes` hold a majority of the set, and of `to` for a transfer.
+  bool enough(const std::vector<identity::NodeId>& nodes) const;
+  std::optional<Accept> plain_accept();
+  std::optional<Accept> transfer_accept();
 
   Prepare _prepare;
+  std::vector<identity::NodeId> _recipients;
   Change _change;
   Reduce _reduce;
+  ReplicaSet _genesis;
   Phase _phase = Phase::preparing;
   std::vector<identity::NodeId> _heard;
-  std::vector<std::vector<NameState>> _answers;  // per promise, per name
+  std::vector<PrepareAnswer> _answers;  // per promise
   std::vector<identity::NodeId> _promised;
   std::vector<identity::NodeId> _accepted;
   std::vector<identity::NodeId> _refusers;
@@ -210,6 +289,7 @@ class Attempt {
   std::string _why;
   std::optional<Ballot> _higher;
   std::optional<ReplicaSet> _serving;
+  std::optional<ReplicaSet> _unfinished;
   std::vector<std::optional<Bytes>> _none;
   std::vector<Ballot> _no_ballots;
 };

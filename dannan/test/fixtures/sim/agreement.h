@@ -7,6 +7,8 @@
 
 #pragma once
 
+#include <algorithm>
+#include <initializer_list>
 #include <map>
 #include <memory>
 #include <optional>
@@ -32,42 +34,76 @@ class Store final : public agree::AcceptorStore {
  public:
   explicit Store(bool persist) : _persist(persist) {}
 
-  void load(std::span<const agree::Name> names, std::function<void(std::vector<agree::AcceptorState>)> done) override {
-    std::vector<agree::AcceptorState> out;
+  void load(agree::Slot slot, std::span<const agree::Name> names, bool every, std::function<void(agree::Held)> done) override {
+    agree::Held out;
+    out.floor = _current.floor;
+    const auto record = _current.slots.find(slot);
+    if (record != _current.slots.end()) out.slot = record->second;
     for (const auto& name : names) {
-      const auto key = text(name);
-      const auto held = _volatile.find(key);
-      out.push_back(held != _volatile.end() ? held->second : _durable[key]);
+      out.names.push_back(name);
+      const auto held = _current.names.find({slot, text(name)});
+      out.states.push_back(held != _current.names.end() ? held->second : agree::AcceptorState{});
     }
+    if (every)
+      for (const auto& [key, state] : _current.names) {
+        if (key.first != slot) continue;
+        const agree::Name name(key.second.begin(), key.second.end());
+        if (std::find(names.begin(), names.end(), name) != names.end()) continue;
+        out.names.push_back(name);
+        out.states.push_back(state);
+      }
     done(std::move(out));
   }
-  void keep(std::span<const agree::Name> names, std::span<const agree::AcceptorState> states, std::function<void(bool)> done) override {
-    for (size_t i = 0; i < names.size(); ++i) {
-      _volatile[text(names[i])] = states[i];
-      if (_persist && !lying_sync) _durable[text(names[i])] = states[i];
-    }
+  void keep(agree::Slot slot, const agree::Held& held, std::function<void(bool)> done) override {
+    keep_in(_current, slot, held);
+    if (_persist && !lying_sync) keep_in(_durable, slot, held);
     done(true);
   }
   bool ready() const override { return _ready; }
 
   // A crash: what was not durable is gone.
-  void crash() { _volatile.clear(); }
+  void crash() { _current = _durable; }
   // A restart that lost the disk too.
   void wipe() {
-    _volatile.clear();
-    _durable.clear();
+    _current = {};
+    _durable = {};
   }
   void set_ready(bool ready) { _ready = ready; }
   // A sync that reports success and keeps nothing (the broken store a checker must catch).
   bool lying_sync = false;
 
+  // What this acceptor holds, for a test's checks.
+  std::optional<agree::SlotState> slot(agree::Slot slot) const {
+    const auto found = _current.slots.find(slot);
+    return found == _current.slots.end() ? std::nullopt : std::optional(found->second);
+  }
+  std::optional<agree::AcceptorState> state(agree::Slot slot, const agree::Name& name) const {
+    const auto found = _current.names.find({slot, text(name)});
+    return found == _current.names.end() ? std::nullopt : std::optional(found->second);
+  }
+
  private:
+  // Keyed by the name's bytes as a string: GCC 14 at -O3 misreads a map of byte vectors.
+  struct Layer {
+    std::map<std::pair<agree::Slot, std::string>, agree::AcceptorState> names;
+    std::map<agree::Slot, agree::SlotState> slots;
+    agree::Ballot floor;
+  };
   static std::string text(const agree::Name& name) { return std::string(name.begin(), name.end()); }
+  static void keep_in(Layer& layer, agree::Slot slot, const agree::Held& held) {
+    layer.floor = held.floor;
+    layer.slots[slot] = held.slot;
+    for (size_t i = 0; i < held.names.size(); ++i) {
+      if (held.states[i] == agree::AcceptorState{})
+        layer.names.erase({slot, text(held.names[i])});
+      else
+        layer.names[{slot, text(held.names[i])}] = held.states[i];
+    }
+  }
   bool _persist;
   bool _ready = true;
-  // Keyed by the name's bytes as a string: GCC 14 at -O3 misreads a map of byte vectors.
-  std::map<std::string, agree::AcceptorState> _volatile;
-  std::map<std::string, agree::AcceptorState> _durable;
+  Layer _current;
+  Layer _durable;
 };
 
 // How the network misbehaves, each drawn from the world's seed.
@@ -83,16 +119,23 @@ struct NetworkFaults {
 class Cluster {
  public:
   static constexpr const char* space = "sim";
+  // The cluster's slot table: small, so founding it is cheap.
+  static constexpr uint32_t slots = 4;
+  // The genesis set's version.
+  static constexpr uint64_t genesis_version = 0;
 
   // `size` nodes, each serving the space from a store that persists before answering if
-  // `persist`.
-  Cluster(World& world, size_t size, NetworkFaults faults, bool persist = true) : _world(world), _time(world), _faults(faults) {
+  // `persist`. The first `genesis` of them (all, if zero) are the genesis set.
+  Cluster(World& world, size_t size, NetworkFaults faults, bool persist = true, size_t genesis = 0) : _world(world), _time(world), _faults(faults) {
     for (size_t i = 0; i < size; ++i) {
       auto node = std::make_unique<Node>();
       node->id.bytes[15] = static_cast<uint8_t>(i + 1);
       node->store = std::make_shared<Store>(persist);
       _nodes.push_back(std::move(node));
     }
+    std::vector<identity::NodeId> founders;
+    for (size_t i = 0; i < (genesis ? genesis : size); ++i) founders.push_back(_nodes[i]->id);
+    _genesis = agree::ReplicaSet::of(std::move(founders), genesis_version);
     for (size_t i = 0; i < size; ++i) start(i);
   }
   Cluster(const Cluster&) = delete;
@@ -103,6 +146,13 @@ class Cluster {
   std::vector<identity::NodeId> ids() const {
     std::vector<identity::NodeId> out;
     for (const auto& node : _nodes) out.push_back(node->id);
+    return out;
+  }
+  const agree::ReplicaSet& genesis() const noexcept { return _genesis; }
+  // The ids of the nodes at `indices`.
+  std::vector<identity::NodeId> ids(std::initializer_list<size_t> indices) const {
+    std::vector<identity::NodeId> out;
+    for (const auto i : indices) out.push_back(_nodes.at(i)->id);
     return out;
   }
   bool up(size_t i) const { return _nodes.at(i)->agreement != nullptr; }
@@ -140,7 +190,7 @@ class Cluster {
     identity::NodeId epoch;
     for (auto& byte : epoch.bytes) byte = static_cast<uint8_t>(_world.random.next());
     node.agreement = std::make_unique<agree::Agreement>(
-        _world.io.get_executor(), node.id, epoch,
+        _world.io.get_executor(), node.id, epoch, agree::Agreement::Table{slots, _genesis},
         [this, i](const identity::NodeId& to, net::MessageType type, net::Bytes payload, std::chrono::milliseconds deadline,
                   std::function<void(std::optional<net::Bytes>, std::string)> done) {
           send(i, index(to), type, std::move(payload), deadline, std::move(done));
@@ -191,6 +241,7 @@ class Cluster {
   World& _world;
   Time _time;
   NetworkFaults _faults;
+  agree::ReplicaSet _genesis;
   std::vector<std::unique_ptr<Node>> _nodes;
   std::set<std::pair<size_t, size_t>> _blocked;
 };

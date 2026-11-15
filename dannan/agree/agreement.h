@@ -31,15 +31,18 @@ namespace dannan::agree {
 
 // One space's acceptor state, the hosted system's to keep: in memory, or durably before
 // keep() says it is done. Called one request at a time per space; done may be called from
-// any thread.
+// any thread. Names are kept per slot, and each slot has its record.
 class AcceptorStore {
  public:
   virtual ~AcceptorStore() = default;
-  // The state held for `names`, one per name in order; a name never seen is a default
-  // AcceptorState.
-  virtual void load(std::span<const Name> names, std::function<void(std::vector<AcceptorState>)> done) = 0;
-  // Keeps `states` for `names`; done(false) if it could not, and the request is refused.
-  virtual void keep(std::span<const Name> names, std::span<const AcceptorState> states, std::function<void(bool)> done) = 0;
+  // What is held for `names` in `slot`: the slot's record, the space's floor, and one
+  // state per name in order (a name never seen is a default AcceptorState). With `every`,
+  // `Held::names` and `Held::states` go on with every other name held in the slot, in any
+  // order: a transfer moves them all.
+  virtual void load(Slot slot, std::span<const Name> names, bool every, std::function<void(Held)> done) = 0;
+  // Keeps all of `held` for `slot`: the record, the floor, and each name's state (a default
+  // state may be dropped). done(false) if it could not, and the request is refused.
+  virtual void keep(Slot slot, const Held& held, std::function<void(bool)> done) = 0;
   // Whether this acceptor may vote: false after a restart that lost its state, until it
   // has caught up (the design's rule; a store that votes with lost state can commit two
   // values for one name).
@@ -56,9 +59,13 @@ struct Outcome {
   Bytes result;
   Ballot ballot;
   std::vector<identity::NodeId> accepted, refused, silent;
-  // Not committed: why. A set refusal names the set the names are served by.
+  // Not committed: why. A set refusal names the set the slot is served by.
   std::string why;
   std::optional<ReplicaSet> serving;
+  // A transfer: the names it carried to the new set.
+  std::vector<Name> names;
+  // Unfinished transfers this call finished on its way.
+  uint32_t finished = 0;
   // Attempts made, retries included.
   uint32_t attempts = 0;
   // forget(): every replica held the tombstone and was told to purge it.
@@ -77,9 +84,18 @@ class Agreement {
   // own, so a run's every wait is an event in its world.
   using Schedule = std::function<void(std::chrono::milliseconds after, std::function<void()> task)>;
 
+  // The cluster's slot table, fixed for its life: the count, and the genesis set that
+  // serves a slot no acceptor has recorded (the maintainer, 2026-11-15: "No root except at genesis. A
+  // root may start with only one node.").
+  struct Table {
+    uint32_t slots = default_slots;
+    ReplicaSet genesis;
+  };
+
   // `executor` runs the proposers' and acceptors' steps; `epoch` is the node's durability
-  // epoch, so a restart never reuses a ballot.
-  Agreement(boost::asio::any_io_executor executor, identity::NodeId self, identity::NodeId epoch, Call call, Advertises advertises,
+  // epoch, so a restart never reuses a ballot. Throws std::invalid_argument for a table of
+  // no slots or more than max_slots.
+  Agreement(boost::asio::any_io_executor executor, identity::NodeId self, identity::NodeId epoch, Table table, Call call, Advertises advertises,
             const contract::TimeSource* time = &contract::steady_time_source(), Schedule schedule = {});
   ~Agreement();
   Agreement(const Agreement&) = delete;
@@ -91,17 +107,33 @@ class Agreement {
   void serve(std::string space, std::string capability, std::shared_ptr<AcceptorStore> store);
   void unserve(const std::string& space);
 
-  // Changes `names` together over `replicas` (version `version` of their configuration):
-  // `change` is given their current values and returns the new ones and a result. Retries
-  // above any higher ballot it hears of, with backoff, until committed, refused for its
-  // set, or `deadline` passes on the injected time. `done` is posted to `executor` once.
-  // From any thread.
-  void change(std::string space, std::vector<Name> names, std::vector<identity::NodeId> replicas, uint64_t version, Change change, Reduce reduce,
+  const Table& table() const noexcept;
+
+  // Changes `names`, all of `slot`, together over `replicas` (version `version` of the
+  // slot's configuration): `change` is given their current values and returns the new ones
+  // and a result. The caller names the slot (slot_of, or the hosted system's own scheme).
+  // Retries above any higher ballot it hears of, with backoff, finishing a transfer to its
+  // set that it finds unfinished, until committed, refused for its set (`Outcome::serving`
+  // says which serves the slot), or `deadline` passes on the injected time. `done` is
+  // posted to `executor` once. From any thread.
+  void change(std::string space, Slot slot, std::vector<Name> names, std::vector<identity::NodeId> replicas, uint64_t version, Change change, Reduce reduce,
               std::chrono::milliseconds deadline, boost::asio::any_io_executor executor, std::function<void(Outcome)> done);
   // A strict read: an identity change, so it returns only what a majority holds (Mimir's
   // ruling 5); a minority side is refused.
-  void read(std::string space, std::vector<Name> names, std::vector<identity::NodeId> replicas, uint64_t version, Reduce reduce,
+  void read(std::string space, Slot slot, std::vector<Name> names, std::vector<identity::NodeId> replicas, uint64_t version, Reduce reduce,
             std::chrono::milliseconds deadline, boost::asio::any_io_executor executor, std::function<void(Outcome)> done);
+
+  // Moves `slot` from `from` (version `from_version`) to `to` (a higher version): one round
+  // on majorities of both sets, carrying every name the old set holds, then settled at
+  // both, after which a proposer naming the old set is refused and told the new one. Safe
+  // for any two sets; growing one node at a time is the hosted system's choice. A slot
+  // holding more names than one message carries is refused, saying so.
+  void transfer(std::string space, Slot slot, std::vector<identity::NodeId> from, uint64_t from_version, std::vector<identity::NodeId> to, uint64_t to_version,
+                std::chrono::milliseconds deadline, boost::asio::any_io_executor executor, std::function<void(Outcome)> done);
+  // Founding (Kvasir's review): records every slot of `space` as served by the genesis set,
+  // one change per slot with no names, so the genesis constant is used once. Committed
+  // when every slot is; otherwise `why` names the first slot that was not. Repeatable.
+  void found(std::string space, std::chrono::milliseconds deadline, boost::asio::any_io_executor executor, std::function<void(Outcome)> done);
 
   // Deletes `names` (Dagda's review, safety 2): commits a tombstone (no value), and only
   // once every replica is seen to hold it, purges it, each acceptor raising its space's
@@ -109,16 +141,17 @@ class Agreement {
   // cannot be reached leaves the tombstone in place, which reads as absent; `Outcome::why`
   // says so and the call may be repeated. Committed: the tombstone is committed; forgotten
   // is said in `Outcome::forgotten`.
-  void forget(std::string space, std::vector<Name> names, std::vector<identity::NodeId> replicas, uint64_t version, std::chrono::milliseconds deadline,
-              boost::asio::any_io_executor executor, std::function<void(Outcome)> done);
+  void forget(std::string space, Slot slot, std::vector<Name> names, std::vector<identity::NodeId> replicas, uint64_t version,
+              std::chrono::milliseconds deadline, boost::asio::any_io_executor executor, std::function<void(Outcome)> done);
   // For a store that restarted without its state (the design's restart rule): a strict read
   // of `names` at a majority of the other replicas, installed into this node's store for
-  // `space` at the committing ballot. The store says ready() once every name it serves has
-  // caught up, by this helper or its own transfer (Mimir's review).
-  void catch_up(std::string space, std::vector<Name> names, std::vector<identity::NodeId> replicas, uint64_t version, std::chrono::milliseconds deadline,
-                boost::asio::any_io_executor executor, std::function<void(Outcome)> done);
+  // `space` at the committing ballot, with the slot recorded as served by `replicas`. The
+  // store says ready() once every name it serves has caught up, by this helper or its own
+  // transfer (Mimir's review).
+  void catch_up(std::string space, Slot slot, std::vector<Name> names, std::vector<identity::NodeId> replicas, uint64_t version,
+                std::chrono::milliseconds deadline, boost::asio::any_io_executor executor, std::function<void(Outcome)> done);
 
-  // A peer's agree_prepare, agree_accept or agree_purge: answered through `answer`, later. Returns the
+  // A peer's agree_prepare, agree_accept, agree_purge or agree_settle: answered through `answer`, later. Returns the
   // message to answer at once when it cannot be served (an unknown space, a refusal before
   // the store is asked), or nothing when the answer will be given.
   std::optional<net::Message> serve_request(const identity::NodeId& from, const net::Message& request, std::function<void(net::Message)> answer);

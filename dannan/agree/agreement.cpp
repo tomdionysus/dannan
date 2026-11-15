@@ -61,10 +61,66 @@ struct Space {
   }
 };
 
+namespace {
+
+// A request as the acceptor serves it, whichever kind.
+struct Request {
+  enum class Kind { prepare, accept, purge, settle } kind;
+  std::string space;
+  Slot slot = 0;
+  std::vector<Name> names;
+  // A transfer's request loads every name held in the slot as well.
+  bool every = false;
+  std::optional<Prepare> prepare;
+  std::optional<Accept> accept;
+  std::optional<Purge> purge;
+  std::optional<Settle> settle;
+};
+
+Request decode_request(const net::Message& message) {
+  namespace m = net::message;
+  Request out{};
+  if (message.type == m::agree_prepare) {
+    auto decoded = decode_prepare(message.payload);
+    out = Request{
+        Request::Kind::prepare, decoded.space, decoded.prepare.slot, decoded.prepare.names, decoded.prepare.to.has_value(), decoded.prepare, {}, {}, {}};
+  } else if (message.type == m::agree_accept) {
+    auto decoded = decode_accept(message.payload);
+    out = Request{Request::Kind::accept, decoded.space, decoded.accept.slot, decoded.accept.names, decoded.accept.to.has_value(), {}, decoded.accept, {}, {}};
+  } else if (message.type == m::agree_purge) {
+    auto decoded = decode_purge(message.payload);
+    out = Request{Request::Kind::purge, decoded.space, decoded.purge.slot, decoded.purge.names, false, {}, {}, decoded.purge, {}};
+  } else {
+    auto decoded = decode_settle(message.payload);
+    out = Request{Request::Kind::settle, decoded.space, decoded.settle.slot, {}, false, {}, {}, {}, decoded.settle};
+  }
+  return out;
+}
+
+net::MessageType reply_type(Request::Kind kind) {
+  namespace m = net::message;
+  switch (kind) {
+    case Request::Kind::prepare:
+      return m::agree_prepare_reply;
+    case Request::Kind::accept:
+      return m::agree_accept_reply;
+    case Request::Kind::purge:
+      return m::agree_purge_reply;
+    case Request::Kind::settle:
+      return m::agree_settle_reply;
+  }
+  return m::agree_accept_reply;
+}
+
+Refusal refusal_of(std::string why) { return Refusal{std::move(why), std::nullopt, std::nullopt, std::nullopt}; }
+
+}  // namespace
+
 struct Agreement::Core : std::enable_shared_from_this<Core> {
   asio::any_io_executor executor;
   identity::NodeId self;
   identity::NodeId epoch;
+  Table table;
   Call call;
   Advertises advertises;
   const contract::TimeSource* time;
@@ -96,84 +152,77 @@ struct Agreement::Core : std::enable_shared_from_this<Core> {
   }
 
   // Serves a request: an answer at once, or nothing when `answer` will be called.
-  std::optional<net::Message> serve(const identity::NodeId& from, const net::Message& request, std::function<void(net::Message)> answer) {
-    enum class Kind { prepare, accept, purge };
-    const Kind kind = request.type == net::message::agree_prepare ? Kind::prepare : request.type == net::message::agree_accept ? Kind::accept : Kind::purge;
-    const auto reply_type = kind == Kind::prepare  ? net::message::agree_prepare_reply
-                            : kind == Kind::accept ? net::message::agree_accept_reply
-                                                   : net::message::agree_purge_reply;
-    std::string space_name;
-    std::optional<PrepareMessage> prepare;
-    std::optional<AcceptMessage> accept;
-    std::optional<PurgeMessage> purge;
+  std::optional<net::Message> serve(const identity::NodeId& from, const net::Message& message, std::function<void(net::Message)> answer) {
+    Request request;
     try {
-      if (kind == Kind::prepare) {
-        prepare = decode_prepare(request.payload);
-        space_name = prepare->space;
-      } else if (kind == Kind::accept) {
-        accept = decode_accept(request.payload);
-        space_name = accept->space;
-      } else {
-        purge = decode_purge(request.payload);
-        space_name = purge->space;
-      }
+      request = decode_request(message);
     } catch (const net::DecodeError& error) {
       return net::error_reply(400, "invalid_request", error.what());
     }
-    const auto space = find(space_name);
-    if (!space) return net::error_reply(404, "no_space", "this node serves no space " + space_name);
+    const auto replied = reply_type(request.kind);
+    if (request.slot >= table.slots) return net::error_reply(400, "invalid_request", "slot " + std::to_string(request.slot) + " is past this cluster's table");
+    const auto space = find(request.space);
+    if (!space) return net::error_reply(404, "no_space", "this node serves no space " + request.space);
     // Only the owner's nodes vote or write (Lugh's review).
     if (from != self && !advertises(from, space->capability))
       return net::error_reply(403, "not_permitted", "the sender does not advertise " + space->capability);
-    const auto refusal = [kind, reply_type](std::string why) {
-      return kind == Kind::prepare ? net::Message{reply_type, encode(PrepareAnswer{Refusal{std::move(why), {}, {}}, {}}), {}}
-                                   : net::Message{reply_type, encode(AcceptAnswer{Refusal{std::move(why), {}, {}}}), {}};
+    const auto refusal = [kind = request.kind, replied](std::string why) {
+      return kind == Request::Kind::prepare ? net::Message{replied, encode(PrepareAnswer{refusal_of(std::move(why)), {}, {}, {}, {}}), {}}
+                                            : net::Message{replied, encode(AcceptAnswer{refusal_of(std::move(why))}), {}};
     };
     if (!space->store->ready()) return refusal("this acceptor is catching up");
-    const auto me = self;
     space->enqueue(
-        [space, me, from, kind, reply_type, refusal, prepare = std::move(prepare), accept = std::move(accept), purge = std::move(purge),
+        [space, me = self, genesis = table.genesis, from, refusal, request = std::move(request), replied,
          answer = std::move(answer)](std::function<void()> done) mutable {
-          // The request's names, then the reserved empty name the space's floor is kept under.
-          auto names = kind == Kind::prepare ? prepare->prepare.names : kind == Kind::accept ? accept->accept.names : purge->purge.names;
-          names.push_back(Name{});
-          space->store->load(
-              names, [space, me, from, kind, reply_type, refusal, prepare, accept, purge, answer, done, names](std::vector<AcceptorState> loaded) mutable {
-                if (loaded.size() != names.size()) {
-                  answer(refusal("the store loaded a different count"));
-                  return done();
-                }
-                auto floor_state = loaded.back();
-                loaded.pop_back();
-                const Ballot floor = floor_state.promised;
-                std::optional<std::vector<AcceptorState>> keep;
-                net::Bytes reply;
-                if (kind == Kind::prepare) {
-                  auto step = on_prepare(me, from, prepare->prepare, loaded, floor);
-                  keep = std::move(step.keep);
-                  reply = encode(step.answer);
-                } else if (kind == Kind::accept) {
-                  auto step = on_accept(me, from, accept->accept, loaded, floor);
-                  keep = std::move(step.keep);
-                  reply = encode(step.answer);
-                } else {
-                  auto step = on_purge(me, from, purge->purge, loaded, floor);
-                  reply = encode(AcceptAnswer{step.refused});
-                  if (!step.refused) {
-                    keep = std::move(step.keep);
-                    floor_state.promised = step.floor;
-                  }
-                }
-                if (!keep) {
-                  answer({reply_type, std::move(reply), {}});
-                  return done();
-                }
-                keep->push_back(floor_state);
-                space->store->keep(names, *keep, [answer, done, reply_type, refusal, reply = std::move(reply)](bool kept) {
-                  answer(kept ? net::Message{reply_type, reply, {}} : refusal("the store could not keep"));
-                  done();
-                });
-              });
+          const auto slot = request.slot;
+          const auto every = request.every;
+          auto names = request.names;
+          space->store->load(slot, names, every, [space, me, genesis, from, refusal, request = std::move(request), replied, answer, done](Held held) mutable {
+            if (held.states.size() != held.names.size() || held.names.size() < request.names.size()) {
+              answer(refusal("the store loaded a different count"));
+              return done();
+            }
+            if (request.every && held.names.size() > max_names) {
+              answer(refusal("the slot holds more names than one transfer carries"));
+              return done();
+            }
+            std::optional<Held> keep;
+            net::Bytes reply;
+            switch (request.kind) {
+              case Request::Kind::prepare: {
+                auto step = on_prepare(me, from, *request.prepare, held, genesis);
+                keep = std::move(step.keep);
+                reply = encode(step.answer);
+                break;
+              }
+              case Request::Kind::accept: {
+                auto step = on_accept(me, from, *request.accept, held, genesis);
+                keep = std::move(step.keep);
+                reply = encode(step.answer);
+                break;
+              }
+              case Request::Kind::purge: {
+                auto step = on_purge(me, from, *request.purge, held);
+                reply = encode(AcceptAnswer{step.refused});
+                if (!step.refused) keep = std::move(step.keep);
+                break;
+              }
+              case Request::Kind::settle: {
+                auto step = on_settle(me, from, *request.settle, held);
+                keep = std::move(step.keep);
+                reply = encode(step.answer);
+                break;
+              }
+            }
+            if (!keep) {
+              answer({replied, std::move(reply), {}});
+              return done();
+            }
+            space->store->keep(request.slot, *keep, [answer, done, replied, refusal, reply = std::move(reply)](bool kept) {
+              answer(kept ? net::Message{replied, reply, {}} : refusal("the store could not keep"));
+              done();
+            });
+          });
         },
         space);
     return std::nullopt;
@@ -197,19 +246,24 @@ struct Agreement::Core : std::enable_shared_from_this<Core> {
   }
 };
 
-// One change, retried until committed, refused for its set, or out of time.
+// One change or transfer, retried until committed, refused for its set, or out of time. A
+// change that finds a transfer to its set unfinished finishes it first.
 struct Agreement::Run : std::enable_shared_from_this<Run> {
+  // Makes the run's own attempt under a ballot.
+  using Make = std::function<Attempt(Ballot)>;
+
   std::shared_ptr<Core> core;
   asio::strand<asio::any_io_executor> strand;
   std::string space;
-  std::vector<Name> names;
-  ReplicaSet set;
-  Change change;
-  Reduce reduce;
+  Slot slot;
+  Make make;
   contract::TimePoint deadline;
   asio::any_io_executor reply;
   std::function<void(Outcome)> done;
   std::unique_ptr<Attempt> attempt;
+  // An unfinished transfer being finished before the run's own attempt: from, to.
+  std::optional<std::pair<ReplicaSet, ReplicaSet>> finishing;
+  uint32_t finished_transfers = 0;
   uint64_t generation = 0;
   size_t outstanding = 0;
   bool finished = false;
@@ -219,15 +273,13 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
   // Seeded from the node and its epoch, so a simulation's run replays exactly.
   std::mt19937_64 random;
 
-  Run(std::shared_ptr<Core> owner, std::string space_name, std::vector<Name> registers, ReplicaSet replicas, Change changing, Reduce reducing,
-      contract::TimePoint until, asio::any_io_executor told, std::function<void(Outcome)> then)
+  Run(std::shared_ptr<Core> owner, std::string space_name, Slot slot_of_run, Make making, contract::TimePoint until, asio::any_io_executor told,
+      std::function<void(Outcome)> then)
       : core(std::move(owner)),
         strand(asio::make_strand(core->executor)),
         space(std::move(space_name)),
-        names(std::move(registers)),
-        set(std::move(replicas)),
-        change(std::move(changing)),
-        reduce(std::move(reducing)),
+        slot(slot_of_run),
+        make(std::move(making)),
         deadline(until),
         reply(std::move(told)),
         done(std::move(then)),
@@ -261,10 +313,11 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
     if (core->time->now() >= deadline) return fail(attempt ? attempt->why() : std::string(), true);
     ++generation;
     ++attempts;
-    attempt = std::make_unique<Attempt>(set, core->next_ballot(above), names, change, reduce);
-    outstanding = set.nodes.size();
+    const auto ballot = core->next_ballot(above);
+    attempt = std::make_unique<Attempt>(finishing ? Attempt::transfer(finishing->first, finishing->second, slot, ballot) : make(ballot));
+    outstanding = attempt->recipients().size();
     const auto request = encode(PrepareMessage{space, attempt->prepare()});
-    for (const auto& node : set.nodes)
+    for (const auto& node : attempt->recipients())
       core->send(node, net::message::agree_prepare, request, left(),
                  [self = shared_from_this(), at = generation, node](std::optional<net::Bytes> answer, std::string) {
                    asio::post(self->strand, [self, at, node, answer = std::move(answer)] { self->prepared(at, node, answer); });
@@ -282,15 +335,15 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
       }
     }
     if (accept) {
-      outstanding = set.nodes.size();
+      outstanding = attempt->recipients().size();
       const auto request = encode(AcceptMessage{space, *accept});
-      for (const auto& to : set.nodes)
+      for (const auto& to : attempt->recipients())
         core->send(to, net::message::agree_accept, request, left(), [self = shared_from_this(), at, to](std::optional<net::Bytes> replied, std::string) {
           asio::post(self->strand, [self, at, to, replied = std::move(replied)] { self->accepted(at, to, replied); });
         });
       return;
     }
-    settle();
+    settle_or_retry();
   }
 
   void accepted(uint64_t at, const identity::NodeId& node, const std::optional<net::Bytes>& answer) {
@@ -302,14 +355,36 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
       } catch (const net::DecodeError&) {
       }
     }
-    if (attempt->phase() == Attempt::Phase::committed) return succeed();
-    settle();
+    if (attempt->phase() == Attempt::Phase::committed) return committed();
+    settle_or_retry();
   }
 
-  // Refused, or every replica heard from without a majority: another ballot, or the end.
-  void settle() {
+  // A committed transfer is settled at both sets before anything relies on it; a finished
+  // one gives way to the run's own attempt at once.
+  void committed() {
+    const auto& prepare = attempt->prepare();
+    if (prepare.to) {
+      const auto request = encode(SettleMessage{space, Settle{prepare.set, *prepare.to, slot, prepare.ballot}});
+      for (const auto& node : attempt->recipients())
+        core->send(node, net::message::agree_settle, request, left(), [](std::optional<net::Bytes>, std::string) {});
+    }
+    if (finishing) {
+      finishing.reset();
+      ++finished_transfers;
+      return begin(0);
+    }
+    succeed();
+  }
+
+  // Refused, or every recipient heard from without enough: another ballot, a transfer to
+  // finish, or the end.
+  void settle_or_retry() {
     if (attempt->phase() == Attempt::Phase::refused) {
-      // Another set serves these names: this one is wrong, whatever a retry would say.
+      if (attempt->unfinished() && !finishing) {
+        finishing = std::make_pair(*attempt->unfinished(), attempt->prepare().set);
+        return retry(attempt->higher() ? attempt->higher()->counter : 0);
+      }
+      // Another set serves the slot: this one is wrong, whatever a retry would say.
       if (attempt->serving()) return fail(attempt->why(), false);
       return retry(attempt->higher() ? attempt->higher()->counter : 0);
     }
@@ -332,11 +407,12 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
   Outcome evidence() const {
     Outcome out;
     out.attempts = attempts;
+    out.finished = finished_transfers;
     if (!attempt) return out;
     out.ballot = attempt->prepare().ballot;
     out.accepted = attempt->accepted();
     out.refused = attempt->refused();
-    for (const auto& node : set.nodes)
+    for (const auto& node : attempt->recipients())
       if (std::find(out.accepted.begin(), out.accepted.end(), node) == out.accepted.end() &&
           std::find(out.refused.begin(), out.refused.end(), node) == out.refused.end())
         out.silent.push_back(node);
@@ -350,6 +426,7 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
     out.values = attempt->values();
     out.changed_at = attempt->changed_at();
     out.result = attempt->result();
+    if (attempt->prepare().to) out.names = attempt->names();
     asio::post(reply, [done = std::move(done), out = std::move(out)] { done(out); });
   }
 
@@ -360,6 +437,13 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
     out.serving = attempt ? attempt->serving() : std::nullopt;
     out.why = timed_out ? "not committed within the deadline" + (why.empty() ? std::string() : ": " + why) : std::move(why);
     asio::post(reply, [done = std::move(done), out = std::move(out)] { done(out); });
+  }
+
+  static void start(const std::shared_ptr<Run>& run) {
+    asio::post(run->strand, [run] {
+      run->arm_watch();
+      run->begin(0);
+    });
   }
 };
 
@@ -380,12 +464,14 @@ void after_on(const asio::any_io_executor& executor, const contract::TimeSource*
 
 }  // namespace
 
-Agreement::Agreement(asio::any_io_executor executor, identity::NodeId self, identity::NodeId epoch, Call call, Advertises advertises,
+Agreement::Agreement(asio::any_io_executor executor, identity::NodeId self, identity::NodeId epoch, Table table, Call call, Advertises advertises,
                      const contract::TimeSource* time, Schedule schedule)
     : _core(std::make_shared<Core>()) {
+  if (table.slots == 0 || table.slots > max_slots) throw std::invalid_argument("a slot table holds 1 to 8192 slots");
   _core->executor = std::move(executor);
   _core->self = self;
   _core->epoch = epoch;
+  _core->table = std::move(table);
   _core->call = std::move(call);
   _core->advertises = std::move(advertises);
   _core->time = time;
@@ -398,6 +484,8 @@ Agreement::~Agreement() {
   contract::WriteLock lock(_core->lifetime);
   _core->closed = true;
 }
+
+const Agreement::Table& Agreement::table() const noexcept { return _core->table; }
 
 void Agreement::serve(std::string space, std::string capability, std::shared_ptr<AcceptorStore> store) {
   if (space.empty() || space.size() > max_space) throw std::invalid_argument("a space is named in 1 to 255 bytes");
@@ -415,22 +503,94 @@ void Agreement::unserve(const std::string& space) {
   _core->spaces.erase(space);
 }
 
-void Agreement::change(std::string space, std::vector<Name> names, std::vector<identity::NodeId> replicas, uint64_t version, Change change, Reduce reduce,
-                       std::chrono::milliseconds deadline, asio::any_io_executor executor, std::function<void(Outcome)> done) {
-  auto run = std::make_shared<Run>(_core, std::move(space), std::move(names), ReplicaSet::of(std::move(replicas), version), std::move(change),
-                                   std::move(reduce), _core->time->now() + deadline, std::move(executor), std::move(done));
-  asio::post(run->strand, [run] {
-    run->arm_watch();
-    run->begin(0);
-  });
+namespace {
+
+void check_slot(Slot slot, const Agreement::Table& table) {
+  if (slot >= table.slots) throw std::invalid_argument("slot " + std::to_string(slot) + " is past this cluster's table of " + std::to_string(table.slots));
 }
 
-void Agreement::read(std::string space, std::vector<Name> names, std::vector<identity::NodeId> replicas, uint64_t version, Reduce reduce,
+}  // namespace
+
+void Agreement::change(std::string space, Slot slot, std::vector<Name> names, std::vector<identity::NodeId> replicas, uint64_t version, Change change,
+                       Reduce reduce, std::chrono::milliseconds deadline, asio::any_io_executor executor, std::function<void(Outcome)> done) {
+  check_slot(slot, _core->table);
+  auto make = [set = ReplicaSet::of(std::move(replicas), version), slot, names = std::move(names), change = std::move(change), reduce = std::move(reduce),
+               genesis = _core->table.genesis](Ballot ballot) { return Attempt(set, slot, ballot, names, change, reduce, genesis); };
+  Run::start(std::make_shared<Run>(_core, std::move(space), slot, std::move(make), _core->time->now() + deadline, std::move(executor), std::move(done)));
+}
+
+void Agreement::read(std::string space, Slot slot, std::vector<Name> names, std::vector<identity::NodeId> replicas, uint64_t version, Reduce reduce,
                      std::chrono::milliseconds deadline, asio::any_io_executor executor, std::function<void(Outcome)> done) {
   change(
-      std::move(space), std::move(names), std::move(replicas), version,
+      std::move(space), slot, std::move(names), std::move(replicas), version,
       [](std::span<const std::optional<Bytes>> current) { return Changed{std::vector<std::optional<Bytes>>(current.begin(), current.end()), {}}; },
       std::move(reduce), deadline, std::move(executor), std::move(done));
+}
+
+void Agreement::transfer(std::string space, Slot slot, std::vector<identity::NodeId> from, uint64_t from_version, std::vector<identity::NodeId> to,
+                         uint64_t to_version, std::chrono::milliseconds deadline, asio::any_io_executor executor, std::function<void(Outcome)> done) {
+  check_slot(slot, _core->table);
+  if (!(to_version > from_version)) throw std::invalid_argument("a transfer's new set has a version above the old one's");
+  auto make = [old_set = ReplicaSet::of(std::move(from), from_version), new_set = ReplicaSet::of(std::move(to), to_version), slot](Ballot ballot) {
+    return Attempt::transfer(old_set, new_set, slot, ballot);
+  };
+  Run::start(std::make_shared<Run>(_core, std::move(space), slot, std::move(make), _core->time->now() + deadline, std::move(executor), std::move(done)));
+}
+
+void Agreement::found(std::string space, std::chrono::milliseconds deadline, asio::any_io_executor executor, std::function<void(Outcome)> done) {
+  struct Founding {
+    std::mutex mutex;
+    uint32_t next = 0;
+    uint32_t left = 0;
+    Outcome out;
+    std::function<void(Outcome)> done;
+  };
+  const auto& table = _core->table;
+  if (table.genesis.nodes.empty()) {
+    Outcome out;
+    out.why = "this node has no genesis set";
+    asio::post(executor, [done = std::move(done), out = std::move(out)] { done(out); });
+    return;
+  }
+  auto founding = std::make_shared<Founding>();
+  founding->left = table.slots;
+  founding->out.committed = true;
+  founding->done = std::move(done);
+  // A window of slots at a time, so a table of 8192 is not 8192 rounds in flight.
+  constexpr uint32_t window = 16;
+  auto step = std::make_shared<std::function<void()>>();
+  *step = [core = _core, founding, step = std::weak_ptr(step), space, deadline, executor, slots = table.slots, genesis = table.genesis]() {
+    Slot slot = 0;
+    {
+      std::lock_guard lock(founding->mutex);
+      if (founding->next == slots) return;
+      slot = founding->next++;
+    }
+    const auto self = step.lock();
+    auto make = [genesis, slot](Ballot ballot) {
+      return Attempt(genesis, slot, ballot, {}, [](std::span<const std::optional<Bytes>>) { return Changed{}; }, {}, genesis);
+    };
+    Run::start(std::make_shared<Run>(core, space, slot, std::move(make), core->time->now() + deadline, executor, [founding, self, slot](Outcome outcome) {
+      bool last = false;
+      {
+        std::lock_guard lock(founding->mutex);
+        founding->out.attempts += outcome.attempts;
+        if (!outcome.committed && founding->out.committed) {
+          founding->out.committed = false;
+          founding->out.why = "slot " + std::to_string(slot) + ": " + outcome.why;
+          founding->out.serving = outcome.serving;
+        }
+        last = --founding->left == 0;
+      }
+      if (last) return founding->done(std::move(founding->out));
+      if (self) (*self)();
+    }));
+  };
+  // Kept alive by the steps in flight, which hold it strongly while they run.
+  for (uint32_t i = 0; i < std::min(window, table.slots); ++i) {
+    auto held = step;
+    asio::post(executor, [held] { (*held)(); });
+  }
 }
 
 namespace {
@@ -464,23 +624,23 @@ void fan_out(const std::function<void(const identity::NodeId&, net::MessageType,
 
 }  // namespace
 
-void Agreement::forget(std::string space, std::vector<Name> names, std::vector<identity::NodeId> replicas, uint64_t version, std::chrono::milliseconds deadline,
-                       asio::any_io_executor executor, std::function<void(Outcome)> done) {
+void Agreement::forget(std::string space, Slot slot, std::vector<Name> names, std::vector<identity::NodeId> replicas, uint64_t version,
+                       std::chrono::milliseconds deadline, asio::any_io_executor executor, std::function<void(Outcome)> done) {
   const auto set = ReplicaSet::of(replicas, version);
   auto core = _core;
   const auto send = [core](const identity::NodeId& to, net::MessageType type, net::Bytes payload, std::chrono::milliseconds within, Reply reply) {
     core->send(to, type, std::move(payload), within, std::move(reply));
   };
   change(
-      space, names, replicas, version,
+      space, slot, names, replicas, version,
       [](std::span<const std::optional<Bytes>> current) { return Changed{std::vector<std::optional<Bytes>>(current.size()), {}}; }, {}, deadline, executor,
-      [space, names, set, send, deadline, executor, done = std::move(done)](Outcome tombstone) mutable {
+      [space, slot, names, set, send, deadline, executor, done = std::move(done)](Outcome tombstone) mutable {
         if (!tombstone.committed) return done(std::move(tombstone));
         // Every replica must hold the tombstone before any forgets it: sent again, the same
         // accept, to all.
-        const Accept again{set, tombstone.ballot, names, std::vector<std::optional<Bytes>>(names.size()), tombstone.changed_at};
+        const Accept again{set, std::nullopt, slot, tombstone.ballot, names, std::vector<std::optional<Bytes>>(names.size()), tombstone.changed_at};
         fan_out(send, set.nodes, net::message::agree_accept, encode(AcceptMessage{space, again}), deadline, executor,
-                [space, names, set, send, deadline, executor, done = std::move(done), tombstone](std::vector<std::optional<net::Bytes>> answers) mutable {
+                [space, slot, names, set, send, deadline, executor, done = std::move(done), tombstone](std::vector<std::optional<net::Bytes>> answers) mutable {
                   for (const auto& answer : answers) {
                     bool held = false;
                     if (answer) try {
@@ -492,8 +652,8 @@ void Agreement::forget(std::string space, std::vector<Name> names, std::vector<i
                       return done(std::move(tombstone));
                     }
                   }
-                  fan_out(send, set.nodes, net::message::agree_purge, encode(PurgeMessage{space, Purge{set, tombstone.ballot, names}}), deadline, executor,
-                          [done = std::move(done), tombstone](std::vector<std::optional<net::Bytes>> purged) mutable {
+                  fan_out(send, set.nodes, net::message::agree_purge, encode(PurgeMessage{space, Purge{set, slot, tombstone.ballot, names}}), deadline,
+                          executor, [done = std::move(done), tombstone](std::vector<std::optional<net::Bytes>> purged) mutable {
                             tombstone.forgotten = std::all_of(purged.begin(), purged.end(), [](const std::optional<net::Bytes>& answer) {
                               try {
                                 return answer && !decode_accept_answer(*answer).refused;
@@ -508,23 +668,28 @@ void Agreement::forget(std::string space, std::vector<Name> names, std::vector<i
       });
 }
 
-void Agreement::catch_up(std::string space, std::vector<Name> names, std::vector<identity::NodeId> replicas, uint64_t version,
+void Agreement::catch_up(std::string space, Slot slot, std::vector<Name> names, std::vector<identity::NodeId> replicas, uint64_t version,
                          std::chrono::milliseconds deadline, asio::any_io_executor executor, std::function<void(Outcome)> done) {
   const auto set = ReplicaSet::of(replicas, version);
   auto core = _core;
   // This node's store refuses to vote while catching up, so the read commits on a majority
-  // of the others; what committed is installed here at its ballot.
-  read(space, names, replicas, version, {}, deadline, executor, [core, space, names, set, done = std::move(done)](Outcome outcome) mutable {
+  // of the others; what committed is installed here at its ballot, and the slot recorded as
+  // served by the set, which the committed read proves.
+  read(space, slot, names, replicas, version, {}, deadline, executor, [core, space, slot, names, set, done = std::move(done)](Outcome outcome) mutable {
     const auto served = core->find(space);
     if (!outcome.committed || !served) return done(std::move(outcome));
-    std::vector<AcceptorState> states;
-    for (size_t i = 0; i < names.size(); ++i) states.push_back(AcceptorState{outcome.ballot, outcome.ballot, outcome.values[i], outcome.changed_at[i], set});
-    served->store->keep(names, states, [done = std::move(done), outcome = std::move(outcome)](bool kept) mutable {
-      if (!kept) {
-        outcome.committed = false;
-        outcome.why = "the store could not keep what was caught up";
-      }
-      done(std::move(outcome));
+    served->store->load(slot, names, false, [served, slot, set, outcome = std::move(outcome), done = std::move(done)](Held held) mutable {
+      for (size_t i = 0; i < held.states.size() && i < outcome.values.size(); ++i)
+        held.states[i] = AcceptorState{outcome.ballot, outcome.ballot, outcome.values[i], outcome.changed_at[i]};
+      held.slot.served = set;
+      held.slot.pending_from.reset();
+      served->store->keep(slot, held, [done = std::move(done), outcome = std::move(outcome)](bool kept) mutable {
+        if (!kept) {
+          outcome.committed = false;
+          outcome.why = "the store could not keep what was caught up";
+        }
+        done(std::move(outcome));
+      });
     });
   });
 }

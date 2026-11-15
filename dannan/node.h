@@ -86,6 +86,12 @@ struct NodeConfig {
   // inbound_capable=, for the capability it is told: " hosts_extents=true".
   std::function<std::string(bool)> inbound_journal_fields;
   std::string version;
+  // Agreement's slot table (agree/agreement.h), fixed for the cluster's life and the same
+  // on every node: the slot count, and the genesis members, which serve a slot no acceptor
+  // has recorded, as version 0. None: no slot can be founded, nor changed until a set
+  // recorded elsewhere serves it.
+  uint32_t agreement_slots = agree::default_slots;
+  std::vector<identity::NodeId> agreement_genesis;
 
   std::chrono::milliseconds heartbeat{5000};
   std::chrono::milliseconds dead_after{30000};

@@ -28,6 +28,7 @@ const Registration agreement(
       decoding([&] { (void)agree::decode_prepare(data); });
       decoding([&] { (void)agree::decode_accept(data); });
       decoding([&] { (void)agree::decode_purge(data); });
+      decoding([&] { (void)agree::decode_settle(data); });
       decoding([&] { (void)agree::decode_prepare_answer(data); });
       decoding([&] { (void)agree::decode_accept_answer(data); });
     },
@@ -37,13 +38,18 @@ const Registration agreement(
       identity::NodeId b;
       b.bytes.fill(2);
       const auto set = agree::ReplicaSet::of({a, b}, 3);
+      const auto next = agree::ReplicaSet::of({b}, 4);
       const agree::Ballot ballot{7, a, b};
       const agree::Name name{'k', 0, 'x'};
-      return std::vector<net::Bytes>{agree::encode(agree::PrepareMessage{"mimir", {set, ballot, {name}}}),
-                                     agree::encode(agree::AcceptMessage{"lugh/totp", {set, ballot, {name}, {agree::Bytes{1, 2, 3}}, {ballot}}}),
-                                     agree::encode(agree::PurgeMessage{"mimir", {set, ballot, {name}}}),
-                                     agree::encode(agree::PrepareAnswer{{}, {{ballot, agree::Bytes{9}, ballot}}}),
-                                     agree::encode(agree::AcceptAnswer{agree::Refusal{"a higher ballot is promised", ballot, set}})};
+      return std::vector<net::Bytes>{
+          agree::encode(agree::PrepareMessage{"mimir", {set, std::nullopt, 5, ballot, {name}}}),
+          agree::encode(agree::PrepareMessage{"mimir", {set, next, 5, ballot, {}}}),
+          agree::encode(agree::AcceptMessage{"lugh/totp", {set, std::nullopt, 0, ballot, {name}, {agree::Bytes{1, 2, 3}}, {ballot}}}),
+          agree::encode(agree::AcceptMessage{"mimir", {set, next, 5, ballot, {name}, {std::nullopt}, {ballot}}}),
+          agree::encode(agree::PurgeMessage{"mimir", {set, 5, ballot, {name}}}),
+          agree::encode(agree::SettleMessage{"mimir", {set, next, 5, ballot}}),
+          agree::encode(agree::PrepareAnswer{std::nullopt, next, set, {name}, {{ballot, agree::Bytes{9}, ballot}}}),
+          agree::encode(agree::AcceptAnswer{agree::Refusal{"the slot is served by another replica set", ballot, next, set}})};
     });
 
 }  // namespace

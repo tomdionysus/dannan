@@ -52,6 +52,18 @@ ReplicaSet get_set(Reader& in) {
   return out;
 }
 
+void put(Writer& out, const std::optional<ReplicaSet>& set) {
+  out.u8(set ? 1 : 0);
+  if (set) put(out, *set);
+}
+
+std::optional<ReplicaSet> get_optional_set(Reader& in, const char* what) {
+  const auto present = in.u8();
+  if (present > 1) throw DecodeError(std::string(what) + "'s presence is 0 or 1");
+  if (!present) return std::nullopt;
+  return get_set(in);
+}
+
 void put(Writer& out, const std::optional<Bytes>& value) {
   out.u8(value ? 1 : 0);
   if (value) out.bytes(*value);
@@ -64,21 +76,24 @@ std::optional<Bytes> get_value(Reader& in) {
   return in.bytes(max_value);
 }
 
+Slot get_slot(Reader& in) {
+  const auto slot = in.u32();
+  if (slot >= max_slots) throw DecodeError("slot " + std::to_string(slot) + " is past the largest table");
+  return slot;
+}
+
 void put_names(Writer& out, const std::vector<Name>& names) {
   out.u32(static_cast<uint32_t>(names.size()));
   for (const auto& name : names) out.bytes(name);
 }
 
+// None is allowed: a transfer's prepare and founding name no register.
 std::vector<Name> get_names(Reader& in) {
   const auto count = in.u32();
-  if (count == 0 || count > max_names) throw DecodeError("a request naming " + std::to_string(count) + " registers");
+  if (count > max_names) throw DecodeError("a message naming " + std::to_string(count) + " registers");
   std::vector<Name> out;
   out.reserve(count);
-  for (uint32_t i = 0; i < count; ++i) {
-    out.push_back(in.bytes(max_name));
-    // The empty name is reserved: an acceptor keeps its space's floor under it.
-    if (out.back().empty()) throw DecodeError("an empty register name");
-  }
+  for (uint32_t i = 0; i < count; ++i) out.push_back(in.bytes(max_name));
   return out;
 }
 
@@ -88,8 +103,8 @@ void put(Writer& out, const std::optional<Refusal>& refusal) {
   out.string(refusal->why);
   out.u8(refusal->higher ? 1 : 0);
   if (refusal->higher) put(out, *refusal->higher);
-  out.u8(refusal->serving ? 1 : 0);
-  if (refusal->serving) put(out, *refusal->serving);
+  put(out, refusal->serving);
+  put(out, refusal->pending_from);
 }
 
 std::optional<Refusal> get_refusal(Reader& in) {
@@ -101,9 +116,8 @@ std::optional<Refusal> get_refusal(Reader& in) {
   const auto higher = in.u8();
   if (higher > 1) throw DecodeError("a higher ballot's presence is 0 or 1");
   if (higher) out.higher = get_ballot(in);
-  const auto serving = in.u8();
-  if (serving > 1) throw DecodeError("a serving set's presence is 0 or 1");
-  if (serving) out.serving = get_set(in);
+  out.serving = get_optional_set(in, "a serving set");
+  out.pending_from = get_optional_set(in, "a pending set");
   return out;
 }
 
@@ -119,6 +133,8 @@ net::Bytes encode(const PrepareMessage& message) {
   out.u8(message_version);
   out.string(message.space);
   put(out, message.prepare.set);
+  put(out, message.prepare.to);
+  out.u32(message.prepare.slot);
   put(out, message.prepare.ballot);
   put_names(out, message.prepare.names);
   return out.take();
@@ -129,6 +145,8 @@ net::Bytes encode(const AcceptMessage& message) {
   out.u8(message_version);
   out.string(message.space);
   put(out, message.accept.set);
+  put(out, message.accept.to);
+  out.u32(message.accept.slot);
   put(out, message.accept.ballot);
   put_names(out, message.accept.names);
   for (const auto& value : message.accept.values) put(out, value);
@@ -141,8 +159,20 @@ net::Bytes encode(const PurgeMessage& message) {
   out.u8(message_version);
   out.string(message.space);
   put(out, message.purge.set);
+  out.u32(message.purge.slot);
   put(out, message.purge.ballot);
   put_names(out, message.purge.names);
+  return out.take();
+}
+
+net::Bytes encode(const SettleMessage& message) {
+  Writer out;
+  out.u8(message_version);
+  out.string(message.space);
+  put(out, message.settle.from);
+  put(out, message.settle.to);
+  out.u32(message.settle.slot);
+  put(out, message.settle.ballot);
   return out.take();
 }
 
@@ -152,8 +182,22 @@ PurgeMessage decode_purge(std::span<const uint8_t> bytes) {
   PurgeMessage out;
   out.space = in.string(max_space);
   out.purge.set = get_set(in);
+  out.purge.slot = get_slot(in);
   out.purge.ballot = get_ballot(in);
   out.purge.names = get_names(in);
+  in.finish();
+  return out;
+}
+
+SettleMessage decode_settle(std::span<const uint8_t> bytes) {
+  Reader in(bytes);
+  open(in);
+  SettleMessage out;
+  out.space = in.string(max_space);
+  out.settle.from = get_set(in);
+  out.settle.to = get_set(in);
+  out.settle.slot = get_slot(in);
+  out.settle.ballot = get_ballot(in);
   in.finish();
   return out;
 }
@@ -162,6 +206,9 @@ net::Bytes encode(const PrepareAnswer& answer) {
   Writer out;
   out.u8(message_version);
   put(out, answer.refused);
+  put(out, answer.served);
+  put(out, answer.pending_from);
+  put_names(out, answer.names);
   out.u32(static_cast<uint32_t>(answer.states.size()));
   for (const auto& state : answer.states) {
     put(out, state.accepted);
@@ -184,8 +231,12 @@ PrepareMessage decode_prepare(std::span<const uint8_t> bytes) {
   PrepareMessage out;
   out.space = in.string(max_space);
   out.prepare.set = get_set(in);
+  out.prepare.to = get_optional_set(in, "a transfer's set");
+  out.prepare.slot = get_slot(in);
   out.prepare.ballot = get_ballot(in);
   out.prepare.names = get_names(in);
+  // A transfer is answered with every name held, so it names none itself.
+  if (out.prepare.to && !out.prepare.names.empty()) throw DecodeError("a transfer's prepare names registers");
   in.finish();
   return out;
 }
@@ -196,6 +247,8 @@ AcceptMessage decode_accept(std::span<const uint8_t> bytes) {
   AcceptMessage out;
   out.space = in.string(max_space);
   out.accept.set = get_set(in);
+  out.accept.to = get_optional_set(in, "a transfer's set");
+  out.accept.slot = get_slot(in);
   out.accept.ballot = get_ballot(in);
   out.accept.names = get_names(in);
   for (size_t i = 0; i < out.accept.names.size(); ++i) out.accept.values.push_back(get_value(in));
@@ -209,6 +262,9 @@ PrepareAnswer decode_prepare_answer(std::span<const uint8_t> bytes) {
   open(in);
   PrepareAnswer out;
   out.refused = get_refusal(in);
+  out.served = get_optional_set(in, "a served set");
+  out.pending_from = get_optional_set(in, "a pending set");
+  out.names = get_names(in);
   const auto count = in.u32();
   if (count > max_names) throw DecodeError("an answer naming " + std::to_string(count) + " registers");
   for (uint32_t i = 0; i < count; ++i) {

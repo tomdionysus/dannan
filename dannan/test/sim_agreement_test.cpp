@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <deque>
 #include <functional>
 #include <optional>
 #include <set>
@@ -28,6 +29,8 @@ namespace dannan::test::sim {
 namespace {
 
 using namespace std::chrono_literals;
+
+constexpr agree::Slot counter_slot = 0;
 
 agree::Bytes encode(uint64_t value) {
   agree::Bytes out(8);
@@ -113,11 +116,12 @@ Run simulate(uint64_t seed, Mode mode) {
   std::vector<uint64_t> incarnation(cluster.size(), 0);
   std::function<void(size_t, uint64_t)> catch_up = [&](size_t a, uint64_t at) {
     if (!cluster.up(a) || incarnation[a] != at) return;
-    cluster.agreement(a).catch_up(Cluster::space, {agree::Name{'c'}}, cluster.ids(), 1, 1000ms, world.io.get_executor(), [&, a, at](agree::Outcome outcome) {
-      if (!cluster.up(a) || incarnation[a] != at) return;
-      if (outcome.committed) return cluster.store(a).set_ready(true);
-      world.after(100, [&, a, at] { catch_up(a, at); });
-    });
+    cluster.agreement(a).catch_up(Cluster::space, counter_slot, {agree::Name{'c'}}, cluster.ids(), Cluster::genesis_version, 1000ms, world.io.get_executor(),
+                                  [&, a, at](agree::Outcome outcome) {
+                                    if (!cluster.up(a) || incarnation[a] != at) return;
+                                    if (outcome.committed) return cluster.store(a).set_ready(true);
+                                    world.after(100, [&, a, at] { catch_up(a, at); });
+                                  });
   };
   const auto back = [&](size_t a) {
     ++incarnation[a];
@@ -148,8 +152,8 @@ Run simulate(uint64_t seed, Mode mode) {
       for (size_t tries = 0; tries < cluster.size() && !cluster.up(at); ++tries) at = (at + 1) % cluster.size();
       if (!cluster.up(at)) return;
       history[n].invoked = world.now_ms();
-      cluster.agreement(at).change(Cluster::space, {agree::Name{'c'}}, cluster.ids(), 1, increment(), {}, 3000ms, world.io.get_executor(),
-                                   [&, n](agree::Outcome outcome) {
+      cluster.agreement(at).change(Cluster::space, counter_slot, {agree::Name{'c'}}, cluster.ids(), Cluster::genesis_version, increment(), {}, 3000ms,
+                                   world.io.get_executor(), [&, n](agree::Outcome outcome) {
                                      auto& op = history[n];
                                      op.completed = world.now_ms();
                                      op.answered = true;
@@ -197,7 +201,7 @@ Run simulate(uint64_t seed, Mode mode) {
   }
   // The final value, by a strict read once healed.
   std::optional<agree::Outcome> read;
-  cluster.agreement(0).read(Cluster::space, {agree::Name{'c'}}, cluster.ids(), 1, {}, 5000ms, world.io.get_executor(),
+  cluster.agreement(0).read(Cluster::space, counter_slot, {agree::Name{'c'}}, cluster.ids(), Cluster::genesis_version, {}, 5000ms, world.io.get_executor(),
                             [&](agree::Outcome outcome) { read = std::move(outcome); });
   world.run_until([&] { return read.has_value(); }, 2'000'000);
   if (!read || !read->committed) {
@@ -208,6 +212,140 @@ Run simulate(uint64_t seed, Mode mode) {
   std::vector<Op> invoked;
   for (const auto& op : history)
     if (op.invoked) invoked.push_back(op);
+  run.committed = static_cast<size_t>(std::count_if(invoked.begin(), invoked.end(), [](const Op& op) { return op.committed; }));
+  run.violation = check(invoked, decode(read->values[0]));
+  return run;
+}
+
+// the maintainer's ruling (2026-11-15: "No root except at genesis. A root may start with only one
+// node."), under the world's faults: founded on one node, every slot is grown to five by
+// transfers, one node at a time, while clients increment a counter naming whichever set they
+// last heard of. A client refused for a stale set is told the set and goes there, each try
+// its own operation (a refused one may still have taken effect). Every slot ends on the five,
+// and the history is linearizable.
+Run grow(uint64_t seed) {
+  World world(seed);
+  NetworkFaults faults;
+  faults.drop_one_in = 10;
+  faults.duplicate_one_in = 10;
+  faults.max_delay_ms = 30;
+  Cluster cluster(world, 5, faults, true, 1);
+  const auto first = [&](size_t size) {
+    std::vector<identity::NodeId> out;
+    for (size_t i = 0; i < size; ++i) out.push_back(cluster.id(i));
+    return out;
+  };
+  // What placement says the counter's slot is on, as clients last heard.
+  std::vector<identity::NodeId> placed = first(1);
+  uint64_t placed_version = 0;
+  std::vector<size_t> grown(Cluster::slots, 1);
+  bool founded = false;
+  cluster.agreement(0).found(Cluster::space, 5000ms, world.io.get_executor(), [&](agree::Outcome outcome) { founded = outcome.committed; });
+  // Each slot grows from the founder: one more node per committed transfer.
+  std::function<void(agree::Slot)> grow_slot = [&](agree::Slot slot) {
+    const auto size = grown[slot];
+    if (size == cluster.size()) return;
+    cluster.agreement(0).transfer(Cluster::space, slot, first(size), size - 1, first(size + 1), size, 3000ms, world.io.get_executor(),
+                                  [&, slot, size](agree::Outcome outcome) {
+                                    if (outcome.committed) {
+                                      grown[slot] = size + 1;
+                                      if (slot == counter_slot) {
+                                        placed = first(size + 1);
+                                        placed_version = size;
+                                      }
+                                    }
+                                    world.after(50, [&, slot] { grow_slot(slot); });
+                                  });
+  };
+  world.after(10, [&] {
+    for (agree::Slot slot = 0; slot < Cluster::slots; ++slot) grow_slot(slot);
+  });
+  std::deque<Op> history;
+  std::function<void(std::vector<identity::NodeId>, uint64_t, int)> increment_on = [&](std::vector<identity::NodeId> nodes, uint64_t version, int tries) {
+    // A client at a node of the set it names.
+    const auto at = nodes[world.random.below(nodes.size())];
+    size_t index = 0;
+    while (cluster.id(index) != at) ++index;
+    if (!cluster.up(index)) return;
+    history.emplace_back();
+    const size_t n = history.size() - 1;
+    history[n].invoked = world.now_ms();
+    cluster.agreement(index).change(Cluster::space, counter_slot, {agree::Name{'c'}}, nodes, version, increment(), {}, 3000ms, world.io.get_executor(),
+                                    [&, n, tries](agree::Outcome outcome) {
+                                      auto& op = history[n];
+                                      op.completed = world.now_ms();
+                                      op.answered = true;
+                                      op.committed = outcome.committed;
+                                      if (outcome.committed) op.result = decode(outcome.result);
+                                      if (!outcome.committed && outcome.serving && tries < 5)
+                                        increment_on(outcome.serving->nodes, outcome.serving->version, tries + 1);
+                                    });
+  };
+  for (int n = 0; n < 30; ++n)
+    world.after(20 + world.random.below(2000), [&] {
+      if (founded) increment_on(placed, placed_version, 0);
+    });
+  // Faults: one-way partitions, and crashes and restarts of any node but the founder.
+  for (int f = 0; f < 8; ++f)
+    world.after(world.random.below(2000), [&] {
+      const auto a = 1 + world.random.below(cluster.size() - 1);
+      const auto b = world.random.below(cluster.size());
+      switch (world.random.below(4)) {
+        case 0:
+          if (a != b) cluster.block(a, b);
+          break;
+        case 1:
+          cluster.unblock_all();
+          break;
+        case 2:
+          if (cluster.up(a)) cluster.crash(a);
+          break;
+        default:
+          if (!cluster.up(a)) cluster.restart(a);
+          break;
+      }
+    });
+  const auto start = world.now_ms();
+  world.after(2500, [&] {
+    cluster.unblock_all();
+    cluster.faults().drop_one_in = 0;
+    cluster.faults().duplicate_one_in = 0;
+    for (size_t i = 0; i < cluster.size(); ++i)
+      if (!cluster.up(i)) cluster.restart(i);
+  });
+  const auto settled = [&] {
+    return world.now_ms() >= start + 2500 && std::all_of(grown.begin(), grown.end(), [&](size_t size) { return size == cluster.size(); }) &&
+           std::all_of(history.begin(), history.end(), [](const Op& op) { return op.answered; });
+  };
+  Run run;
+  if (!world.run_until(settled, 2'000'000)) {
+    run.unsettled = true;
+    run.violation = "the run did not settle";
+    return run;
+  }
+  // Every slot is on the five at a majority of them.
+  const auto five = agree::ReplicaSet::of(cluster.ids(), cluster.size() - 1);
+  for (agree::Slot slot = 0; slot < Cluster::slots; ++slot) {
+    size_t holding = 0;
+    for (size_t i = 0; i < cluster.size(); ++i) {
+      const auto record = cluster.store(i).slot(slot);
+      if (record && record->served == five) ++holding;
+    }
+    if (holding < five.majority()) {
+      run.violation = "slot " + std::to_string(slot) + " is on the five at only " + std::to_string(holding) + " nodes";
+      return run;
+    }
+  }
+  std::optional<agree::Outcome> read;
+  cluster.agreement(4).read(Cluster::space, counter_slot, {agree::Name{'c'}}, cluster.ids(), five.version, {}, 5000ms, world.io.get_executor(),
+                            [&](agree::Outcome outcome) { read = std::move(outcome); });
+  world.run_until([&] { return read.has_value(); }, 2'000'000);
+  if (!read || !read->committed) {
+    run.unsettled = true;
+    run.violation = "the final read did not commit" + (read ? ": " + read->why : std::string());
+    return run;
+  }
+  const std::vector<Op> invoked(history.begin(), history.end());
   run.committed = static_cast<size_t>(std::count_if(invoked.begin(), invoked.end(), [](const Op& op) { return op.committed; }));
   run.violation = check(invoked, decode(read->values[0]));
   return run;
@@ -255,6 +393,16 @@ TEST(Simulation, ANodeThatLostItsStateCatchesUpBeforeItVotes) {
     const auto run = simulate(seed, Mode::catch_up);
     ASSERT_FALSE(run.violation) << "seed " << seed << ": " << *run.violation;
   }
+}
+
+TEST(Simulation, AOneNodeGenesisGrowsToFiveUnderFaults) {
+  size_t committed = 0;
+  for (uint64_t seed = 1; seed <= seeds(60); ++seed) {
+    const auto run = grow(seed);
+    ASSERT_FALSE(run.violation) << "seed " << seed << ": " << *run.violation;
+    committed += run.committed;
+  }
+  EXPECT_GT(committed, 0u);
 }
 
 // A seed replays exactly.
