@@ -154,6 +154,10 @@ class Stream : public std::enable_shared_from_this<Stream> {
   const boost::asio::ip::tcp::endpoint& peer() const noexcept { return _peer; }
   // The client certificate presented, if any; set once the handshake completed.
   const std::optional<ClientCertificate>& client_certificate() const noexcept { return _client_certificate; }
+  // The other end's certificate at either end: an accepted stream's client
+  // certificate, or a connected stream's server certificate, verified (Lugh's review:
+  // client_certificate() would be misread on an outbound stream).
+  const std::optional<ClientCertificate>& peer_certificate() const noexcept { return _client_certificate; }
   // The protocol ALPN chose; empty for none.
   const std::string& alpn() const noexcept { return _alpn; }
   // "tcp" or "tls".
@@ -165,6 +169,7 @@ class Stream : public std::enable_shared_from_this<Stream> {
 
  private:
   friend class StreamListener;
+  friend class StreamConnector;
   struct Private {};
 
  public:
@@ -174,6 +179,10 @@ class Stream : public std::enable_shared_from_this<Stream> {
  private:
   // The handshake as the server, within the listener's handshake deadline.
   void handshake(std::function<void(std::string)> done);
+  // The handshake as the client, under `context`, checking the server's certificate
+  // against `name` (a DNS name, or an IP literal with no SNI). On the stream's executor;
+  // the connector holds its deadline.
+  void client_handshake(std::shared_ptr<detail::ServerTls> context, const std::string& name, std::function<void(std::string)> done);
   void note_read();
   void arm_idle();
   void write_next();

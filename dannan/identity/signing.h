@@ -66,4 +66,12 @@ bool verify(SigningAlgorithm algorithm, std::span<const uint8_t> public_key, std
 // Which algorithm a SubjectPublicKeyInfo is for; nothing for anything else.
 std::optional<SigningAlgorithm> algorithm_of_public_key(std::span<const uint8_t> public_key) noexcept;
 
+// RS256 (RSASSA-PKCS1-v1_5 with SHA-256), verify only, for WebAuthn's COSE RSA keys
+// (Lugh's P11, the maintainer, 2026-11-15): whether `signature` signs `message` under the public
+// key of modulus `n` and exponent `e`, each big-endian, leading zeros allowed. A modulus
+// under 2048 bits or over 8192, an exponent that is even or under 3, a signature not the
+// modulus's length, or any malformed input is false, never an exception: these bytes
+// come from outside. Dannan signs nothing with RSA.
+bool verify_rs256(std::span<const uint8_t> n, std::span<const uint8_t> e, std::span<const uint8_t> message, std::span<const uint8_t> signature) noexcept;
+
 }  // namespace dannan::identity

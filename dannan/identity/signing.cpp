@@ -8,9 +8,13 @@
 #include "dannan/identity/signing.h"
 
 #include <openssl/bn.h>
+#include <openssl/core_names.h>
 #include <openssl/ec.h>
 #include <openssl/ecdsa.h>
+#include <openssl/err.h>
 #include <openssl/evp.h>
+#include <openssl/param_build.h>
+#include <openssl/rsa.h>
 #include <openssl/x509.h>
 
 #include <stdexcept>
@@ -165,6 +169,44 @@ bool verify(SigningAlgorithm algorithm, std::span<const uint8_t> public_key, std
   DigestContext context(EVP_MD_CTX_new(), EVP_MD_CTX_free);
   if (!context || EVP_DigestVerifyInit(context.get(), nullptr, digest_for(algorithm), nullptr, key.get()) != 1) return false;
   return EVP_DigestVerify(context.get(), checked.data(), checked.size(), message.data(), message.size()) == 1;
+}
+
+bool verify_rs256(std::span<const uint8_t> n, std::span<const uint8_t> e, std::span<const uint8_t> message, std::span<const uint8_t> signature) noexcept {
+  using Bignum = std::unique_ptr<BIGNUM, decltype(&BN_free)>;
+  Bignum modulus(BN_bin2bn(n.data(), static_cast<int>(n.size()), nullptr), BN_free);
+  Bignum exponent(BN_bin2bn(e.data(), static_cast<int>(e.size()), nullptr), BN_free);
+  if (!modulus || !exponent || n.size() > 8192 / 8 + 64 || e.size() > 64) {
+    ERR_clear_error();
+    return false;
+  }
+  const int bits = BN_num_bits(modulus.get());
+  if (bits < 2048 || bits > 8192 || !BN_is_odd(modulus.get())) return false;
+  if (!BN_is_odd(exponent.get()) || BN_cmp(exponent.get(), BN_value_one()) <= 0 || BN_num_bits(exponent.get()) < 2) return false;
+  if (signature.size() != static_cast<size_t>(BN_num_bytes(modulus.get()))) return false;
+  std::unique_ptr<OSSL_PARAM_BLD, decltype(&OSSL_PARAM_BLD_free)> build(OSSL_PARAM_BLD_new(), OSSL_PARAM_BLD_free);
+  if (!build || OSSL_PARAM_BLD_push_BN(build.get(), OSSL_PKEY_PARAM_RSA_N, modulus.get()) != 1 ||
+      OSSL_PARAM_BLD_push_BN(build.get(), OSSL_PKEY_PARAM_RSA_E, exponent.get()) != 1) {
+    ERR_clear_error();
+    return false;
+  }
+  std::unique_ptr<OSSL_PARAM, decltype(&OSSL_PARAM_free)> params(OSSL_PARAM_BLD_to_param(build.get()), OSSL_PARAM_free);
+  std::unique_ptr<EVP_PKEY_CTX, decltype(&EVP_PKEY_CTX_free)> from(EVP_PKEY_CTX_new_from_name(nullptr, "RSA", nullptr), EVP_PKEY_CTX_free);
+  EVP_PKEY* made = nullptr;
+  if (!params || !from || EVP_PKEY_fromdata_init(from.get()) != 1 || EVP_PKEY_fromdata(from.get(), &made, EVP_PKEY_PUBLIC_KEY, params.get()) != 1) {
+    ERR_clear_error();
+    return false;
+  }
+  Pkey key(made, EVP_PKEY_free);
+  DigestContext context(EVP_MD_CTX_new(), EVP_MD_CTX_free);
+  EVP_PKEY_CTX* padding = nullptr;
+  if (!context || EVP_DigestVerifyInit(context.get(), &padding, EVP_sha256(), nullptr, key.get()) != 1 ||
+      EVP_PKEY_CTX_set_rsa_padding(padding, RSA_PKCS1_PADDING) != 1) {
+    ERR_clear_error();
+    return false;
+  }
+  const bool good = EVP_DigestVerify(context.get(), signature.data(), signature.size(), message.data(), message.size()) == 1;
+  ERR_clear_error();
+  return good;
 }
 
 }  // namespace dannan::identity

@@ -13,6 +13,7 @@
 #include <openssl/x509_vfy.h>
 
 #include <boost/asio/dispatch.hpp>
+#include <boost/asio/ip/address.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/asio/write.hpp>
 
@@ -102,6 +103,60 @@ void Stream::handshake(std::function<void(std::string)> done) {
     const unsigned char* protocol = nullptr;
     unsigned int length = 0;
     SSL_get0_alpn_selected(session, &protocol, &length);
+    if (protocol) self->_alpn.assign(reinterpret_cast<const char*>(protocol), length);
+    done({});
+  });
+}
+
+void Stream::client_handshake(std::shared_ptr<detail::ServerTls> context, const std::string& name, std::function<void(std::string)> done) {
+  _context = std::move(context);
+  _tls = std::make_unique<TlsStream>(_socket, _context->context);
+  SSL* session = _tls->native_handle();
+  X509_VERIFY_PARAM* param = SSL_get0_param(session);
+  boost::system::error_code literal;
+  const auto address = asio::ip::make_address(name, literal);
+  bool named = false;
+  if (!literal) {
+    // An IP literal is checked against the certificate's addresses, and sent as no SNI
+    // (RFC 6066, section 3; Lir's and Lugh's reviews).
+    named = X509_VERIFY_PARAM_set1_ip_asc(param, address.to_string().c_str()) == 1;
+  } else {
+    // One wildcard label at most, the leftmost, never part of a label (Lugh's review).
+    X509_VERIFY_PARAM_set_hostflags(param, X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
+    // A trailing dot names the same host: it is left out of the check (OpenSSL does not
+    // strip it, macOS CI) and of the SNI (RFC 6066, section 3).
+    std::string host = name;
+    if (host.size() > 1 && host.back() == '.') host.pop_back();
+    named = X509_VERIFY_PARAM_set1_host(param, host.c_str(), host.size()) == 1 && SSL_set_tlsext_host_name(session, const_cast<char*>(host.c_str())) == 1;
+  }
+  if (!named) {
+    finish(false);
+    asio::post(get_executor(), [done = std::move(done), name] { done("cannot check the server's name " + name); });
+    return;
+  }
+  _tls->async_handshake(ssl::stream_base::client, [self = shared_from_this(), done = std::move(done)](const boost::system::error_code& error) {
+    if (error || self->_closed.load()) {
+      std::string why = error ? error.message() : std::string("closed during the handshake");
+      if (self->_tls) {
+        const long verdict = SSL_get_verify_result(self->_tls->native_handle());
+        if (verdict != X509_V_OK) why = std::string("the server's certificate: ") + X509_verify_cert_error_string(verdict);
+      }
+      // A handshake cut short by the connector's deadline is counted as timed out
+      // there, not here too: the counters partition the attempts (Lir's review).
+      if (!self->_closed.load()) {
+        contract::Lock lock(self->_shared->mutex);
+        ++self->_shared->counters.handshakes_failed;
+      }
+      self->finish(false);
+      done(why);
+      return;
+    }
+    SSL* established = self->_tls->native_handle();
+    // A chain or a name that failed ended the handshake: what is here verified.
+    self->_client_certificate = presented(established, true);
+    const unsigned char* protocol = nullptr;
+    unsigned int length = 0;
+    SSL_get0_alpn_selected(established, &protocol, &length);
     if (protocol) self->_alpn.assign(reinterpret_cast<const char*>(protocol), length);
     done({});
   });

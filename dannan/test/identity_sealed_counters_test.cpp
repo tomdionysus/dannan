@@ -89,9 +89,13 @@ TEST(SealedCounters, OpensOnlyUnderItsKeyAndRefusesAnAlteredFile) {
     EXPECT_NE(std::string(error.what()).find((dir.path() / "identity" / "counters").string()), std::string::npos) << error.what();
   }
   {
+    // The last byte flipped, not overwritten: it is the GCM tag's, random, and a fixed
+    // value already there one time in 256 altered nothing (deb arm64 CI).
     std::fstream file(dir.path() / "identity" / "counters", std::ios::in | std::ios::out | std::ios::binary);
+    file.seekg(-1, std::ios::end);
+    const char last = static_cast<char>(file.get());
     file.seekp(-1, std::ios::end);
-    file.put('\x5a');
+    file.put(static_cast<char>(last ^ 0x01));
   }
   EXPECT_THROW(SealedCounters(dir.path(), key_of(1)), std::runtime_error);
 }

@@ -235,12 +235,18 @@ void StreamListener::stop_accepting() {
 void StreamListener::close_all() { close_all({}, {}); }
 
 void StreamListener::close_all(asio::any_io_executor executor, std::function<void()> done) {
+  detail::close_open(*_shared, std::move(executor), std::move(done));
+}
+
+namespace detail {
+
+void close_open(ListenerShared& shared, asio::any_io_executor executor, std::function<void()> done) {
   std::vector<std::shared_ptr<Stream>> open;
   {
-    contract::Lock lock(_shared->mutex);
-    for (const auto& each : _shared->open)
+    contract::Lock lock(shared.mutex);
+    for (const auto& each : shared.open)
       if (auto stream = each.lock()) open.push_back(std::move(stream));
-    _shared->open.clear();
+    shared.open.clear();
   }
   if (done) {
     if (open.empty()) {
@@ -257,6 +263,8 @@ void StreamListener::close_all(asio::any_io_executor executor, std::function<voi
   }
   for (auto& stream : open) stream->close();
 }
+
+}  // namespace detail
 
 void StreamListener::stop() {
   stop_accepting();

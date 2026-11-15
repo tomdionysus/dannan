@@ -34,9 +34,21 @@ current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluat
 
 ## Resume here (2026-11-15)
 
-**0.8.2 is prepared on `develop`** (the maintainer approved it, 2026-11-15): Dagda's placement copies, and Lugh's two key
-messages (a mismatched key, an encrypted key), each reviewed and approved. Waiting on the maintainer: the tag `0.8.2` and the push
-of `main`. Then stage the `.deb`s and tell Dagda, Lugh, Lir and Macha.
+**0.8.3 is prepared on `develop`** (the maintainer approved it, 2026-11-15): the stream connector (Lir and Lugh reviewed and
+approved, `2026-11-15-p3-stream-connector.md`) and RS256 verification (Lugh's WebAuthn, the maintainer's ruling; the maintainer put it in
+0.8.3). Waiting on the maintainer: the tag `0.8.3` and the push of `main`. Then stage the `.deb`s and tell Lir (lir::client moves
+onto the connector), Lugh (https.cpp and W2), Mimir, Dagda and Macha.
+
+**In progress, first (the maintainer: half the stack waits on it): agreement, on `feature/agreement`**, which opens 0.9 (CMake
+0.9.0, `libdannan0.9`) and so merges after 0.8.3 is tagged. Built: the pure core (`agree/caspaxos.h`, tested by a
+3000-order simulator), the wire with a fuzz target, the runtime (`agree/agreement.h`), the node's wiring and
+`Context::agreement()`; also Lir's lease use-after-free fix (0.9's, the Lease's layout changes). Not yet: the fast path,
+value-less prepare and deltas, `forget()`, reconfiguration through a configuration register, the stores' catch-up.
+Until reconfiguration, a name's replica set must be fixed for its life: two proposers naming disjoint majorities for a
+name nobody has touched could both commit.
+
+**0.8.2 is released** (`main` and tag at `20771a6`, pushed at the maintainer's word, 2026-11-15; main's CI run 43737550419
+green). The `.deb`s are staged in `../tomcully-apt/incoming/dannan/0.8.2/` and checked. Lir and Lugh run on it.
 
 **0.8.1 is released** (`main` and tag at `53cc933`, pushed at the maintainer's word, 2026-11-15; main's CI run 43734647887 green).
 The `.deb`s are staged in `../tomcully-apt/incoming/dannan/0.8.1/` and checked (shlibs `libdannan0.8 (>= 0.8.1)`).
@@ -46,6 +58,22 @@ Lir runs on it (337 passed on node-c, no code change); Lugh is moving.
 green on every job. The `.deb`s are staged in `../tomcully-apt/incoming/dannan/0.8.0/` and checked (SONAME
 `libdannan.so.0.8`, shlibs `libdannan0.8 (>= 0.8.0)`, `dannan-custody` and its page in `dannan-tools`), for the maintainer to
 publish. Dagda, Lir, Lugh and Macha were told; Dagda gated on the tag (1106 ran, 1103 passed), Lir runs on it.
+
+the maintainer's rulings, 2026-11-15, directly:
+- **0.8.3 (a patch): the stream connector**, `dannan::listen`'s outbound side, for Lir's client library, Lugh's
+  publisher and `https.cpp`, and Mimir. Designed in `2026-11-15-p3-stream-connector.md`, reviewed by Lir and Lugh
+  (both reviews taken in it); keeps 0.8's layout.
+- **Anything that can use agreement waits for it** (the maintainer, 2026-11-15, directly: "consensus/agreement is a huge part
+  of higher order behaviour"): no stack project builds its own consensus, lease-for-consensus or workaround in the
+  meantime. So agreement leads 0.9.0's work. Told to Dagda, Lugh, Lir, Macha Server, Mimir, Kvasir and Louhi.
+- **0.9.0: leaderless per-key agreement in Dannan** (Mimir's ruling 6, confirmed to Dannan directly): CASPaxos-shaped,
+  a linearizable change to a named register over a caller-supplied replica set, majority commit, no leader, several
+  registers of one set in one round; acceptor state behind a hosted system's interface, so Dannan stores nothing; new
+  wire messages. Design first, reviewed by Mimir, Lugh and Dagda.
+- **0.9.0: a hybrid logical clock in Dannan**, since Dagda will adopt it (the maintainer: in Dannan if another project would).
+  Dagda's conditions are requirements: one clock per node shared by every hosted system; never backwards across a
+  restart (a persisted high-water mark); a stated bound on a received stamp ahead of local wall time, refused or
+  clamped and counted. Lir would adopt it too, if the maintainer reopens the 2026-11-04 retained-ordering decision (Lir's to ask).
 
 For 0.9.0, an ABI change so not a patch (Dagda's after-profile of 0.8.2): every call still copies its peer's whole
 record, adverts and all, in `Client::handlers_for`'s capture, `CallOutcome::peer` and `RequestScheduler::Job`;
