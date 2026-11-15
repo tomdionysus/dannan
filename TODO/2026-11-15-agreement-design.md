@@ -264,8 +264,12 @@ which set it is a majority of. Dannan's recommended answer has no root at all:
   used exactly once. Otherwise a slot nobody wrote for years would belong to machines long
   replaced. The rule for an untouched slot stays as the founding moment's and a safety net.
 - **Finding a moved slot** (Kvasir): each node advertises, softly through membership, the
-  slots its acceptors serve, as **one** advert holding a bitmap (32 bytes for 256 slots;
-  no versions, which the refusal supplies). A node holds at most 64 adverts of at most
+  slots its acceptors serve, as **one** advert holding a bitmap of ceil(slots / 8) bytes
+  (32 bytes at the default 256; no versions, which the refusal supplies). The slot count
+  is configurable and fixed for the cluster's life (the maintainer's ruling for Mimir: "I said
+  configurable. 256 default"). It is carried in the cluster's identity beside the genesis
+  members, and a node configured with another count is refused at join. The 1 KiB advert
+  caps it at 8192 slots. A node holds at most 64 adverts of at most
   1 KiB (`membership/node_record.h:48`), so an advert per slot, or versions per slot
   (2.5 KiB at 256), would not fit. A proposer takes the set from those
   adverts as a hint, never as authority. The acceptors' recorded set, and their refusal
