@@ -28,7 +28,9 @@ struct Accepted { Ballot ballot; std::optional<net::Bytes> value; };
 
 // The hosted system's acceptor state for one replica set, batched so several registers
 // of one set move in one round (Mimir's MULTI/EXEC within a slot). Called on Dannan's
-// strand for the set; may persist before answering (Mimir's levels; Lugh and Louhi in
+// strand for the set; may persist before answering: in the stack's
+// ack_level names (the maintainer, 2026-11-15, relayed by Kvasir), stores answering from memory
+// make a write `decided`, stores syncing first make it `replicated` (Lugh and Louhi in
 // Dagda). Answers within the call's deadline or the round counts the acceptor as silent.
 class AcceptorStore {
  public:
