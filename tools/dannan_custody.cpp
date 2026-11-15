@@ -19,7 +19,13 @@
 //
 // Both refuse while a node holds the state directory's lock.
 
+#include <fcntl.h>
+#include <unistd.h>
+
+#include <cerrno>
+#include <csignal>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <iostream>
 #include <map>
@@ -76,6 +82,13 @@ int main(int argc, char** argv) {
     std::cerr << "dannan-custody: " << error.what() << "\n" << usage;
     return 2;
   }
+  // Standard output closed, the next file opened (the lock, the node's id, the
+  // custody) would be handed its descriptor, and the root written into it in
+  // clear: refused before anything is opened.
+  if (::fcntl(STDOUT_FILENO, F_GETFD) == -1) {
+    std::cerr << "dannan-custody: standard output is closed; nothing was made or read\n";
+    return 1;
+  }
   try {
     // show reads and never writes (Macha's review): a mistyped or fresh
     // directory must not gain an id it would print as the node's, nor a lock
@@ -85,13 +98,30 @@ int main(int argc, char** argv) {
     // or read beside one.
     const identity::StateLock lock(state);
     if (command == "init") {
-      // The new root goes to stdout and nowhere else. The node's id is made
-      // with its custody, as a node makes it at its first start; one there
-      // already (Macha's) is kept.
+      // The root is printed once and custody is never replaced, so a root lost
+      // after create() would leave custody nothing opens and an init that will
+      // not run again (Macha's review). Whatever can fail comes first: the
+      // node's id is made before the custody, as a node makes it at its first
+      // start (one there already, Macha's, is kept).
+      (void)identity::load_or_create_node_id(state);
       const auto root = identity::KeyCustody::create(state, source);
       if (!root) throw std::runtime_error("no root was made");
-      (void)identity::load_or_create_node_id(state);
-      std::printf("%s\n", identity::hex(root->reveal()).c_str());
+      // The new root goes to stdout and nowhere else. A write that fails (a
+      // closed stdout, a reader that went: no SIGPIPE, so EPIPE) takes the
+      // custody back: nothing has used the root, and the node is stopped.
+      std::signal(SIGPIPE, SIG_IGN);
+      const auto line = identity::hex(root->reveal()) + "\n";
+      const bool written = std::fwrite(line.data(), 1, line.size(), stdout) == line.size() && std::fflush(stdout) == 0 && !std::ferror(stdout);
+      if (!written) {
+        const int why = errno;
+        std::error_code removed;
+        std::filesystem::remove(state / "identity" / "custody", removed);
+        std::cerr << "dannan-custody: the new root could not be written to stdout (" << std::strerror(why) << "); "
+                  << (removed ? "the custody made could not be removed, " + (state / "identity" / "custody").string() + ": remove it before init again"
+                              : std::string("the custody made is removed, so init may run again"))
+                  << "\n";
+        return 1;
+      }
       return 0;
     }
     const auto custody = identity::KeyCustody::open(state, source);
