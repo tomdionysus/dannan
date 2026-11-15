@@ -105,6 +105,38 @@ foreground class (a client waits on them). One message carries every name of one
 - Ballots carry the durability epoch, so a restart never reuses one even with its
   counter lost.
 
+## Mimir's review, taken
+
+- **The committed attempt's result** (Q1). `change` may run several times across retries;
+  it returns the new values and an opaque result (the popped element, `SET NX`'s answer, a
+  script's return), and `Outcome` carries the result of the attempt that committed, only.
+  Scripts run on the proposer, deterministically over the values given; nothing runs at
+  an acceptor.
+- **One round, kept one** (Q4). No tick or batching delay on the fast path; concurrent
+  changes to one replica set are coalesced into one message when they meet, sent at once,
+  never held back.
+- **Values without shipping them** (ask A). A register may be megabytes (a Redis list).
+  Prepare answers with each name's accepted ballot and a small owner summary (a version),
+  not its value. The proposer takes the value from its own local acceptor when that holds
+  the highest ballot (the usual case: Mimir's proposer is a replica), or fetches it from
+  one acceptor that holds it. Accept carries, at the owner's choice, a whole value or a
+  delta against a named base ballot, which the `AcceptorStore` applies through the owner's
+  function, or answers "need whole" when its accepted ballot is not the base; the proposer
+  then sends it whole. Dannan carries the delta as opaque bytes.
+- **An owner's reduction, with a stated constraint** (ask B). Mimir's merge-class writes
+  change a key's state outside agreement, so two acceptors can hold one highest ballot with
+  different states. The reduction of a majority's prepare answers into the current value
+  is owner-supplied, defaulting to CASPaxos's highest-ballot rule. **Safety constraint,
+  in the contract:** the reduction is given the highest-ballot answer apart from the rest,
+  and its result must keep that value as its base, only joining in what the others carry
+  (a monotone join); a reduction that drops or overturns the highest-ballot value can lose
+  a committed value, and is outside the contract. Tested with a reducer that joins, and
+  stated, not prevented, for one that does not.
+- **The store's own catch-up** (ask C). A restarted store catches up however it chooses
+  (Mimir transfers a shard's state from a replica) and says through `ready()` when it may
+  vote; the per-name majority read is the default helper, not assumed.
+- **Names are bytes** (ask D): any byte, NUL included, on the wire and in the interface.
+
 ## One replica set at a time (Dagda's review, safety 1)
 
 The caller names `replicas` from its own placement, and two proposers whose rosters differ
