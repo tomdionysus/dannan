@@ -359,7 +359,10 @@ class Budget {
   // Waits until `bytes` may be held, as the node's ledger does: nothing once
   // the deadline passes, or once `cancelled` is set and wake() is called, and
   // at once when the class could never hold that much. Charged to `owner`, as
-  // reserve(). No deadline (a default TimePoint) throws std::invalid_argument.
+  // reserve(). The deadline is on the steady clock (contract::Clock::now() +
+  // what is left), not the node's time(): a stepped clock's reading would put
+  // it far off either way (Dagda's review). No deadline (a default TimePoint)
+  // throws std::invalid_argument.
   // Waits on other holders and on the deadline; thread-safe.
   virtual std::optional<sched::RetainedMemoryLedger::Lease> acquire(sched::WorkClass work, sched::MemoryOwner owner, uint64_t bytes,
                                                                     contract::TimePoint deadline, std::atomic_bool* cancelled = nullptr) = 0;
