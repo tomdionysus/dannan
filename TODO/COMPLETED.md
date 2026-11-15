@@ -10,7 +10,10 @@ figures. the maintainer, 2026-11-14, directly: P5 is enough, cut 0.8.0. The firs
 the tag for Macha's custody tool, and put Dagda's waiting budget in 0.8.0 too; loader promotion is 0.9.0, with the wire
 batch (the maintainer, 2026-11-15). The version commit changes CHANGELOG, README, ACTIVE and this file; CMake and `debian/control`
 (`libdannan0.8`) said 0.8 from the minor's opening (`e839322`). The tag and the push of `main` wait on the maintainer's word.
-Built and tested on hosted CI only; the gate counts are in the record below once develop's run is in.
+Built and tested on hosted CI only. **Gate, develop's run 43677182126, green on every job: `dannan_tests` 735 on
+Debian (deb x86-64), 734 passed and the one long-standing skip (`Supervisor.ADirectoryThatCannotBeListedIsWarnedOf`);
+on macOS 734, 732 passed, the BBR skip and `CustodyTool.InitTakesCustodyBackWhenTheRootCannotBeWritten` (no
+`/dev/full` there).**
 
 On the way, two flakes in tests, neither in the library:
 - `Session.ClosingFromAnotherThreadMidTransferIsSafe` failed on macOS: a fast echo answered the whole 2 MiB call before
@@ -34,7 +37,18 @@ a start; dannan-node, which could do it, is the test bed's and not installed). O
 - Both refuse under `.dannan.lock` ("already in use"; an flock records no holder, so none is named, as dannan-node).
 - The manual page says a root sealed without a TPM opens only on its host, and what an off-node backup must keep.
 Six process tests (`dannan/test/custody_tool_test.cpp`). CI run 43674960447 green on every job after one TSan rerun
-(the flake above). Macha reviews the merge.
+(the flake above).
+
+Macha's review of the merge found that init could lose its root after `create()`, leaving custody nothing opens and
+an init that will not run again. Fixed on `feature/custody-init-safe`, merged at `470869e`:
+- the node id is made before the custody;
+- the root's line is built in `SecureBytes` and written with write(2), retried on EINTR, SIGPIPE ignored;
+- a failed write removes the custody just made, so init runs again.
+Found on the way: with stdout closed, the next file opened takes fd 1, and the root would have been written into it in
+clear with exit 0. A closed stdout is now refused before anything is opened. The manual page says to pipe the root
+into `systemd-creds encrypt`, never to a file, and what to do if the encrypt fails after the root was written. Two
+more tests: a closed stdout, and stdout on `/dev/full` (Linux only). CI run 43676476946 green on every job. Macha
+approved.
 
 ## Handoff, 2026-11-15: the budget's wait, for Dagda's reads
 
