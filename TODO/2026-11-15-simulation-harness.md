@@ -146,13 +146,38 @@ over the world's network and time).
 - **Header-only, kept light.** The checkers in their own headers, included only by the
   tests that check (a build Pi has 3 GB).
 
-## Open for review
+## Mimir's review, taken
 
-1. Kvasir, Mimir: is a model the owner supplies (a small C++ type: apply an operation,
-   compare a result) the right seam for the checkers, or do you want to supply the whole
-   checker and use only the history?
-2. Kvasir: is a search for a serial order enough for your sizes, or do you need Elle-style
-   cycle detection over dependency graphs?
-3. Both: is header-only right, or would you rather link a static library?
-4. Mimir: does a recorded "response or none" per operation cover blocking commands (a pop
-   waiting for an element), or do they need their own event kind?
+- **Models over groups of keys.** Per-key checking is unsound for atomic multi-key
+  operations (Mimir's ruling 22, MULTI/EXEC, scripts): the checker splits the history into
+  connected groups of keys touched by the same operation and searches each group under the
+  owner's model; a pure single-key history is checked per key.
+- **Allowed results, not one answer.** A model's apply is a predicate, "is this result
+  allowed from this state", with the states it may lead to: SPOP, SRANDMEMBER, an
+  approximate XTRIM have more than one correct result.
+- **Two more event kinds, optional.** `cancelled`: a known outcome with no effect (a client
+  that closed while parked, a BLPOP timed out with nil), checked as taking nothing, unlike
+  `none`, whose outcome is unknown. `parked`: when the server parked a command, ignored by
+  linearizability and read by a fairness checker (waiters on a key served oldest first,
+  across nodes once pops go through agreement).
+- **The client's operation id in the history.** A retry inside the client is one operation;
+  a write that appears twice under one id is a defect the checker names.
+- **A convergence checker for the merge class.** Merge writes are not linearizable by
+  design; what must hold: after heal and quiescence every replica of a key holds the same
+  value, containing every write the faults do not excuse (the per-level rules). Mimir's
+  ruling 4, checkable; the owner supplies the merge functions.
+- **One more broken protocol:** a reducer that drops a merge write acknowledged at
+  `replicated` (Mimir's ruling 16: an agreement command sees every such write), refused.
+
+## Packaging, settled
+
+The world, time, network, disk, history and models are header-only, as the other fixtures
+are. The checkers' search (the Wing-Gong core, the dependency-cycle detection, convergence)
+is one small static library, `dannan_sim_checkers`, so a 3 GB Pi compiles it once (Mimir's
+preference, consistent with Kvasir's caution); the models stay header-side.
+
+## Review
+
+Kvasir and Mimir reviewed it, 2026-11-15; every point is taken above. Open: whether Dagda's
+node-local log writes through Dannan's durable-file contract or its own (asked of Dagda),
+which decides how `SimDisk` sits under real Dagda.
