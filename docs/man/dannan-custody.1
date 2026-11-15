@@ -41,8 +41,11 @@ as 64 hex digits and a line end, and nothing else is written to standard
 output, so it may be piped straight to
 .BR systemd-creds (1)
 .BR encrypt .
-It is never stored in clear. Custody that exists is never replaced: init then
-refuses and changes nothing.
+It is never stored in clear. The node's id,
+.IR DIR /node-id,
+is made with it, as a node makes it at its first start; an id already there is
+kept. Custody that exists is never replaced: init then refuses and changes
+nothing.
 .TP
 .B show
 Opens custody with the credential as the unit will find it and prints the
@@ -52,7 +55,9 @@ for
 .BR dannan-ca (1)
 .BR issue .
 It proves the sealed credential opens custody before the node is started on
-it. A root that does not open custody, or a custody file altered, is refused.
+it, and writes nothing: a directory with no node id, mistyped or fresh, is
+refused. A root that does not open custody, or a custody file altered, is
+refused.
 .SH OPTIONS
 .TP
 .BI \-\-state " DIR"

@@ -69,6 +69,8 @@ TEST(CustodyTool, MakesCustodyUnderACredentialAndShowsTheIdentity) {
   ASSERT_EQ(made.status, 0) << made.err;
   ASSERT_TRUE(std::regex_match(made.out, std::regex("[0-9a-f]{64}\n"))) << made.out;
   EXPECT_TRUE(identity::KeyCustody::exists(state));
+  // The node's id comes with its custody.
+  EXPECT_TRUE(std::filesystem::exists(std::filesystem::path(state) / "node-id"));
 
   const auto credentials = dir.path() / "credentials";
   place_credential(credentials, "dannan-root", made.out);
@@ -86,6 +88,37 @@ TEST(CustodyTool, MakesCustodyUnderACredentialAndShowsTheIdentity) {
   EXPECT_NE(again.err.find("never replaced"), std::string::npos) << again.err;
   const auto still = run(dir, {"show", "--state", state, "--credential", "dannan-root", "--credentials-dir", credentials.string()});
   EXPECT_EQ(still.out, shown.out);
+}
+
+// init keeps an id already there (a Macha node's, written before the cutover).
+TEST(CustodyTool, InitKeepsTheNodesIdAlreadyThere) {
+  test::TempDir dir;
+  const auto state = dir.path() / "state";
+  const auto id = identity::load_or_create_node_id(state);
+  const auto made = run(dir, {"init", "--state", state.string(), "--credential", "dannan-root"});
+  ASSERT_EQ(made.status, 0) << made.err;
+  EXPECT_EQ(identity::load_or_create_node_id(state), id);
+}
+
+// show reads and never writes (Macha's review): a directory with no node id,
+// mistyped or fresh, is refused and gains none.
+TEST(CustodyTool, ShowRefusesAndWritesNothingWithoutANodeId) {
+  test::TempDir dir;
+  const auto state = dir.path() / "state";
+  const auto made = run(dir, {"init", "--state", state.string(), "--credential", "dannan-root"});
+  ASSERT_EQ(made.status, 0) << made.err;
+  std::filesystem::remove(state / "node-id");
+  const auto credentials = dir.path() / "credentials";
+  place_credential(credentials, "dannan-root", made.out);
+  const auto shown = run(dir, {"show", "--state", state.string(), "--credential", "dannan-root", "--credentials-dir", credentials.string()});
+  EXPECT_EQ(shown.status, 1);
+  EXPECT_TRUE(shown.out.empty()) << shown.out;
+  EXPECT_NE(shown.err.find("no node identity in"), std::string::npos) << shown.err;
+  EXPECT_FALSE(std::filesystem::exists(state / "node-id"));
+
+  const auto elsewhere = dir.path() / "mistyped";
+  EXPECT_EQ(run(dir, {"show", "--state", elsewhere.string(), "--credential", "dannan-root", "--credentials-dir", credentials.string()}).status, 1);
+  EXPECT_FALSE(std::filesystem::exists(elsewhere));
 }
 
 // Without --credentials-dir, show reads $CREDENTIALS_DIRECTORY, as the unit
@@ -115,6 +148,7 @@ TEST(CustodyTool, ShowReadsTheUnitsCredentialsAndRefusesAWrongRoot) {
 TEST(CustodyTool, RefusesWhileTheStateIsLocked) {
   test::TempDir dir;
   const auto state = dir.path() / "state";
+  (void)identity::load_or_create_node_id(state);
   {
     const identity::StateLock held(state);
     const auto made = run(dir, {"init", "--state", state.string(), "--credential", "dannan-root"});

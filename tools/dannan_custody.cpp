@@ -77,13 +77,20 @@ int main(int argc, char** argv) {
     return 2;
   }
   try {
+    // show reads and never writes (Macha's review): a mistyped or fresh
+    // directory must not gain an id it would print as the node's, nor a lock
+    // file, so this is asked before the lock is taken.
+    if (command == "show" && !std::filesystem::exists(state / "node-id")) throw std::runtime_error("no node identity in " + state.string());
     // A running node holds this lock for its whole life: custody is never made
     // or read beside one.
     const identity::StateLock lock(state);
     if (command == "init") {
-      // The new root goes to stdout and nowhere else.
+      // The new root goes to stdout and nowhere else. The node's id is made
+      // with its custody, as a node makes it at its first start; one there
+      // already (Macha's) is kept.
       const auto root = identity::KeyCustody::create(state, source);
       if (!root) throw std::runtime_error("no root was made");
+      (void)identity::load_or_create_node_id(state);
       std::printf("%s\n", identity::hex(root->reveal()).c_str());
       return 0;
     }
