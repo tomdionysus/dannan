@@ -462,6 +462,36 @@ TEST(Simulation, AMovedSlotIsFoundFromTheAdvertsAndTheRefusal) {
   EXPECT_TRUE(redirected.committed) << redirected.why;
 }
 
+// The fast path through the runtime: a node's second change of the same names commits in
+// one round; another node's change in between sends its next one the full way, still
+// committed, and the counter counts every increment once.
+TEST(Simulation, TheFastPathIsTakenUncontendedAndLeftWhenContended) {
+  World world(5);
+  Cluster cluster(world, 3, NetworkFaults{});
+  const auto increment_at = [&](size_t at) {
+    std::optional<agree::Outcome> out;
+    cluster.agreement(at).change(Cluster::space, counter_slot, {agree::Name{'c'}}, cluster.ids(), Cluster::genesis_version, increment(), {}, 2000ms,
+                                 world.io.get_executor(), [&](agree::Outcome outcome) { out = std::move(outcome); });
+    world.run_until([&] { return out.has_value(); }, 2'000'000);
+    return out.value_or(agree::Outcome{});
+  };
+  const auto first = increment_at(0);
+  ASSERT_TRUE(first.committed) << first.why;
+  EXPECT_FALSE(first.fast);
+  const auto second = increment_at(0);
+  ASSERT_TRUE(second.committed) << second.why;
+  EXPECT_TRUE(second.fast);
+  EXPECT_EQ(decode(second.result), 2u);
+  ASSERT_TRUE(increment_at(1).committed);
+  const auto contended = increment_at(0);
+  ASSERT_TRUE(contended.committed) << contended.why;
+  EXPECT_FALSE(contended.fast);
+  EXPECT_EQ(decode(contended.result), 4u);
+  const auto after = increment_at(0);
+  EXPECT_TRUE(after.fast);
+  EXPECT_EQ(decode(after.result), 5u);
+}
+
 // A seed replays exactly.
 TEST(Simulation, ASeedReplaysExactly) {
   const auto first = simulate(42, Mode::keep);

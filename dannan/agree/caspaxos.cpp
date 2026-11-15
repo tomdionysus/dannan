@@ -129,6 +129,20 @@ AcceptStep on_accept(const identity::NodeId& self, const identity::NodeId& from,
     out.answer.refused = refusal("the accept names, values and changes differ in count");
     return out;
   }
+  // The fast path: nothing may have been prepared since its last ballot, here, for these
+  // names or for the slot, and the slot is still the set's, settled.
+  if (request.fast_from) {
+    const auto& last = *request.fast_from;
+    bool untouched = !request.to && held.slot.served == request.set && !held.slot.pending_from && !(held.slot.promised > last) && request.ballot > last &&
+                     request.ballot > held.floor;
+    // Still the reservation the last commit made, and nothing accepted since.
+    for (size_t i = 0; i < names && untouched; ++i) untouched = held.states[i].promised == request.ballot && held.states[i].accepted == last;
+    if (!untouched) {
+      out.answer.refused = Refusal{"the fast path's last ballot is not the last here", std::max({highest_of(held, names), held.floor, held.slot.promised}),
+                                   std::nullopt, std::nullopt};
+      return out;
+    }
+  }
   // Accepted at the ballot promised or above; equal is the same proposer's retry. Never at
   // or below the floor, and a plain change never at or below a transfer's promise. A
   // transfer is refused where anything in the slot, named or not, holds a higher ballot.
@@ -139,9 +153,13 @@ AcceptStep on_accept(const identity::NodeId& self, const identity::NodeId& from,
     out.answer.refused = Refusal{"a higher ballot is promised", std::max({highest, held.floor, held.slot.promised}), std::nullopt, std::nullopt};
     return out;
   }
+  if (request.reserve && (request.to || !(*request.reserve > request.ballot))) {
+    out.answer.refused = refusal("a reservation is a plain accept's, above its ballot");
+    return out;
+  }
   Held keep = held;
   for (size_t i = 0; i < names; ++i) {
-    keep.states[i].promised = request.ballot;
+    keep.states[i].promised = request.reserve.value_or(request.ballot);
     keep.states[i].accepted = request.ballot;
     keep.states[i].value = request.values[i];
     keep.states[i].changed_at = request.changed_at[i];
@@ -226,6 +244,21 @@ Attempt Attempt::transfer(ReplicaSet from, ReplicaSet to, Slot slot, Ballot ball
   for (const auto& node : out._prepare.to->nodes)
     if (!out._prepare.set.contains(node)) out._recipients.push_back(node);
   std::sort(out._recipients.begin(), out._recipients.end());
+  return out;
+}
+
+Attempt Attempt::fast(ReplicaSet set, Slot slot, Ballot ballot, std::vector<Name> names, Change change, Ballot last,
+                      const std::vector<std::optional<Bytes>>& values, const std::vector<Ballot>& changed_at) {
+  if (!(ballot > last)) throw std::invalid_argument("the fast path's ballot is above its last");
+  if (values.size() != names.size() || changed_at.size() != names.size()) throw std::invalid_argument("the fast path's last values name a different count");
+  Attempt out(std::move(set), slot, ballot, std::move(names), std::move(change), {}, ReplicaSet{});
+  auto changed = out._change(values);
+  if (changed.values.size() != values.size()) throw std::logic_error("a change returned a different count of values");
+  Accept accept{out._prepare.set, std::nullopt, slot, ballot, out._prepare.names, std::move(changed.values), {}, last, std::nullopt};
+  for (size_t i = 0; i < values.size(); ++i) accept.changed_at.push_back(accept.values[i] == values[i] ? changed_at[i] : ballot);
+  out._result = std::move(changed.result);
+  out._accept = std::move(accept);
+  out._phase = Phase::accepting;
   return out;
 }
 
@@ -318,9 +351,22 @@ std::optional<Accept> Attempt::plain_accept() {
     current.push_back(_reduce ? _reduce(base, answers) : base.value);
     bases.push_back(base);
   }
+  // This proposer's own earlier accept is the newest for every name: its change is already in
+  // the values, which are committed as they are, with that attempt's result.
+  if (count > 0 && !_reduce) {
+    const auto own = std::find_if(_own.begin(), _own.end(), [&bases](const std::pair<Ballot, Bytes>& earlier) {
+      return std::all_of(bases.begin(), bases.end(), [&earlier](const NameState& base) { return base.accepted == earlier.first; });
+    });
+    if (own != _own.end()) {
+      Accept accept{set, std::nullopt, _prepare.slot, _prepare.ballot, _prepare.names, current, {}, std::nullopt, std::nullopt};
+      for (const auto& base : bases) accept.changed_at.push_back(base.changed_at);
+      _result = own->second;
+      return accept;
+    }
+  }
   auto changed = _change(current);
   if (changed.values.size() != count) throw std::logic_error("a change returned a different count of values");
-  Accept accept{set, std::nullopt, _prepare.slot, _prepare.ballot, _prepare.names, std::move(changed.values), {}};
+  Accept accept{set, std::nullopt, _prepare.slot, _prepare.ballot, _prepare.names, std::move(changed.values), {}, std::nullopt, std::nullopt};
   for (size_t i = 0; i < count; ++i)
     // Unaltered, a value keeps the ballot that last changed it: a stable fencing token.
     accept.changed_at.push_back(accept.values[i] == bases[i].value ? bases[i].changed_at : _prepare.ballot);
@@ -342,7 +388,7 @@ std::optional<Accept> Attempt::transfer_accept() {
         if (answer.names[i].size() == key.size() && std::equal(answer.names[i].begin(), answer.names[i].end(), key.begin())) state = answer.states[i];
       states.push_back(std::move(state));
     }
-  Accept accept{_prepare.set, _prepare.to, _prepare.slot, _prepare.ballot, {}, {}, {}};
+  Accept accept{_prepare.set, _prepare.to, _prepare.slot, _prepare.ballot, {}, {}, {}, std::nullopt, std::nullopt};
   for (const auto& [key, answers] : by_name) {
     const auto base = *std::max_element(answers.begin(), answers.end(), [](const NameState& a, const NameState& b) { return a.accepted < b.accepted; });
     accept.names.emplace_back(key.begin(), key.end());

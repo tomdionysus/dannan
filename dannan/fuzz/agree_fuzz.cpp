@@ -44,8 +44,9 @@ const Registration agreement(
       return std::vector<net::Bytes>{
           agree::encode(agree::PrepareMessage{"mimir", {set, std::nullopt, 5, ballot, {name}}}),
           agree::encode(agree::PrepareMessage{"mimir", {set, next, 5, ballot, {}}}),
-          agree::encode(agree::AcceptMessage{"lugh/totp", {set, std::nullopt, 0, ballot, {name}, {agree::Bytes{1, 2, 3}}, {ballot}}}),
-          agree::encode(agree::AcceptMessage{"mimir", {set, next, 5, ballot, {name}, {std::nullopt}, {ballot}}}),
+          agree::encode(
+              agree::AcceptMessage{"lugh/totp", {set, std::nullopt, 0, ballot, {name}, {agree::Bytes{1, 2, 3}}, {ballot}, ballot, agree::Ballot{8, a, b}}}),
+          agree::encode(agree::AcceptMessage{"mimir", {set, next, 5, ballot, {name}, {std::nullopt}, {ballot}, std::nullopt, std::nullopt}}),
           agree::encode(agree::PurgeMessage{"mimir", {set, 5, ballot, {name}}}),
           agree::encode(agree::SettleMessage{"mimir", {set, next, 5, ballot}}),
           agree::encode(agree::PrepareAnswer{std::nullopt, next, set, {name}, {{ballot, agree::Bytes{9}, ballot}}}),

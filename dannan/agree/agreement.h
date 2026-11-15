@@ -71,6 +71,8 @@ struct Outcome {
   uint32_t finished = 0;
   // Attempts made, retries included.
   uint32_t attempts = 0;
+  // Committed in one round, on the fast path.
+  bool fast = false;
   // forget(): every replica held the tombstone and was told to purge it.
   bool forgotten = false;
 };

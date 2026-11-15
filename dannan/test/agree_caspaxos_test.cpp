@@ -432,6 +432,124 @@ TEST(Reconfiguration, ALaggardOfTheOldSetNeitherBlocksTheNewSetNorStaysBehind) {
   EXPECT_EQ(stale.serving(), next);
 }
 
+// A retry after a partial accept (the simulator's seed 30, with the fast path): the retry's
+// majority finds the proposer's own earlier accept newest, so the change is already in it;
+// it commits it unchanged, with that attempt's result, rather than applying the change twice.
+TEST(Agreement, ARetryAfterAPartialAcceptAppliesTheChangeOnce) {
+  Acceptors acceptors;
+  ASSERT_EQ(run(acceptors, three, node(1), ballot(1, 1), {bytes("k")}, put("v")).phase(), Attempt::Phase::committed);
+  const Change append = [](std::span<const std::optional<Bytes>> current) {
+    auto next = *current[0];
+    next.push_back('+');
+    return Changed{{next}, next};
+  };
+  Attempt partial(three, slot, ballot(2, 1), {bytes("k")}, append, {}, genesis);
+  drive(acceptors, partial, node(1), {}, {node(1)});
+  ASSERT_EQ(partial.phase(), Attempt::Phase::accepting);
+  Attempt retry(three, slot, ballot(3, 1), {bytes("k")}, append, {}, genesis);
+  retry.own({{ballot(2, 1), partial.result()}});
+  drive(acceptors, retry, node(1), {node(1), node(2)});
+  ASSERT_EQ(retry.phase(), Attempt::Phase::committed);
+  EXPECT_EQ(text(*retry.values()[0]), "v+");
+  EXPECT_EQ(text(retry.result()), "v+");
+}
+
+// The fast path (the design's "Fast path"): the proposer that committed last changes the
+// same names again in one round, its accept carrying its prepare.
+// The accept an attempt makes, sent to `to` with a reservation of the proposer's next ballot.
+void accept_reserving(Acceptors& acceptors, Attempt& attempt, const identity::NodeId& from, Ballot reserve, std::vector<identity::NodeId> to = {}) {
+  auto accept = *attempt.accept();
+  accept.reserve = reserve;
+  if (to.empty()) to = attempt.recipients();
+  for (const auto& at : to) attempt.on_accept(at, acceptors.accept(at, from, accept));
+}
+
+// A plain change to its end, its accept reserving `reserve`.
+Attempt run_reserving(Acceptors& acceptors, const ReplicaSet& set, const identity::NodeId& from, Ballot b, std::vector<Name> names, Change change,
+                      Ballot reserve) {
+  Attempt attempt(set, slot, b, std::move(names), std::move(change), {}, genesis);
+  for (const auto& at : set.nodes) (void)attempt.on_prepare(at, acceptors.prepare(at, from, attempt.prepare()));
+  accept_reserving(acceptors, attempt, from, reserve);
+  return attempt;
+}
+
+TEST(FastPath, TheLastCommitterChangesInOneRound) {
+  Acceptors acceptors;
+  const auto first = run_reserving(acceptors, three, node(1), ballot(1, 1), {bytes("k")}, put("v"), ballot(2, 1));
+  ASSERT_EQ(first.phase(), Attempt::Phase::committed);
+  auto fast = Attempt::fast(three, slot, ballot(2, 1), {bytes("k")}, put("w"), ballot(1, 1), first.values(), first.changed_at());
+  ASSERT_TRUE(fast.is_fast());
+  EXPECT_EQ(fast.phase(), Attempt::Phase::accepting);
+  accept_reserving(acceptors, fast, node(1), ballot(3, 1));
+  ASSERT_EQ(fast.phase(), Attempt::Phase::committed);
+  // Unaltered, a fast identity change keeps the fencing token.
+  auto again = Attempt::fast(three, slot, ballot(3, 1), {bytes("k")}, identity_change(), ballot(2, 1), fast.values(), fast.changed_at());
+  accept_reserving(acceptors, again, node(1), ballot(4, 1));
+  ASSERT_EQ(again.phase(), Attempt::Phase::committed);
+  EXPECT_EQ(again.changed_at()[0], ballot(2, 1));
+  const auto read = run(acceptors, three, node(2), ballot(5, 2), {bytes("k")}, identity_change());
+  EXPECT_EQ(text(*read.values()[0]), "w");
+}
+
+// Anything prepared in between, by another proposer, refuses the fast path at a majority,
+// so it can never commit over a value it has not seen.
+TEST(FastPath, AnythingPreparedInBetweenRefusesIt) {
+  Acceptors acceptors;
+  const auto first = run_reserving(acceptors, three, node(1), ballot(1, 1), {bytes("k")}, put("v"), ballot(2, 1));
+  ASSERT_EQ(first.phase(), Attempt::Phase::committed);
+  // Another proposer must pass the reservation, and does.
+  EXPECT_EQ(run(acceptors, three, node(2), ballot(1, 2), {bytes("k")}, put("early")).phase(), Attempt::Phase::refused);
+  ASSERT_EQ(run(acceptors, three, node(2), ballot(3, 2), {bytes("k")}, put("theirs")).phase(), Attempt::Phase::committed);
+  auto fast = Attempt::fast(three, slot, ballot(2, 1), {bytes("k")}, put("mine"), ballot(1, 1), first.values(), first.changed_at());
+  accept_reserving(acceptors, fast, node(1), ballot(4, 1));
+  EXPECT_EQ(fast.phase(), Attempt::Phase::refused);
+  ASSERT_TRUE(fast.higher());
+  EXPECT_EQ(*fast.higher(), ballot(3, 2));
+  // Even a prepare that committed nothing is enough to send it the full way.
+  const auto read = run_reserving(acceptors, three, node(1), ballot(5, 1), {bytes("k")}, identity_change(), ballot(6, 1));
+  ASSERT_EQ(read.phase(), Attempt::Phase::committed);
+  auto stale = Attempt::fast(three, slot, ballot(6, 1), {bytes("k")}, put("late"), ballot(5, 1), read.values(), read.changed_at());
+  (void)acceptors.prepare(node(2), node(3), Prepare{three, std::nullopt, slot, ballot(7, 3), {bytes("k")}});
+  (void)acceptors.prepare(node(3), node(3), Prepare{three, std::nullopt, slot, ballot(7, 3), {bytes("k")}});
+  accept_reserving(acceptors, stale, node(1), ballot(8, 1));
+  EXPECT_EQ(stale.phase(), Attempt::Phase::refused);
+}
+
+// What the simulator found (seed 30) before reservations: a fast accept taken by a minority
+// while another proposer committed elsewhere must never outrank that commit. Reserved at the
+// last commit, the fast ballot sits below anything that won since.
+TEST(FastPath, AFastValueAtAMinorityNeverOutranksACommitInBetween) {
+  Acceptors acceptors;
+  const auto first = run_reserving(acceptors, three, node(1), ballot(1, 1), {bytes("k")}, put("v"), ballot(2, 1));
+  ASSERT_EQ(first.phase(), Attempt::Phase::committed);
+  Attempt theirs(three, slot, ballot(3, 2), {bytes("k")}, put("theirs"), {}, genesis);
+  drive(acceptors, theirs, node(2), {node(2), node(3)}, {node(2), node(3)});
+  ASSERT_EQ(theirs.phase(), Attempt::Phase::committed);
+  auto fast = Attempt::fast(three, slot, ballot(2, 1), {bytes("k")}, put("mine"), ballot(1, 1), first.values(), first.changed_at());
+  accept_reserving(acceptors, fast, node(1), ballot(4, 1), {node(1)});
+  ASSERT_EQ(acceptors.held[node(1)]["k"].accepted, ballot(2, 1));
+  const auto read = run(acceptors, three, node(3), ballot(9, 3), {bytes("k")}, identity_change());
+  ASSERT_EQ(read.phase(), Attempt::Phase::committed);
+  EXPECT_EQ(text(*read.values()[0]), "theirs");
+}
+
+// The fast path across a transfer (the design's contract): the last committer's cached
+// ballot is for the old set, so its next accept is refused, told the new set, and it never
+// commits on the old set again.
+TEST(FastPath, IsLostAcrossATransfer) {
+  Acceptors acceptors;
+  const auto first = run_reserving(acceptors, three, node(1), ballot(1, 1), {bytes("k")}, put("v"), ballot(2, 1));
+  ASSERT_EQ(first.phase(), Attempt::Phase::committed);
+  const auto next = ReplicaSet::of({node(2), node(3), node(4)}, 2);
+  ASSERT_EQ(move(acceptors, three, next, node(2), ballot(3, 2)).phase(), Attempt::Phase::committed);
+  auto fast = Attempt::fast(three, slot, ballot(2, 1), {bytes("k")}, put("old set"), ballot(1, 1), first.values(), first.changed_at());
+  accept_reserving(acceptors, fast, node(1), ballot(4, 1));
+  EXPECT_EQ(fast.phase(), Attempt::Phase::refused);
+  EXPECT_EQ(fast.serving(), next);
+  const auto read = run(acceptors, next, node(4), ballot(9, 4), {bytes("k")}, identity_change());
+  EXPECT_EQ(text(*read.values()[0]), "v");
+}
+
 // The default slot function: fixed, in range, and refusing a table it cannot have.
 TEST(Reconfiguration, SlotOfIsFixedAndInRange) {
   EXPECT_EQ(slot_of(bytes("user:1"), 256), slot_of(bytes("user:1"), 256));
@@ -575,10 +693,15 @@ TEST(AgreementWire, EveryMessageRoundTrips) {
   ASSERT_TRUE(moving.prepare.to);
   EXPECT_EQ(*moving.prepare.to, four);
 
-  const AcceptMessage accept{"lugh/totp", {three, four, slot, ballot(4, 1), {binary}, {std::nullopt}, {ballot(2, 2)}}};
+  const AcceptMessage accept{"lugh/totp", {three, four, slot, ballot(4, 1), {binary}, {std::nullopt}, {ballot(2, 2)}, std::nullopt, std::nullopt}};
   const auto accepted = decode_accept(encode(accept));
   EXPECT_EQ(accepted.accept.names, accept.accept.names);
   EXPECT_EQ(accepted.accept.to, four);
+  EXPECT_FALSE(accepted.accept.fast_from);
+  const auto fast = decode_accept(
+      encode(AcceptMessage{"mimir", {three, std::nullopt, slot, ballot(5, 1), {binary}, {bytes("w")}, {ballot(5, 1)}, ballot(4, 1), ballot(6, 1)}}));
+  EXPECT_EQ(fast.accept.fast_from, ballot(4, 1));
+  EXPECT_EQ(fast.accept.reserve, ballot(6, 1));
   EXPECT_FALSE(accepted.accept.values[0]);
   EXPECT_EQ(accepted.accept.changed_at[0], ballot(2, 2));
 

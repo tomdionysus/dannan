@@ -153,6 +153,10 @@ net::Bytes encode(const AcceptMessage& message) {
   put_names(out, message.accept.names);
   for (const auto& value : message.accept.values) put(out, value);
   for (const auto& changed : message.accept.changed_at) put(out, changed);
+  out.u8(message.accept.fast_from ? 1 : 0);
+  if (message.accept.fast_from) put(out, *message.accept.fast_from);
+  out.u8(message.accept.reserve ? 1 : 0);
+  if (message.accept.reserve) put(out, *message.accept.reserve);
   return out.take();
 }
 
@@ -261,6 +265,14 @@ AcceptMessage decode_accept(std::span<const uint8_t> bytes) {
   out.accept.names = get_names(in);
   for (size_t i = 0; i < out.accept.names.size(); ++i) out.accept.values.push_back(get_value(in));
   for (size_t i = 0; i < out.accept.names.size(); ++i) out.accept.changed_at.push_back(get_ballot(in));
+  const auto fast = in.u8();
+  if (fast > 1) throw DecodeError("a fast path's presence is 0 or 1");
+  if (fast) out.accept.fast_from = get_ballot(in);
+  const auto reserved = in.u8();
+  if (reserved > 1) throw DecodeError("a reservation's presence is 0 or 1");
+  if (reserved) out.accept.reserve = get_ballot(in);
+  // The fast path is a plain change's alone.
+  if ((out.accept.fast_from || out.accept.reserve) && out.accept.to) throw DecodeError("a transfer on the fast path");
   in.finish();
   return out;
 }

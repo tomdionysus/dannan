@@ -144,6 +144,15 @@ struct Accept {
   std::vector<Name> names;
   std::vector<std::optional<Bytes>> values;
   std::vector<Ballot> changed_at;
+  // The fast path (the design's "Fast path", CASPaxos's one-round optimisation). A plain
+  // accept may `reserve` the proposer's next ballot: an acceptor that takes it promises the
+  // reservation, not the accept's own ballot. The proposer's next change of the same names is
+  // then an accept at the reserved ballot with `fast_from` its last ballot, taken only where
+  // every name still holds that reservation as its promise and `fast_from` as accepted, the
+  // slot served by the set with no transfer promised since. Any prepare that wins in between
+  // must pass the reservation at a majority, so it outranks the fast value wherever both are.
+  std::optional<Ballot> fast_from{};
+  std::optional<Ballot> reserve{};
 };
 
 struct AcceptAnswer {
@@ -239,8 +248,23 @@ class Attempt {
   // A transfer of `slot` from `from` to `to`. Throws std::invalid_argument for a ballot of
   // zero, or a `to` whose version is not above `from`'s.
   static Attempt transfer(ReplicaSet from, ReplicaSet to, Slot slot, Ballot ballot, Reduce reduce = {});
+  // The fast path: a plain change by the proposer whose change of `names` at `last`, which
+  // reserved `ballot`, was the last committed, with `values` and `changed_at` as it committed
+  // them. One round: the attempt starts accepting at the reserved ballot. Throws
+  // std::invalid_argument for a ballot not above `last`.
+  static Attempt fast(ReplicaSet set, Slot slot, Ballot ballot, std::vector<Name> names, Change change, Ballot last,
+                      const std::vector<std::optional<Bytes>>& values, const std::vector<Ballot>& changed_at);
+  // Whether this attempt is on the fast path.
+  bool is_fast() const noexcept { return _accept && _accept->fast_from.has_value(); }
+  // The ballots this proposer's earlier attempts at the same change sent accepts under, with
+  // each one's result. Where a majority's newest value for every name is one of them, the
+  // change is already in it: the attempt commits it unchanged and reports that result, so a
+  // retry after a partial accept never applies the change twice.
+  void own(std::vector<std::pair<Ballot, Bytes>> earlier) { _own = std::move(earlier); }
 
   const Prepare& prepare() const noexcept { return _prepare; }
+  // The accept, once there is one (at once, on the fast path).
+  const std::optional<Accept>& accept() const noexcept { return _accept; }
   // Every node the attempt's messages go to: the set, or both sets of a transfer.
   const std::vector<identity::NodeId>& recipients() const noexcept { return _recipients; }
   // An answer to the prepare; the accept to send to every recipient once enough have
@@ -278,6 +302,7 @@ class Attempt {
   Change _change;
   Reduce _reduce;
   ReplicaSet _genesis;
+  std::vector<std::pair<Ballot, Bytes>> _own;
   Phase _phase = Phase::preparing;
   std::vector<identity::NodeId> _heard;
   std::vector<PrepareAnswer> _answers;  // per promise

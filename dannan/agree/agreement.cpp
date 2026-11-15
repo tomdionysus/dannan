@@ -138,6 +138,45 @@ struct Agreement::Core : std::enable_shared_from_this<Core> {
   // publish out of order. Lock order: this before the roster's own (publish sets an advert).
   contract::Mutex publishing;
   std::map<std::string, std::vector<uint8_t>> bitmaps DANNAN_GUARDED_BY(publishing);
+
+  // The fast path's cache: this node's last committed change of each name list, by space,
+  // slot, set and names. Taken by the next change of the same names, put back by its commit,
+  // so a change that fails leaves none and the one after goes the full way.
+  struct Last {
+    // The ballot it committed at, and the one its accept reserved for the next.
+    Ballot ballot;
+    Ballot reserved;
+    std::vector<std::optional<Bytes>> values;
+    std::vector<Ballot> changed_at;
+  };
+  static constexpr size_t max_lasts = 65536;
+  contract::Mutex lasts_mutex;
+  std::map<std::string, Last> lasts DANNAN_GUARDED_BY(lasts_mutex);
+
+  static std::string last_key(const std::string& space, Slot slot, const ReplicaSet& set, const std::vector<Name>& names) {
+    net::Writer out;
+    out.string(space);
+    out.u32(slot);
+    out.u64(set.version);
+    for (const auto& node : set.nodes) out.fixed(node.bytes);
+    for (const auto& name : names) out.bytes(name);
+    const auto bytes = out.take();
+    return std::string(bytes.begin(), bytes.end());
+  }
+  std::optional<Last> take_last(const std::string& key) {
+    contract::Lock lock(lasts_mutex);
+    const auto found = lasts.find(key);
+    if (found == lasts.end()) return std::nullopt;
+    auto out = std::move(found->second);
+    lasts.erase(found);
+    return out;
+  }
+  void keep_last(const std::string& key, Last last) {
+    contract::Lock lock(lasts_mutex);
+    // Bounded: past it, the cache starts again, and the next change of each goes the full way.
+    if (lasts.size() >= max_lasts) lasts.clear();
+    lasts[key] = std::move(last);
+  }
   std::atomic<uint64_t> counter{0};
   // Each change's own, so two on one node never share a backoff sequence.
   std::atomic<uint64_t> runs{0};
@@ -298,6 +337,14 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
   std::string space;
   Slot slot;
   Make make;
+  // A plain change's: its first try on the fast path, when this node's last commit of its
+  // names is cached; and what its commit leaves in the cache.
+  std::function<std::optional<Attempt>()> make_fast;
+  std::function<void(const Attempt&, const Ballot& reserved)> on_commit;
+  // Every accept this run has sent for its own change, with that attempt's result.
+  std::vector<std::pair<Ballot, Bytes>> sent;
+  // The ballot the last accept sent reserved.
+  std::optional<Ballot> reserved;
   contract::TimePoint deadline;
   asio::any_io_executor reply;
   std::function<void(Outcome)> done;
@@ -355,7 +402,14 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
     ++generation;
     ++attempts;
     const auto ballot = core->next_ballot(above);
+    // The first try of a plain change whose names this node committed last: one round.
+    if (!finishing && attempts == 1 && make_fast)
+      if (auto fast = make_fast()) {
+        attempt = std::make_unique<Attempt>(std::move(*fast));
+        return send_accept(*attempt->accept());
+      }
     attempt = std::make_unique<Attempt>(finishing ? Attempt::transfer(finishing->first, finishing->second, slot, ballot) : make(ballot));
+    if (!attempt->prepare().to) attempt->own(sent);
     outstanding = attempt->recipients().size();
     const auto request = encode(PrepareMessage{space, attempt->prepare(), core->fingerprint});
     for (const auto& node : attempt->recipients())
@@ -375,16 +429,25 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
       } catch (const net::DecodeError&) {
       }
     }
-    if (accept) {
-      outstanding = attempt->recipients().size();
-      const auto request = encode(AcceptMessage{space, *accept, core->fingerprint});
-      for (const auto& to : attempt->recipients())
-        core->send(to, net::message::agree_accept, request, left(), [self = shared_from_this(), at, to](std::optional<net::Bytes> replied, std::string) {
-          asio::post(self->strand, [self, at, to, replied = std::move(replied)] { self->accepted(at, to, replied); });
-        });
-      return;
-    }
+    if (accept) return send_accept(*accept);
     settle_or_retry();
+  }
+
+  void send_accept(Accept accept) {
+    if (!accept.to) {
+      // Remembered, so a later attempt that finds it newest commits it rather than changing it again.
+      sent.emplace_back(accept.ballot, attempt->result());
+      // This node's next ballot, reserved by the acceptors that take this, for the fast path.
+      accept.reserve = core->next_ballot(0);
+      reserved = accept.reserve;
+    }
+    outstanding = attempt->recipients().size();
+    const auto request = encode(AcceptMessage{space, accept, core->fingerprint});
+    for (const auto& to : attempt->recipients())
+      core->send(to, net::message::agree_accept, request, left(),
+                 [self = shared_from_this(), at = generation, to](std::optional<net::Bytes> replied, std::string) {
+                   asio::post(self->strand, [self, at, to, replied = std::move(replied)] { self->accepted(at, to, replied); });
+                 });
   }
 
   void accepted(uint64_t at, const identity::NodeId& node, const std::optional<net::Bytes>& answer) {
@@ -414,12 +477,17 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
       ++finished_transfers;
       return begin(0);
     }
+    if (on_commit && reserved) on_commit(*attempt, *reserved);
     succeed();
   }
 
   // Refused, or every recipient heard from without enough: another ballot, a transfer to
   // finish, or the end.
   void settle_or_retry() {
+    // The fast path missed: the full way at once, no backoff (Mimir's "one round, kept one").
+    const bool missed = attempt->phase() == Attempt::Phase::refused || outstanding == 0;
+    if (attempt->is_fast() && missed && !(attempt->phase() == Attempt::Phase::refused && attempt->serving() && !attempt->unfinished()))
+      return begin(attempt->higher() ? attempt->higher()->counter : 0);
     if (attempt->phase() == Attempt::Phase::refused) {
       if (attempt->unfinished() && !finishing) {
         finishing = std::make_pair(*attempt->unfinished(), attempt->prepare().set);
@@ -464,6 +532,7 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
     finished = true;
     auto out = evidence();
     out.committed = true;
+    out.fast = attempt->is_fast();
     out.values = attempt->values();
     out.changed_at = attempt->changed_at();
     out.result = attempt->result();
@@ -578,9 +647,26 @@ void check_slot(Slot slot, const Agreement::Table& table) {
 void Agreement::change(std::string space, Slot slot, std::vector<Name> names, std::vector<identity::NodeId> replicas, uint64_t version, Change change,
                        Reduce reduce, std::chrono::milliseconds deadline, asio::any_io_executor executor, std::function<void(Outcome)> done) {
   check_slot(slot, _core->table);
-  auto make = [set = ReplicaSet::of(std::move(replicas), version), slot, names = std::move(names), change = std::move(change), reduce = std::move(reduce),
-               genesis = _core->table.genesis](Ballot ballot) { return Attempt(set, slot, ballot, names, change, reduce, genesis); };
-  Run::start(std::make_shared<Run>(_core, std::move(space), slot, std::move(make), _core->time->now() + deadline, std::move(executor), std::move(done)));
+  const auto set = ReplicaSet::of(std::move(replicas), version);
+  const auto key = Core::last_key(space, slot, set, names);
+  // An owner's reduction sees what changed outside agreement only in a prepare's answers, so a
+  // change with one never takes the fast path (Mimir's merge writes).
+  const bool may_be_fast = !reduce;
+  auto make = [set, slot, names, change, reduce = std::move(reduce), genesis = _core->table.genesis](Ballot ballot) {
+    return Attempt(set, slot, ballot, names, change, reduce, genesis);
+  };
+  auto run = std::make_shared<Run>(_core, std::move(space), slot, std::move(make), _core->time->now() + deadline, std::move(executor), std::move(done));
+  if (may_be_fast) {
+    run->make_fast = [core = _core, key, set, slot, names, change]() -> std::optional<Attempt> {
+      auto last = core->take_last(key);
+      if (!last) return std::nullopt;
+      return Attempt::fast(set, slot, last->reserved, names, change, last->ballot, last->values, last->changed_at);
+    };
+    run->on_commit = [core = _core, key](const Attempt& committed, const Ballot& reserved) {
+      core->keep_last(key, Core::Last{committed.prepare().ballot, reserved, committed.values(), committed.changed_at()});
+    };
+  }
+  Run::start(run);
 }
 
 void Agreement::read(std::string space, Slot slot, std::vector<Name> names, std::vector<identity::NodeId> replicas, uint64_t version, Reduce reduce,
@@ -702,7 +788,8 @@ void Agreement::forget(std::string space, Slot slot, std::vector<Name> names, st
         if (!tombstone.committed) return done(std::move(tombstone));
         // Every replica must hold the tombstone before any forgets it: sent again, the same
         // accept, to all.
-        const Accept again{set, std::nullopt, slot, tombstone.ballot, names, std::vector<std::optional<Bytes>>(names.size()), tombstone.changed_at};
+        const Accept again{set,          std::nullopt, slot, tombstone.ballot, names, std::vector<std::optional<Bytes>>(names.size()), tombstone.changed_at,
+                           std::nullopt, std::nullopt};
         fan_out(send, set.nodes, net::message::agree_accept, encode(AcceptMessage{space, again, fingerprint}), deadline, executor,
                 [space, slot, names, set, send, deadline, executor, fingerprint, done = std::move(done),
                  tombstone](std::vector<std::optional<net::Bytes>> answers) mutable {
