@@ -259,6 +259,7 @@ class Node final : public Context {
   supervise::SupervisedThreads& threads() override { return _threads; }
   sched::ClassGates& gates() override { return _gates; }
   sched::WorkerPool& workers() override { return _workers; }
+  agree::Agreement& agreement() override { return *_agreement; }
   Diagnostics diagnostics() const override;
 
  private:
@@ -372,6 +373,8 @@ class Node final : public Context {
   std::unique_ptr<reach::Paths> _paths;
   // Channels; shared, since its completions hold it weakly.
   std::shared_ptr<net::Fanout> _fanout;
+  // Agreement: its changes in flight hold its core, never the node.
+  std::unique_ptr<agree::Agreement> _agreement;
 
   struct Watcher {
     boost::asio::any_io_executor executor;

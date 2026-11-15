@@ -55,6 +55,9 @@ inline constexpr MessageType channel_replay{18};
 inline constexpr MessageType channel_bulk{19};
 inline constexpr MessageType revocations{20};
 inline constexpr MessageType relay_credit{21};
+// Agreement (0.9.0): a prepare and an accept for one space's registers.
+inline constexpr MessageType agree_prepare{22};
+inline constexpr MessageType agree_accept{23};
 inline constexpr MessageType ok{100};
 inline constexpr MessageType members_reply{101};
 inline constexpr MessageType telemetry_reply{102};
@@ -65,6 +68,8 @@ inline constexpr MessageType relay_open_reply{106};
 inline constexpr MessageType relay_offer_reply{107};
 inline constexpr MessageType channel_replay_reply{108};
 inline constexpr MessageType revocations_reply{109};
+inline constexpr MessageType agree_prepare_reply{110};
+inline constexpr MessageType agree_accept_reply{111};
 inline constexpr MessageType error{127};
 }  // namespace message
 

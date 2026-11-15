@@ -46,6 +46,9 @@ add_library(dannan SHARED
   reach/inbound.cpp
   reach/paths.cpp
   reach/upnp.cpp
+  agree/agreement.cpp
+  agree/caspaxos.cpp
+  agree/wire.cpp
   listen/certificates.cpp
   listen/connector.cpp
   listen/limits.cpp

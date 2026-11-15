@@ -18,6 +18,8 @@
 #include <boost/asio/strand.hpp>
 #include <fstream>
 #include <future>
+#include <map>
+#include <mutex>
 #include <set>
 #include <thread>
 
@@ -2075,6 +2077,88 @@ TEST(Node, ARestartOnASharedIoContextLeavesNothingBehind) {
     flood.join();
   }
   b.stop();
+}
+
+// An acceptor store as a hosted system would keep one in memory.
+class MemoryStore final : public agree::AcceptorStore {
+ public:
+  void load(std::span<const agree::Name> names, std::function<void(std::vector<agree::AcceptorState>)> done) override {
+    std::vector<agree::AcceptorState> out;
+    {
+      std::lock_guard lock(_mutex);
+      for (const auto& name : names) out.push_back(_held[std::string(name.begin(), name.end())]);
+    }
+    done(std::move(out));
+  }
+  void keep(std::span<const agree::Name> names, std::span<const agree::AcceptorState> states, std::function<void(bool)> done) override {
+    {
+      std::lock_guard lock(_mutex);
+      for (size_t i = 0; i < names.size(); ++i) _held[std::string(names[i].begin(), names[i].end())] = states[i];
+    }
+    done(true);
+  }
+  bool ready() const override { return true; }
+
+ private:
+  std::mutex _mutex;
+  // Keyed by the name's bytes as a string: GCC 14 at -O3 misreads a map of byte vectors.
+  std::map<std::string, agree::AcceptorState> _held;
+};
+
+agree::Outcome agree_now(Node& node, const std::vector<identity::NodeId>& replicas, agree::Change change, std::chrono::milliseconds deadline, Io& io) {
+  auto told = std::make_shared<std::promise<agree::Outcome>>();
+  node.context().agreement().change("test", {agree::Name{'k'}}, replicas, 1, std::move(change), {}, deadline, io.context.get_executor(),
+                                    [told](agree::Outcome outcome) { told->set_value(std::move(outcome)); });
+  auto future = told->get_future();
+  if (future.wait_for(30s) != std::future_status::ready) return {};
+  return future.get();
+}
+
+// Agreement across the cluster (0.9.0): a change on two nodes' acceptors commits on
+// both, and the other node's strict read sees it; a node that does not advertise the
+// space's capability is refused by the others, so it cannot make a majority.
+TEST(Node, AgreementCommitsAcrossTheClusterAndRefusesANodeWithoutTheCapability) {
+  Pair pair;
+  pair.b->start();
+  const auto a = pair.a->context().identity().id();
+  const auto b = pair.b->context().identity().id();
+  ASSERT_TRUE(eventually([&] { return knows(*pair.a, b) && knows(*pair.b, a); }));
+  pair.a->context().agreement().serve("test", "test", std::make_shared<MemoryStore>());
+  pair.b->context().agreement().serve("test", "test", std::make_shared<MemoryStore>());
+  pair.a->context().nodes().advertise("test", {});
+  pair.b->context().nodes().advertise("test", {});
+  const auto advertising = [](Node& node, const identity::NodeId& id) {
+    for (const auto& record : node.context().nodes().active())
+      if (record.id == id) return record.adverts.contains("test");
+    return false;
+  };
+  ASSERT_TRUE(eventually([&] { return advertising(*pair.a, b) && advertising(*pair.b, a); }));
+
+  const auto put = [](std::string value) {
+    return [value](std::span<const std::optional<agree::Bytes>> current) {
+      return agree::Changed{std::vector<std::optional<agree::Bytes>>(current.size(), agree::Bytes(value.begin(), value.end())), agree::Bytes{'o', 'k'}};
+    };
+  };
+  const auto written = agree_now(*pair.a, {a, b}, put("agreed"), 10s, pair.io);
+  ASSERT_TRUE(written.committed) << written.why;
+  EXPECT_EQ(written.accepted.size(), 2u);
+  EXPECT_EQ(written.result, (agree::Bytes{'o', 'k'}));
+
+  auto told = std::make_shared<std::promise<agree::Outcome>>();
+  pair.b->context().agreement().read("test", {agree::Name{'k'}}, {a, b}, 1, {}, 10s, pair.io.context.get_executor(),
+                                     [told](agree::Outcome outcome) { told->set_value(std::move(outcome)); });
+  const auto read = told->get_future().get();
+  ASSERT_TRUE(read.committed) << read.why;
+  ASSERT_TRUE(read.values[0]);
+  EXPECT_EQ(std::string(read.values[0]->begin(), read.values[0]->end()), "agreed");
+  EXPECT_EQ(read.changed_at[0], written.changed_at[0]);
+
+  // B no longer advertises the capability: A refuses it, and alone it is no majority.
+  pair.b->context().nodes().withdraw("test");
+  ASSERT_TRUE(eventually([&] { return !advertising(*pair.a, b); }));
+  const auto refused = agree_now(*pair.b, {a, b}, put("stranger"), 500ms, pair.io);
+  EXPECT_FALSE(refused.committed);
+  EXPECT_FALSE(refused.why.empty());
 }
 
 }  // namespace

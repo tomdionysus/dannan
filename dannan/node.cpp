@@ -564,6 +564,29 @@ Node::Node(asio::io_context& io, NodeConfig config)
   hooks.executor = _io.get_executor();
   hooks.replay_deadline = _config.connect_timeout * 2;
   _fanout = std::make_shared<net::Fanout>(std::move(hooks));
+  // Agreement calls peers as the channels do, by their roster records; a peer not in
+  // the active roster is silent for the round.
+  _agreement = std::make_unique<agree::Agreement>(
+      _io.get_executor(), _identity.id, _identity.durability_epoch,
+      [this](const identity::NodeId& to, net::MessageType type, net::Bytes payload, std::chrono::milliseconds deadline,
+             std::function<void(std::optional<net::Bytes>, std::string)> done) {
+        std::optional<NodeRecord> peer;
+        for (auto& node : _members.active())
+          if (node.id == to) peer = std::move(node);
+        if (!peer || !_client || _stopping || _calls_cancelled) return asio::post(_io, [done] { done(std::nullopt, "the peer is not reachable now"); });
+        (void)place_call(*peer, {peer->host, peer->port}, type, std::move(payload), sched::FrameType::control, deadline, _io.get_executor(),
+                         [done](net::CallOutcome outcome) {
+                           if (!outcome.reply) return done(std::nullopt, outcome.failure);
+                           if (const auto refusal = net::refusal_of(*outcome.reply)) return done(std::nullopt, refusal->message);
+                           done(std::move(outcome.reply->payload), {});
+                         });
+      },
+      [this](const identity::NodeId& node, const std::string& capability) {
+        for (const auto& record : _members.active())
+          if (record.id == node) return record.adverts.contains(capability);
+        return false;
+      },
+      _config.time);
   // Tombstones loaded with the roster fence telemetry before anything runs.
   for (const auto& reset : _members.identity_resets()) _telemetry.apply_identity_reset(reset);
 }
@@ -907,6 +930,14 @@ net::Handled Node::handle(const NodeRecord& peer, sched::FrameType frame, net::M
   if (type == m::channel_replay) return _fanout->on_replay(peer, request);
   if (type == m::channel_bulk) return _fanout->on_bulk(peer, request);
   if (type == m::dial_back) return _dial_back->answer(peer.id, request.payload);
+  if (type == m::agree_prepare || type == m::agree_accept) {
+    // Answered later, once the hosted system's store has kept what the rules changed;
+    // the peer is the session's, so who sent it is proven.
+    auto later = std::make_shared<net::Answer>(std::move(answer));
+    const auto give = [later](net::Message reply) { (*later)(std::move(reply)); };
+    if (auto now = _agreement->serve_request(peer.id, request, give)) give(std::move(*now));
+    return net::Handled::deferred();
+  }
   // Held shared across the call: unbind waits for it.
   contract::ReadLock lock(_handlers_mutex);
   const auto handler = _handlers.find(type);

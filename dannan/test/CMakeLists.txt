@@ -14,6 +14,7 @@ target_link_libraries(dannan_test_fixtures INTERFACE GTest::gtest Threads::Threa
 target_compile_definitions(dannan_test_fixtures INTERFACE DANNAN_TEST_TEMP_ROOT="${PROJECT_BINARY_DIR}/test-tmp")
 
 add_executable(dannan_tests
+  agree_caspaxos_test.cpp
   contract_test.cpp
   custody_tool_test.cpp
   fixtures_test.cpp

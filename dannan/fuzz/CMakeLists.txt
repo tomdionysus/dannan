@@ -10,7 +10,7 @@
 # runs on each gate; with DANNAN_BUILD_FUZZING, each also builds as its own
 # binary: a libFuzzer fuzzer where the compiler has libFuzzer, otherwise a
 # replay driver over files.
-set(DANNAN_FUZZ_TARGETS handshake level0 records)
+set(DANNAN_FUZZ_TARGETS agree handshake level0 records)
 
 add_library(dannan_fuzz_targets OBJECT registry.cpp)
 foreach(target ${DANNAN_FUZZ_TARGETS})
