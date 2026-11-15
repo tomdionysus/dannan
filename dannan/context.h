@@ -19,6 +19,7 @@
 #include <string>
 #include <vector>
 
+#include "dannan/agree/agreement.h"
 #include "dannan/contract/scope.h"
 #include "dannan/contract/time_source.h"
 #include "dannan/identity/key_custody.h"
@@ -438,6 +439,11 @@ class Context {
   // The node's worker pool, on the gates, started with the node. A hosted system
   // may build a pool of its own beside it, on gates() and threads().
   virtual sched::WorkerPool& workers() = 0;
+  // Leaderless per-key agreement over the cluster (0.9.0, TODO/2026-11-15-agreement-
+  // design.md): a hosted system serves its space's acceptors from a store of its own
+  // and changes registers from any node. the maintainer, 2026-11-15: anything in the stack that
+  // can use agreement uses this, and builds no consensus of its own.
+  virtual agree::Agreement& agreement() = 0;
   virtual Diagnostics diagnostics() const = 0;
 };
 
