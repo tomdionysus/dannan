@@ -83,9 +83,12 @@ Change identity_change() {
   return [](std::span<const std::optional<Bytes>> current) { return Changed{std::vector<std::optional<Bytes>>(current.begin(), current.end()), {}}; };
 }
 
-// SET NX: written only if absent; the result says whether this change won.
+// SET NX: written only if absent; the result says whether this change won. A retry after
+// a commit whose answers were lost reads its own write: it recognises it as its win, as a
+// real client tags its writes (the simulator found the ambiguity).
 Change set_nx(const std::string& value) {
   return [value](std::span<const std::optional<Bytes>> current) {
+    if (current[0] && *current[0] == bytes(value)) return Changed{{current[0]}, bytes("won")};
     if (current[0]) return Changed{{current[0]}, bytes("lost")};
     return Changed{{bytes(value)}, bytes("won")};
   };
@@ -185,8 +188,8 @@ TEST(Agreement, AMinorityCommitsNothing) {
 TEST(Agreement, TheOwnersReductionAdvancesTheBase) {
   Acceptors acceptors;
   ASSERT_EQ(run(acceptors, three, node(1), ballot(1, 1), {bytes("k")}, put("a")).phase(), Attempt::Phase::committed);
-  // A merge write that reached one replica outside agreement.
-  acceptors.held[node(3)]["k"].value = bytes("a+b");
+  // A merge write that reached one replica of the majority outside agreement.
+  acceptors.held[node(2)]["k"].value = bytes("a+b");
   const Reduce join = [](const NameState& base, std::span<const NameState> answers) {
     auto out = base.value;
     for (const auto& each : answers)

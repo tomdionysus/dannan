@@ -154,6 +154,11 @@ std::optional<Accept> Attempt::on_prepare(const identity::NodeId& from, const Pr
 }
 
 void Attempt::on_accept(const identity::NodeId& from, const AcceptAnswer& answer) {
+  // Committed, it still records who else accepted: the evidence names them all.
+  if (_phase == Phase::committed && !answer.refused && counted(from)) {
+    _accepted.push_back(from);
+    return;
+  }
   if (_phase != Phase::accepting || !counted(from)) return;
   if (answer.refused) return refuse(from, *answer.refused);
   _accepted.push_back(from);
