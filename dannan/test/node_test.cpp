@@ -2086,14 +2086,14 @@ class MemoryStore final : public agree::AcceptorStore {
     std::vector<agree::AcceptorState> out;
     {
       std::lock_guard lock(_mutex);
-      for (const auto& name : names) out.push_back(_held[name]);
+      for (const auto& name : names) out.push_back(_held[std::string(name.begin(), name.end())]);
     }
     done(std::move(out));
   }
   void keep(std::span<const agree::Name> names, std::span<const agree::AcceptorState> states, std::function<void(bool)> done) override {
     {
       std::lock_guard lock(_mutex);
-      for (size_t i = 0; i < names.size(); ++i) _held[names[i]] = states[i];
+      for (size_t i = 0; i < names.size(); ++i) _held[std::string(names[i].begin(), names[i].end())] = states[i];
     }
     done(true);
   }
@@ -2101,7 +2101,8 @@ class MemoryStore final : public agree::AcceptorStore {
 
  private:
   std::mutex _mutex;
-  std::map<agree::Name, agree::AcceptorState> _held;
+  // Keyed by the name's bytes as a string: GCC 14 at -O3 misreads a map of byte vectors.
+  std::map<std::string, agree::AcceptorState> _held;
 };
 
 agree::Outcome agree_now(Node& node, const std::vector<identity::NodeId>& replicas, agree::Change change, std::chrono::milliseconds deadline, Io& io) {

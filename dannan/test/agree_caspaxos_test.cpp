@@ -35,17 +35,19 @@ std::string text(const Bytes& b) { return std::string(b.begin(), b.end()); }
 
 Ballot ballot(uint64_t counter, uint8_t by) { return Ballot{counter, node(by), node(static_cast<uint8_t>(100 + by))}; }
 
-// The acceptors' state, kept as a hosted system would, and the rules applied to it.
+// The acceptors' state, kept as a hosted system would, and the rules applied to it. Keyed
+// by the name's bytes as a string: GCC 14 at -O3 misreads a map of byte vectors' compare.
 struct Acceptors {
-  std::map<identity::NodeId, std::map<Name, AcceptorState>> held;
+  std::map<identity::NodeId, std::map<std::string, AcceptorState>> held;
 
+  static std::string key(const Name& name) { return std::string(name.begin(), name.end()); }
   std::vector<AcceptorState> load(const identity::NodeId& at, const std::vector<Name>& names) {
     std::vector<AcceptorState> out;
-    for (const auto& name : names) out.push_back(held[at][name]);
+    for (const auto& name : names) out.push_back(held[at][key(name)]);
     return out;
   }
   void keep(const identity::NodeId& at, const std::vector<Name>& names, const std::vector<AcceptorState>& states) {
-    for (size_t i = 0; i < names.size(); ++i) held[at][names[i]] = states[i];
+    for (size_t i = 0; i < names.size(); ++i) held[at][key(names[i])] = states[i];
   }
   PrepareAnswer prepare(const identity::NodeId& at, const identity::NodeId& from, const Prepare& request) {
     const auto state = load(at, request.names);
@@ -184,7 +186,7 @@ TEST(Agreement, TheOwnersReductionAdvancesTheBase) {
   Acceptors acceptors;
   ASSERT_EQ(run(acceptors, three, node(1), ballot(1, 1), {bytes("k")}, put("a")).phase(), Attempt::Phase::committed);
   // A merge write that reached one replica outside agreement.
-  acceptors.held[node(3)][bytes("k")].value = bytes("a+b");
+  acceptors.held[node(3)]["k"].value = bytes("a+b");
   const Reduce join = [](const NameState& base, std::span<const NameState> answers) {
     auto out = base.value;
     for (const auto& each : answers)
