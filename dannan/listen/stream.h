@@ -133,7 +133,9 @@ class Stream : public std::enable_shared_from_this<Stream> {
   // protocol that writes many tiny pieces of one message. From any thread; applied
   // on the stream's executor.
   void set_no_delay(bool on);
-  // Whether it is set; false once the socket is closed.
+  // Whether it is set; false once the socket is closed. On the stream's executor
+  // only, as every reader of the socket (Lir's review: off it, a read racing a close
+  // could meet a reused descriptor).
   bool no_delay() const;
 
   // Ends the connection cleanly: what send() queued is written first, then TLS's

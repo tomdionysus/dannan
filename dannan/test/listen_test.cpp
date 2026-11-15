@@ -330,6 +330,24 @@ TEST(StreamListener, IsDestroyedAfterItsContextStopped) {
   EXPECT_EQ(gone.wait_for(10s), std::future_status::ready);
 }
 
+// Lugh's review: a node whose start fails returns before its io context ever runs,
+// and a listener started there waited its whole bound for a close nothing would
+// run. It stops at once, and a connect after it is refused.
+TEST(StreamListener, StopsAtOnceOnAContextThatNeverRan) {
+  asio::io_context io;
+  StreamListener listener(io, plain_config());
+  listener.start(io.get_executor(), [](std::shared_ptr<Stream> stream) { echo(stream); });
+  const auto port = listener.port();
+  const auto started = std::chrono::steady_clock::now();
+  listener.stop();
+  EXPECT_LT(std::chrono::steady_clock::now() - started, 1s);
+  asio::io_context client_io;
+  asio::ip::tcp::socket late(client_io);
+  boost::system::error_code refused;
+  late.connect({asio::ip::make_address("127.0.0.1"), port}, refused);
+  EXPECT_TRUE(refused);
+}
+
 // TLS at accept, with the listener's minimum version: 1.3 only refuses a 1.2 client.
 TEST(StreamListener, ServesTlsAtItsMinimumVersion) {
   Io io;

@@ -94,7 +94,8 @@ class StreamListener {
   // Stops accepting; what is open stays open, and nothing is handed up after it
   // returns. From any thread, the io context's own included (a signal handler on a
   // one-thread context, Lugh's review), and after the io context has stopped (the
-  // destructor's case). From a thread outside the io context the acceptor is closed
+  // destructor's case), or before it has ever run (a start that failed further on,
+  // Lugh's review). From a thread outside a running io context the acceptor is closed
   // when it returns, so a connect after it is refused; it waits up to five seconds
   // for the strand. From one of its threads the close is queued and not waited for:
   // until it runs, a connection may reach the backlog, and is closed unserved.
