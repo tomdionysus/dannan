@@ -585,6 +585,12 @@ words, so a session does not re-derive it.
   counts are Dannan's, as `ServerLimits`; the ordered class's job and
   byte bounds are the registering hosted system's to size, defaulting to
   Macha's.
+- (2026-11-15, the maintainer) **Agreement has no root except at genesis, and a
+  genesis root may be a single node.** Names hash to a fixed slot table.
+  Every slot is touched at founding on the genesis set, and from then on
+  each slot's set is recorded in its own acceptors and moved only by
+  `transfer()`. No node or operator holds a role after genesis
+  (`TODO/2026-11-15-agreement-design.md`, "Reconfiguration").
 
 ## Standing rules
 

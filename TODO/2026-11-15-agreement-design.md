@@ -229,7 +229,19 @@ a space of its own. A proposer takes a name's set from the agreed map, and the m
 only by agreement, with the transfers it implies. Placement over each node's own roster
 (Dannan's `by_capacity`) stays the way to *propose* a new map, never the map itself.
 
-**Open: waits on the maintainer.** the maintainer asked of the root: "Dannan, and its predecessor code in Macha,
+**Ruled (the maintainer, 2026-11-15): "No root except at genesis. A root may start with only one
+node."** The form below is the design. The map-register root the draft first proposed is
+withdrawn.
+
+**A genesis of one node.** The genesis set may be a single founder, whose majority is
+itself: every slot is touched on that one node at founding. As nodes join, placement
+grows each slot's set by `transfer()`, a joint change on a majority of the old set and a
+majority of the new one (one node, then two of three), so the founder is ordinary once
+its slots have moved. Until then the founder is the cluster's single point of failure,
+as any one-node cluster is. Tests: found on one node, join four, and every slot ends on a
+set of three or more with its value intact, under the simulator's faults.
+
+the maintainer had asked of the first draft's root: "Dannan, and its predecessor code in Macha,
 were explicitly written to avoid this. What went wrong?" What went wrong: the draft took a
 conventional consensus system's shape (a metadata root) where the stack's rule is that no
 node is special. The need underneath is real and new: Macha's writes merge, so nodes with
@@ -261,18 +273,8 @@ which set it is a majority of. Dannan's recommended answer has no root at all:
   late joiner could only ask the genesis members, which would make them special again.
 
 Nothing is a role after genesis; an operator is needed only when a slot's majority is lost
-for ever, which no design avoids. The paragraph below is the form reviewed before the maintainer's
-question, kept until he rules.
-
-**The root is a genesis value, not a role** (Mimir's condition and Kvasir's concern, both
-from the maintainer's rule of no designated nodes). The map registers' first set is the cluster's
-founding members, listed in configuration (the list a node joins by). From then on it is an
-ordinary register whose set is recorded in itself and changes by `transfer()` like any
-other, proposed by the hosted system's placement when a member has been off the roster long
-enough. A node whose configuration names an old root finds the current one by the serving
-refusal (below). An operator is needed only when a majority of the root is lost for ever,
-which no design avoids. While the root has no majority, map changes wait and nothing else
-does: commands on names already touched run from a cached map.
+for ever, which no design avoids. (Withdrawn, from the reviewed draft: a map register on
+the founding members, moved later by `transfer()`. The slot table needs no map register.)
 
 **What the hosted systems rely on, stated as contract:**
 
