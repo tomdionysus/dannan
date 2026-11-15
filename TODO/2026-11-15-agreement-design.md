@@ -105,6 +105,49 @@ foreground class (a client waits on them). One message carries every name of one
 - Ballots carry the durability epoch, so a restart never reuses one even with its
   counter lost.
 
+## One replica set at a time (Dagda's review, safety 1)
+
+The caller names `replicas` from its own placement, and two proposers whose rosters differ
+during a transition can name different sets; a majority of each could then both commit,
+two values for one name. So the set is part of the agreed state, not each proposer's view:
+
+- Every prepare and accept carries the replica set's identity (its sorted node ids, hashed)
+  and the set's configuration version.
+- Each acceptor stores, per space and set, the configuration it serves, and refuses a
+  message naming another set or an older version, saying which it serves; the proposer
+  then reads the configuration and retries on it.
+- A replica set changes only by committing a configuration register through the same
+  protocol, on the old set (CASPaxos's grow-catch-up-shrink, one node at a time). The
+  hosted system's placement proposes the change; it takes effect when committed.
+- Test: two proposers naming different sets for one name never both commit.
+
+## Deleting a name (Dagda's review, safety 2)
+
+Acceptor state otherwise grows without bound (Mimir's `DEL` and expiry), and removing it
+naively lets a lagging acceptor bring a value back. CASPaxos's procedure: commit a
+tombstone; once every acceptor of the set holds the tombstone, the proposer raises its
+ballot counter past it and the acceptors remove the name. Until every acceptor has it, the
+tombstone stays. `forget(space, names, replicas, ...)` does this; in 0.9.0's design now, as
+Mimir's store contract depends on it, even if the helper comes after the primitive.
+
+## Where a persisting store lives (Dagda's answer to question 3)
+
+On a node-local log, not a head space: each prepare or accept an append under the
+acceptor's own dot, group-committed in the node's tick, superseded entries retired, an
+in-memory index of the current state per name. A node-local log's no-rollback refuses a
+restored older segment at open, which is exactly "restarted without state": the store says
+so and refuses to vote until caught up. Two syncs a change (one on the fast path). Until
+Dagda's log exists (slice 4, paused for Macha's port), a persisting store is the hosted
+system's own file.
+
+## Leases: two guarantees, named (Dagda's review)
+
+Dagda's leases are soft: absence-based, epoch-fenced, two holders possible for the absence
+window, available on both sides of a split (Lir's shard leases want this). A register
+lease here is linearizable but needs a majority: a minority side cannot take or renew it
+(Lugh's TOTP lease and Louhi's single scheduler want this). Each design names which it
+uses.
+
 ## What it does not do
 
 - No log, no ordering across names beyond one change's names. Cross-slot transactions are
