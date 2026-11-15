@@ -70,10 +70,18 @@ void check(const Certificates::Material& material, const CertificatePaths& paths
   // use_private_key refuses a mismatched pair itself, which read as "not a key"
   // (Lugh's finding), so each failure is told for what it is.
   std::unique_ptr<BIO, decltype(&BIO_free)> bio(BIO_new_mem_buf(material.key.data(), static_cast<int>(material.key.size())), BIO_free);
-  std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> key(bio ? PEM_read_bio_PrivateKey(bio.get(), nullptr, nullptr, nullptr) : nullptr, EVP_PKEY_free);
+  // A passphrase is never asked for (OpenSSL's default would prompt on a terminal,
+  // and fail under systemd): an encrypted key is refused for what it is (Lugh).
+  bool encrypted = false;
+  const auto refuse_passphrase = [](char*, int, int, void* asked) -> int {
+    *static_cast<bool*>(asked) = true;
+    return -1;
+  };
+  std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> key(bio ? PEM_read_bio_PrivateKey(bio.get(), nullptr, refuse_passphrase, &encrypted) : nullptr,
+                                                          EVP_PKEY_free);
   if (!key) {
     ERR_clear_error();
-    throw std::runtime_error(paths.key.string() + ": not a PEM private key");
+    throw std::runtime_error(paths.key.string() + (encrypted ? ": an encrypted key, which is not supported" : ": not a PEM private key"));
   }
   X509* leaf = SSL_CTX_get0_certificate(context.native_handle());
   if (!leaf || X509_check_private_key(leaf, key.get()) != 1) {
