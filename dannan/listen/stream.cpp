@@ -123,10 +123,11 @@ void Stream::client_handshake(std::shared_ptr<detail::ServerTls> context, const 
   } else {
     // One wildcard label at most, the leftmost, never part of a label (Lugh's review).
     X509_VERIFY_PARAM_set_hostflags(param, X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
-    // The SNI carries no trailing dot (RFC 6066, section 3); the check takes either.
-    std::string sni = name;
-    if (sni.size() > 1 && sni.back() == '.') sni.pop_back();
-    named = X509_VERIFY_PARAM_set1_host(param, name.c_str(), name.size()) == 1 && SSL_set_tlsext_host_name(session, const_cast<char*>(sni.c_str())) == 1;
+    // A trailing dot names the same host: it is left out of the check (OpenSSL does not
+    // strip it, macOS CI) and of the SNI (RFC 6066, section 3).
+    std::string host = name;
+    if (host.size() > 1 && host.back() == '.') host.pop_back();
+    named = X509_VERIFY_PARAM_set1_host(param, host.c_str(), host.size()) == 1 && SSL_set_tlsext_host_name(session, const_cast<char*>(host.c_str())) == 1;
   }
   if (!named) {
     finish(false);
