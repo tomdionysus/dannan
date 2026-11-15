@@ -252,7 +252,10 @@ which set it is a majority of. Dannan's recommended answer has no root at all:
   used exactly once. Otherwise a slot nobody wrote for years would belong to machines long
   replaced. The rule for an untouched slot stays as the founding moment's and a safety net.
 - **Finding a moved slot** (Kvasir): each node advertises, softly through membership, the
-  slots its acceptors serve and at which version. A proposer takes the set from those
+  slots its acceptors serve, as **one** advert holding a bitmap (32 bytes for 256 slots;
+  no versions, which the refusal supplies). A node holds at most 64 adverts of at most
+  1 KiB (`membership/node_record.h:48`), so an advert per slot, or versions per slot
+  (2.5 KiB at 256), would not fit. A proposer takes the set from those
   adverts as a hint, never as authority. The acceptors' recorded set, and their refusal
   naming it, stay the truth, so a stale or wrong hint costs one redirect. Without this, a
   late joiner could only ask the genesis members, which would make them special again.
