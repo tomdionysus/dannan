@@ -34,18 +34,22 @@ current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluat
 
 ## Resume here (2026-11-15)
 
-**0.8.3 is prepared on `develop`** (the maintainer approved it, 2026-11-15): the stream connector (Lir and Lugh reviewed and
-approved, `2026-11-15-p3-stream-connector.md`) and RS256 verification (Lugh's WebAuthn, the maintainer's ruling; the maintainer put it in
-0.8.3). Waiting on the maintainer: the tag `0.8.3` and the push of `main`. Then stage the `.deb`s and tell Lir (lir::client moves
-onto the connector), Lugh (https.cpp and W2), Mimir, Dagda and Macha.
+**0.9 is open on `develop`** (CMake 0.9.0, `libdannan0.9`). In progress, first (the maintainer: half the stack waits on it):
+agreement, merged at `dc9ede1`: the pure core (`agree/caspaxos.h`), the wire with a fuzz target, the runtime
+(`agree/agreement.h`, an injectable Schedule), the node's wiring and `Context::agreement()`; Lir's lease
+use-after-free fix. The simulation harness's first phase (the maintainer: within 0.9.0), merged at `2785ab6`:
+`test/fixtures/sim/world.h` and `agreement.h`; five real nodes linearizable under lost, delayed, duplicated and one-way
+messages and crash-restarts over 150 seeds; the broken protocol (voting after losing state) refused.
+Next, in order: agreement's stores' catch-up and `forget()`; reconfiguration through a configuration register (until
+then a name's replica set must be fixed for its life: two proposers naming disjoint majorities for a name nobody has
+touched could both commit); the fast path, value-less prepare and deltas; the harness's membership, Routes, placement,
+correlated kills and the history with faults and resolutions, then the checkers (`2026-11-15-simulation-harness.md`);
+the file-system interface (`2026-11-15-file-system-interface.md`, with Dagda for review); the hybrid clock
+(`2026-11-15-hlc-design.md`, reviewed); the datagram listener; the per-call record copies.
 
-**In progress, first (the maintainer: half the stack waits on it): agreement, on `feature/agreement`**, which opens 0.9 (CMake
-0.9.0, `libdannan0.9`) and so merges after 0.8.3 is tagged. Built: the pure core (`agree/caspaxos.h`, tested by a
-3000-order simulator), the wire with a fuzz target, the runtime (`agree/agreement.h`), the node's wiring and
-`Context::agreement()`; also Lir's lease use-after-free fix (0.9's, the Lease's layout changes). Not yet: the fast path,
-value-less prepare and deltas, `forget()`, reconfiguration through a configuration register, the stores' catch-up.
-Until reconfiguration, a name's replica set must be fixed for its life: two proposers naming disjoint majorities for a
-name nobody has touched could both commit.
+**0.8.3 is released** (`main` and tag at `00a3a12`, pushed at the maintainer's word, 2026-11-15; main's CI run 43757309649 green).
+The `.deb`s are staged in `../tomcully-apt/incoming/dannan/0.8.3/` and checked (shlibs `libdannan0.8 (>= 0.8.3)`). Lir
+runs on it with lir::client on the connector (351 passed on node-b); Mimir pins it.
 
 **0.8.2 is released** (`main` and tag at `20771a6`, pushed at the maintainer's word, 2026-11-15; main's CI run 43737550419
 green). The `.deb`s are staged in `../tomcully-apt/incoming/dannan/0.8.2/` and checked. Lir and Lugh run on it.
