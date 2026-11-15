@@ -51,6 +51,9 @@ the maintainer's rulings, 2026-11-15, directly:
 - **0.8.3 (a patch): the stream connector**, `dannan::listen`'s outbound side, for Lir's client library, Lugh's
   publisher and `https.cpp`, and Mimir. Designed in `2026-11-15-p3-stream-connector.md`, reviewed by Lir and Lugh
   (both reviews taken in it); keeps 0.8's layout.
+- **Anything that can use agreement waits for it** (the maintainer, 2026-11-15, directly: "consensus/agreement is a huge part
+  of higher order behaviour"): no stack project builds its own consensus, lease-for-consensus or workaround in the
+  meantime. So agreement leads 0.9.0's work. Told to Dagda, Lugh, Lir, Macha Server, Mimir, Kvasir and Louhi.
 - **0.9.0: leaderless per-key agreement in Dannan** (Mimir's ruling 6, confirmed to Dannan directly): CASPaxos-shaped,
   a linearizable change to a named register over a caller-supplied replica set, majority commit, no leader, several
   registers of one set in one round; acceptor state behind a hosted system's interface, so Dannan stores nothing; new
