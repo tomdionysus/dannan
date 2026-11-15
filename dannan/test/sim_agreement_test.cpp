@@ -127,10 +127,18 @@ Run simulate(uint64_t seed, Mode mode) {
       case Mode::broken:
         // Its state lost, it votes at once: what the design forbids.
         return cluster.restart(a, true, true);
-      case Mode::catch_up:
-        // Its state lost, it refuses to vote until it has caught up.
+      case Mode::catch_up: {
+        // Its state lost, it refuses to vote until it has caught up. The rule assumes a
+        // minority loses its state at once: a majority wiped has nothing left to catch up
+        // from, and correctly never commits again. So a node is wiped only while those not
+        // yet caught up stay a minority; otherwise it comes back with its state.
+        size_t behind = 0;
+        for (size_t i = 0; i < cluster.size(); ++i)
+          if (!cluster.store(i).ready()) ++behind;
+        if (behind + 1 > (cluster.size() - 1) / 2) return cluster.restart(a);
         cluster.restart(a, true, false);
         return catch_up(a, incarnation[a]);
+      }
     }
   };
   // Clients on every node, at random times over two simulated seconds.
