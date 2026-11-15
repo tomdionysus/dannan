@@ -111,6 +111,9 @@ case "$step" in
     # "change" bit (4), never "incompatible" (8), which it keeps for removals.
     # Added symbols are left out of the report, since an addition is a patch's to
     # make. A virtual added to an interface changes its vtable, and is reported.
+    # The standard library's template instances are left out
+    # (tools/abi-suppressions.ini): they come and go with Dannan's code, not its
+    # interface.
     # The first release of a minor has nothing to keep.
     version=$(sed -n 's/^project(dannan VERSION \([0-9.]*\).*/\1/p' "$top/CMakeLists.txt")
     minor=${version%.*}
@@ -148,7 +151,7 @@ case "$step" in
     fi
     echo "abi: $version against $base"
     set +e
-    abidiff $ignore --no-added-syms --no-show-locs --headers-dir1 "$out/abi/base/include/dannan" --headers-dir2 "$out/abi/current/include/dannan" "$old" "$new"
+    abidiff $ignore --no-added-syms --no-show-locs --suppressions "$top/tools/abi-suppressions.ini" --headers-dir1 "$out/abi/base/include/dannan" --headers-dir2 "$out/abi/current/include/dannan" "$old" "$new"
     rc=$?
     set -e
     if [ "$rc" -ne 0 ]; then
