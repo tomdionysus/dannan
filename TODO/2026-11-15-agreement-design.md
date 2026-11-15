@@ -247,6 +247,15 @@ which set it is a majority of. Dannan's recommended answer has no root at all:
   the genesis members are ordinary.
 - A hosted system's own map (Kvasir's ranges) lives in slot registers, and its names are
   first touched only after that map commits.
+- **Every slot is touched at founding** (Kvasir): one change per slot on the genesis set,
+  an empty value, so from the first minute no slot is untouched and the genesis constant is
+  used exactly once. Otherwise a slot nobody wrote for years would belong to machines long
+  replaced. The rule for an untouched slot stays as the founding moment's and a safety net.
+- **Finding a moved slot** (Kvasir): each node advertises, softly through membership, the
+  slots its acceptors serve and at which version. A proposer takes the set from those
+  adverts as a hint, never as authority. The acceptors' recorded set, and their refusal
+  naming it, stay the truth, so a stale or wrong hint costs one redirect. Without this, a
+  late joiner could only ask the genesis members, which would make them special again.
 
 Nothing is a role after genesis; an operator is needed only when a slot's majority is lost
 for ever, which no design avoids. The paragraph below is the form reviewed before the maintainer's
