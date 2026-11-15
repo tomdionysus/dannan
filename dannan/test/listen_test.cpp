@@ -746,6 +746,9 @@ TEST(StreamConnector, ChecksTheServersChainAndNameOverTls) {
 
   const auto by_name = connect_now(connector, io, "127.0.0.1", listener.port(), tls("localhost"));
   ASSERT_TRUE(by_name.stream) << by_name.why;
+  // A trailing dot names the same host (Lugh's review).
+  const auto dotted = connect_now(connector, io, "127.0.0.1", listener.port(), tls("localhost."));
+  EXPECT_TRUE(dotted.stream) << dotted.why;
 
   const auto wrong_name = connect_now(connector, io, "127.0.0.1", listener.port(), tls("other.example"));
   EXPECT_FALSE(wrong_name.stream);
@@ -893,6 +896,18 @@ TEST(StreamConnector, FindsABadTrustAtOnceAndRefusesAnExecutorNotOfAnIoContext) 
   }
   write(dir.path() / "junk.pem", "not a certificate\n");
   EXPECT_THROW(ClientTrust(dir.path() / "junk.pem"), std::runtime_error);
+  // The system's default is read at once too (Lugh's review): SSL_CERT_FILE naming no
+  // certificate is refused when the trust is made, naming it.
+  const auto empty = dir.path() / "empty.pem";
+  write(empty, "");
+  ::setenv("SSL_CERT_FILE", empty.c_str(), 1);
+  try {
+    ClientTrust system;
+    ADD_FAILURE() << "an empty system store was taken";
+  } catch (const std::runtime_error& error) {
+    EXPECT_NE(std::string(error.what()).find(empty.string()), std::string::npos) << error.what();
+  }
+  ::unsetenv("SSL_CERT_FILE");
   asio::thread_pool pool(1);
   EXPECT_THROW(StreamConnector(pool.get_executor(), ConnectorConfig{}), std::invalid_argument);
   pool.join();

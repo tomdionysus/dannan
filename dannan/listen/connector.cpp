@@ -17,6 +17,7 @@
 #include <boost/asio/post.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
+#include <cstdlib>
 #include <stdexcept>
 
 #include "dannan/listen/detail.h"
@@ -32,18 +33,19 @@ namespace {
 std::shared_ptr<X509_STORE> load_store(const std::filesystem::path& bundle) {
   std::shared_ptr<X509_STORE> store(X509_STORE_new(), X509_STORE_free);
   if (!store) throw std::runtime_error("cannot make a certificate store");
-  if (bundle.empty()) {
-    if (X509_STORE_set_default_paths(store.get()) != 1) {
-      ERR_clear_error();
-      throw std::runtime_error("the system's certificate store cannot be read");
-    }
-    return store;
+  // No bundle named: the system's default file (SSL_CERT_FILE when set), read now like
+  // any bundle. Not its lookup directory, which would read files during a handshake and
+  // pass an empty store until the first connection (Lugh's review).
+  std::filesystem::path path = bundle;
+  if (path.empty()) {
+    const char* named = std::getenv(X509_get_default_cert_file_env());
+    path = named && *named ? named : X509_get_default_cert_file();
   }
-  if (X509_STORE_load_file(store.get(), bundle.c_str()) != 1) {
+  if (X509_STORE_load_file(store.get(), path.c_str()) != 1) {
     ERR_clear_error();
-    throw std::runtime_error(bundle.string() + ": not a PEM certificate bundle");
+    throw std::runtime_error(path.string() + ": not a PEM certificate bundle");
   }
-  if (sk_X509_OBJECT_num(X509_STORE_get0_objects(store.get())) <= 0) throw std::runtime_error(bundle.string() + ": holds no certificate");
+  if (sk_X509_OBJECT_num(X509_STORE_get0_objects(store.get())) <= 0) throw std::runtime_error(path.string() + ": holds no certificate");
   return store;
 }
 
