@@ -233,6 +233,10 @@ gold-plating beyond what the design and its reviews ask.
             completion. need_whole acceptors are caught up by an identity change(), and they block nothing beyond
             liveness.
         - Kvasir was told of the summary rule; it can supply summaries and keep the fast path.
+        - The read's promises are kept like any prepare's (Kvasir's option (a)): one round and one sync per promiser.
+          **After 0.9.0:** a read-only prepare that is not kept, returning only when all answers match and otherwise
+          starting again with a kept prepare. Option (b) as first stated is unsafe through its fallback accept. It
+          needs Kvasir's simulator run: crashes between the read's promise and a lower-ballot accept.
         - To build now; then the branch merges. Today a whole value in an accept
           is one message, up to `max_value`. Once he answers, the branch merges to develop.
 
