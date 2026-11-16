@@ -1,5 +1,39 @@
 # Current release
 
+## 0.8.5: a sign-in's back-off, and a node destroyed after its io stopped
+
+`listen::Backoff` (`dannan/listen/backoff.h`, header-only): failed sign-ins per key (a
+principal, a source address), answered with a growing wait rather than a lock, so knowing a
+user's name cannot lock them out. Some free failures, then a wait doubling up to a ceiling,
+forgotten after an idle time; keys bounded by pruning the forgotten; on injected time;
+thread-safe. Ask it before any costly check. Lugh's, moved into Dannan so Lugh and Kvasir
+link one copy.
+
+Fixed: a node stopped while its io ran, then destroyed after the io had stopped, hung in its
+client's and its server's second stop, each of which posted to the stopped io and waited for
+it (Louhi). A second stop now waits only for what is still in flight.
+
+The ABI is 0.8.0's.
+
+## 0.8.4: StartTLS with no answer, a stoppable wait for node events, and a deferred answer's slot freed in time
+
+`Stream::start_tls_unanswered(done)`: StartTLS for a protocol that sends no answer, where
+the client begins its handshake right behind its request (MySQL's SSLRequest, then its
+ClientHello: Kvasir). Nothing is written and the bytes already waiting are taken as the
+handshake. Every other check of `start_tls` stands: certificates present, once only,
+nothing queued by `send()`. The hosted system must have read exactly the request.
+
+`NodeEvents::wait_for_change(seen, timeout, std::stop_token)`: returns when the total
+moves, when the token is stopped, or at the timeout; `milliseconds::max()` waits with no
+timeout. A component's stop ends its wait at once, with no polling and no artificial kind
+(Macha, whose NodeEvents become Dannan's).
+
+Fixed: a deferred `Answer` sent its reply before giving back its `max_deferred` place and
+bytes, so a caller that asked again at once could be refused as overloaded. Found by ASan
+in hosted CI.
+
+The ABI is 0.8.0's.
+
 ## 0.8.3: connecting out, and RS256 for WebAuthn
 
 `dannan::listen`'s outbound side, `StreamConnector`: connects over TCP or TLS and hands

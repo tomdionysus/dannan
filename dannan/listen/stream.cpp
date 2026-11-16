@@ -188,6 +188,18 @@ void Stream::start_tls(std::string answer, std::function<void(std::string)> done
   });
 }
 
+void Stream::start_tls_unanswered(std::function<void(std::string)> done) {
+  asio::dispatch(get_executor(), [self = shared_from_this(), done = std::move(done)]() mutable {
+    const auto refuse = [&](std::string why) { asio::post(self->get_executor(), [done = std::move(done), why = std::move(why)] { done(why); }); };
+    if (!self->_shared->config.certificates) return refuse("the listener has no certificates");
+    if (self->_tls_started || self->_tls) return refuse("TLS is already started");
+    if (self->_writing || !self->_outbound.empty()) return refuse("bytes queued by send() are not yet written");
+    self->_tls_started = true;
+    // No answer, and no check of waiting bytes: they are the client's handshake.
+    self->handshake(std::move(done));
+  });
+}
+
 void Stream::set_idle(std::chrono::milliseconds idle) {
   _idle = idle;
   note_read();

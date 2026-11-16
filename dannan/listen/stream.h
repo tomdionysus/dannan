@@ -122,6 +122,14 @@ class Stream : public std::enable_shared_from_this<Stream> {
   // listener with certificates, and only once. Refused while bytes queued by send()
   // are not yet written (Lugh's review): they would go out after the answer.
   void start_tls(std::string answer, std::function<void(std::string)> done);
+  // StartTLS where the protocol sends no answer and the client begins its handshake at
+  // once (MySQL's SSLRequest, then its ClientHello with nothing between: Kvasir's ask).
+  // As start_tls, but nothing is written, and bytes already waiting are the client's
+  // handshake, so they are not refused. The hosted system must have read exactly the
+  // request: whatever it read past it is lost to the handshake. Once, only with
+  // certificates, refused while bytes queued by send() are not yet written; `done` as
+  // start_tls's.
+  void start_tls_unanswered(std::function<void(std::string)> done);
 
   // How long the connection may go without a byte read before it is closed at once;
   // zero (the default): never. Set at any time.

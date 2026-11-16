@@ -267,6 +267,14 @@ void Server::stop() {
   {
     contract::Lock lock(_mutex);
     again = _stopped;
+    // Stopped already: the acceptor is closed and the sessions told. Only what is still in
+    // flight is waited for, and nothing is posted, since a destructor's stop can come after
+    // the io has stopped and would wait for ever on a handler that never runs (Louhi,
+    // 2026-11-16).
+    if (again) {
+      _idle.wait(lock.native(), [&]() DANNAN_REQUIRES(_mutex) { return _operations == 0; });
+      return;
+    }
     _stopped = true;
     for (auto& [_, session] : _sessions) sessions.push_back(session);
     for (auto& [_, connection] : _handshaking) handshaking.push_back(connection);
