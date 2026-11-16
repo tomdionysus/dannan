@@ -23,6 +23,8 @@
 #include <string>
 #include <vector>
 
+#include "dannan/agree/wire.h"
+#include "dannan/net/routes.h"
 #include "dannan/test/fixtures/sim/agreement.h"
 
 namespace dannan::test::sim {
@@ -51,6 +53,38 @@ agree::Change increment() {
     const auto next = decode(current[0]) + 1;
     return agree::Changed{{encode(next)}, encode(next)};
   };
+}
+
+// The store contract a value-less prepare relies on: a load without values leaves them
+// empty and says what is held; keeping a state held but not carried leaves the value and its
+// summary alone; a state carrying a value is given the store's summary.
+TEST(SimStore, AValueLessLoadKeepsTheValueAndItsSummary) {
+  Store store(true);
+  const agree::Name k{'k'};
+  const agree::Bytes value(1000, 5);
+  agree::Held written;
+  written.names = {k};
+  written.states = {agree::AcceptorState{agree::Ballot{1, {}, {}}, agree::Ballot{1, {}, {}}, value, agree::Ballot{1, {}, {}}, {}, true}};
+  store.keep(counter_slot, written, [](Store::Kept kept) { ASSERT_TRUE(kept.kept); });
+  ASSERT_TRUE(store.state(counter_slot, k));
+  EXPECT_EQ(store.state(counter_slot, k)->summary, Store::summary(value));
+
+  std::optional<agree::Held> loaded;
+  store.load(counter_slot, std::vector<agree::Name>{k}, false, false, [&](agree::Held held) { loaded = std::move(held); });
+  ASSERT_TRUE(loaded);
+  ASSERT_EQ(loaded->states.size(), 1u);
+  EXPECT_FALSE(loaded->states[0].value);
+  EXPECT_TRUE(loaded->states[0].has_value);
+  EXPECT_EQ(loaded->states[0].summary, Store::summary(value));
+
+  loaded->states[0].promised = agree::Ballot{2, {}, {}};
+  store.keep(counter_slot, *loaded, [](Store::Kept kept) { ASSERT_TRUE(kept.kept); });
+  const auto after = store.state(counter_slot, k);
+  ASSERT_TRUE(after);
+  EXPECT_EQ(after->promised, (agree::Ballot{2, {}, {}}));
+  ASSERT_TRUE(after->value);
+  EXPECT_EQ(*after->value, value);
+  EXPECT_EQ(after->summary, Store::summary(value));
 }
 
 struct Op {
@@ -460,6 +494,375 @@ TEST(Simulation, AMovedSlotIsFoundFromTheAdvertsAndTheRefusal) {
                                 world.io.get_executor(), done);
   });
   EXPECT_TRUE(redirected.committed) << redirected.why;
+}
+
+// A change that appends one byte, its result the new length.
+agree::Change append(uint8_t byte) {
+  return [byte](std::span<const std::optional<agree::Bytes>> current) {
+    auto next = current[0].value_or(agree::Bytes{});
+    next.push_back(byte);
+    return agree::Changed{{next}, encode(next.size())};
+  };
+}
+
+agree::Change put(agree::Bytes value) {
+  return [value](std::span<const std::optional<agree::Bytes>> current) { return agree::Changed{{value}, encode(current.size())}; };
+}
+
+// Whether any prepare answer that crossed the network carried a value.
+bool a_prepare_answer_carried_a_value(const Cluster& cluster) {
+  for (const auto& crossed : cluster.crossed) {
+    if (crossed.type != net::message::agree_prepare) continue;
+    const auto answer = agree::decode_prepare_answer(crossed.answer);
+    for (const auto& state : answer.states)
+      if (state.value) return true;
+  }
+  return false;
+}
+
+size_t crossed_of(const Cluster& cluster, net::MessageType type) {
+  return static_cast<size_t>(std::count_if(cluster.crossed.begin(), cluster.crossed.end(), [type](const Cluster::Crossed& each) { return each.type == type; }));
+}
+
+// Value-less prepare through the runtime (the design's "Value-less prepare and deltas"): a
+// megabyte register is changed by another node with no prepare answer carrying its value,
+// and the change works from the value as it was.
+TEST(Simulation, AMegabyteRegisterChangesWithNoPrepareAnswerCarryingItsValue) {
+  World world(17);
+  Cluster cluster(world, 3, NetworkFaults{});
+  cluster.recording = true;
+  const auto change_at = [&](size_t at, agree::Change change) {
+    std::optional<agree::Outcome> out;
+    cluster.agreement(at).change(Cluster::space, counter_slot, {agree::Name{'m'}}, cluster.ids(), Cluster::genesis_version, std::move(change), {}, 5000ms,
+                                 world.io.get_executor(), [&](agree::Outcome outcome) { out = std::move(outcome); });
+    world.run_until([&] { return out.has_value(); }, 5'000'000);
+    return out.value_or(agree::Outcome{});
+  };
+  const agree::Bytes megabyte(1024 * 1024, 'a');
+  const auto written = change_at(0, put(megabyte));
+  ASSERT_TRUE(written.committed) << written.why;
+  const auto appended = change_at(1, append('b'));
+  ASSERT_TRUE(appended.committed) << appended.why;
+  EXPECT_EQ(decode(appended.result), megabyte.size() + 1);
+  ASSERT_TRUE(appended.values[0]);
+  EXPECT_EQ(appended.values[0]->size(), megabyte.size() + 1);
+  EXPECT_EQ(appended.values[0]->back(), 'b');
+  EXPECT_FALSE(a_prepare_answer_carried_a_value(cluster));
+}
+
+// This node's acceptor missed the last write: the base is fetched from another holder, over
+// the network and in pieces when larger than one, and the change works from it.
+TEST(Simulation, ABaseIsFetchedFromAnotherHolderInPiecesWhenThisNodesAcceptorIsBehind) {
+  World world(19);
+  Cluster cluster(world, 3, NetworkFaults{});
+  const auto change_at = [&](size_t at, agree::Change change) {
+    std::optional<agree::Outcome> out;
+    cluster.agreement(at).change(Cluster::space, counter_slot, {agree::Name{'m'}}, cluster.ids(), Cluster::genesis_version, std::move(change), {}, 5000ms,
+                                 world.io.get_executor(), [&](agree::Outcome outcome) { out = std::move(outcome); });
+    world.run_until([&] { return out.has_value(); }, 5'000'000);
+    return out.value_or(agree::Outcome{});
+  };
+  // Three and a half pieces, written by node 0 while node 2 hears nothing from it.
+  const agree::Bytes large(3 * agree::max_piece + agree::max_piece / 2, 'x');
+  cluster.block(0, 2);
+  ASSERT_TRUE(change_at(0, put(large)).committed);
+  ASSERT_FALSE(cluster.store(2).state(counter_slot, agree::Name{'m'}));
+  cluster.unblock_all();
+  cluster.recording = true;
+  const auto appended = change_at(2, append('y'));
+  ASSERT_TRUE(appended.committed) << appended.why;
+  EXPECT_EQ(decode(appended.result), large.size() + 1);
+  EXPECT_FALSE(a_prepare_answer_carried_a_value(cluster));
+  // Four pieces from one holder, or more if a holder gave way to another.
+  EXPECT_GE(crossed_of(cluster, net::message::agree_fetch), 4u);
+}
+
+// The owner's reduction through the runtime: it asks for an answer behind the base, which is
+// fetched by that answer's own ballot (here from this node's own acceptor), and it sees that
+// older value.
+TEST(Simulation, AnAnswerTheReductionAsksForIsFetchedByItsOwnBallot) {
+  World world(23);
+  Cluster cluster(world, 3, NetworkFaults{});
+  const auto change_at = [&](size_t at, agree::Change change, agree::Reduce reduce) {
+    std::optional<agree::Outcome> out;
+    cluster.agreement(at).change(Cluster::space, counter_slot, {agree::Name{'m'}}, cluster.ids(), Cluster::genesis_version, std::move(change),
+                                 std::move(reduce), 5000ms, world.io.get_executor(), [&](agree::Outcome outcome) { out = std::move(outcome); });
+    world.run_until([&] { return out.has_value(); }, 5'000'000);
+    return out.value_or(agree::Outcome{});
+  };
+  ASSERT_TRUE(change_at(0, put(agree::Bytes{'o', 'l', 'd'}), {}).committed);
+  // Node 2 misses the next write.
+  cluster.block(0, 2);
+  ASSERT_TRUE(change_at(0, put(agree::Bytes{'n', 'e', 'w'}), {}).committed);
+  cluster.unblock_all();
+  std::vector<std::string> seen;
+  const agree::Reduce older = [&seen](const agree::NameState& base, std::span<const agree::NameState> answers) {
+    agree::Reduced out{base.value, {}};
+    for (size_t i = 0; i < answers.size(); ++i) {
+      if (answers[i].accepted == base.accepted) continue;
+      if (!answers[i].value) {
+        out.need.push_back({i, std::nullopt});
+        continue;
+      }
+      seen.emplace_back(answers[i].value->begin(), answers[i].value->end());
+    }
+    return out;
+  };
+  const auto read = change_at(2, append('!'), older);
+  ASSERT_TRUE(read.committed) << read.why;
+  ASSERT_TRUE(read.values[0]);
+  EXPECT_EQ(std::string(read.values[0]->begin(), read.values[0]->end()), "new!");
+  EXPECT_EQ(seen, std::vector<std::string>{"old"});
+}
+
+// An append that also returns its delta: the byte appended (the simulator's store applies a
+// delta by appending it).
+agree::Change append_with_delta(uint8_t byte) {
+  return [byte](std::span<const std::optional<agree::Bytes>> current) {
+    auto next = current[0].value_or(agree::Bytes{});
+    next.push_back(byte);
+    return agree::Changed{{next}, encode(next.size()), {agree::Bytes{byte}}};
+  };
+}
+
+// Deltas through the runtime: to an acceptor holding the base only the delta crosses the
+// network, applied in place by its store; one that missed the base is sent the whole value.
+// When a store's own check refuses every delta, the names go whole and the change still
+// commits. Every acceptor ends with the same value.
+TEST(Simulation, ADeltaIsAppliedInPlaceAndAnAcceptorBehindIsSentTheWholeValue) {
+  World world(29);
+  Cluster cluster(world, 3, NetworkFaults{});
+  const auto change_at = [&](size_t at, agree::Change change) {
+    std::optional<agree::Outcome> out;
+    cluster.agreement(at).change(Cluster::space, counter_slot, {agree::Name{'m'}}, cluster.ids(), Cluster::genesis_version, std::move(change), {}, 5000ms,
+                                 world.io.get_executor(), [&](agree::Outcome outcome) { out = std::move(outcome); });
+    world.run_until([&] { return out.has_value(); }, 5'000'000);
+    // Let every accept still in flight land.
+    world.run_until([] { return false; }, 200'000);
+    return out.value_or(agree::Outcome{});
+  };
+  const agree::Bytes megabyte(1024 * 1024, 'a');
+  ASSERT_TRUE(change_at(0, put(megabyte)).committed);
+  // Every acceptor holds the base: the other promiser is sent only the delta.
+  cluster.recording = true;
+  ASSERT_TRUE(change_at(1, append_with_delta('b')).committed);
+  const auto small_accept = std::any_of(cluster.crossed.begin(), cluster.crossed.end(),
+                                        [](const Cluster::Crossed& each) { return each.type == net::message::agree_accept && each.request_bytes < 4096; });
+  EXPECT_TRUE(small_accept);
+  // Node 2 misses the next change, then changes the register itself: its own acceptor is
+  // behind the base, so it is sent the whole value.
+  cluster.block(0, 2);
+  ASSERT_TRUE(change_at(0, append_with_delta('c')).committed);
+  cluster.unblock_all();
+  const auto changed = change_at(2, append_with_delta('d'));
+  ASSERT_TRUE(changed.committed) << changed.why;
+  EXPECT_EQ(decode(changed.result), megabyte.size() + 3);
+  for (size_t at = 0; at < 3; ++at) {
+    const auto held = cluster.store(at).state(counter_slot, agree::Name{'m'});
+    if (!held || held->accepted != changed.ballot) continue;
+    ASSERT_TRUE(held->value);
+    EXPECT_EQ(held->value->size(), megabyte.size() + 3) << "at " << at;
+    EXPECT_EQ(held->value->back(), 'd');
+  }
+
+  // Every store now refuses deltas: they go whole, and the change commits.
+  for (size_t at = 0; at < 3; ++at) cluster.store(at).refuse_deltas = true;
+  const auto whole = change_at(1, append_with_delta('e'));
+  ASSERT_TRUE(whole.committed) << whole.why;
+  EXPECT_EQ(decode(whole.result), megabyte.size() + 4);
+}
+
+// The value-less change through the runtime (part 6): a delta on a megabyte is committed with
+// no value fetched or sent; the next takes the fast path, its summary checked; a read with no
+// delta commits with no accept; an acceptor lacking the base is named, caught up by an
+// identity change(), and counted again after; a declined change ends at once.
+TEST(Simulation, AValueLessChangeCarriesOnlyDeltas) {
+  World world(37);
+  Cluster cluster(world, 3, NetworkFaults{});
+  const auto settle = [&] { world.run_until([] { return false; }, 200'000); };
+  const auto deltas_at = [&](size_t at, agree::DeltaChange change, std::chrono::milliseconds deadline = 5000ms) {
+    std::optional<agree::Outcome> out;
+    cluster.agreement(at).change_deltas(Cluster::space, counter_slot, {agree::Name{'m'}}, cluster.ids(), Cluster::genesis_version, std::move(change), deadline,
+                                        world.io.get_executor(), [&](agree::Outcome outcome) { out = std::move(outcome); });
+    world.run_until([&] { return out.has_value(); }, 5'000'000);
+    settle();
+    return out.value_or(agree::Outcome{});
+  };
+  const auto whole_at = [&](size_t at, agree::Change change) {
+    std::optional<agree::Outcome> out;
+    cluster.agreement(at).change(Cluster::space, counter_slot, {agree::Name{'m'}}, cluster.ids(), Cluster::genesis_version, std::move(change), {}, 5000ms,
+                                 world.io.get_executor(), [&](agree::Outcome outcome) { out = std::move(outcome); });
+    world.run_until([&] { return out.has_value(); }, 5'000'000);
+    settle();
+    return out.value_or(agree::Outcome{});
+  };
+  // The simulator's store summarises a value by its length and applies a delta by appending,
+  // so a change knows exactly the summary its commit leaves.
+  const auto append = [](uint8_t byte) {
+    return agree::DeltaChange([byte](std::span<const agree::Base> bases) {
+      const auto length = bases[0].has_value ? decode(std::optional<agree::Bytes>(bases[0].summary)) : 0;
+      return agree::Deltas{{agree::Bytes{byte}}, encode(length + 1), false, {encode(length + 1)}};
+    });
+  };
+  const agree::Bytes megabyte(1024 * 1024, 'v');
+  ASSERT_TRUE(whole_at(0, put(megabyte)).committed);
+
+  cluster.recording = true;
+  bool local = false;
+  const auto first = deltas_at(1, [&](std::span<const agree::Base> bases) {
+    local = bases[0].local;
+    return agree::Deltas{{agree::Bytes{'a'}}, encode(megabyte.size() + 1), false, {encode(megabyte.size() + 1)}};
+  });
+  ASSERT_TRUE(first.committed) << first.why;
+  EXPECT_TRUE(local);
+  EXPECT_TRUE(first.values.empty());
+  EXPECT_FALSE(a_prepare_answer_carried_a_value(cluster));
+  EXPECT_EQ(crossed_of(cluster, net::message::agree_fetch), 0u);
+  for (const auto& each : cluster.crossed) {
+    if (each.type == net::message::agree_accept) {
+      EXPECT_LT(each.request_bytes, 4096u);
+    }
+  }
+  const auto fast = deltas_at(1, append('b'));
+  ASSERT_TRUE(fast.committed) << fast.why;
+  EXPECT_TRUE(fast.fast);
+  EXPECT_EQ(decode(fast.result), megabyte.size() + 2);
+
+  // A read with no delta: one round, no accept.
+  cluster.crossed.clear();
+  const agree::DeltaChange none = [](std::span<const agree::Base> bases) {
+    return agree::Deltas{std::vector<std::optional<agree::Bytes>>(bases.size()), agree::Bytes(bases[0].summary)};
+  };
+  const auto read = deltas_at(2, none);
+  ASSERT_TRUE(read.committed) << read.why;
+  EXPECT_EQ(decode(read.result), megabyte.size() + 2);
+  EXPECT_EQ(crossed_of(cluster, net::message::agree_accept), 0u);
+
+  // Node 2 misses a change, and node 1 goes down: a majority now needs node 2, which lacks
+  // the base. It is named, and the change cannot commit. (Node 0 has no fast path cached, so
+  // it goes the full way at once.)
+  cluster.block(1, 2);
+  ASSERT_TRUE(deltas_at(1, append('c')).committed);
+  cluster.unblock_all();
+  cluster.crash(1);
+  const auto stuck = deltas_at(0, append('d'), 800ms);
+  EXPECT_FALSE(stuck.committed);
+  EXPECT_EQ(stuck.need_whole, cluster.ids({2}));
+  // An identity change() sends node 2 the whole value; then the value-less change commits.
+  const auto caught = whole_at(0, [](std::span<const std::optional<agree::Bytes>> current) {
+    return agree::Changed{std::vector<std::optional<agree::Bytes>>(current.begin(), current.end()), {}};
+  });
+  ASSERT_TRUE(caught.committed) << caught.why;
+  const auto after = deltas_at(0, append('e'));
+  ASSERT_TRUE(after.committed) << after.why;
+  EXPECT_TRUE(after.need_whole.empty());
+  // 'd', accepted by node 0 alone, may have been carried on by the catch-up, as Paxos allows.
+  const auto held = cluster.store(2).state(counter_slot, agree::Name{'m'});
+  ASSERT_TRUE(held && held->value);
+  EXPECT_EQ(decode(after.result), held->value->size());
+  EXPECT_GE(held->value->size(), megabyte.size() + 4);
+  EXPECT_EQ(held->value->back(), 'e');
+
+  // Declined: at once, nothing sent.
+  const auto declined = deltas_at(0, [](std::span<const agree::Base>) { return agree::Deltas{{}, {}, true}; });
+  EXPECT_FALSE(declined.committed);
+  EXPECT_EQ(declined.why, "declined");
+  EXPECT_EQ(declined.attempts, 1u);
+}
+
+// Kvasir's ranges: a transfer whose new acceptors were caught up beforehand by the store's own
+// means sends no value at all. Every prepare answer is value-less, every accept carries the
+// ballot only, and the new acceptors hold the value at the transfer's ballot.
+TEST(Simulation, ATransferWhoseNewAcceptorsHoldTheValuesSendsNoValue) {
+  World world(31);
+  Cluster cluster(world, 5, NetworkFaults{}, true, 3);
+  const auto told = [&](auto start) {
+    std::optional<agree::Outcome> out;
+    start([&](agree::Outcome outcome) { out = std::move(outcome); });
+    world.run_until([&] { return out.has_value(); }, 5'000'000);
+    world.run_until([] { return false; }, 200'000);
+    return out.value_or(agree::Outcome{});
+  };
+  constexpr agree::Slot moved_slot = 1;
+  const agree::Bytes megabyte(1024 * 1024, 'r');
+  const auto written = told([&](auto done) {
+    cluster.agreement(0).change(Cluster::space, moved_slot, {agree::Name{'m'}}, cluster.ids({0, 1, 2}), 0, put(megabyte), {}, 5000ms, world.io.get_executor(),
+                                done);
+  });
+  ASSERT_TRUE(written.committed) << written.why;
+  // Nodes 3 and 4 copy the range from node 0, as a store's own catch-up would.
+  const auto state = cluster.store(0).state(moved_slot, agree::Name{'m'});
+  ASSERT_TRUE(state);
+  for (const size_t at : {3, 4}) {
+    agree::Held copy;
+    copy.names = {agree::Name{'m'}};
+    copy.states = {*state};
+    cluster.store(at).keep(moved_slot, copy, [](Store::Kept kept) { ASSERT_TRUE(kept.kept); });
+  }
+  cluster.recording = true;
+  const auto moved = told([&](auto done) {
+    cluster.agreement(2).transfer(Cluster::space, moved_slot, cluster.ids({0, 1, 2}), 0, cluster.ids({2, 3, 4}), 1, 5000ms, world.io.get_executor(), done);
+  });
+  ASSERT_TRUE(moved.committed) << moved.why;
+  EXPECT_FALSE(a_prepare_answer_carried_a_value(cluster));
+  for (const auto& each : cluster.crossed)
+    if (each.type == net::message::agree_accept) {
+      EXPECT_LT(each.request_bytes, 64u * 1024) << "an accept to node " << each.to;
+    }
+  for (const size_t at : {3, 4}) {
+    const auto held = cluster.store(at).state(moved_slot, agree::Name{'m'});
+    ASSERT_TRUE(held);
+    EXPECT_EQ(held->accepted, moved.ballot);
+    ASSERT_TRUE(held->value);
+    EXPECT_EQ(*held->value, megabyte);
+  }
+}
+
+// Large values and deltas under faults: lost, duplicated and delayed messages, and a crash
+// and restart. Every append is a delta on a megabyte; a duplicated or replayed accept must
+// never apply one twice, and every committed append is where its result says.
+TEST(Simulation, LargeValuesAndDeltasStayConsistentUnderFaults) {
+  for (uint64_t seed = 1; seed <= seeds(8); ++seed) {
+    SCOPED_TRACE("seed " + std::to_string(seed));
+    World world(seed);
+    Cluster cluster(world, 3, NetworkFaults{20, 20, 20});
+    const auto change_at = [&](size_t at, agree::Change change) {
+      std::optional<agree::Outcome> out;
+      cluster.agreement(at).change(Cluster::space, counter_slot, {agree::Name{'m'}}, cluster.ids(), Cluster::genesis_version, std::move(change), {}, 5000ms,
+                                   world.io.get_executor(), [&](agree::Outcome outcome) { out = std::move(outcome); });
+      world.run_until([&] { return out.has_value(); }, 5'000'000);
+      return out.value_or(agree::Outcome{});
+    };
+    const agree::Bytes megabyte(1024 * 1024, '.');
+    bool based = false;
+    for (int tries = 0; tries < 5 && !based; ++tries) based = change_at(0, put(megabyte)).committed;
+    ASSERT_TRUE(based);
+    std::vector<std::pair<uint64_t, uint8_t>> committed;
+    for (uint8_t i = 0; i < 24; ++i) {
+      if (i == 12) {
+        cluster.crash(1);
+        cluster.restart(1);
+      }
+      const uint8_t byte = static_cast<uint8_t>('A' + i);
+      const auto outcome = change_at(i % 3, append_with_delta(byte));
+      if (outcome.committed) committed.emplace_back(decode(outcome.result), byte);
+    }
+    cluster.faults() = NetworkFaults{};
+    const auto read = change_at(0, [](std::span<const std::optional<agree::Bytes>> current) { return agree::Changed{{current[0]}, {}}; });
+    ASSERT_TRUE(read.committed) << read.why;
+    ASSERT_TRUE(read.values[0]);
+    const auto& value = *read.values[0];
+    ASSERT_GE(value.size(), megabyte.size());
+    EXPECT_TRUE(std::equal(megabyte.begin(), megabyte.end(), value.begin()));
+    // Each append once at most, in the place its result names.
+    std::set<uint8_t> seen;
+    for (size_t at = megabyte.size(); at < value.size(); ++at) EXPECT_TRUE(seen.insert(value[at]).second) << "applied twice: " << value[at];
+    for (const auto& [length, byte] : committed) {
+      ASSERT_LE(length, value.size());
+      EXPECT_EQ(value[length - 1], byte);
+    }
+    EXPECT_FALSE(committed.empty());
+  }
 }
 
 // The fast path through the runtime: a node's second change of the same names commits in

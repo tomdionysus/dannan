@@ -38,11 +38,48 @@ class AcceptorStore {
   // What is held for `names` in `slot`: the slot's record, the space's floor, and one
   // state per name in order (a name never seen is a default AcceptorState). With `every`,
   // `Held::names` and `Held::states` go on with every other name held in the slot, in any
-  // order: a transfer moves them all.
-  virtual void load(Slot slot, std::span<const Name> names, bool every, std::function<void(Held)> done) = 0;
-  // Keeps all of `held` for `slot`: the record, the floor, and each name's state (a default
-  // state may be dropped). done(false) if it could not, and the request is refused.
-  virtual void keep(Slot slot, const Held& held, std::function<void(bool)> done) = 0;
+  // order: a transfer moves them all. Without `values`, each state's value is left empty,
+  // with `has_value` and `summary` saying what is held (a value-less prepare).
+  virtual void load(Slot slot, std::span<const Name> names, bool every, bool values, std::function<void(Held)> done) = 0;
+  // What keep() did: everything, or nothing. Not kept with `need_whole` empty: it could not, and
+  // the request is refused. Not kept with `need_whole`: the names, by index in `held`, whose
+  // delta it could not apply (its own check of the delta against the value), asked for whole.
+  struct Kept {
+    bool kept = false;
+    std::vector<size_t> need_whole{};
+  };
+  // Keeps all of `held` for `slot`, as one durable step, all of it or nothing (Mimir's and
+  // Kvasir's review): the record, the floor, and each name's state (a default state may be
+  // dropped).
+  // - A state carrying a value is given the store's summary of it, at most max_summary bytes.
+  // - A state with `has_value` and no value keeps the value and summary already held.
+  // - A state with a `delta` has it applied, in place, to the value held at exactly its
+  //   `base` (the rule has checked that the state is there), and the result summarised.
+  //   Every delta is checked before any is applied; one the store cannot apply answers
+  //   `need_whole`, and nothing of `held` is kept: no ballots and no values. A repeated accept
+  //   at a ballot already held never reaches here with its delta: the rule answers it.
+  // "Kept" means it survives a crash at any point after done. done may be called from any
+  // thread, never inline from a store's lengthy work on the caller's strand.
+  virtual void keep(Slot slot, const Held& held, std::function<void(Kept)> done) = 0;
+  // What value() answers: the bytes, and whether they are only what lies past the `since` asked
+  // with (false: the whole value).
+  struct Fetched {
+    Bytes bytes;
+    bool past = false;
+  };
+  // The value of `name` held at exactly `ballot`, for a proposer's fetch; nothing if the name
+  // holds another ballot or no value. With `since` (a summary this store gave, asked for by the
+  // owner's reduction), it may answer only what it keeps past that summary, in the owner's
+  // form, saying so with `past`; it may always answer whole instead. `past` without `since` is
+  // refused. The default loads the name and answers the whole value; a store holding large
+  // values may answer from where it keeps them.
+  virtual void value(Slot slot, const Name& name, const Ballot& ballot, const std::optional<Bytes>& since, std::function<void(std::optional<Fetched>)> done) {
+    (void)since;
+    load(slot, std::vector<Name>{name}, false, true, [ballot, done = std::move(done)](Held held) {
+      if (held.states.size() == 1 && held.states[0].accepted == ballot && held.states[0].value) return done(Fetched{std::move(*held.states[0].value), false});
+      done(std::nullopt);
+    });
+  }
   // Whether this acceptor may vote: false after a restart that lost its state, until it
   // has caught up (the design's rule; a store that votes with lost state can commit two
   // values for one name).
@@ -75,6 +112,9 @@ struct Outcome {
   bool fast = false;
   // forget(): every replica held the tombstone and was told to purge it.
   bool forgotten = false;
+  // change_deltas(): the acceptors that needed a name whole, which it does not carry; the
+  // owner catches them up by its own copy, or by an identity change().
+  std::vector<identity::NodeId> need_whole;
 };
 
 class Agreement {
@@ -139,6 +179,19 @@ class Agreement {
   // posted to `executor` once. From any thread.
   void change(std::string space, Slot slot, std::vector<Name> names, std::vector<identity::NodeId> replicas, uint64_t version, Change change, Reduce reduce,
               std::chrono::milliseconds deadline, boost::asio::any_io_executor executor, std::function<void(Outcome)> done);
+  // A value-less change (the design's part 6, Mimir's and Kvasir's ask): `change` is given each
+  // name's base (ballot, summary, whether it holds a value, whether this node's own acceptor
+  // holds exactly it) and returns a delta per name, or declines. No value is fetched, built or
+  // sent: holders take the delta, or the ballot only for a name left as it is. It commits on a
+  // majority that takes it; an acceptor needing a name whole is not counted and is named in
+  // `Outcome::need_whole`. A change that declines ends at once ("declined"). With no delta and
+  // every promiser at the base, it commits with no accept (a current read: one round; each
+  // promise kept as any prepare's). `Outcome::values` is empty; `changed_at` is set. The fast
+  // path keeps each name's ballot and the summary the change said its commit leaves; a name
+  // without one takes no fast path. `change` runs on the agreement's own strand, never while
+  // Dannan holds a lock or waits on a store's completion. From any thread.
+  void change_deltas(std::string space, Slot slot, std::vector<Name> names, std::vector<identity::NodeId> replicas, uint64_t version, DeltaChange change,
+                     std::chrono::milliseconds deadline, boost::asio::any_io_executor executor, std::function<void(Outcome)> done);
   // A strict read: an identity change, so it returns only what a majority holds (Mimir's
   // ruling 5); a minority side is refused.
   void read(std::string space, Slot slot, std::vector<Name> names, std::vector<identity::NodeId> replicas, uint64_t version, Reduce reduce,

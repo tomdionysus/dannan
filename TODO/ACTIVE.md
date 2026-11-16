@@ -57,9 +57,17 @@ current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluat
   were freed with the ledger. That is a double free. TSan files a use-after-free under `race:` suppressions, and Lir
   suppresses `race:dannan::sched::RetainedMemoryLedger::release`, so the first bad write went unreported. The
   test before the failing one, `HeldMessagesAreLeasedInTheNodesLedger`, is the one that triggers it. Fixed on
-  develop at `79dfa2e` (0.9 ABI). Lir was told to confirm it one of two ways: pin a develop commit and drop the
-  suppression, or run 0.8.5 under ASan and expect a double free in `release`. The one-thread reproduction is
-  dropped unless Lir's check says otherwise.
+  develop at `79dfa2e` (0.9 ABI).
+- **Lir's checks on node-c (2026-11-16).**
+  - ASan on 0.8.5: the defect fired in 1 run of 30 of `ClusterTest.*`. The report was a use-after-free read in
+    `release` (`_allocations.find`), from a `Lease` in a fanout replay's completion, after `~LirNode` freed the
+    ledger in `HeldMessagesAreLeasedInTheNodesLedger`'s teardown.
+  - TSan with print_suppressions: 30 runs, no warnings, the ledger suppression never matched, and the NodeRecord
+    report was not reproduced.
+  - So the defect is confirmed, and the NodeRecord report is attributed to it by mechanism, not reproduced.
+- **Lir waits for the 0.9.0 tag** rather than pinning develop (the maintainer, to Lir directly). It stays on 0.8.5 with the
+  suppression until then, and will say at once if the NodeRecord report appears on a build with the fix. The
+  one-thread reproduction is dropped unless it does.
 
 **Lir's first TSan report against 0.8.3** (2026-11-16).
 - What: a heap-use-after-free in `~NodeRecord`, in Lir run 43773090610 (`ClusterTest.ConnectingOnAnotherNodeTakesTheClientOver`, two
@@ -83,9 +91,17 @@ current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluat
 - Lir also saw two other intermittent failures, being looked at on Lir's side: run 43757235866 (TSan) and run
   43765626713 (release arm64).
 
-**Waiting on the maintainer:**
-- Whether a node with another slot table should also be refused at join; today every agreement request refuses it
-  (step 1 below).
+**Waiting on the maintainer:** nothing.
+
+**A flake recurred, open:** `LevelZero.AChunkLostWithTheSendersSessionEndsTheCircuitWithinTheBound`
+(`reach_paths_test.cpp:592`).
+- It failed in develop's CI run 43900791401 (asan arm64, on `ba153ea`, a commit that touched only the plan), at
+  lines 604, 605 and 607. After A closed its data route to the hub, the hub's circuit did not end within 20 s, B did
+  not leave, and A counted no close with an unknown count.
+- The next run, on `6ab20b8`, was green.
+- It was seen once before, locally under clang at 0.5.x, and never in CI since.
+- Not investigated yet. It is to be pinned (did the close reach a live route, and did the transfer end before it?)
+  before anything is changed.
 
 **Release mechanics learned 2026-11-16:**
 - The `.deb`s CI builds before the tag exists come out versioned `<last>+gitN`. After pushing the tag, re-run
@@ -103,7 +119,9 @@ current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluat
   catch-up holds while a minority is wiped.
 
 **0.9.0 is cut when the whole plan below is done** (the maintainer, 2026-11-16, asked: not before, and not after agreement
-alone).
+alone). Asked again later that day, he kept it: "I'd rather do it right - but it is becoming a chokepoint, we've been
+at this some time. Complete it properly." Lir, Mimir and Kvasir wait on the tag, so keep each step moving: no
+gold-plating beyond what the design and its reviews ask.
 
 **Next, in order** (the maintainer: agreement first, half the stack waits on it):
 1. **Reconfiguration, as the maintainer ruled** (2026-11-15: "No root except at genesis. A root may start with only one
@@ -115,9 +133,11 @@ alone).
    - **Built** at `c524a28`: every request carries the table's fingerprint and an acceptor with another table refuses
      it; the slot advert (`agree.slots/<space>`) and `Agreement::hint()`. The suite on node-d ran 778 tests: 777
      passed and 1 skipped (it is skipped when run as root).
-   - **For the maintainer:** the design said a node with another table is "refused at join". It is refused at every agreement
-     request instead, which keeps membership free of agreement's settings. Whether join-time refusal is still wanted
-     on top is his call.
+   - **Refused at join as well** (the maintainer, 2026-11-16, asked: "Also refuse at join"). Today a node with another table is
+     refused at every agreement request. To build: the table's fingerprint goes in the join handshake, and a node
+     whose fingerprint differs is refused with a reason naming the table. Tests first: a node with another slot count,
+     and one with another genesis set, are each refused at join, and a matching node joins. To be done after
+     value-less prepare and deltas, on its own branch.
    - The test "the fast path lost across a transfer" is `FastPath.IsLostAcrossATransfer` (`6c90f50`).
 2. **The fast path: built** at `6c90f50`.
    - How it works: a plain accept reserves the proposer's next ballot (`Accept::reserve`), and the next change of the
@@ -132,15 +152,98 @@ alone).
      (`2026-11-15-agreement-design.md`, "Value-less prepare and deltas", at `82c18a8`). Build order, each with its
      tests first and its own commit:
      1. The summary (per name, 64 bytes, set by the store) and the has-value bit in `AcceptorState` and `NameState`;
-        a "values wanted" flag on prepare; `load()` leaving values empty when value-less.
+        a "values wanted" flag on prepare; `load()` leaving values empty when value-less. **Built** on
+        `feature/valueless-prepare` at `c71eb20`. `keep()`'s contract now says a state held but not carried keeps the
+        store's value and summary, which part 4's in-place apply needs too. Every attempt still asks for values. The
+        suite on node-b ran 799 tests: 798 passed and 1 skipped (it is skipped when run as root).
      2. The fetch: `agree_fetch` by name, ballot, offset and `since_summary`, answered in pieces; the store's
         `value(...)`. Then the Attempt's fetching phase between promise and accept, taking the base from this node's
-        own acceptor when it holds it.
-     3. The reduction on summaries (Mimir's (a)): it returns its result or the names it needs fetched.
+        own acceptor when it holds it. **Built** at `acaab48`.
+        - The pieces are at most 1 MiB (`max_piece`) and are resumed by offset. A fetch moves between holders of
+          the ballot from the same offset.
+        - `value()`'s default loads the name.
+        - The runtime asks every plain change without a reduction for no values.
+        - `since_summary` waits for part 3, where Mimir's reduction needs it. The first cut fetches whole by ballot,
+          as Mimir allowed.
+        - The suite on node-c ran 806 tests: 805 passed and 1 skipped (it is skipped when run as root).
+        - Hosted CI runs on develop only, so the branch's sanitizer runs come at its merge.
+     3. The reduction on summaries (Mimir's (a)): it returns its result or the names it needs fetched. **Built** at
+        `5a09792`.
+        - `Reduce` returns `Reduced{value, need}`. A need is an answer, whole or past a `since` summary. It is
+          fetched by that answer's ballot and summary, and the reduction is called again. Asking twice for one
+          answer refuses the attempt.
+        - Holders match on ballot and summary, since merge writes leave one ballot with different values.
+        - A change with a reduction goes value-less too; a transfer still carries values.
+        - The fetch and `value()` carry `since`; the default `value()` answers whole.
+        - Mimir was told of the API change.
+        - The suite on node-a ran 809 tests: 808 passed and 1 skipped (it is skipped when run as root).
      4. Deltas: a change may return a delta per name. The accept carries, per name, a whole value, a delta with its
         base ballot, or the ballot only (Kvasir's "already held"). The store's in-place `apply(slot, name,
         base_ballot, new_ballot, delta, done(applied | need_whole))`. A "need whole" is resent in pieces.
-     5. `transfer()` over all of it, then the simulator with large values and deltas under faults.
+        **Built** at `3d771a1`, with the delta inside `keep()`, not a separate `apply()`. A separate call could not be
+        atomic. the maintainer asked for review first, and Mimir and Kvasir took it; the contract is in the design document.
+        - A delta goes only to an acceptor that answered holding its base (ballot and summary).
+        - The rule asks for a name whole off the base, and answers a replay at the new ballot without the delta.
+        - `keep()` answers `Kept{kept, need_whole}`, all or nothing.
+        - The proposer resends names whole to an acceptor that asks.
+        - The `past` flag on a fetch past `since` is in (`0275e67`, Mimir's ask).
+        - **Still to do:** a whole resend larger than one message, in pieces; the "ballot only" accept. Both belong
+          with `transfer()` in part 5. The fast path sends whole values.
+        - The suite on node-a ran 813 tests: 812 passed and 1 skipped (it is skipped when run as root).
+     5. `transfer()` over all of it, then the simulator with large values and deltas under faults. **Built** at
+        `1c624d3`.
+        - A transfer is value-less, its bases fetched from holders in either set.
+        - An accept's third form is the ballot only (Kvasir's "already held"), for a value left as it is.
+        - Every compact form carries its base's ballot and summary, and the rule asks whole where either differs.
+        - An acceptor not heard from is sent the compact form and asks for what it lacks.
+        - Tests:
+          - `Held.*`;
+          - `Simulation.ATransferWhoseNewAcceptorsHoldTheValuesSendsNoValue` (every accept under 64 KiB);
+          - `Simulation.LargeValuesAndDeltasStayConsistentUnderFaults` (8 seeds; drops, duplicates, delays and a
+            crash; every append applied once).
+        - The suite on node-a ran 817 tests: 816 passed and 1 skipped (it is skipped when run as root).
+        - The store interface is final; Mimir and Kvasir were told.
+        - Mimir accepted the store side as final (2026-11-16).
+        - Kvasir accepted the store side too. **A whole resend in pieces is not needed** (Kvasir): ranges stay below
+          `max_value` by Kvasir's own split, and a lagging acceptor is caught up by the store before it is sent
+          anything.
+     6. **The value-less change** (Mimir's and Kvasir's ask; the maintainer, 2026-11-16: "Include in 0.9.0", since under the
+        ABI rule it would otherwise wait for 0.10.0). Every write to a large collection or range otherwise copies the
+        whole value at the proposer. Kvasir commits every 10 to 20 ms.
+        - `change_deltas(...)`. The change is given each name's base (ballot, summary, has-value) and whether this
+          node's own acceptor holds exactly it. It returns a delta per name (none: unchanged) and a result.
+        - No fetch and no whole value anywhere. Holders get the delta, or the ballot only for an unchanged name.
+        - A majority must take it. An acceptor needing the whole value is not counted and gets no resend; the
+          Outcome names it, for the owner to catch up.
+        - The fast path keeps ballots and summaries, not bytes. A transfer and catch_up() are unchanged.
+        - The API went to Mimir and Kvasir before it was built. Kvasir agreed it as written (2026-11-16):
+          - the fast path checking by ballot only is right for ranges;
+          - need_whole nodes are reported, not resent;
+          - `local` false may return no deltas.
+        - Kvasir's read: a `change_deltas` with no delta for any name commits without an accept when every answer
+          in the promising majority names the same ballot and summary. That state is already chosen, so a current
+          read is one round and no sync. Otherwise it falls back to the ballot-only accept. The proof rule applies.
+        - Mimir's review, taken (2026-11-16):
+          - `Deltas::decline` ends the change at once (`why = "declined"`), for a base not local or moved under
+            Mimir's lock.
+          - `Deltas::summaries`: per name, the summary keep() will set. The fast path keeps ballot and summary and
+            checks both, and a name with none takes no fast path. Commutation is not relied on: a reply computed
+            from a merged-over base would be wrong.
+          - Contract: DeltaChange runs on the agreement's strand, never under a Dannan lock or waiting on a store
+            completion. need_whole acceptors are caught up by an identity change(), and they block nothing beyond
+            liveness.
+        - Kvasir was told of the summary rule; it can supply summaries and keep the fast path.
+        - The read's promises are kept like any prepare's (Kvasir's option (a)): one round and one sync per promiser.
+          **After 0.9.0:** a read-only prepare that is not kept, returning only when all answers match and otherwise
+          starting again with a kept prepare. Option (b) as first stated is unsafe through its fallback accept. It
+          needs Kvasir's simulator run: crashes between the read's promise and a lower-ballot accept.
+        - **Built** at `c23086a`.
+          - Tests: `ValueLessChange.*`, and `Simulation.AValueLessChangeCarriesOnlyDeltas`. The simulation covers a
+            megabyte delta with no fetch, the fast path, a read with no accept, need_whole named then caught up by
+            an identity change, and a decline.
+          - The suite on node-d ran 823 tests: 822 passed and 1 skipped (it is skipped when run as root).
+        - The branch merges to develop next, for hosted CI's sanitizers. Today a whole value in an accept
+          is one message, up to `max_value`. Once he answers, the branch merges to develop.
 
    Tests are named there: one-node genesis grown to five, the root unreachable, the fast path lost across a
    transfer.

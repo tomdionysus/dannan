@@ -64,10 +64,24 @@ struct Acceptors {
         }
     return out;
   }
+  // A delta here is bytes appended to the value held (the rule has checked its base).
   void keep(const identity::NodeId& at, const Held& kept) {
     slots[at] = kept.slot;
     floor[at] = kept.floor;
-    for (size_t i = 0; i < kept.names.size(); ++i) held[at][key(kept.names[i])] = kept.states[i];
+    for (size_t i = 0; i < kept.names.size(); ++i) {
+      auto state = kept.states[i];
+      auto& stored = held[at][key(kept.names[i])];
+      if (state.delta) {
+        auto value = stored.value.value_or(Bytes{});
+        value.insert(value.end(), state.delta->begin(), state.delta->end());
+        state.value = std::move(value);
+        state.delta.reset();
+        state.base = {};
+      } else if (state.has_value && !state.value) {
+        state.value = stored.value;
+      }
+      stored = std::move(state);
+    }
   }
   PrepareAnswer prepare(const identity::NodeId& at, const identity::NodeId& from, const Prepare& request) {
     auto step = on_prepare(at, from, request, load(at, request.names, request.to.has_value()), founders);
@@ -245,6 +259,557 @@ TEST(Agreement, AForgottenNameStaysForgotten) {
   const auto kept = acceptors.purge(node(1), node(1), Purge{three, slot, ballot(2, 2), {bytes("j")}});
   EXPECT_EQ(kept.forgotten, 0u);
   EXPECT_EQ(text(*acceptors.held[node(1)]["j"].value), "w");
+}
+
+// Value-less prepare (the design's "Value-less prepare and deltas"): an answer says whether
+// a value is held and carries the store's summary, and carries the value only when wanted.
+// A store that loaded value-less answers the same.
+TEST(ValueLess, APrepareWithoutValuesAnswersWhatIsHeldAndItsSummary) {
+  const AcceptorState stored{ballot(1, 1), ballot(1, 1), bytes("a megabyte"), ballot(1, 1), bytes("v3"), true};
+  const SlotState served{three, std::nullopt, Ballot{}};
+  Held held{served, {}, {bytes("k"), bytes("j")}, {stored, AcceptorState{}}};
+  Prepare request{three, std::nullopt, slot, ballot(2, 1), {bytes("k"), bytes("j")}, false};
+  const auto check = [&](const PrepareStep& step, bool carried) {
+    ASSERT_FALSE(step.answer.refused);
+    ASSERT_EQ(step.answer.states.size(), 2u);
+    const auto& k = step.answer.states[0];
+    EXPECT_EQ(k.accepted, ballot(1, 1));
+    EXPECT_EQ(k.changed_at, ballot(1, 1));
+    EXPECT_TRUE(k.has_value);
+    EXPECT_EQ(text(k.summary), "v3");
+    EXPECT_EQ(k.value.has_value(), carried);
+    if (carried) {
+      EXPECT_EQ(text(*k.value), "a megabyte");
+    }
+    EXPECT_FALSE(step.answer.states[1].has_value);
+    EXPECT_FALSE(step.answer.states[1].value);
+  };
+  check(on_prepare(node(1), node(1), request, held, genesis), false);
+  held.states[0].value.reset();
+  const auto loaded_without = on_prepare(node(1), node(1), request, held, genesis);
+  check(loaded_without, false);
+  // What it keeps is still held without its value, for the store to leave as it is.
+  ASSERT_TRUE(loaded_without.keep);
+  EXPECT_TRUE(loaded_without.keep->states[0].has_value);
+  EXPECT_EQ(loaded_without.keep->states[0].promised, ballot(2, 1));
+  held.states[0].value = bytes("a megabyte");
+  request.values = true;
+  check(on_prepare(node(1), node(1), request, held, genesis), true);
+}
+
+// An accept carries a whole value: the state holds it, or holds none for a tombstone, and its
+// summary is left empty for the store to give it.
+TEST(ValueLess, AnAcceptMarksTheValueHeldAndLeavesItsSummaryToTheStore) {
+  const AcceptorState stored{ballot(1, 1), ballot(1, 1), std::nullopt, ballot(1, 1), bytes("old"), true};
+  const Held held{{three, std::nullopt, Ballot{}}, {}, {bytes("k")}, {stored}};
+  const auto written =
+      on_accept(node(1), node(1), Accept{three, std::nullopt, slot, ballot(2, 1), {bytes("k")}, {bytes("new")}, {ballot(2, 1)}, {}, {}}, held, genesis);
+  ASSERT_TRUE(written.keep);
+  EXPECT_TRUE(written.keep->states[0].has_value);
+  EXPECT_EQ(text(*written.keep->states[0].value), "new");
+  EXPECT_TRUE(written.keep->states[0].summary.empty());
+  const auto deleted =
+      on_accept(node(1), node(1), Accept{three, std::nullopt, slot, ballot(2, 1), {bytes("k")}, {std::nullopt}, {ballot(2, 1)}, {}, {}}, held, genesis);
+  ASSERT_TRUE(deleted.keep);
+  EXPECT_FALSE(deleted.keep->states[0].has_value);
+  EXPECT_FALSE(deleted.keep->states[0].value);
+}
+
+// A purge forgets only a tombstone: a value loaded value-less is still a value.
+TEST(ValueLess, APurgeTellsATombstoneFromAValueLoadedWithoutIt) {
+  const Purge request{three, slot, ballot(2, 2), {bytes("k")}};
+  const SlotState served{three, std::nullopt, Ballot{}};
+  const Held value{served, {}, {bytes("k")}, {AcceptorState{ballot(2, 2), ballot(2, 2), std::nullopt, ballot(2, 2), {}, true}}};
+  EXPECT_EQ(on_purge(node(1), node(2), request, value).forgotten, 0u);
+  const Held tombstone{served, {}, {bytes("k")}, {AcceptorState{ballot(2, 2), ballot(2, 2), std::nullopt, ballot(2, 2), {}, false}}};
+  EXPECT_EQ(on_purge(node(1), node(2), request, tombstone).forgotten, 1u);
+}
+
+// The summary is the store's, but bounded: one over 64 bytes refuses the prepare, and nothing
+// is kept.
+TEST(ValueLess, ASummaryOverSixtyFourBytesIsRefused) {
+  const AcceptorState stored{ballot(1, 1), ballot(1, 1), std::nullopt, ballot(1, 1), Bytes(max_summary + 1, 7), true};
+  const Held held{{three, std::nullopt, Ballot{}}, {}, {bytes("k")}, {stored}};
+  const auto step = on_prepare(node(1), node(1), Prepare{three, std::nullopt, slot, ballot(2, 1), {bytes("k")}, false}, held, genesis);
+  EXPECT_TRUE(step.answer.refused);
+  EXPECT_FALSE(step.keep);
+}
+
+// The base's value is fetched, not carried: once a majority has promised without values, the
+// attempt names the base's ballot and the promisers holding exactly it, and goes on to its
+// accept, built from the fetched value, once that is in.
+TEST(ValueLess, ABaseIsFetchedByItsBallotFromThePromisersHoldingIt) {
+  Acceptors acceptors;
+  ASSERT_EQ(run(acceptors, three, node(1), ballot(1, 1), {bytes("k")}, put("v")).phase(), Attempt::Phase::committed);
+  const Change append = [](std::span<const std::optional<Bytes>> current) { return Changed{{bytes(text(current[0].value_or(Bytes{})) + "+")}, {}}; };
+  Attempt attempt(three, slot, ballot(2, 2), {bytes("k")}, append, {}, genesis);
+  ASSERT_TRUE(attempt.value_less());
+  EXPECT_FALSE(attempt.prepare().values);
+  for (const auto& at : three.nodes) {
+    const auto answer = acceptors.prepare(at, node(2), attempt.prepare());
+    for (const auto& state : answer.states) EXPECT_FALSE(state.value);
+    EXPECT_FALSE(attempt.on_prepare(at, answer));
+  }
+  ASSERT_EQ(attempt.phase(), Attempt::Phase::fetching);
+  ASSERT_EQ(attempt.wanted().size(), 1u);
+  EXPECT_EQ(attempt.wanted()[0].name, 0u);
+  EXPECT_FALSE(attempt.wanted()[0].answer);
+  EXPECT_FALSE(attempt.wanted()[0].since);
+  EXPECT_EQ(attempt.wanted()[0].ballot, ballot(1, 1));
+  // The majority that promised first, both holding the base.
+  EXPECT_EQ(attempt.wanted()[0].holders, (std::vector<identity::NodeId>{node(1), node(2)}));
+  // A fetch not wanted is ignored.
+  EXPECT_FALSE(attempt.fetched(attempt.wanted()[0].id + 1, bytes("x")));
+  const auto accept = attempt.fetched(attempt.wanted()[0].id, bytes("v"));
+  ASSERT_TRUE(accept);
+  EXPECT_EQ(attempt.phase(), Attempt::Phase::accepting);
+  EXPECT_EQ(text(*accept->values[0]), "v+");
+  EXPECT_EQ(accept->changed_at[0], ballot(2, 2));
+  for (const auto& at : three.nodes) attempt.on_accept(at, acceptors.accept(at, node(2), *accept));
+  EXPECT_EQ(attempt.phase(), Attempt::Phase::committed);
+  EXPECT_EQ(text(*acceptors.held[node(3)]["k"].value), "v+");
+}
+
+// A promiser behind the base is no holder: only one whose accepted ballot is the base's.
+TEST(ValueLess, OnlyAPromiserHoldingTheBasesBallotIsAHolder) {
+  Acceptors acceptors;
+  Attempt write(three, slot, ballot(1, 1), {bytes("k")}, put("v"), {}, genesis);
+  drive(acceptors, write, node(1), {}, {node(1), node(2)});
+  ASSERT_EQ(write.phase(), Attempt::Phase::committed);
+  Attempt attempt(three, slot, ballot(2, 3), {bytes("k")}, identity_change(), {}, genesis);
+  ASSERT_TRUE(attempt.value_less());
+  EXPECT_FALSE(attempt.on_prepare(node(3), acceptors.prepare(node(3), node(3), attempt.prepare())));
+  EXPECT_FALSE(attempt.on_prepare(node(2), acceptors.prepare(node(2), node(3), attempt.prepare())));
+  ASSERT_EQ(attempt.phase(), Attempt::Phase::fetching);
+  ASSERT_EQ(attempt.wanted().size(), 1u);
+  EXPECT_EQ(attempt.wanted()[0].holders, std::vector<identity::NodeId>{node(2)});
+}
+
+// A base holding no value, never written or a tombstone, needs no fetch: the accept comes at
+// once.
+TEST(ValueLess, ABaseHoldingNoValueNeedsNoFetch) {
+  Acceptors acceptors;
+  const auto erase = [](std::span<const std::optional<Bytes>> current) { return Changed{std::vector<std::optional<Bytes>>(current.size()), {}}; };
+  ASSERT_EQ(run(acceptors, three, node(1), ballot(1, 1), {bytes("gone")}, put("v")).phase(), Attempt::Phase::committed);
+  ASSERT_EQ(run(acceptors, three, node(1), ballot(2, 1), {bytes("gone")}, erase).phase(), Attempt::Phase::committed);
+  Attempt attempt(three, slot, ballot(3, 2), {bytes("gone"), bytes("never")}, put("w"), {}, genesis);
+  ASSERT_TRUE(attempt.value_less());
+  EXPECT_FALSE(attempt.on_prepare(node(1), acceptors.prepare(node(1), node(2), attempt.prepare())));
+  const auto accept = attempt.on_prepare(node(2), acceptors.prepare(node(2), node(2), attempt.prepare()));
+  ASSERT_TRUE(accept);
+  EXPECT_TRUE(attempt.wanted().empty());
+  EXPECT_EQ(text(*accept->values[0]), "w");
+  EXPECT_EQ(text(*accept->values[1]), "w");
+}
+
+// No holder gave the base: the attempt is refused, for another ballot, and a value fetched
+// after is ignored.
+TEST(ValueLess, NoHolderGivingTheBaseRefusesTheAttempt) {
+  Acceptors acceptors;
+  ASSERT_EQ(run(acceptors, three, node(1), ballot(1, 1), {bytes("k")}, put("v")).phase(), Attempt::Phase::committed);
+  Attempt attempt(three, slot, ballot(2, 2), {bytes("k")}, put("w"), {}, genesis);
+  ASSERT_TRUE(attempt.value_less());
+  for (const auto& at : three.nodes) attempt.on_prepare(at, acceptors.prepare(at, node(2), attempt.prepare()));
+  ASSERT_EQ(attempt.phase(), Attempt::Phase::fetching);
+  const auto id = attempt.wanted()[0].id;
+  attempt.unfetched("no holder answered");
+  EXPECT_EQ(attempt.phase(), Attempt::Phase::refused);
+  EXPECT_EQ(attempt.why(), "no holder answered");
+  EXPECT_FALSE(attempt.fetched(id, bytes("v")));
+}
+
+// Value-less is asked before the prepare goes: by a change, with a reduction or without, and
+// (part 5) by a transfer. An attempt already answered keeps asking for values.
+TEST(ValueLess, APreparedAttemptStillAsksForValues) {
+  const Reduce reduce = [](const NameState& base, std::span<const NameState>) { return Reduced{base.value, {}}; };
+  Attempt reducing(three, slot, ballot(1, 1), {bytes("k")}, put("v"), reduce, genesis);
+  EXPECT_TRUE(reducing.value_less());
+  EXPECT_FALSE(reducing.prepare().values);
+  auto moving = Attempt::transfer(three, ReplicaSet::of({node(1), node(2), node(3), node(4)}, 2), slot, ballot(1, 1));
+  EXPECT_TRUE(moving.value_less());
+  EXPECT_FALSE(moving.prepare().values);
+  Acceptors acceptors;
+  Attempt prepared(three, slot, ballot(1, 1), {bytes("k")}, put("v"), {}, genesis);
+  prepared.on_prepare(node(1), acceptors.prepare(node(1), node(1), prepared.prepare()));
+  EXPECT_FALSE(prepared.value_less());
+}
+
+// Mimir's option (a): the reduction decides on summaries. Matching summaries mean nothing to
+// fetch beyond the base. One that differs is asked for, past the base's summary (Mimir: the
+// merge operations past a frontier), fetched by that answer's ballot, and the reduction,
+// called again, folds it in.
+TEST(ValueLess, AReductionDecidesOnSummariesAndFetchesOnlyWhatItAsksFor) {
+  Acceptors acceptors;
+  ASSERT_EQ(run(acceptors, three, node(1), ballot(1, 1), {bytes("k")}, put("a")).phase(), Attempt::Phase::committed);
+  for (const auto& at : three.nodes) acceptors.held[at]["k"].summary = bytes("f1");
+  size_t calls = 0;
+  const Reduce merge = [&calls](const NameState& base, std::span<const NameState> answers) {
+    ++calls;
+    Reduced out{base.value, {}};
+    for (size_t i = 0; i < answers.size(); ++i) {
+      if (answers[i].summary == base.summary) continue;
+      if (!answers[i].value) {
+        out.need.push_back({i, base.summary});
+        continue;
+      }
+      // Past the frontier: folded in. Whole: taken as it is.
+      out.value = answers[i].past ? bytes(text(*out.value) + text(*answers[i].value)) : answers[i].value;
+    }
+    return out;
+  };
+  const auto prepared = [&](Attempt& attempt) {
+    EXPECT_TRUE(attempt.value_less());
+    for (const auto& at : three.nodes) attempt.on_prepare(at, acceptors.prepare(at, node(2), attempt.prepare()));
+    EXPECT_EQ(attempt.phase(), Attempt::Phase::fetching);
+    EXPECT_EQ(attempt.wanted().size(), 1u);
+  };
+
+  // Every summary matches: the base alone, and one call.
+  Attempt same(three, slot, ballot(2, 2), {bytes("k")}, identity_change(), merge, genesis);
+  prepared(same);
+  const auto plain = same.fetched(same.wanted()[0].id, bytes("a"));
+  ASSERT_TRUE(plain);
+  EXPECT_EQ(text(*plain->values[0]), "a");
+  EXPECT_EQ(calls, 1u);
+
+  // A merge write reached node 2 outside agreement: its summary moved, its ballot did not.
+  calls = 0;
+  acceptors.held[node(2)]["k"].summary = bytes("f2");
+  Attempt merged(three, slot, ballot(3, 2), {bytes("k")}, identity_change(), merge, genesis);
+  prepared(merged);
+  // A base is fetched whole: an answer past a summary it never asked with is ignored.
+  EXPECT_FALSE(merged.fetched(merged.wanted()[0].id, bytes("a"), true));
+  ASSERT_EQ(merged.wanted().size(), 1u);
+  EXPECT_FALSE(merged.wanted()[0].answer);
+  EXPECT_FALSE(merged.fetched(merged.wanted()[0].id, bytes("a")));
+  ASSERT_EQ(merged.phase(), Attempt::Phase::fetching);
+  ASSERT_EQ(merged.wanted().size(), 1u);
+  const auto asked = merged.wanted()[0];
+  ASSERT_TRUE(asked.answer);
+  EXPECT_EQ(asked.ballot, ballot(1, 1));
+  ASSERT_TRUE(asked.since);
+  EXPECT_EQ(text(*asked.since), "f1");
+  // Only the acceptor holding that state: the same ballot is not the same value here.
+  EXPECT_EQ(asked.holders, std::vector<identity::NodeId>{node(2)});
+  const auto folded = merged.fetched(asked.id, bytes("+b"), true);
+  ASSERT_TRUE(folded);
+  EXPECT_EQ(text(*folded->values[0]), "a+b");
+  EXPECT_EQ(calls, 2u);
+
+  // The holder could not serve past the frontier and answered whole: the reduction is told so.
+  Attempt whole(three, slot, ballot(4, 2), {bytes("k")}, identity_change(), merge, genesis);
+  prepared(whole);
+  EXPECT_FALSE(whole.fetched(whole.wanted()[0].id, bytes("a")));
+  ASSERT_EQ(whole.wanted().size(), 1u);
+  const auto taken = whole.fetched(whole.wanted()[0].id, bytes("a+b"), false);
+  ASSERT_TRUE(taken);
+  EXPECT_EQ(text(*taken->values[0]), "a+b");
+}
+
+// A reduction that asks again for an answer it was given refuses the attempt, rather than
+// fetching for ever.
+TEST(ValueLess, AReductionAskingTwiceForOneAnswerRefuses) {
+  Acceptors acceptors;
+  ASSERT_EQ(run(acceptors, three, node(1), ballot(1, 1), {bytes("k")}, put("a")).phase(), Attempt::Phase::committed);
+  const Reduce greedy = [](const NameState&, std::span<const NameState>) { return Reduced{std::nullopt, {{0, bytes("s")}}}; };
+  Attempt attempt(three, slot, ballot(2, 2), {bytes("k")}, identity_change(), greedy, genesis);
+  ASSERT_TRUE(attempt.value_less());
+  for (const auto& at : three.nodes) attempt.on_prepare(at, acceptors.prepare(at, node(2), attempt.prepare()));
+  ASSERT_EQ(attempt.phase(), Attempt::Phase::fetching);
+  EXPECT_FALSE(attempt.fetched(attempt.wanted()[0].id, bytes("a")));
+  ASSERT_EQ(attempt.phase(), Attempt::Phase::fetching);
+  EXPECT_FALSE(attempt.fetched(attempt.wanted()[0].id, bytes("past s")));
+  EXPECT_EQ(attempt.phase(), Attempt::Phase::refused);
+  EXPECT_FALSE(attempt.why().empty());
+}
+
+// A change appending '+', returning the delta as well as the whole value.
+Change append_with_delta() {
+  return [](std::span<const std::optional<Bytes>> current) {
+    auto value = current[0].value_or(Bytes{});
+    value.push_back('+');
+    return Changed{{value}, {}, {Bytes{'+'}}};
+  };
+}
+
+// Deltas (the design's "Value-less prepare and deltas", part 4): a delta goes to an acceptor
+// that answered holding its base, and (part 5) to one not heard from, which asks whole if it
+// lacks the base; one that answered behind is sent the whole value. Every acceptor ends with
+// the same value.
+TEST(Deltas, ADeltaGoesOnlyWhereItsBaseIsHeld) {
+  Acceptors acceptors;
+  Attempt write(three, slot, ballot(1, 1), {bytes("k")}, put("a"), {}, genesis);
+  drive(acceptors, write, node(1), {}, {node(1), node(2)});
+  ASSERT_EQ(write.phase(), Attempt::Phase::committed);
+  Attempt attempt(three, slot, ballot(2, 1), {bytes("k")}, append_with_delta(), {}, genesis);
+  EXPECT_FALSE(attempt.on_prepare(node(1), acceptors.prepare(node(1), node(1), attempt.prepare())));
+  const auto accept = attempt.on_prepare(node(3), acceptors.prepare(node(3), node(1), attempt.prepare()));
+  ASSERT_TRUE(accept);
+  EXPECT_EQ(text(*accept->values[0]), "a+");
+  ASSERT_EQ(accept->deltas.size(), 1u);
+  EXPECT_EQ(accept->bases[0], ballot(1, 1));
+  const auto to_holder = attempt.accept_for(node(1), *accept);
+  ASSERT_EQ(to_holder.deltas.size(), 1u);
+  EXPECT_TRUE(to_holder.deltas[0]);
+  EXPECT_FALSE(to_holder.values[0]);
+  // Answered behind the base: whole.
+  const auto whole = attempt.accept_for(node(3), *accept);
+  EXPECT_TRUE(whole.deltas.empty());
+  EXPECT_EQ(text(*whole.values[0]), "a+");
+  // Not heard from: the delta, with the base's ballot and summary.
+  const auto unheard = attempt.accept_for(node(2), *accept);
+  ASSERT_EQ(unheard.deltas.size(), 1u);
+  EXPECT_TRUE(unheard.deltas[0]);
+  EXPECT_EQ(unheard.summaries.size(), 1u);
+  for (const auto& at : three.nodes) EXPECT_FALSE(attempt.on_accept(at, acceptors.accept(at, node(1), attempt.accept_for(at, *accept))));
+  EXPECT_EQ(attempt.phase(), Attempt::Phase::committed);
+  for (const auto& at : three.nodes) EXPECT_EQ(text(*acceptors.held[at]["k"].value), "a+");
+}
+
+// The rule: a delta whose base is not held here asks for the name whole and keeps nothing; a
+// delta on the base is given to the store; an accept already kept at its ballot (resent, or
+// replayed after recovery) is kept again without its delta, so it is never applied twice.
+TEST(Deltas, TheRuleAsksWholeOffTheBaseAndNeverAppliesADeltaTwice) {
+  const SlotState served{three, std::nullopt, Ballot{}};
+  const Held at_base{served, {}, {bytes("k")}, {AcceptorState{ballot(1, 1), ballot(1, 1), bytes("a"), ballot(1, 1), {}, true}}};
+  Accept accept{three, std::nullopt, slot, ballot(2, 1), {bytes("k")}, {std::nullopt}, {ballot(2, 1)}, {}, {}, {Bytes{'+'}}, {ballot(1, 1)}};
+  const auto applied = on_accept(node(1), node(1), accept, at_base, genesis);
+  EXPECT_TRUE(applied.answer.need_whole.empty());
+  ASSERT_TRUE(applied.keep);
+  ASSERT_TRUE(applied.keep->states[0].delta);
+  EXPECT_EQ(applied.keep->states[0].base, ballot(1, 1));
+  EXPECT_EQ(applied.keep->states[0].accepted, ballot(2, 1));
+  EXPECT_FALSE(applied.keep->states[0].value);
+  EXPECT_TRUE(applied.keep->states[0].has_value);
+
+  accept.bases[0] = ballot(1, 2);
+  const auto off_base = on_accept(node(1), node(1), accept, at_base, genesis);
+  EXPECT_EQ(off_base.answer.need_whole, std::vector<size_t>{0});
+  EXPECT_FALSE(off_base.answer.refused);
+  EXPECT_FALSE(off_base.keep);
+
+  accept.bases[0] = ballot(1, 1);
+  const Held kept_already{served, {}, {bytes("k")}, {AcceptorState{ballot(2, 1), ballot(2, 1), bytes("a+"), ballot(2, 1), {}, true}}};
+  const auto replayed = on_accept(node(1), node(1), accept, kept_already, genesis);
+  EXPECT_TRUE(replayed.answer.need_whole.empty());
+  ASSERT_TRUE(replayed.keep);
+  EXPECT_FALSE(replayed.keep->states[0].delta);
+  EXPECT_EQ(text(*replayed.keep->states[0].value), "a+");
+
+  // The base's ballot with another summary (a merge write outside agreement) is another
+  // value: asked for whole.
+  Accept merged = accept;
+  merged.summaries = {bytes("another state")};
+  EXPECT_EQ(on_accept(node(1), node(1), merged, at_base, genesis).answer.need_whole, std::vector<size_t>{0});
+
+  // Both whole and a delta for one name is not an accept Dannan makes.
+  accept.values[0] = bytes("a+");
+  EXPECT_TRUE(on_accept(node(1), node(1), accept, at_base, genesis).answer.refused);
+}
+
+// An acceptor that needs a name whole is sent the accept again with it whole, and then
+// counts; one that asks whole again for what it was sent whole counts as refusing.
+TEST(Deltas, NeedWholeIsAnsweredWithTheNameWhole) {
+  Acceptors acceptors;
+  ASSERT_EQ(run(acceptors, three, node(1), ballot(1, 1), {bytes("k")}, put("a")).phase(), Attempt::Phase::committed);
+  Attempt attempt(three, slot, ballot(2, 1), {bytes("k")}, append_with_delta(), {}, genesis);
+  std::optional<Accept> accept;
+  for (const auto& at : three.nodes)
+    if (auto next = attempt.on_prepare(at, acceptors.prepare(at, node(1), attempt.prepare()))) accept = next;
+  ASSERT_TRUE(accept);
+  const auto again = attempt.on_accept(node(1), AcceptAnswer{std::nullopt, {0}});
+  ASSERT_TRUE(again);
+  EXPECT_TRUE(again->deltas.empty());
+  EXPECT_EQ(text(*again->values[0]), "a+");
+  EXPECT_TRUE(attempt.accepted().empty());
+  // Whole now, and asked whole again: refused.
+  EXPECT_FALSE(attempt.on_accept(node(1), AcceptAnswer{std::nullopt, {0}}));
+  EXPECT_EQ(attempt.refused(), std::vector<identity::NodeId>{node(1)});
+  // The others take the delta, and commit it.
+  for (const auto& at : {node(2), node(3)}) EXPECT_FALSE(attempt.on_accept(at, acceptors.accept(at, node(1), attempt.accept_for(at, *accept))));
+  EXPECT_EQ(attempt.phase(), Attempt::Phase::committed);
+}
+
+// The ballot only (Kvasir's "already held"): a value the change leaves as it is goes to an
+// acceptor holding it as the ballot alone, and that acceptor keeps its value at the new ballot.
+TEST(Held, AnUnchangedValueGoesAsTheBallotOnlyToItsHolders) {
+  Acceptors acceptors;
+  ASSERT_EQ(run(acceptors, three, node(1), ballot(1, 1), {bytes("k")}, put("v")).phase(), Attempt::Phase::committed);
+  Attempt read(three, slot, ballot(2, 2), {bytes("k")}, identity_change(), {}, genesis);
+  std::optional<Accept> accept;
+  for (const auto& at : three.nodes)
+    if (auto next = read.on_prepare(at, acceptors.prepare(at, node(2), read.prepare()))) accept = next;
+  ASSERT_TRUE(accept);
+  const auto to_holder = read.accept_for(node(1), *accept);
+  ASSERT_EQ(to_holder.held.size(), 1u);
+  EXPECT_EQ(to_holder.held[0], 1);
+  EXPECT_EQ(to_holder.bases[0], ballot(1, 1));
+  EXPECT_FALSE(to_holder.values[0]);
+  for (const auto& at : three.nodes) read.on_accept(at, acceptors.accept(at, node(2), read.accept_for(at, *accept)));
+  EXPECT_EQ(read.phase(), Attempt::Phase::committed);
+  EXPECT_EQ(text(*read.values()[0]), "v");
+  for (const auto& at : three.nodes) {
+    EXPECT_EQ(acceptors.held[at]["k"].accepted, ballot(2, 2));
+    EXPECT_EQ(text(*acceptors.held[at]["k"].value), "v");
+  }
+  // An acceptor that no longer holds the base asks for the name whole.
+  const SlotState served{three, std::nullopt, Ballot{}};
+  const Held moved_on{served, {}, {bytes("k")}, {AcceptorState{ballot(3, 3), ballot(3, 3), bytes("x"), ballot(3, 3), {}, true}}};
+  Accept stale = to_holder;
+  stale.ballot = ballot(4, 2);
+  EXPECT_EQ(on_accept(node(1), node(2), stale, moved_on, genesis).answer.need_whole, std::vector<size_t>{0});
+}
+
+// A transfer goes value-less too: the bases are fetched, an acceptor already holding a name
+// (a new one caught up by the store's own means, Kvasir's ranges) is sent its ballot only,
+// and one lacking it the whole value.
+TEST(Held, ATransferFetchesItsBasesAndSendsTheBallotOnlyToAcceptorsHoldingThem) {
+  Acceptors acceptors;
+  ASSERT_EQ(run(acceptors, three, node(1), ballot(1, 1), {bytes("a")}, put("va")).phase(), Attempt::Phase::committed);
+  ASSERT_EQ(run(acceptors, three, node(1), ballot(2, 1), {bytes("b")}, put("vb")).phase(), Attempt::Phase::committed);
+  // Node 4 caught up with "a" beforehand.
+  acceptors.held[node(4)]["a"] = acceptors.held[node(1)]["a"];
+  const auto four = ReplicaSet::of({node(1), node(2), node(3), node(4)}, 2);
+  auto moving = Attempt::transfer(three, four, slot, ballot(3, 1));
+  ASSERT_TRUE(moving.value_less());
+  // Node 4 promises among the first, so its answer counts; node 3's is past enough.
+  for (const auto& at : {node(4), node(1), node(2), node(3)}) {
+    const auto answer = acceptors.prepare(at, node(1), moving.prepare());
+    for (const auto& state : answer.states) EXPECT_FALSE(state.value);
+    moving.on_prepare(at, answer);
+  }
+  ASSERT_EQ(moving.phase(), Attempt::Phase::fetching);
+  ASSERT_EQ(moving.wanted().size(), 2u);
+  std::optional<Accept> accept;
+  // A copy: each fetch takes its entry out of wanted().
+  const auto wanted_now = moving.wanted();
+  for (const auto& wanted : wanted_now)
+    if (auto next = moving.fetched(wanted.id, bytes(text(wanted.key) == "a" ? "va" : "vb"))) accept = next;
+  ASSERT_TRUE(accept);
+  ASSERT_EQ(accept->names.size(), 2u);
+  const auto to_new = moving.accept_for(node(4), *accept);
+  ASSERT_EQ(to_new.held.size(), 2u);
+  EXPECT_EQ(to_new.held[0], 1);  // "a": held already
+  EXPECT_EQ(to_new.held[1], 0);  // "b": whole
+  EXPECT_EQ(text(*to_new.values[1]), "vb");
+  const auto to_old = moving.accept_for(node(1), *accept);
+  EXPECT_EQ(to_old.held, (std::vector<uint8_t>{1, 1}));
+  for (const auto& at : moving.recipients()) moving.on_accept(at, acceptors.accept(at, node(1), moving.accept_for(at, *accept)));
+  EXPECT_EQ(moving.phase(), Attempt::Phase::committed);
+  EXPECT_EQ(text(*acceptors.held[node(4)]["a"].value), "va");
+  EXPECT_EQ(text(*acceptors.held[node(4)]["b"].value), "vb");
+  EXPECT_EQ(acceptors.held[node(4)]["a"].accepted, ballot(3, 1));
+}
+
+// The value-less change (part 6): the change sees each name's base, never its value, and
+// returns a delta; no value is fetched or sent, and the acceptors apply the delta in place.
+TEST(ValueLessChange, CommitsADeltaWithNoValueAnywhere) {
+  Acceptors acceptors;
+  ASSERT_EQ(run(acceptors, three, node(1), ballot(1, 1), {bytes("k")}, put("a")).phase(), Attempt::Phase::committed);
+  std::vector<Base> seen;
+  const DeltaChange plus = [&seen](std::span<const Base> bases) {
+    seen.assign(bases.begin(), bases.end());
+    return Deltas{{Bytes{'+'}}, bytes("ok")};
+  };
+  auto attempt = Attempt::deltas(three, slot, ballot(2, 1), {bytes("k")}, plus, genesis, node(1));
+  EXPECT_FALSE(attempt.prepare().values);
+  std::optional<Accept> accept;
+  for (const auto& at : three.nodes)
+    if (auto next = attempt.on_prepare(at, acceptors.prepare(at, node(1), attempt.prepare()))) accept = next;
+  ASSERT_TRUE(accept);
+  EXPECT_TRUE(attempt.wanted().empty());
+  ASSERT_EQ(seen.size(), 1u);
+  EXPECT_EQ(seen[0].ballot, ballot(1, 1));
+  EXPECT_TRUE(seen[0].has_value);
+  EXPECT_TRUE(seen[0].local);
+  EXPECT_FALSE(accept->values[0]);
+  ASSERT_TRUE(accept->deltas[0]);
+  EXPECT_EQ(attempt.accept_for(node(3), *accept).deltas, accept->deltas);
+  for (const auto& at : three.nodes) attempt.on_accept(at, acceptors.accept(at, node(1), *accept));
+  EXPECT_EQ(attempt.phase(), Attempt::Phase::committed);
+  EXPECT_EQ(text(attempt.result()), "ok");
+  for (const auto& at : three.nodes) EXPECT_EQ(text(*acceptors.held[at]["k"].value), "a+");
+}
+
+// A value-less read: no delta, and every promiser at the base, so that state is chosen
+// already. It commits with no accept, and nothing changes at any acceptor.
+TEST(ValueLessChange, AReadWhosePromisersAgreeCommitsWithNoAccept) {
+  Acceptors acceptors;
+  ASSERT_EQ(run(acceptors, three, node(1), ballot(1, 1), {bytes("k")}, put("a")).phase(), Attempt::Phase::committed);
+  const DeltaChange none = [](std::span<const Base> bases) { return Deltas{std::vector<std::optional<Bytes>>(bases.size()), bytes("read")}; };
+  auto read = Attempt::deltas(three, slot, ballot(2, 2), {bytes("k")}, none, genesis, node(2));
+  for (const auto& at : three.nodes) EXPECT_FALSE(read.on_prepare(at, acceptors.prepare(at, node(2), read.prepare())));
+  EXPECT_EQ(read.phase(), Attempt::Phase::committed);
+  EXPECT_TRUE(read.read_only());
+  EXPECT_EQ(read.changed_at()[0], ballot(1, 1));
+  for (const auto& at : three.nodes) EXPECT_EQ(acceptors.held[at]["k"].accepted, ballot(1, 1));
+
+  // One promiser behind: not chosen by this majority, so the ballot only goes out.
+  Attempt write(three, slot, ballot(3, 1), {bytes("k")}, put("b"), {}, genesis);
+  drive(acceptors, write, node(1), {}, {node(1), node(2)});
+  auto behind = Attempt::deltas(three, slot, ballot(4, 2), {bytes("k")}, none, genesis, node(2));
+  EXPECT_FALSE(behind.on_prepare(node(2), acceptors.prepare(node(2), node(2), behind.prepare())));
+  const auto accept = behind.on_prepare(node(3), acceptors.prepare(node(3), node(2), behind.prepare()));
+  ASSERT_TRUE(accept);
+  EXPECT_FALSE(behind.read_only());
+  ASSERT_EQ(accept->held.size(), 1u);
+  EXPECT_EQ(accept->held[0], 1);
+  EXPECT_EQ(accept->bases[0], ballot(3, 1));
+}
+
+// The owner declines (its base not local, or moved under its lock): nothing is sent, and the
+// attempt ends, "declined".
+TEST(ValueLessChange, ADeclinedChangeEndsAtOnce) {
+  Acceptors acceptors;
+  const DeltaChange decline = [](std::span<const Base>) { return Deltas{{}, {}, true}; };
+  auto attempt = Attempt::deltas(three, slot, ballot(1, 1), {bytes("k")}, decline, genesis, node(1));
+  for (const auto& at : three.nodes) EXPECT_FALSE(attempt.on_prepare(at, acceptors.prepare(at, node(1), attempt.prepare())));
+  EXPECT_EQ(attempt.phase(), Attempt::Phase::refused);
+  EXPECT_TRUE(attempt.declined());
+  EXPECT_EQ(attempt.why(), "declined");
+  EXPECT_FALSE(attempt.accept());
+}
+
+// An acceptor lacking the base needs the name whole, which a value-less change does not carry:
+// it is named and not counted, and is sent nothing more.
+TEST(ValueLessChange, AnAcceptorNeedingANameWholeIsNamedNotResent) {
+  Acceptors acceptors;
+  ASSERT_EQ(run(acceptors, three, node(1), ballot(1, 1), {bytes("k")}, put("a")).phase(), Attempt::Phase::committed);
+  const DeltaChange plus = [](std::span<const Base>) { return Deltas{{Bytes{'+'}}, {}}; };
+  auto attempt = Attempt::deltas(three, slot, ballot(2, 1), {bytes("k")}, plus, genesis, node(1));
+  for (const auto& at : three.nodes) attempt.on_prepare(at, acceptors.prepare(at, node(1), attempt.prepare()));
+  ASSERT_EQ(attempt.phase(), Attempt::Phase::accepting);
+  EXPECT_FALSE(attempt.on_accept(node(3), AcceptAnswer{std::nullopt, {0}}));
+  EXPECT_EQ(attempt.need_whole(), std::vector<identity::NodeId>{node(3)});
+  EXPECT_EQ(attempt.refused(), std::vector<identity::NodeId>{node(3)});
+  attempt.on_accept(node(1), AcceptAnswer{});
+  attempt.on_accept(node(2), AcceptAnswer{});
+  EXPECT_EQ(attempt.phase(), Attempt::Phase::committed);
+}
+
+// A retry that finds this proposer's own earlier accept newest commits it as it stands, the
+// ballot only: the delta is never applied twice.
+TEST(ValueLessChange, ARetryAfterAPartialAcceptNeverAppliesItsDeltaTwice) {
+  Acceptors acceptors;
+  ASSERT_EQ(run(acceptors, three, node(1), ballot(1, 1), {bytes("k")}, put("a")).phase(), Attempt::Phase::committed);
+  size_t calls = 0;
+  const DeltaChange plus = [&calls](std::span<const Base>) {
+    ++calls;
+    return Deltas{{Bytes{'+'}}, bytes("first")};
+  };
+  auto first = Attempt::deltas(three, slot, ballot(2, 1), {bytes("k")}, plus, genesis, node(1));
+  drive(acceptors, first, node(1), {}, {node(1)});
+  EXPECT_NE(first.phase(), Attempt::Phase::committed);
+  auto retry = Attempt::deltas(three, slot, ballot(3, 1), {bytes("k")}, plus, genesis, node(1));
+  retry.own({{ballot(2, 1), bytes("first")}});
+  std::optional<Accept> accept;
+  for (const auto& at : {node(1), node(2)})
+    if (auto next = retry.on_prepare(at, acceptors.prepare(at, node(1), retry.prepare()))) accept = next;
+  ASSERT_TRUE(accept);
+  EXPECT_EQ(calls, 1u);
+  EXPECT_FALSE(accept->deltas[0]);
+  EXPECT_EQ(accept->held[0], 1);
+  EXPECT_EQ(text(retry.result()), "first");
 }
 
 // A minority answers: nothing commits.
@@ -571,7 +1136,7 @@ TEST(Agreement, TheOwnersReductionAdvancesTheBase) {
     auto out = base.value;
     for (const auto& each : answers)
       if (each.value && out && each.value->size() > out->size()) out = each.value;
-    return out;
+    return Reduced{out, {}};
   };
   const auto read = run(acceptors, three, node(2), ballot(2, 2), {bytes("k")}, identity_change(), join);
   ASSERT_EQ(read.phase(), Attempt::Phase::committed);
@@ -687,6 +1252,8 @@ TEST(AgreementWire, EveryMessageRoundTrips) {
   EXPECT_EQ(prepared.prepare.slot, slot);
   EXPECT_EQ(prepared.prepare.ballot, ballot(4, 1));
   EXPECT_EQ(prepared.prepare.names, prepare.prepare.names);
+  EXPECT_TRUE(prepared.prepare.values);
+  EXPECT_FALSE(decode_prepare(encode(PrepareMessage{"mimir", {three, std::nullopt, slot, ballot(4, 1), {binary}, false}})).prepare.values);
 
   const auto four = ReplicaSet::of({node(1), node(2), node(3), node(4)}, 2);
   const auto moving = decode_prepare(encode(PrepareMessage{"mimir", {three, four, slot, ballot(5, 1), {}}}));
@@ -705,14 +1272,56 @@ TEST(AgreementWire, EveryMessageRoundTrips) {
   EXPECT_FALSE(accepted.accept.values[0]);
   EXPECT_EQ(accepted.accept.changed_at[0], ballot(2, 2));
 
-  const PrepareAnswer promise{std::nullopt, four, three, {binary, bytes("b")}, {{ballot(1, 1), bytes("v"), ballot(1, 1)}, {Ballot{}, std::nullopt, Ballot{}}}};
+  const PrepareAnswer promise{std::nullopt,
+                              four,
+                              three,
+                              {binary, bytes("b"), bytes("c")},
+                              {{ballot(1, 1), bytes("v"), ballot(1, 1), bytes("sum"), true},
+                               {Ballot{}, std::nullopt, Ballot{}, {}, false},
+                               {ballot(2, 1), std::nullopt, ballot(2, 1), Bytes(max_summary, 9), true}}};
   const auto promised = decode_prepare_answer(encode(promise));
-  ASSERT_EQ(promised.states.size(), 2u);
+  ASSERT_EQ(promised.states.size(), 3u);
   EXPECT_EQ(promised.served, four);
   EXPECT_EQ(promised.pending_from, three);
   EXPECT_EQ(promised.names, promise.names);
   EXPECT_EQ(text(*promised.states[0].value), "v");
+  EXPECT_EQ(text(promised.states[0].summary), "sum");
+  EXPECT_TRUE(promised.states[0].has_value);
   EXPECT_FALSE(promised.states[1].value);
+  EXPECT_FALSE(promised.states[1].has_value);
+  // Held, not carried: a value-less prepare's answer.
+  EXPECT_FALSE(promised.states[2].value);
+  EXPECT_TRUE(promised.states[2].has_value);
+  EXPECT_EQ(promised.states[2].summary, Bytes(max_summary, 9));
+
+  const auto delta = decode_accept(encode(AcceptMessage{"mimir",
+                                                        {three,
+                                                         std::nullopt,
+                                                         slot,
+                                                         ballot(5, 1),
+                                                         {binary, bytes("b")},
+                                                         {std::nullopt, bytes("w")},
+                                                         {ballot(5, 1), ballot(5, 1)},
+                                                         {},
+                                                         {},
+                                                         {Bytes{'+'}, std::nullopt},
+                                                         {ballot(4, 1), Ballot{}}}}));
+  ASSERT_EQ(delta.accept.deltas.size(), 2u);
+  EXPECT_EQ(*delta.accept.deltas[0], Bytes{'+'});
+  EXPECT_EQ(delta.accept.bases[0], ballot(4, 1));
+  EXPECT_FALSE(delta.accept.deltas[1]);
+  EXPECT_EQ(text(*delta.accept.values[1]), "w");
+  EXPECT_TRUE(accepted.accept.deltas.empty());
+  Accept held_only{three, std::nullopt, slot, ballot(5, 1), {binary}, {std::nullopt}, {ballot(5, 1)}, {}, {}, {}, {ballot(4, 1)}, {1}};
+  const auto ballot_only = decode_accept(encode(AcceptMessage{"mimir", held_only}));
+  ASSERT_EQ(ballot_only.accept.held.size(), 1u);
+  EXPECT_EQ(ballot_only.accept.held[0], 1);
+  EXPECT_EQ(ballot_only.accept.bases[0], ballot(4, 1));
+  EXPECT_FALSE(ballot_only.accept.deltas[0]);
+  EXPECT_FALSE(ballot_only.accept.values[0]);
+  const auto four_fetch = decode_fetch(encode(FetchMessage{"mimir", three, slot, binary, ballot(3, 2), 0, 0, std::nullopt, four}));
+  EXPECT_EQ(four_fetch.to, four);
+  EXPECT_EQ(decode_accept_answer(encode(AcceptAnswer{std::nullopt, {0, 3}})).need_whole, (std::vector<size_t>{0, 3}));
 
   const AcceptAnswer refusal{Refusal{"the slot is served by another replica set", ballot(9, 3), four, three}};
   const auto refused = decode_accept_answer(encode(refusal));
@@ -734,6 +1343,29 @@ TEST(AgreementWire, EveryMessageRoundTrips) {
   EXPECT_EQ(settled.settle.ballot, ballot(6, 2));
   const auto purged = decode_purge(encode(PurgeMessage{"mimir", {three, slot, ballot(6, 2), {binary}}}));
   EXPECT_EQ(purged.purge.names, std::vector<Name>{binary});
+
+  const auto since = decode_fetch(encode(FetchMessage{"mimir", three, slot, binary, ballot(3, 2), 0, table, bytes("frontier")}));
+  ASSERT_TRUE(since.since);
+  EXPECT_EQ(text(*since.since), "frontier");
+  const auto fetch = decode_fetch(encode(FetchMessage{"mimir", three, slot, binary, ballot(3, 2), 1024, table}));
+  EXPECT_FALSE(fetch.since);
+  EXPECT_EQ(fetch.space, "mimir");
+  EXPECT_EQ(fetch.set, three);
+  EXPECT_EQ(fetch.slot, slot);
+  EXPECT_EQ(fetch.name, binary);
+  EXPECT_EQ(fetch.ballot, ballot(3, 2));
+  EXPECT_EQ(fetch.offset, 1024u);
+  EXPECT_EQ(fetch.table, table);
+  const auto piece = decode_fetch_answer(encode(FetchAnswer{std::nullopt, true, 3000, 1000, Bytes(1000, 7)}));
+  EXPECT_FALSE(piece.past);
+  EXPECT_TRUE(decode_fetch_answer(encode(FetchAnswer{std::nullopt, true, 10, 0, Bytes(10, 1), true})).past);
+  EXPECT_TRUE(piece.held);
+  EXPECT_EQ(piece.total, 3000u);
+  EXPECT_EQ(piece.offset, 1000u);
+  EXPECT_EQ(piece.piece, Bytes(1000, 7));
+  const auto moved_on = decode_fetch_answer(encode(FetchAnswer{}));
+  EXPECT_FALSE(moved_on.held);
+  EXPECT_FALSE(moved_on.refused);
 }
 
 TEST(AgreementWire, RefusesWhatItCannotTrust) {
@@ -752,6 +1384,36 @@ TEST(AgreementWire, RefusesWhatItCannotTrust) {
   auto trailing = encode(AcceptAnswer{});
   trailing.push_back(0);
   EXPECT_THROW(decode_accept_answer(trailing), net::DecodeError);
+  // A prepare's values flag other than 0 or 1.
+  auto flag = encode(PrepareMessage{"mimir", {three, std::nullopt, slot, ballot(4, 1), {bytes("k")}}});
+  flag.back() = 2;
+  EXPECT_THROW(decode_prepare(flag), net::DecodeError);
+  // An answer's has-value bit (its last byte) other than 0 or 1, or a value carried for a name
+  // that holds none.
+  const PrepareAnswer carried{std::nullopt, {}, {}, {}, {{ballot(1, 1), bytes("v"), ballot(1, 1), {}, true}}};
+  auto held = encode(carried);
+  held.back() = 2;
+  EXPECT_THROW(decode_prepare_answer(held), net::DecodeError);
+  held.back() = 0;
+  EXPECT_THROW(decode_prepare_answer(held), net::DecodeError);
+  // A summary over 64 bytes is neither sent nor taken.
+  const PrepareAnswer long_summary{std::nullopt, {}, {}, {}, {{ballot(1, 1), std::nullopt, ballot(1, 1), Bytes(max_summary + 1, 1), true}}};
+  EXPECT_THROW(encode(long_summary), std::invalid_argument);
+  // A fetched piece outside its value, a piece with "not held", or a piece over 1 MiB.
+  EXPECT_THROW(decode_fetch_answer(encode(FetchAnswer{std::nullopt, true, 100, 50, Bytes(51, 1)})), net::DecodeError);
+  EXPECT_THROW(decode_fetch_answer(encode(FetchAnswer{std::nullopt, true, 100, 101, {}})), net::DecodeError);
+  EXPECT_THROW(decode_fetch_answer(encode(FetchAnswer{std::nullopt, false, 100, 0, Bytes(1, 1)})), net::DecodeError);
+  EXPECT_THROW(decode_fetch_answer(encode(FetchAnswer{std::nullopt, false, 0, 0, {}, true})), net::DecodeError);
+  EXPECT_THROW(encode(FetchAnswer{std::nullopt, true, max_piece + 1, 0, Bytes(max_piece + 1, 1)}), std::invalid_argument);
+  // A refusal that also asks for names whole, or a name both whole and a delta.
+  EXPECT_THROW(decode_accept_answer(encode(AcceptAnswer{Refusal{"no", std::nullopt, std::nullopt, std::nullopt}, {0}})), net::DecodeError);
+  EXPECT_THROW(decode_accept(encode(AcceptMessage{
+                   "mimir", {three, std::nullopt, slot, ballot(5, 1), {bytes("k")}, {bytes("w")}, {ballot(5, 1)}, {}, {}, {Bytes{'+'}}, {ballot(4, 1)}}})),
+               net::DecodeError);
+  // A since over 64 bytes is not a summary.
+  EXPECT_THROW(encode(FetchMessage{"mimir", three, slot, bytes("k"), ballot(1, 1), 0, 0, Bytes(max_summary + 1, 1)}), std::invalid_argument);
+  // A fetch offset past the largest value.
+  EXPECT_THROW(decode_fetch(encode(FetchMessage{"mimir", three, slot, bytes("k"), ballot(1, 1), max_value + 1, 0})), net::DecodeError);
 }
 
 // The fencing token's bytes order as the ballots do.

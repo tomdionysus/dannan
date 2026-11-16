@@ -24,6 +24,9 @@ inline constexpr size_t max_names = 4096;
 inline constexpr size_t max_name = 64 * 1024;
 inline constexpr size_t max_value = 256u * 1024 * 1024;
 inline constexpr size_t max_why = 1024;
+// A fetch is answered in pieces of at most this, resumed by offset, so a value larger than
+// one message is never one message, and a control lane is never held long by one.
+inline constexpr size_t max_piece = 1024 * 1024;
 
 // Each request carries the sender's slot table as its fingerprint (table_fingerprint): a
 // node configured with another count or genesis set is refused by every acceptor, since the
@@ -49,6 +52,35 @@ struct SettleMessage {
   uint64_t table = 0;
 };
 
+// A value-less prepare's base, or an answer the owner's reduction asked for, fetched from a
+// promiser that holds it (the design's "Value-less prepare and deltas"): the value of `name`
+// that the acceptor holds at exactly `ballot`, from `offset`; with `since` (a summary, at
+// most max_summary bytes), only what the store keeps past it, in the owner's form. The sender
+// and the acceptor are both in `set`. Changes nothing.
+struct FetchMessage {
+  std::string space;
+  ReplicaSet set;
+  Slot slot = 0;
+  Name name;
+  Ballot ballot;
+  uint64_t offset = 0;
+  uint64_t table = 0;
+  std::optional<Bytes> since{};
+  // A transfer's new set: the sender and the acceptor may be in either.
+  std::optional<ReplicaSet> to{};
+};
+// Refused; or not held (the acceptor has moved on from that ballot, or never held it); or
+// held, with the answer's whole size and the piece at `offset`. `past`: the answer is only
+// what lies past the fetch's `since`, not the whole value.
+struct FetchAnswer {
+  std::optional<Refusal> refused;
+  bool held = false;
+  uint64_t total = 0;
+  uint64_t offset = 0;
+  Bytes piece{};
+  bool past = false;
+};
+
 // FNV-1a 64 over the slot count (4 bytes) and the genesis set as the wire writes it.
 uint64_t table_fingerprint(uint32_t slots, const ReplicaSet& genesis);
 
@@ -58,6 +90,8 @@ net::Bytes encode(const PurgeMessage& message);
 net::Bytes encode(const SettleMessage& message);
 net::Bytes encode(const PrepareAnswer& answer);
 net::Bytes encode(const AcceptAnswer& answer);
+net::Bytes encode(const FetchMessage& message);
+net::Bytes encode(const FetchAnswer& answer);
 
 PrepareMessage decode_prepare(std::span<const uint8_t> bytes);
 AcceptMessage decode_accept(std::span<const uint8_t> bytes);
@@ -66,6 +100,10 @@ PurgeMessage decode_purge(std::span<const uint8_t> bytes);
 SettleMessage decode_settle(std::span<const uint8_t> bytes);
 PrepareAnswer decode_prepare_answer(std::span<const uint8_t> bytes);
 AcceptAnswer decode_accept_answer(std::span<const uint8_t> bytes);
+FetchMessage decode_fetch(std::span<const uint8_t> bytes);
+// Refuses an answer whose piece lies outside its total, is over max_piece, or comes with
+// "not held".
+FetchAnswer decode_fetch_answer(std::span<const uint8_t> bytes);
 
 // A ballot as a third party compares it (Louhi's fencing token): the counter, then the
 // node id, then the epoch, 40 bytes big-endian, so byte order is ballot order.

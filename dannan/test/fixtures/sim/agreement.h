@@ -34,7 +34,7 @@ class Store final : public agree::AcceptorStore {
  public:
   explicit Store(bool persist) : _persist(persist) {}
 
-  void load(agree::Slot slot, std::span<const agree::Name> names, bool every, std::function<void(agree::Held)> done) override {
+  void load(agree::Slot slot, std::span<const agree::Name> names, bool every, bool values, std::function<void(agree::Held)> done) override {
     agree::Held out;
     out.floor = _current.floor;
     const auto record = _current.slots.find(slot);
@@ -52,13 +52,28 @@ class Store final : public agree::AcceptorStore {
         out.names.push_back(name);
         out.states.push_back(state);
       }
+    if (!values)
+      for (auto& state : out.states) state.value.reset();
     done(std::move(out));
   }
-  void keep(agree::Slot slot, const agree::Held& held, std::function<void(bool)> done) override {
+  // This store's delta is bytes appended to the value; every delta is checked before any is
+  // applied, so a keep is all or nothing.
+  void keep(agree::Slot slot, const agree::Held& held, std::function<void(Kept)> done) override {
+    Kept out;
+    for (size_t i = 0; i < held.names.size(); ++i) {
+      if (!held.states[i].delta) continue;
+      const auto found = _current.names.find({slot, text(held.names[i])});
+      const auto at = found == _current.names.end() ? agree::Ballot{} : found->second.accepted;
+      if (at != held.states[i].base || refuse_deltas) out.need_whole.push_back(i);
+    }
+    if (!out.need_whole.empty()) return done(std::move(out));
     keep_in(_current, slot, held);
     if (_persist && !lying_sync) keep_in(_durable, slot, held);
-    done(true);
+    out.kept = true;
+    done(std::move(out));
   }
+  // The store's own check refusing every delta, as a store does for one it cannot apply.
+  bool refuse_deltas = false;
   bool ready() const override { return _ready; }
   void records(std::function<void(std::vector<std::pair<agree::Slot, agree::SlotState>>)> done) override {
     done(std::vector<std::pair<agree::Slot, agree::SlotState>>(_current.slots.begin(), _current.slots.end()));
@@ -97,12 +112,47 @@ class Store final : public agree::AcceptorStore {
     layer.floor = held.floor;
     layer.slots[slot] = held.slot;
     for (size_t i = 0; i < held.names.size(); ++i) {
-      if (held.states[i] == agree::AcceptorState{})
-        layer.names.erase({slot, text(held.names[i])});
-      else
-        layer.names[{slot, text(held.names[i])}] = held.states[i];
+      const std::pair<agree::Slot, std::string> key{slot, text(held.names[i])};
+      auto state = held.states[i];
+      if (state == agree::AcceptorState{}) {
+        layer.names.erase(key);
+        continue;
+      }
+      if (state.delta) {
+        // Applied in place to the value at the base, and summarised.
+        const auto before = layer.names.find(key);
+        auto value = before != layer.names.end() && before->second.value ? *before->second.value : agree::Bytes{};
+        value.insert(value.end(), state.delta->begin(), state.delta->end());
+        state.value = std::move(value);
+        state.summary = summary_of(*state.value);
+        state.delta.reset();
+        state.base = {};
+      } else if (state.has_value && !state.value) {
+        // Held, not carried: the value and its summary stay as they are.
+        const auto before = layer.names.find(key);
+        if (before != layer.names.end()) {
+          state.value = before->second.value;
+          state.summary = before->second.summary;
+        }
+      } else {
+        state.has_value = state.value.has_value();
+        state.summary = state.value ? summary_of(*state.value) : agree::Bytes{};
+      }
+      layer.names[key] = std::move(state);
     }
   }
+  // This store's summary: the value's length, eight bytes big-endian.
+  static agree::Bytes summary_of(const agree::Bytes& value) {
+    agree::Bytes out(8);
+    for (int i = 0; i < 8; ++i) out[static_cast<size_t>(i)] = static_cast<uint8_t>(static_cast<uint64_t>(value.size()) >> (56 - 8 * i));
+    return out;
+  }
+
+ public:
+  // The summary this store gives a value, for a test's checks.
+  static agree::Bytes summary(const agree::Bytes& value) { return summary_of(value); }
+
+ private:
   bool _persist;
   bool _ready = true;
   Layer _current;
@@ -162,6 +212,18 @@ class Cluster {
   agree::Agreement& agreement(size_t i) { return *_nodes.at(i)->agreement; }
   Store& store(size_t i) { return *_nodes.at(i)->store; }
   NetworkFaults& faults() { return _faults; }
+
+  // Every answer that crossed the world while `recording`: who asked whom, the request's type,
+  // and the answer's bytes. A node's own acceptor answers it without the world.
+  struct Crossed {
+    size_t from = 0;
+    size_t to = 0;
+    net::MessageType type{};
+    net::Bytes answer;
+    size_t request_bytes = 0;
+  };
+  bool recording = false;
+  std::vector<Crossed> crossed;
 
   // Messages from `from` to `to` are lost until unblocked: a one-way partition.
   void block(size_t from, size_t to) { _blocked.insert({from, to}); }
@@ -249,8 +311,9 @@ class Cluster {
       if (lost(from, to)) continue;
       _world.after(delay(), [this, from, to, type, payload, finish] {
         if (!up(to)) return;
-        const auto answer = [this, from, to, finish](net::Message reply) {
+        const auto answer = [this, from, to, type, size = payload.size(), finish](net::Message reply) {
           if (lost(to, from)) return;
+          if (recording) crossed.push_back({from, to, type, reply.payload, size});
           _world.after(delay(), [finish, reply = std::move(reply)] {
             if (const auto refusal = net::refusal_of(reply)) return finish(std::nullopt, refusal->message);
             finish(reply.payload, {});

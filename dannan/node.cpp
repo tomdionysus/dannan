@@ -970,7 +970,7 @@ net::Handled Node::handle(const NodeRecord& peer, sched::FrameType frame, net::M
   if (type == m::channel_replay) return _fanout->on_replay(peer, request);
   if (type == m::channel_bulk) return _fanout->on_bulk(peer, request);
   if (type == m::dial_back) return _dial_back->answer(peer.id, request.payload);
-  if (type == m::agree_prepare || type == m::agree_accept || type == m::agree_purge || type == m::agree_settle) {
+  if (type == m::agree_prepare || type == m::agree_accept || type == m::agree_purge || type == m::agree_settle || type == m::agree_fetch) {
     // Answered later, once the hosted system's store has kept what the rules changed;
     // the peer is the session's, so who sent it is proven.
     auto later = std::make_shared<net::Answer>(std::move(answer));

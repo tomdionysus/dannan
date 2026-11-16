@@ -7,6 +7,8 @@
 
 #include "dannan/agree/wire.h"
 
+#include <stdexcept>
+
 namespace dannan::agree {
 namespace {
 
@@ -138,6 +140,7 @@ net::Bytes encode(const PrepareMessage& message) {
   out.u32(message.prepare.slot);
   put(out, message.prepare.ballot);
   put_names(out, message.prepare.names);
+  out.u8(message.prepare.values ? 1 : 0);
   return out.take();
 }
 
@@ -157,6 +160,27 @@ net::Bytes encode(const AcceptMessage& message) {
   if (message.accept.fast_from) put(out, *message.accept.fast_from);
   out.u8(message.accept.reserve ? 1 : 0);
   if (message.accept.reserve) put(out, *message.accept.reserve);
+  // Compact forms: none, or one entry per name: 0 whole, 1 a base ballot and the delta, 2 a
+  // base ballot only (already held).
+  const auto& accept = message.accept;
+  const auto count = accept.names.size();
+  const bool compact = !accept.deltas.empty() || !accept.held.empty();
+  if ((!accept.deltas.empty() && accept.deltas.size() != count) || (!accept.held.empty() && accept.held.size() != count) ||
+      (compact && accept.bases.size() != count) || (!accept.summaries.empty() && accept.summaries.size() != count))
+    throw std::invalid_argument("an accept's deltas name a different count");
+  out.u8(compact ? 1 : 0);
+  if (compact)
+    for (size_t i = 0; i < count; ++i) {
+      const bool held = !accept.held.empty() && accept.held[i];
+      const bool delta = !accept.deltas.empty() && accept.deltas[i];
+      out.u8(held ? 2 : delta ? 1 : 0);
+      if (!held && !delta) continue;
+      put(out, accept.bases[i]);
+      const auto& summary = accept.summaries.empty() ? Bytes{} : accept.summaries[i];
+      if (summary.size() > max_summary) throw std::invalid_argument("a base's summary is at most 64 bytes");
+      out.bytes(summary);
+      if (delta && !held) out.bytes(*accept.deltas[i]);
+    }
   return out.take();
 }
 
@@ -224,6 +248,9 @@ net::Bytes encode(const PrepareAnswer& answer) {
     put(out, state.accepted);
     put(out, state.value);
     put(out, state.changed_at);
+    if (state.summary.size() > max_summary) throw std::invalid_argument("a summary is at most 64 bytes");
+    out.bytes(state.summary);
+    out.u8(state.has_value || state.value ? 1 : 0);
   }
   return out.take();
 }
@@ -232,6 +259,8 @@ net::Bytes encode(const AcceptAnswer& answer) {
   Writer out;
   out.u8(message_version);
   put(out, answer.refused);
+  out.u32(static_cast<uint32_t>(answer.need_whole.size()));
+  for (const auto i : answer.need_whole) out.u32(static_cast<uint32_t>(i));
   return out.take();
 }
 
@@ -248,6 +277,9 @@ PrepareMessage decode_prepare(std::span<const uint8_t> bytes) {
   out.prepare.names = get_names(in);
   // A transfer is answered with every name held, so it names none itself.
   if (out.prepare.to && !out.prepare.names.empty()) throw DecodeError("a transfer's prepare names registers");
+  const auto values = in.u8();
+  if (values > 1) throw DecodeError("a prepare's values wanted is 0 or 1");
+  out.prepare.values = values == 1;
   in.finish();
   return out;
 }
@@ -273,6 +305,27 @@ AcceptMessage decode_accept(std::span<const uint8_t> bytes) {
   if (reserved) out.accept.reserve = get_ballot(in);
   // The fast path is a plain change's alone.
   if ((out.accept.fast_from || out.accept.reserve) && out.accept.to) throw DecodeError("a transfer on the fast path");
+  const auto deltas = in.u8();
+  if (deltas > 1) throw DecodeError("an accept's deltas' presence is 0 or 1");
+  if (deltas) {
+    const auto count = out.accept.names.size();
+    out.accept.deltas.resize(count);
+    out.accept.held.resize(count, 0);
+    out.accept.bases.resize(count);
+    out.accept.summaries.resize(count);
+    for (size_t i = 0; i < count; ++i) {
+      const auto form = in.u8();
+      if (form > 2) throw DecodeError("a name's form is 0, 1 or 2");
+      if (!form) continue;
+      out.accept.bases[i] = get_ballot(in);
+      out.accept.summaries[i] = in.bytes(max_summary);
+      if (form == 1)
+        out.accept.deltas[i] = in.bytes(max_value);
+      else
+        out.accept.held[i] = 1;
+      if (out.accept.values[i]) throw DecodeError("a name carried in two forms");
+    }
+  }
   in.finish();
   return out;
 }
@@ -292,6 +345,11 @@ PrepareAnswer decode_prepare_answer(std::span<const uint8_t> bytes) {
     state.accepted = get_ballot(in);
     state.value = get_value(in);
     state.changed_at = get_ballot(in);
+    state.summary = in.bytes(max_summary);
+    const auto held = in.u8();
+    if (held > 1) throw DecodeError("a name's has-value is 0 or 1");
+    state.has_value = held == 1;
+    if (state.value && !state.has_value) throw DecodeError("a value carried for a name that holds none");
     out.states.push_back(std::move(state));
   }
   in.finish();
@@ -303,7 +361,85 @@ AcceptAnswer decode_accept_answer(std::span<const uint8_t> bytes) {
   open(in);
   AcceptAnswer out;
   out.refused = get_refusal(in);
+  const auto count = in.u32();
+  if (count > max_names) throw DecodeError("an answer needing " + std::to_string(count) + " names whole");
+  for (uint32_t i = 0; i < count; ++i) {
+    const auto index = in.u32();
+    if (index >= max_names) throw DecodeError("a name needed whole past the largest accept");
+    out.need_whole.push_back(index);
+  }
+  if (out.refused && !out.need_whole.empty()) throw DecodeError("a refusal that also needs names whole");
   in.finish();
+  return out;
+}
+
+net::Bytes encode(const FetchMessage& message) {
+  Writer out;
+  out.u8(message_version);
+  out.string(message.space);
+  out.u64(message.table);
+  put(out, message.set);
+  out.u32(message.slot);
+  out.bytes(message.name);
+  put(out, message.ballot);
+  out.u64(message.offset);
+  if (message.since && message.since->size() > max_summary) throw std::invalid_argument("a fetch's since is a summary, at most 64 bytes");
+  put(out, message.since);
+  put(out, message.to);
+  return out.take();
+}
+
+net::Bytes encode(const FetchAnswer& answer) {
+  if (answer.piece.size() > max_piece) throw std::invalid_argument("a fetched piece is at most 1 MiB");
+  Writer out;
+  out.u8(message_version);
+  put(out, answer.refused);
+  out.u8(answer.held ? 1 : 0);
+  out.u64(answer.total);
+  out.u64(answer.offset);
+  out.bytes(answer.piece);
+  out.u8(answer.past ? 1 : 0);
+  return out.take();
+}
+
+FetchMessage decode_fetch(std::span<const uint8_t> bytes) {
+  Reader in(bytes);
+  open(in);
+  FetchMessage out;
+  out.space = in.string(max_space);
+  out.table = in.u64();
+  out.set = get_set(in);
+  out.slot = get_slot(in);
+  out.name = in.bytes(max_name);
+  out.ballot = get_ballot(in);
+  out.offset = in.u64();
+  if (out.offset > max_value) throw DecodeError("a fetch's offset is past the largest value");
+  const auto since = in.u8();
+  if (since > 1) throw DecodeError("a fetch's since's presence is 0 or 1");
+  if (since) out.since = in.bytes(max_summary);
+  out.to = get_optional_set(in, "a transfer's set");
+  in.finish();
+  return out;
+}
+
+FetchAnswer decode_fetch_answer(std::span<const uint8_t> bytes) {
+  Reader in(bytes);
+  open(in);
+  FetchAnswer out;
+  out.refused = get_refusal(in);
+  const auto held = in.u8();
+  if (held > 1) throw DecodeError("a fetch's held is 0 or 1");
+  out.held = held == 1;
+  out.total = in.u64();
+  out.offset = in.u64();
+  out.piece = in.bytes(max_piece);
+  const auto past = in.u8();
+  if (past > 1) throw DecodeError("a fetch's past is 0 or 1");
+  out.past = past == 1;
+  in.finish();
+  if (out.total > max_value) throw DecodeError("a fetched value over the largest value");
+  if (!out.held && (out.total || out.offset || !out.piece.empty() || out.past)) throw DecodeError("a fetch not held carries a piece");
+  if (out.offset > out.total || out.piece.size() > out.total - out.offset) throw DecodeError("a fetched piece outside its value");
   return out;
 }
 

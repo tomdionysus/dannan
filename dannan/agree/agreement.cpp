@@ -16,6 +16,7 @@
 #include <memory>
 #include <mutex>
 #include <random>
+#include <set>
 #include <stdexcept>
 
 #include "dannan/agree/wire.h"
@@ -78,6 +79,8 @@ struct Request {
   std::optional<Settle> settle;
   // The sender's slot table's fingerprint.
   uint64_t table = 0;
+  // Whether the store loads values: a value-less prepare's answers carry none.
+  bool values = true;
 };
 
 Request decode_request(const net::Message& message) {
@@ -85,19 +88,20 @@ Request decode_request(const net::Message& message) {
   Request out{};
   if (message.type == m::agree_prepare) {
     auto decoded = decode_prepare(message.payload);
+    const bool values = decoded.prepare.values;
     out =
         Request{Request::Kind::prepare, decoded.space, decoded.prepare.slot, decoded.prepare.names, decoded.prepare.to.has_value(), decoded.prepare, {}, {}, {},
-                decoded.table};
+                decoded.table,          values};
   } else if (message.type == m::agree_accept) {
     auto decoded = decode_accept(message.payload);
     out = Request{Request::Kind::accept, decoded.space, decoded.accept.slot, decoded.accept.names, decoded.accept.to.has_value(), {}, decoded.accept, {}, {},
-                  decoded.table};
+                  decoded.table,         true};
   } else if (message.type == m::agree_purge) {
     auto decoded = decode_purge(message.payload);
-    out = Request{Request::Kind::purge, decoded.space, decoded.purge.slot, decoded.purge.names, false, {}, {}, decoded.purge, {}, decoded.table};
+    out = Request{Request::Kind::purge, decoded.space, decoded.purge.slot, decoded.purge.names, false, {}, {}, decoded.purge, {}, decoded.table, true};
   } else {
     auto decoded = decode_settle(message.payload);
-    out = Request{Request::Kind::settle, decoded.space, decoded.settle.slot, {}, false, {}, {}, {}, decoded.settle, decoded.table};
+    out = Request{Request::Kind::settle, decoded.space, decoded.settle.slot, {}, false, {}, {}, {}, decoded.settle, decoded.table, true};
   }
   return out;
 }
@@ -148,6 +152,10 @@ struct Agreement::Core : std::enable_shared_from_this<Core> {
     Ballot reserved;
     std::vector<std::optional<Bytes>> values;
     std::vector<Ballot> changed_at;
+    // A value-less change's instead of values: each name's summary as its commit left it, and
+    // whether this node's acceptor took it. Kept under a key of its own.
+    std::vector<Bytes> summaries{};
+    bool local = false;
   };
   static constexpr size_t max_lasts = 65536;
   contract::Mutex lasts_mutex;
@@ -228,6 +236,7 @@ struct Agreement::Core : std::enable_shared_from_this<Core> {
 
   // Serves a request: an answer at once, or nothing when `answer` will be called.
   std::optional<net::Message> serve(const identity::NodeId& from, const net::Message& message, std::function<void(net::Message)> answer) {
+    if (message.type == net::message::agree_fetch) return serve_fetch(from, message, std::move(answer));
     Request request;
     try {
       request = decode_request(message);
@@ -252,9 +261,10 @@ struct Agreement::Core : std::enable_shared_from_this<Core> {
          answer = std::move(answer)](std::function<void()> done) mutable {
           const auto slot = request.slot;
           const auto every = request.every;
+          const auto values = request.values;
           auto names = request.names;
           space->store->load(
-              slot, names, every, [core, space, me, genesis, from, refusal, request = std::move(request), replied, answer, done](Held held) mutable {
+              slot, names, every, values, [core, space, me, genesis, from, refusal, request = std::move(request), replied, answer, done](Held held) mutable {
                 if (held.states.size() != held.names.size() || held.names.size() < request.names.size()) {
                   answer(refusal("the store loaded a different count"));
                   return done();
@@ -295,14 +305,79 @@ struct Agreement::Core : std::enable_shared_from_this<Core> {
                   answer({replied, std::move(reply), {}});
                   return done();
                 }
-                space->store->keep(
-                    request.slot, *keep,
-                    [core, space, slot = request.slot, record = keep->slot, answer, done, replied, refusal, reply = std::move(reply)](bool kept) {
-                      if (kept) core->note(space->name, slot, record);
-                      answer(kept ? net::Message{replied, reply, {}} : refusal("the store could not keep"));
-                      done();
-                    });
+                space->store->keep(request.slot, *keep,
+                                   [core, space, slot = request.slot, record = keep->slot, answer, done, replied, refusal, reply = std::move(reply),
+                                    kind = request.kind, carried = request.names.size()](AcceptorStore::Kept kept) {
+                                     if (kept.kept) {
+                                       core->note(space->name, slot, record);
+                                       answer(net::Message{replied, reply, {}});
+                                     } else if (kind == Request::Kind::accept && !kept.need_whole.empty() &&
+                                                std::all_of(kept.need_whole.begin(), kept.need_whole.end(), [carried](size_t i) { return i < carried; })) {
+                                       // The store's own check refused a delta: nothing kept, those names asked for whole.
+                                       answer(net::Message{replied, encode(AcceptAnswer{std::nullopt, std::move(kept.need_whole)}), {}});
+                                     } else {
+                                       answer(refusal("the store could not keep"));
+                                     }
+                                     done();
+                                   });
               });
+        },
+        space);
+    return std::nullopt;
+  }
+
+  // A fetch: the value held at exactly the ballot asked, the piece from the offset asked.
+  // Read in the space's order with its other requests; nothing is kept.
+  std::optional<net::Message> serve_fetch(const identity::NodeId& from, const net::Message& message, std::function<void(net::Message)> answer) {
+    namespace m = net::message;
+    FetchMessage fetch;
+    try {
+      fetch = decode_fetch(message.payload);
+    } catch (const net::DecodeError& error) {
+      return net::error_reply(400, "invalid_request", error.what());
+    }
+    if (fetch.slot >= table.slots) return net::error_reply(400, "invalid_request", "slot " + std::to_string(fetch.slot) + " is past this cluster's table");
+    const auto space = find(fetch.space);
+    if (!space) return net::error_reply(404, "no_space", "this node serves no space " + fetch.space);
+    if (from != self && !advertises(from, space->capability))
+      return net::error_reply(403, "not_permitted", "the sender does not advertise " + space->capability);
+    const auto refusal = [](std::string why) {
+      return net::Message{m::agree_fetch_reply, encode(FetchAnswer{refusal_of(std::move(why)), false, 0, 0, {}}), {}};
+    };
+    if (fetch.table != fingerprint) return refusal("the sender's slot table (count or genesis set) differs from this node's");
+    const auto in_either = [&fetch](const identity::NodeId& node) { return fetch.set.contains(node) || (fetch.to && fetch.to->contains(node)); };
+    if (!in_either(self)) return refusal("this node is not in the replica set named");
+    if (!in_either(from)) return refusal("the sender is not in the replica set named");
+    if (!space->store->ready()) return refusal("this acceptor is catching up");
+    space->enqueue(
+        [space, fetch = std::move(fetch), refusal, answer = std::move(answer)](std::function<void()> done) mutable {
+          const auto slot = fetch.slot;
+          const auto name = fetch.name;
+          const auto ballot = fetch.ballot;
+          const auto since = fetch.since;
+          space->store->value(slot, name, ballot, since, [fetch = std::move(fetch), refusal, answer, done](std::optional<AcceptorStore::Fetched> fetched) {
+            if (!fetched) {
+              answer(net::Message{m::agree_fetch_reply, encode(FetchAnswer{}), {}});
+              return done();
+            }
+            const auto& value = fetched->bytes;
+            if (value.size() > max_value || fetch.offset > value.size() || (fetched->past && !fetch.since)) {
+              answer(refusal(value.size() > max_value        ? "the value is over the largest value"
+                             : fetched->past && !fetch.since ? "the store answered past a summary it was not asked for"
+                                                             : "the offset is past the value"));
+              return done();
+            }
+            const auto start = static_cast<size_t>(fetch.offset);
+            const auto length = std::min(max_piece, value.size() - start);
+            FetchAnswer piece{std::nullopt,
+                              true,
+                              value.size(),
+                              fetch.offset,
+                              Bytes(value.begin() + static_cast<std::ptrdiff_t>(start), value.begin() + static_cast<std::ptrdiff_t>(start + length)),
+                              fetched->past};
+            answer(net::Message{m::agree_fetch_reply, encode(piece), {}});
+            done();
+          });
         },
         space);
     return std::nullopt;
@@ -354,6 +429,8 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
   uint32_t finished_transfers = 0;
   uint64_t generation = 0;
   size_t outstanding = 0;
+  // The current attempt's fetches already asked for, by their id.
+  std::set<size_t> fetches_started;
   bool finished = false;
   uint32_t attempts = 0;
   // Which backoff is current: a retry superseded by another does nothing.
@@ -401,15 +478,21 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
     if (core->time->now() >= deadline) return fail(attempt ? attempt->why() : std::string(), true);
     ++generation;
     ++attempts;
+    fetches_started.clear();
     const auto ballot = core->next_ballot(above);
     // The first try of a plain change whose names this node committed last: one round.
     if (!finishing && attempts == 1 && make_fast)
       if (auto fast = make_fast()) {
         attempt = std::make_unique<Attempt>(std::move(*fast));
+        // A value-less change may decline before anything is sent.
+        if (!attempt->accept()) return settle_or_retry();
         return send_accept(*attempt->accept());
       }
     attempt = std::make_unique<Attempt>(finishing ? Attempt::transfer(finishing->first, finishing->second, slot, ballot) : make(ballot));
     if (!attempt->prepare().to) attempt->own(sent);
+    // No answer carries a value; the bases are fetched, from this node's own acceptor when it
+    // holds them.
+    attempt->value_less();
     outstanding = attempt->recipients().size();
     const auto request = encode(PrepareMessage{space, attempt->prepare(), core->fingerprint});
     for (const auto& node : attempt->recipients())
@@ -430,7 +513,93 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
       }
     }
     if (accept) return send_accept(*accept);
+    if (attempt->phase() == Attempt::Phase::fetching) return fetch_bases();
+    // A value-less read whose promisers all held the base: committed with no accept.
+    if (attempt->phase() == Attempt::Phase::committed) return committed();
     settle_or_retry();
+  }
+
+  // One value being fetched: its holders in the order tried, and what has come so far.
+  struct Fetching {
+    size_t id = 0;
+    size_t name = 0;
+    Name key;
+    Ballot ballot;
+    std::optional<Bytes> since;
+    std::vector<identity::NodeId> holders;
+    size_t holder = 0;
+    Bytes value;
+    std::optional<uint64_t> total;
+    // Whether what has come is only what lies past `since`: every piece from one holder says
+    // the same, and a fetch moving to another holder starts again.
+    bool past = false;
+  };
+
+  // Every value the attempt wants and this run has not yet asked for, each from its holders:
+  // this node's own acceptor first, which needs no message. A holder that has moved on,
+  // refuses or is silent gives way to the next, from the same offset, since every holder of
+  // the ballot and summary holds the same value (past a summary, from the beginning).
+  void fetch_bases() {
+    for (const auto& wanted : attempt->wanted()) {
+      if (!fetches_started.insert(wanted.id).second) continue;
+      auto fetching = std::make_shared<Fetching>();
+      fetching->id = wanted.id;
+      fetching->name = wanted.name;
+      fetching->key = wanted.key;
+      fetching->ballot = wanted.ballot;
+      fetching->since = wanted.since;
+      fetching->holders = wanted.holders;
+      const auto own = std::find(fetching->holders.begin(), fetching->holders.end(), core->self);
+      if (own != fetching->holders.end()) std::rotate(fetching->holders.begin(), own, own + 1);
+      fetch_piece(fetching);
+    }
+  }
+
+  void fetch_piece(const std::shared_ptr<Fetching>& fetching) {
+    if (fetching->holder >= fetching->holders.size()) {
+      attempt->unfetched("no acceptor holding a base's ballot gave its value");
+      return settle_or_retry();
+    }
+    const auto& prepare = attempt->prepare();
+    const auto request =
+        encode(FetchMessage{space, prepare.set, slot, fetching->key, fetching->ballot, fetching->value.size(), core->fingerprint, fetching->since, prepare.to});
+    core->send(fetching->holders[fetching->holder], net::message::agree_fetch, request, left(),
+               [self = shared_from_this(), at = generation, fetching](std::optional<net::Bytes> answer, std::string) {
+                 asio::post(self->strand, [self, at, fetching, answer = std::move(answer)] { self->fetched_piece(at, fetching, answer); });
+               });
+  }
+
+  void fetched_piece(uint64_t at, const std::shared_ptr<Fetching>& fetching, const std::optional<net::Bytes>& answer) {
+    if (finished || at != generation || attempt->phase() != Attempt::Phase::fetching) return;
+    std::optional<FetchAnswer> piece;
+    if (answer) {
+      try {
+        piece = decode_fetch_answer(*answer);
+      } catch (const net::DecodeError&) {
+      }
+    }
+    const bool usable = piece && !piece->refused && piece->held && piece->offset == fetching->value.size() &&
+                        (!fetching->total || (*fetching->total == piece->total && fetching->past == piece->past)) &&
+                        (!piece->piece.empty() || piece->total == piece->offset) && (!piece->past || fetching->since);
+    if (!usable) {
+      ++fetching->holder;
+      // Past a summary, one holder may answer what lies past it and another the whole value:
+      // the next starts from the beginning.
+      if (fetching->since) {
+        fetching->value.clear();
+        fetching->total.reset();
+        fetching->past = false;
+      }
+      return fetch_piece(fetching);
+    }
+    fetching->total = piece->total;
+    fetching->past = piece->past;
+    fetching->value.insert(fetching->value.end(), piece->piece.begin(), piece->piece.end());
+    if (fetching->value.size() < *fetching->total) return fetch_piece(fetching);
+    if (auto accept = attempt->fetched(fetching->id, std::move(fetching->value), fetching->past)) return send_accept(*accept);
+    // The owner's reduction asked for more, or refused.
+    if (attempt->phase() == Attempt::Phase::fetching) return fetch_bases();
+    if (attempt->phase() == Attempt::Phase::refused) settle_or_retry();
   }
 
   void send_accept(Accept accept) {
@@ -442,12 +611,25 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
       reserved = accept.reserve;
     }
     outstanding = attempt->recipients().size();
-    const auto request = encode(AcceptMessage{space, accept, core->fingerprint});
-    for (const auto& to : attempt->recipients())
-      core->send(to, net::message::agree_accept, request, left(),
-                 [self = shared_from_this(), at = generation, to](std::optional<net::Bytes> replied, std::string) {
-                   asio::post(self->strand, [self, at, to, replied = std::move(replied)] { self->accepted(at, to, replied); });
-                 });
+    // Each recipient's own form: the ballot only or a delta where it holds the base, else whole.
+    // Every recipient sent the whole accept shares one encoding.
+    std::optional<net::Bytes> whole;
+    for (const auto& to : attempt->recipients()) {
+      auto mine = attempt->accept_for(to, accept);
+      if (!mine.deltas.empty() || !mine.held.empty()) {
+        send_accept_to(to, encode(AcceptMessage{space, std::move(mine), core->fingerprint}));
+        continue;
+      }
+      if (!whole) whole = encode(AcceptMessage{space, std::move(mine), core->fingerprint});
+      send_accept_to(to, *whole);
+    }
+  }
+
+  void send_accept_to(const identity::NodeId& to, net::Bytes request) {
+    core->send(to, net::message::agree_accept, std::move(request), left(),
+               [self = shared_from_this(), at = generation, to](std::optional<net::Bytes> replied, std::string) {
+                 asio::post(self->strand, [self, at, to, replied = std::move(replied)] { self->accepted(at, to, replied); });
+               });
   }
 
   void accepted(uint64_t at, const identity::NodeId& node, const std::optional<net::Bytes>& answer) {
@@ -455,7 +637,13 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
     --outstanding;
     if (answer) {
       try {
-        attempt->on_accept(node, decode_accept_answer(*answer));
+        // An acceptor that needs names whole is sent the accept again, those names whole, with
+        // the reservation the first carried.
+        if (auto again = attempt->on_accept(node, decode_accept_answer(*answer))) {
+          if (!again->to) again->reserve = reserved;
+          ++outstanding;
+          return send_accept_to(node, encode(AcceptMessage{space, std::move(*again), core->fingerprint}));
+        }
       } catch (const net::DecodeError&) {
       }
     }
@@ -477,13 +665,16 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
       ++finished_transfers;
       return begin(0);
     }
-    if (on_commit && reserved) on_commit(*attempt, *reserved);
+    // A read committed with no accept reserved nothing.
+    if (on_commit && reserved && !attempt->read_only()) on_commit(*attempt, *reserved);
     succeed();
   }
 
   // Refused, or every recipient heard from without enough: another ballot, a transfer to
   // finish, or the end.
   void settle_or_retry() {
+    // The owner declined its value-less change: the end, at once.
+    if (attempt->declined()) return fail(attempt->why(), false);
     // The fast path missed: the full way at once, no backoff (Mimir's "one round, kept one").
     const bool missed = attempt->phase() == Attempt::Phase::refused || outstanding == 0;
     if (attempt->is_fast() && missed && !(attempt->phase() == Attempt::Phase::refused && attempt->serving() && !attempt->unfinished()))
@@ -521,6 +712,7 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
     out.ballot = attempt->prepare().ballot;
     out.accepted = attempt->accepted();
     out.refused = attempt->refused();
+    out.need_whole = attempt->need_whole();
     for (const auto& node : attempt->recipients())
       if (std::find(out.accepted.begin(), out.accepted.end(), node) == out.accepted.end() &&
           std::find(out.refused.begin(), out.refused.end(), node) == out.refused.end())
@@ -533,7 +725,8 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
     auto out = evidence();
     out.committed = true;
     out.fast = attempt->is_fast();
-    out.values = attempt->values();
+    // A value-less change has no values to give.
+    if (!attempt->is_deltas()) out.values = attempt->values();
     out.changed_at = attempt->changed_at();
     out.result = attempt->result();
     if (attempt->prepare().to) out.names = attempt->names();
@@ -666,6 +859,37 @@ void Agreement::change(std::string space, Slot slot, std::vector<Name> names, st
       core->keep_last(key, Core::Last{committed.prepare().ballot, reserved, committed.values(), committed.changed_at()});
     };
   }
+  Run::start(run);
+}
+
+void Agreement::change_deltas(std::string space, Slot slot, std::vector<Name> names, std::vector<identity::NodeId> replicas, uint64_t version,
+                              DeltaChange change, std::chrono::milliseconds deadline, asio::any_io_executor executor, std::function<void(Outcome)> done) {
+  check_slot(slot, _core->table);
+  if (!change) throw std::invalid_argument("a value-less change needs its change");
+  const auto set = ReplicaSet::of(std::move(replicas), version);
+  // A key of its own: a whole-value change's cache holds values, this one's summaries.
+  const auto key = "deltas/" + Core::last_key(space, slot, set, names);
+  auto make = [set, slot, names, change, genesis = _core->table.genesis, self = _core->self](Ballot ballot) {
+    return Attempt::deltas(set, slot, ballot, names, change, genesis, self);
+  };
+  auto run = std::make_shared<Run>(_core, std::move(space), slot, std::move(make), _core->time->now() + deadline, std::move(executor), std::move(done));
+  run->make_fast = [core = _core, key, set, slot, names, change]() -> std::optional<Attempt> {
+    auto last = core->take_last(key);
+    if (!last) return std::nullopt;
+    return Attempt::fast_deltas(set, slot, last->reserved, names, change, last->ballot, last->summaries, last->changed_at, last->local, core->self);
+  };
+  run->on_commit = [core = _core, key](const Attempt& committed, const Ballot& reserved) {
+    // Only where every name's summary after the commit is known: a name without one takes no
+    // fast path, so neither does the change.
+    std::vector<Bytes> summaries;
+    for (const auto& summary : committed.summaries()) {
+      if (!summary) return;
+      summaries.push_back(*summary);
+    }
+    const auto& took = committed.accepted();
+    const bool local = std::find(took.begin(), took.end(), core->self) != took.end();
+    core->keep_last(key, Core::Last{committed.prepare().ballot, reserved, {}, committed.changed_at(), std::move(summaries), local});
+  };
   Run::start(run);
 }
 
@@ -830,19 +1054,21 @@ void Agreement::catch_up(std::string space, Slot slot, std::vector<Name> names, 
   read(space, slot, names, replicas, version, {}, deadline, executor, [core, space, slot, names, set, done = std::move(done)](Outcome outcome) mutable {
     const auto served = core->find(space);
     if (!outcome.committed || !served) return done(std::move(outcome));
-    served->store->load(slot, names, false, [core, space, served, slot, set, outcome = std::move(outcome), done = std::move(done)](Held held) mutable {
+    // Every state is replaced whole, so none is loaded with its value.
+    served->store->load(slot, names, false, false, [core, space, served, slot, set, outcome = std::move(outcome), done = std::move(done)](Held held) mutable {
       for (size_t i = 0; i < held.states.size() && i < outcome.values.size(); ++i)
-        held.states[i] = AcceptorState{outcome.ballot, outcome.ballot, outcome.values[i], outcome.changed_at[i]};
+        held.states[i] = AcceptorState{outcome.ballot, outcome.ballot, outcome.values[i], outcome.changed_at[i], {}, outcome.values[i].has_value()};
       held.slot.served = set;
       held.slot.pending_from.reset();
-      served->store->keep(slot, held, [core, space, slot, record = held.slot, done = std::move(done), outcome = std::move(outcome)](bool kept) mutable {
-        if (kept) core->note(space, slot, record);
-        if (!kept) {
-          outcome.committed = false;
-          outcome.why = "the store could not keep what was caught up";
-        }
-        done(std::move(outcome));
-      });
+      served->store->keep(slot, held,
+                          [core, space, slot, record = held.slot, done = std::move(done), outcome = std::move(outcome)](AcceptorStore::Kept kept) mutable {
+                            if (kept.kept) core->note(space, slot, record);
+                            if (!kept.kept) {
+                              outcome.committed = false;
+                              outcome.why = "the store could not keep what was caught up";
+                            }
+                            done(std::move(outcome));
+                          });
     });
   });
 }
