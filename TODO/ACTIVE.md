@@ -88,8 +88,8 @@ current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluat
 - The `.deb`s CI builds before the tag exists come out versioned `<last>+gitN`. After pushing the tag, re-run
   `main`'s whole run (`gh run rerun <id>`; re-running a single deb job did not replace the arm64 artifact), then
   download that attempt's artifacts by id.
-- ASan cannot start on the Pis' 4K-page 39-bit kernels, so until the 48-bit kernel lands a release's local sanitizer
-  gate is TSan, and ASan is hosted CI's.
+- Since 2026-11-16 every Pi runs a 4K-page 48-bit kernel, so a release's local gate is release, ASan and TSan again.
+  On 4 GB node-d use -j1.
 
 **Built for 0.9.0 so far** (see `COMPLETED.md`):
 - Agreement: the CASPaxos core (`agree/caspaxos.h`), its wire (types 22 to 24, replies 110 to 112) and fuzz target,
