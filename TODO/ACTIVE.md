@@ -32,12 +32,36 @@ live cluster is live-a and live-b, both Pi 5 on Debian 13 with Boost
 contract `API_VERSION` 24. The laptop is on MacPorts for everything. Macha's
 current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluation.md`.
 
-## Resume here (2026-11-15, end of session)
+## Resume here (2026-11-16, in session)
 
-**State.** `develop` is 0.9 (CMake 0.9.0, `libdannan0.9`), at `042d2db` or later. 0.8.3 is the last release (`main`
-and tag at `00a3a12`; every 0.8 release's record is in `COMPLETED.md`). The branches are merged and no work is in
-flight. Develop's CI run 43765614152, for the agreement merge (`6f17bea`) and the scheduler fix (`0ce0b82`), was
-still running at the clear (macOS green): **check it first**. The fix's first real test is that run's ASan job.
+**State.** `develop` is 0.9 (CMake 0.9.0, `libdannan0.9`), at `a5d12df`, not pushed. 0.8.3 is the last release
+(`main` and tag at `00a3a12`; every 0.8 release's record is in `COMPLETED.md`). In flight:
+`feature/agreement-reconfiguration`, at `2329b9f`. Its suite on node-d ran 776 tests: 775 passed and 1 skipped (it is
+skipped when run as root). See the handoff in `COMPLETED.md`. Develop's CI is green up to the pushed `c6fed5e` (run
+43769767060, 15 of 15), and 43765614152 passed the scheduler fix under ASan. The branch's own CI, and develop's
+local commits from `fbcbb90` on, need a push, which waits on the maintainer's word.
+
+**First, before more 0.9 work: Lir's TSan report against 0.8.3** (2026-11-16).
+- What: a heap-use-after-free in `~NodeRecord`, in Lir run 43773090610 (`ClusterTest.ConnectingOnAnotherNodeTakesTheClientOver`, two
+  nodes in one process, 4 io threads). The log is at `../lir/build/ci-logs/tsan-43773090610.log`.
+  - The read: `~ClientHandshake` (`_local`, a copy of `Membership::self()`) under `~DialState` (`net/session.cpp:462`).
+  - The earlier free, of the same map node: `~vector<NodeRecord>` of `observe_direct`'s `before` (`_members.active()`),
+    from the server's established callback.
+- Ruled out by reading: every Membership accessor and setter holds `_mutex`; `self()`, `active()` and `all()` return
+  deep copies; ClientHandshake takes `local` by value; the dial and accept states share no record.
+- Lir confirmed its `_deps` Dannan build uses lir_tests' flags (same g++ 14, C++20, no `_GLIBCXX_*` defines).
+- Not reproduced in Dannan (2026-11-16):
+  - `Node.NodesJoinWhileAdvertsChangeAndNothingIsShared` (`0358243`): 8 of 8 clean under clang 19 TSan (node-a), 8 of
+    8 clean under g++ 14 TSan (node-c).
+  - The whole suite (785 tests) clean under both.
+- Not reproduced in Lir either (Lir, 2026-11-16, node-c, g++ 14 TSan at CI's flags, Dannan 0.8.3, Lir at `82352e6`):
+  0 reports in 53 processes (the test alone 40 times, `ClusterTest.*` 10 times, the full suite 3 times).
+- Lir keeps no record across threads. Its one reference handed to Dannan, the `const NodeRecord&` to
+  `routes().call`, is copied at once: `place_call` takes it by value (`node.cpp:211-213`).
+- **Status: open, unexplained, not suppressed.** Most likely the CI runner's timing, possibly a TSan artifact. If it
+  recurs, a second report with other frames is what pins it; until then this stops being the first item.
+- Lir also saw two other intermittent failures, being looked at on Lir's side: run 43757235866 (TSan) and run
+  43765626713 (release arm64).
 
 **Waiting on the maintainer:**
 - Whether the scheduler fix (`0ce0b82`: a deferred answer gives back its place and bytes before its reply is sent;
@@ -50,6 +74,9 @@ still running at the clear (macOS green): **check it first**. The fix's first re
   keeping every other check: certificates present, once only, nothing queued by send(). The new member is additive,
   so the ABI is kept. Write it test first, with a client that sends its ClientHello right behind the request. Kvasir
   pins 0.8.2 and moves to the first tag carrying it.
+- Whether 0.8.4 also carries **`NodeEvents::wait_for_change(seen, timeout, std::stop_token)`** (`fbcbb90`, merged at
+  `a5d12df`), Macha Server's ask so its NodeEvents become Dannan's. It is additive, with the member layout unchanged,
+  so it keeps the ABI. The suite on node-d ran 767 tests: 766 passed and 1 skipped (it is skipped when run as root).
 
 **Built for 0.9.0 so far** (see `COMPLETED.md`):
 - Agreement: the CASPaxos core (`agree/caspaxos.h`), its wire (types 22 to 24, replies 110 to 112) and fuzz target,
@@ -59,20 +86,37 @@ still running at the clear (macOS green): **check it first**. The fix's first re
   duplicated and one-way messages and crash-restarts. The broken protocol (voting after losing state) is caught, and
   catch-up holds while a minority is wiped.
 
+**0.9.0 is cut when the whole plan below is done** (the maintainer, 2026-11-16, asked: not before, and not after agreement
+alone).
+
 **Next, in order** (the maintainer: agreement first, half the stack waits on it):
 1. **Reconfiguration, as the maintainer ruled** (2026-11-15: "No root except at genesis. A root may start with only one
    node."). The design is `2026-11-15-agreement-design.md`, "Reconfiguration", agreed by Mimir and Kvasir:
-   - a fixed slot table, its count configurable (256 by default, at most 8192) and carried in the cluster's identity
-     beside the genesis members;
-   - every slot touched at founding;
-   - `transfer()`, a joint change on majorities of both sets;
-   - the slot bitmap advert as a hint, the refusal's `serving` being the authority.
+   - **Built** on `feature/agreement-reconfiguration` (`2329b9f`), with the gap's fix: per-slot records, `transfer()`,
+     settle, `found()`, the proof rule, the laggard rule. The table is `NodeConfig::agreement_slots` and
+     `agreement_genesis` (genesis at version 0).
+   - **Built** at `c524a28`: every request carries the table's fingerprint and an acceptor with another table refuses
+     it; the slot advert (`agree.slots/<space>`) and `Agreement::hint()`. The suite on node-d ran 778 tests: 777
+     passed and 1 skipped (it is skipped when run as root). Not merged: hosted CI first.
+   - **For the maintainer:** the design said a node with another table is "refused at join". It is refused at every agreement
+     request instead, which keeps membership free of agreement's settings. Whether join-time refusal is still wanted
+     on top is his call.
+   - The test "the fast path lost across a transfer" is `FastPath.IsLostAcrossATransfer` (`6c90f50`).
+2. **The fast path: built** at `6c90f50`.
+   - How it works: a plain accept reserves the proposer's next ballot (`Accept::reserve`), and the next change of the
+     same names is an accept at that ballot with `fast_from`. A change with an owner's reduction never goes fast (merge
+     writes are seen only in a prepare). The runtime caches the last commit per space, slot, set and names; a miss
+     goes the full way at once.
+   - What the simulator found on the way: a fast ballot chosen at send time could outrank a commit made in between;
+     reserving it is CASPaxos's own form, and fixes it. A retry after a partial accept applied its change twice; a
+     retry that finds its own accept newest now commits it unchanged.
+   - The suite on node-d ran 784 tests: 783 passed and 1 skipped (it is skipped when run as root).
+   - Still to do in step 2: **value-less prepare and deltas**.
 
    Tests are named there: one-node genesis grown to five, the root unreachable, the fast path lost across a
    transfer.
-2. **The fast path** (one round uncontended), then **value-less prepare and deltas**. These come before a transfer of
-   large values (Kvasir's ranges: new acceptors are caught up by the store first, and the joint round then carries a
-   version or a delta).
+   Value-less prepare and deltas come before a transfer of large values (Kvasir's ranges: new acceptors are caught up
+   by the store first, and the joint round then carries a version or a delta).
 3. **The harness's next phase** (`2026-11-15-simulation-harness.md`):
    - membership, Routes, placement and correlated kills in the world;
    - the history with faults and resolutions;
@@ -87,7 +131,42 @@ still running at the clear (macOS green): **check it first**. The fix's first re
    - loader promotion at the peer.
 
    The wire additions are designed and reviewed first.
-7. Atomic commit across replica sets: Mimir and Kvasir will propose it.
+7. Atomic commit across replica sets. Mimir needs it for ruling 22's multi-slot commands now that a change names one
+   slot. Mimir's proposal is `../mimir/TODO/2026-11-15-cross-slot-commit-proposal.md` (Proposed, not yet put to the maintainer):
+   - `transact(space, parts, f, deadline)`, with intents inside register values and one transaction-record register
+     as the commit point;
+   - older wins;
+   - three questions for Dannan at its end.
+
+   Kvasir's corrections (2026-11-16):
+   - commits of known values (its buffered SQL writes);
+   - intents at the hosted system's granularity, laid, found and resolved by the hosted system, with Dannan owning
+     the record, the decide and the finishing;
+   - a pluggable conflict rule (the maintainer ruled that a decided or replicated commit wins over an undecided one);
+   - a commit stamp by the hybrid clock at decide.
+9. **Ruled (the maintainer, 2026-11-16, relayed by Lir): both calls below in 0.9, no 0.8.x stopgap.** Lir holds a new prefix's
+   SUBACK until the advert is held or the deadline passes. On a miss it grants the subscription and logs the peers that
+   missed it. The ask: push a changed advert and learn who holds it.
+   - The finding: on Lir's cluster a QoS 1 publish right after a SUBACK on another node is lost for that subscriber.
+     It was delivered 0 of 20 times at 0 ms and 8 of 8 at 5 s. The cause is the interest advert travelling at heartbeat
+     pace (`net/fanout.h:29`), and nothing records the gap.
+   - Recommended:
+     - `Nodes::advertise(key, value, deadline, executor, done)`, which sends the changed self record over the members
+       exchange (type 2) to every active peer and reports held and missed;
+     - `Fanout::subscribe(..., deadline, executor, done)` on top of it.
+   - A virtual interface addition, so 0.9.
+10. **Lugh's sign-in Backoff into Dannan** (Kvasir's ask, 2026-11-16, stack rule 3; agreed). It becomes
+    `dannan::listen::Backoff` (`listen/backoff.h`), Lugh's class and contract as they stand, on
+    `contract::TimePoint`, per node. Lugh's tests move with it (`lugh/test/authn_backoff_test.cpp`, suite Backoff:
+    FreeFailuresThenDoublingWaits, TheWaitHasACeiling, KeysAreSeparateAndSuccessClearsOne, QuietKeysAreForgotten,
+    MadeUpKeysDoNotGrowWithoutBound). Once it is tagged, Lugh switches its Authenticator and deletes its copy and
+    tests; the cluster-wide sum stays Lugh's (P8). Kvasir's MySQL sign-in keys it per principal and per source.
+    Small: right after item 9. Header-only and additive, so it could also go out in an 0.8.x patch: the maintainer's call.
+8. **Export the fuzz harness** (Kvasir's ask, 2026-11-15; Mimir wants it too), so hosted systems link it rather than
+   copy it (the stack's rule 3): `fuzz/fuzz.h`'s Target and Registration, `targets()`, the replay driver, and
+   `fuzz_smoke_test.cpp`'s mutate and seeds-then-mutations-then-noise loop as a callable, installed header-only with
+   the test fixtures. A hosted system then runs its targets in its own test binary with no clang, which no build Pi
+   has.
 
 **Standing, from the maintainer's rulings (2026-11-15):**
 - Anything that can use agreement waits for it: no stack project builds its own consensus meanwhile.
@@ -99,7 +178,11 @@ still running at the clear (macOS green): **check it first**. The fix's first re
 so it may roll its upgrade one node at a time.
 
 **Where things are built and tested** (the maintainer, 2026-11-14: "STOP all builds on the Mac now. Use the RPi cluster only."):
-- Never build or run tests on the Mac. Editing, git, gh, reading CI logs and clang-format are fine.
+- Never build or run tests on the Mac. Editing, git, gh, reading CI logs and clang-format are fine. The one exception
+  (the maintainer, 2026-11-16, told to every session): "TSan may be run on the mac IF AND ONLY IF bughunting." Since 2026-11-16
+  every Pi boots the 4K-page kernel (the maintainer had the cluster manager switch them), so g++ TSan runs on all four and clang
+  19 TSan on all but node-d. No sanitizer builds on node-d: it has 4 GB, and Dannan's ASan build hung it. Use node-b or
+  node-c, after `free -m`.
 - Hosted CI (`.github/workflows/ci.yml`) is the gate: 15 jobs on Debian x86-64 and arm64 and macOS, with `abi`
   against the minor's last tag. To run it on a feature branch, add a temporary commit putting the branch in
   `on.push.branches`, and drop it before the merge with `git rebase --onto X^ X`. Its logs come down with

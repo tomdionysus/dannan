@@ -14,6 +14,7 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/strand.hpp>
 #include <fstream>
@@ -92,12 +93,19 @@ struct Pair {
   identity::ClusterKey key = cluster_key(dir.path());
   std::unique_ptr<Node> a;
   std::unique_ptr<Node> b;
-  // `setup_a` runs before A starts: a hosted system registers its routes then.
-  explicit Pair(const std::function<void(NodeConfig&)>& tune_b = {}, const std::function<void(Node&)>& setup_a = {}) {
-    a = std::make_unique<Node>(io.context, config(dir.path() / "a", key));
+  // `setup_a` runs before A starts: a hosted system registers its routes then. With
+  // `genesis_on_a`, A alone is the agreement genesis set of both.
+  explicit Pair(const std::function<void(NodeConfig&)>& tune_b = {}, const std::function<void(Node&)>& setup_a = {}, bool genesis_on_a = false) {
+    auto a_config = config(dir.path() / "a", key);
+    if (genesis_on_a) {
+      // A's id is made with its state; a node built and dropped unstarted leaves it there.
+      a_config.agreement_genesis = {Node(io.context, a_config).context().identity().id()};
+    }
+    a = std::make_unique<Node>(io.context, a_config);
     if (setup_a) setup_a(*a);
     a->start();
     auto b_config = config(dir.path() / "b", key, {{"127.0.0.1", a->port()}});
+    b_config.agreement_genesis = a_config.agreement_genesis;
     if (tune_b) tune_b(b_config);
     b = std::make_unique<Node>(io.context, b_config);
   }
@@ -121,6 +129,54 @@ TEST(Node, TwoNodesFormOneCluster) {
     return std::any_of(all.begin(), all.end(), [&](const status::Telemetry& t) { return t.node_id() == b && t.text(status::field::version) == "0.1.0-test"; });
   }));
   EXPECT_TRUE(eventually([&] { return pair.b->context().nodes().latency(a).has_value(); }));
+}
+
+// Lir's TSan report against 0.8.3 (run 43773090610): nodes joining while adverts change and
+// dials run, in one process on one io_context of four threads. A dial's handshake carries a
+// copy of its node's record and the server observes the peer's; neither may share anything
+// with the other or with the roster. Every join completes, and under TSan nothing races.
+TEST(Node, NodesJoinWhileAdvertsChangeAndNothingIsShared) {
+  Io io;
+  test::TempDir dir;
+  const auto key = cluster_key(dir.path());
+  Node a(io.context, config(dir.path() / "a", key));
+  a.start();
+  std::atomic<bool> churning{true};
+  // The node joining this round, held under the mutex while the churn uses it.
+  std::mutex joining_mutex;
+  Node* joining = nullptr;
+  // Adverts change on both sides throughout, as a hosted system's subscriptions do.
+  std::thread churn([&] {
+    for (uint64_t i = 0; churning; ++i) {
+      const auto name = "interest/" + std::to_string(i % 7);
+      const net::Bytes value(1 + i % 13, static_cast<uint8_t>(i));
+      a.context().nodes().advertise(name, value);
+      if (i % 3 == 0) a.context().nodes().withdraw(name);
+      std::lock_guard lock(joining_mutex);
+      if (!joining) continue;
+      joining->context().nodes().advertise(name, value);
+      if (i % 3 == 0) joining->context().nodes().withdraw(name);
+      std::this_thread::yield();
+    }
+  });
+  for (int round = 0; round < 12; ++round) {
+    auto b = std::make_unique<Node>(io.context, config(dir.path() / ("b" + std::to_string(round)), key, {{"127.0.0.1", a.port()}}));
+    b->start();
+    {
+      std::lock_guard lock(joining_mutex);
+      joining = b.get();
+    }
+    const auto id = b->context().identity().id();
+    EXPECT_TRUE(eventually([&] { return knows(a, id) && knows(*b, a.context().identity().id()); })) << "round " << round;
+    {
+      std::lock_guard lock(joining_mutex);
+      joining = nullptr;
+    }
+    b->stop();
+  }
+  churning = false;
+  churn.join();
+  a.stop();
 }
 
 // The transport writes through the sink the node was given, so a hosted
@@ -2082,18 +2138,32 @@ TEST(Node, ARestartOnASharedIoContextLeavesNothingBehind) {
 // An acceptor store as a hosted system would keep one in memory.
 class MemoryStore final : public agree::AcceptorStore {
  public:
-  void load(std::span<const agree::Name> names, std::function<void(std::vector<agree::AcceptorState>)> done) override {
-    std::vector<agree::AcceptorState> out;
+  void load(agree::Slot slot, std::span<const agree::Name> names, bool every, std::function<void(agree::Held)> done) override {
+    agree::Held out;
     {
       std::lock_guard lock(_mutex);
-      for (const auto& name : names) out.push_back(_held[std::string(name.begin(), name.end())]);
+      out.slot = _slots[slot];
+      out.floor = _floor;
+      for (const auto& name : names) {
+        out.names.push_back(name);
+        out.states.push_back(_held[{slot, std::string(name.begin(), name.end())}]);
+      }
+      if (every)
+        for (const auto& [key, state] : _held) {
+          const agree::Name name(key.second.begin(), key.second.end());
+          if (key.first != slot || std::find(names.begin(), names.end(), name) != names.end()) continue;
+          out.names.push_back(name);
+          out.states.push_back(state);
+        }
     }
     done(std::move(out));
   }
-  void keep(std::span<const agree::Name> names, std::span<const agree::AcceptorState> states, std::function<void(bool)> done) override {
+  void keep(agree::Slot slot, const agree::Held& held, std::function<void(bool)> done) override {
     {
       std::lock_guard lock(_mutex);
-      for (size_t i = 0; i < names.size(); ++i) _held[std::string(names[i].begin(), names[i].end())] = states[i];
+      _slots[slot] = held.slot;
+      _floor = held.floor;
+      for (size_t i = 0; i < held.names.size(); ++i) _held[{slot, std::string(held.names[i].begin(), held.names[i].end())}] = held.states[i];
     }
     done(true);
   }
@@ -2102,23 +2172,35 @@ class MemoryStore final : public agree::AcceptorStore {
  private:
   std::mutex _mutex;
   // Keyed by the name's bytes as a string: GCC 14 at -O3 misreads a map of byte vectors.
-  std::map<std::string, agree::AcceptorState> _held;
+  std::map<std::pair<agree::Slot, std::string>, agree::AcceptorState> _held;
+  std::map<agree::Slot, agree::SlotState> _slots;
+  agree::Ballot _floor;
 };
 
-agree::Outcome agree_now(Node& node, const std::vector<identity::NodeId>& replicas, agree::Change change, std::chrono::milliseconds deadline, Io& io) {
+const agree::Slot k_slot = agree::slot_of(agree::Name{'k'}, agree::default_slots);
+
+agree::Outcome told_within(const std::function<void(std::function<void(agree::Outcome)>)>& start) {
   auto told = std::make_shared<std::promise<agree::Outcome>>();
-  node.context().agreement().change("test", {agree::Name{'k'}}, replicas, 1, std::move(change), {}, deadline, io.context.get_executor(),
-                                    [told](agree::Outcome outcome) { told->set_value(std::move(outcome)); });
+  start([told](agree::Outcome outcome) { told->set_value(std::move(outcome)); });
   auto future = told->get_future();
   if (future.wait_for(30s) != std::future_status::ready) return {};
   return future.get();
 }
 
-// Agreement across the cluster (0.9.0): a change on two nodes' acceptors commits on
-// both, and the other node's strict read sees it; a node that does not advertise the
-// space's capability is refused by the others, so it cannot make a majority.
+agree::Outcome agree_now(Node& node, const std::vector<identity::NodeId>& replicas, uint64_t version, agree::Change change, std::chrono::milliseconds deadline,
+                         Io& io) {
+  return told_within([&](std::function<void(agree::Outcome)> done) {
+    node.context().agreement().change("test", k_slot, {agree::Name{'k'}}, replicas, version, std::move(change), {}, deadline, io.context.get_executor(),
+                                      std::move(done));
+  });
+}
+
+// Agreement across the cluster (0.9.0): founded on A alone, the genesis, and grown to A and
+// B by a transfer; a change on both nodes' acceptors commits on both, and the other node's
+// strict read sees it; a node that does not advertise the space's capability is refused by
+// the others, so it cannot make a majority.
 TEST(Node, AgreementCommitsAcrossTheClusterAndRefusesANodeWithoutTheCapability) {
-  Pair pair;
+  Pair pair({}, {}, true);
   pair.b->start();
   const auto a = pair.a->context().identity().id();
   const auto b = pair.b->context().identity().id();
@@ -2139,15 +2221,25 @@ TEST(Node, AgreementCommitsAcrossTheClusterAndRefusesANodeWithoutTheCapability) 
       return agree::Changed{std::vector<std::optional<agree::Bytes>>(current.size(), agree::Bytes(value.begin(), value.end())), agree::Bytes{'o', 'k'}};
     };
   };
-  const auto written = agree_now(*pair.a, {a, b}, put("agreed"), 10s, pair.io);
+  const auto founded = told_within([&](auto done) { pair.a->context().agreement().found("test", 10s, pair.io.context.get_executor(), std::move(done)); });
+  ASSERT_TRUE(founded.committed) << founded.why;
+  // Before the transfer, a set naming B is refused: the slot is A's.
+  const auto early = agree_now(*pair.a, {a, b}, 1, put("early"), 2s, pair.io);
+  EXPECT_FALSE(early.committed);
+  ASSERT_EQ(agree_now(*pair.a, {a}, 0, put("founded"), 10s, pair.io).committed, true);
+  const auto grown = told_within(
+      [&](auto done) { pair.a->context().agreement().transfer("test", k_slot, {a}, 0, {a, b}, 1, 10s, pair.io.context.get_executor(), std::move(done)); });
+  ASSERT_TRUE(grown.committed) << grown.why;
+  EXPECT_EQ(grown.names, std::vector<agree::Name>{agree::Name{'k'}});
+
+  const auto written = agree_now(*pair.a, {a, b}, 1, put("agreed"), 10s, pair.io);
   ASSERT_TRUE(written.committed) << written.why;
-  EXPECT_EQ(written.accepted.size(), 2u);
+  EXPECT_GE(written.accepted.size(), 2u);
   EXPECT_EQ(written.result, (agree::Bytes{'o', 'k'}));
 
-  auto told = std::make_shared<std::promise<agree::Outcome>>();
-  pair.b->context().agreement().read("test", {agree::Name{'k'}}, {a, b}, 1, {}, 10s, pair.io.context.get_executor(),
-                                     [told](agree::Outcome outcome) { told->set_value(std::move(outcome)); });
-  const auto read = told->get_future().get();
+  const auto read = told_within([&](auto done) {
+    pair.b->context().agreement().read("test", k_slot, {agree::Name{'k'}}, {a, b}, 1, {}, 10s, pair.io.context.get_executor(), std::move(done));
+  });
   ASSERT_TRUE(read.committed) << read.why;
   ASSERT_TRUE(read.values[0]);
   EXPECT_EQ(std::string(read.values[0]->begin(), read.values[0]->end()), "agreed");
@@ -2156,7 +2248,7 @@ TEST(Node, AgreementCommitsAcrossTheClusterAndRefusesANodeWithoutTheCapability) 
   // B no longer advertises the capability: A refuses it, and alone it is no majority.
   pair.b->context().nodes().withdraw("test");
   ASSERT_TRUE(eventually([&] { return !advertising(*pair.a, b); }));
-  const auto refused = agree_now(*pair.b, {a, b}, put("stranger"), 500ms, pair.io);
+  const auto refused = agree_now(*pair.b, {a, b}, 1, put("stranger"), 500ms, pair.io);
   EXPECT_FALSE(refused.committed);
   EXPECT_FALSE(refused.why.empty());
 }

@@ -3,6 +3,51 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
+## Handoff, 2026-11-16: reconfiguration built, with a safety gap found and closed
+
+- **A gap in the reviewed design, found in building it.**
+  - What it was: an acceptor with no record admitted a request naming any set. So a transfer whose accept reached
+    one node of the new set (and so did not commit) let a proposer that took the bitmap hint commit on unrecorded
+    nodes, while the old set went on committing. That is two histories, with no stale proposer needed. Records were
+    also per name, so a name never written in a moved slot had no record anywhere.
+  - the maintainer chose the recommended fix: per-slot records; a transfer as a change to the whole slot; pending until a
+    settle follows its commit; a plain change commits only with a settled record in its majority, or on the genesis
+    set for a slot recorded nowhere; a proposer that meets an unfinished move finishes it.
+  - Written into `2026-11-15-agreement-design.md` (`81dc063`). Mimir and Kvasir were told.
+- **Built** on `feature/agreement-reconfiguration` (`2329b9f`):
+  - The core: `on_settle`, `Attempt::transfer`, `Held` with the slot record and floor.
+  - `agree_settle` (25, reply 113).
+  - `Agreement::transfer()` and `found()`; the caller names the slot (Mimir's hash tags), and `slot_of` is the
+    default.
+  - The interface changes: `AcceptorStore::load(slot, names, every)` and `keep(slot, held)`; the table in
+    `NodeConfig`. The empty-name reserve for the floor is gone, so a prepare may now name no register; the wire
+    test's "no names is refused" check was changed to match, the only check changed.
+- **Found by the simulator** (`Simulation.AOneNodeGenesisGrowsToFiveUnderFaults`, seed 13): a member of both sets
+  that missed a transfer's accept and its settle refused the new set, and the attempt took that as proof its set was
+  stale, so the slot stalled. Now a record of an older configuration is a laggard's: the acceptor promises and shows
+  it, the proof rule decides, and the next accept brings it up to date
+  (`Reconfiguration.ALaggardOfTheOldSetNeitherBlocksTheNewSetNorStaysBehind`).
+- **New tests (9):**
+  - `Reconfiguration.*` (8), among them the gap's own case, a change racing a transfer, a one-node genesis grown to
+    five, settle reaching a node that missed the accept, and `slot_of`;
+  - the simulator growing a one-node genesis to five under faults while stale clients follow the refusal's set (60
+    seeds).
+  - The node test now founds on A alone and grows to A and B by `transfer()`.
+- **Gates:** suite on node-d 776 ran, 775 passed, 1 skipped (as root). Hosted CI not run: it was not running.
+- `NodeEvents::wait_for_change(seen, timeout, stop_token)` for Macha Server: `fbcbb90`, merged to develop at
+  `a5d12df` (767 ran, 766 passed, 1 skipped). For 0.8.4 if the maintainer wants one.
+- Asks recorded in the plan: Kvasir's (and Mimir's) fuzz-harness export (item 8); Mimir's need for multi-slot commit
+  (item 7).
+- **Later the same session** (branch `feature/agreement-reconfiguration`, still unmerged):
+  - `c524a28`: every agreement request carries the slot table's fingerprint, and an acceptor with another table
+    refuses it (`Simulation.ANodeWithAnotherSlotTableIsRefused`); the slot advert `agree.slots/<space>` and
+    `Agreement::hint()` (`Simulation.AMovedSlotIsFoundFromTheAdvertsAndTheRefusal`). 778 ran, 777 passed, 1 skipped.
+  - `6c90f50`: the fast path, with reservations, and a retry adopting its own newest accept. Simulator seeds 30 and
+    99 found the two flaws the design had. New tests: `FastPath.*` (4), `Agreement.ARetryAfterAPartialAccept...`,
+    `Simulation.TheFastPathIsTakenUncontendedAndLeftWhenContended`. 784 ran, 783 passed, 1 skipped.
+  - Lir's TSan report against 0.8.3 is recorded at the top of `ACTIVE.md`, read but not yet reproduced.
+  - Develop's hosted CI came back green (43769767060, 15 of 15; the scheduler fix passed ASan in 43765614152).
+
 ## Handoff, 2026-11-15: agreement's lifecycle merged; reconfiguration ruled
 
 - `forget()` and `catch_up()` for agreement, on `feature/agreement-lifecycle`, merged at `6f17bea`. CI first failed

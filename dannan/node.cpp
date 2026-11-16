@@ -568,6 +568,8 @@ Node::Node(asio::io_context& io, NodeConfig config)
   // the active roster is silent for the round.
   _agreement = std::make_unique<agree::Agreement>(
       _io.get_executor(), _identity.id, _identity.durability_epoch,
+      agree::Agreement::Table{_config.agreement_slots,
+                              _config.agreement_genesis.empty() ? agree::ReplicaSet{} : agree::ReplicaSet::of(_config.agreement_genesis, 0)},
       [this](const identity::NodeId& to, net::MessageType type, net::Bytes payload, std::chrono::milliseconds deadline,
              std::function<void(std::optional<net::Bytes>, std::string)> done) {
         std::optional<NodeRecord> peer;
@@ -586,7 +588,20 @@ Node::Node(asio::io_context& io, NodeConfig config)
           if (record.id == node) return record.adverts.contains(capability);
         return false;
       },
-      _config.time);
+      _config.time, agree::Agreement::Schedule{},
+      // The slot advert, through the roster's adverts like any hosted system's.
+      [this](const std::string& key, std::optional<net::Bytes> value) {
+        if (value)
+          _members.set_advert(key, std::move(*value));
+        else
+          _members.clear_advert(key);
+      },
+      [this](const std::string& key) {
+        std::vector<std::pair<identity::NodeId, net::Bytes>> out;
+        for (const auto& record : _members.active())
+          if (const auto value = record.advert(key)) out.emplace_back(record.id, net::Bytes(value->begin(), value->end()));
+        return out;
+      });
   // Tombstones loaded with the roster fence telemetry before anything runs.
   for (const auto& reset : _members.identity_resets()) _telemetry.apply_identity_reset(reset);
 }
@@ -930,7 +945,7 @@ net::Handled Node::handle(const NodeRecord& peer, sched::FrameType frame, net::M
   if (type == m::channel_replay) return _fanout->on_replay(peer, request);
   if (type == m::channel_bulk) return _fanout->on_bulk(peer, request);
   if (type == m::dial_back) return _dial_back->answer(peer.id, request.payload);
-  if (type == m::agree_prepare || type == m::agree_accept || type == m::agree_purge) {
+  if (type == m::agree_prepare || type == m::agree_accept || type == m::agree_purge || type == m::agree_settle) {
     // Answered later, once the hosted system's store has kept what the rules changed;
     // the peer is the session's, so who sent it is proven.
     auto later = std::make_shared<net::Answer>(std::move(answer));

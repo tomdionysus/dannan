@@ -63,6 +63,7 @@ RouteTable RouteTable::with_dannan_types() {
   table.add_core(message::agree_prepare, {"agree_prepare", control, control_only, false});
   table.add_core(message::agree_accept, {"agree_accept", control, control_only, false});
   table.add_core(message::agree_purge, {"agree_purge", control, control_only, false});
+  table.add_core(message::agree_settle, {"agree_settle", control, control_only, false});
   // Replies inherit their request's class.
   table.add_core(message::ok, {"ok", both, any, false});
   table.add_core(message::members_reply, {"members_reply", control, control_only, false});
@@ -77,6 +78,7 @@ RouteTable RouteTable::with_dannan_types() {
   table.add_core(message::agree_prepare_reply, {"agree_prepare_reply", control, control_only, false});
   table.add_core(message::agree_accept_reply, {"agree_accept_reply", control, control_only, false});
   table.add_core(message::agree_purge_reply, {"agree_purge_reply", control, control_only, false});
+  table.add_core(message::agree_settle_reply, {"agree_settle_reply", control, control_only, false});
   table.add_core(message::error, {"error", both, any, false});
   return table;
 }
