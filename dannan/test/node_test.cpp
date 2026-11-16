@@ -121,6 +121,31 @@ TEST(Node, TwoNodesFormOneCluster) {
   EXPECT_TRUE(eventually([&] { return pair.b->context().nodes().latency(a).has_value(); }));
 }
 
+// A node stopped while its io ran may be destroyed after the io has stopped (Louhi,
+// 2026-11-16): its client's second stop, from the destructor, has nothing left to wait for,
+// and must not post to an io that will never run it.
+TEST(Node, ANodeStoppedThenDestroyedAfterItsIoStopsDoesNotHang) {
+  test::TempDir dir;
+  const auto key = cluster_key(dir.path());
+  asio::io_context context;
+  auto work = asio::make_work_guard(context);
+  std::vector<std::thread> threads;
+  for (int i = 0; i < 2; ++i) threads.emplace_back([&] { context.run(); });
+  auto node = std::make_unique<Node>(context, config(dir.path() / "a", key));
+  node->start();
+  node->stop();
+  work.reset();
+  context.stop();
+  for (auto& thread : threads) thread.join();
+  // On a thread of its own, so a hang fails this test rather than the suite.
+  auto destroyed = std::make_shared<std::promise<void>>();
+  std::thread([destroyed, held = node.release()] {
+    delete held;
+    destroyed->set_value();
+  }).detach();
+  EXPECT_EQ(destroyed->get_future().wait_for(10s), std::future_status::ready);
+}
+
 // The transport writes through the sink the node was given, so a hosted
 // system's own sink keeps its line format.
 TEST(Node, TheTransportWritesThroughTheNodesSink) {
