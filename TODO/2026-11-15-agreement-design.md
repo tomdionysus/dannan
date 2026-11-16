@@ -479,6 +479,10 @@ has no merging reduction. Two needs, which replace any store-driven catch-up hoo
    reported holding at the base ballot is not fetched for it or sent to it: the accept names the ballot only. A
    range's new acceptors are caught up by the store's own means first (a copy from a replica, later Dagda's log);
    the joint round then only checks the ballot.
+3. **`apply` in place suits ranges too**, with two points of contract:
+   - `done(applied)` means the result is kept as durably as an accept the store took whole would be;
+   - a base the store holds but cannot apply the delta to (its own check fails) answers `need_whole`, not an error,
+     so the proposer resends whole.
 
 **Tests named:**
 - a megabyte register changed with no prepare answer carrying its value;
