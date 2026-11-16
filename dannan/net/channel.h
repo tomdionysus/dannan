@@ -115,6 +115,9 @@ struct Credentials {
 
   std::optional<identity::ClusterKey> key;
   std::optional<CertificateCredential> certificate;
+  // Whether an authenticated peer, by the record it sent, may join: empty, or why not (a
+  // slot table that differs, say). Both sides ask it; null: every peer may.
+  std::function<std::string(const membership::NodeRecord& peer)> admit;
 
   // The versions these prove: 1 with a key, 2 with a certificate. Throws
   // std::logic_error with neither.

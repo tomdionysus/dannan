@@ -17,6 +17,7 @@
 #include <set>
 #include <stdexcept>
 
+#include "dannan/agree/wire.h"
 #include "dannan/reach/external_ip.h"
 
 namespace dannan {
@@ -551,6 +552,17 @@ Node::Node(asio::io_context& io, NodeConfig config)
     _credentials.certificate = std::move(credential);
   }
   if (_config.use_cluster_key || !_config.certificate) _credentials.key = _identity.key;
+  // The slot table, published on this node's record and checked on every peer's at the
+  // handshake: a node with another one never joins (the maintainer, 2026-11-16). A peer that publishes
+  // none (an older node) joins, and is refused at every agreement request instead.
+  const auto table = agree::table_fingerprint(_config.agreement_slots,
+                                              _config.agreement_genesis.empty() ? agree::ReplicaSet{} : agree::ReplicaSet::of(_config.agreement_genesis, 0));
+  _members.set_advert(agree::Agreement::table_advert(), membership::u64_advert(table));
+  _credentials.admit = [table](const NodeRecord& peer) -> std::string {
+    const auto theirs = peer.advert_u64(agree::Agreement::table_advert());
+    if (theirs && *theirs != table) return "the peer's agreement slot table (count or genesis set) differs from this node's";
+    return {};
+  };
   net::Fanout::Hooks hooks;
   hooks.self = [this] { return _members.self(); };
   hooks.roster = [this] { return _members.active(); };
