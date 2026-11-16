@@ -50,13 +50,16 @@ current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluat
   2. It publishes: `ChannelsNoun::publish`, then `Fanout::publish`, then `Fanout::destinations` (`fanout.cpp:146`),
      whose roster copy's `~NodeRecord` frees a map node.
   3. Leaving the callback, `~RosterSnapshot` reads that freed node.
-- So a snapshot's record and a record from the fanout's roster hook (`_members.active()`) shared a map node. Both
-  are deep copies under the members' lock by reading (`snapshot()` moves `all_and_active()`'s vectors out). Not yet
-  explained.
-- **Next, first:** a one-thread reproduction. A roster-watch callback on the io thread takes a snapshot, publishes
-  on a channel a peer subscribes to, and lets the snapshot go, while the roster and adverts change. Run it under TSan
-  on node-a (clang) and on node-c (g++, Lir's compiler). It is deterministic on one thread once the interleaving
-  happens, so a hit pins it.
+- Both copies are deep and taken under the members' lock, and Membership writes `_self` and `_nodes` only under
+  it, so two fresh copies "sharing" a node means the allocator handed one block out twice.
+- **Explained, by reading (2026-11-16): heap corruption from the ledger defect Lir suppresses.** At 0.8.5,
+  `RetainedMemoryLedger::release` on a destroyed ledger erases from `_allocations` and `_owner_bytes`, whose nodes
+  were freed with the ledger. That is a double free. TSan files a use-after-free under `race:` suppressions, and Lir
+  suppresses `race:dannan::sched::RetainedMemoryLedger::release`, so the first bad write went unreported. The
+  test before the failing one, `HeldMessagesAreLeasedInTheNodesLedger`, is the one that triggers it. Fixed on
+  develop at `79dfa2e` (0.9 ABI). Lir was told to confirm it one of two ways: pin a develop commit and drop the
+  suppression, or run 0.8.5 under ASan and expect a double free in `release`. The one-thread reproduction is
+  dropped unless Lir's check says otherwise.
 
 **Lir's first TSan report against 0.8.3** (2026-11-16).
 - What: a heap-use-after-free in `~NodeRecord`, in Lir run 43773090610 (`ClusterTest.ConnectingOnAnotherNodeTakesTheClientOver`, two
