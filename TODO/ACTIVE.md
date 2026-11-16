@@ -203,6 +203,13 @@ gold-plating beyond what the design and its reviews ask.
             crash; every append applied once).
         - The suite on node-a ran 817 tests: 816 passed and 1 skipped (it is skipped when run as root).
         - The store interface is final; Mimir and Kvasir were told.
+        - Mimir accepted the store side as final (2026-11-16).
+        - **After 0.9.0, first** (Mimir's ask, additive): a change that sees no whole bytes where the proposer's own
+          store holds the base. Change is told "held locally" for that name and returns a delta only. The whole value
+          is built lazily, only for a need_whole or an Outcome. The fast path's cache keeps ballots and summaries, not
+          bytes. Today every agreement write to a large collection costs O(n) to serialize at the proposer. Mimir
+          routes writes to a node in the slot's set meanwhile, so the base fetch is local (self is tried first, with
+          no message).
         - **Open:** Kvasir is asked whether a whole resend in pieces is still needed. Today a whole value in an accept
           is one message, up to `max_value`. Once he answers, the branch merges to develop.
 
