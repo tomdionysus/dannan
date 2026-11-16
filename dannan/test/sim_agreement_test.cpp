@@ -53,6 +53,38 @@ agree::Change increment() {
   };
 }
 
+// The store contract a value-less prepare relies on: a load without values leaves them
+// empty and says what is held; keeping a state held but not carried leaves the value and its
+// summary alone; a state carrying a value is given the store's summary.
+TEST(SimStore, AValueLessLoadKeepsTheValueAndItsSummary) {
+  Store store(true);
+  const agree::Name k{'k'};
+  const agree::Bytes value(1000, 5);
+  agree::Held written;
+  written.names = {k};
+  written.states = {agree::AcceptorState{agree::Ballot{1, {}, {}}, agree::Ballot{1, {}, {}}, value, agree::Ballot{1, {}, {}}, {}, true}};
+  store.keep(counter_slot, written, [](bool kept) { ASSERT_TRUE(kept); });
+  ASSERT_TRUE(store.state(counter_slot, k));
+  EXPECT_EQ(store.state(counter_slot, k)->summary, Store::summary(value));
+
+  std::optional<agree::Held> loaded;
+  store.load(counter_slot, std::vector<agree::Name>{k}, false, false, [&](agree::Held held) { loaded = std::move(held); });
+  ASSERT_TRUE(loaded);
+  ASSERT_EQ(loaded->states.size(), 1u);
+  EXPECT_FALSE(loaded->states[0].value);
+  EXPECT_TRUE(loaded->states[0].has_value);
+  EXPECT_EQ(loaded->states[0].summary, Store::summary(value));
+
+  loaded->states[0].promised = agree::Ballot{2, {}, {}};
+  store.keep(counter_slot, *loaded, [](bool kept) { ASSERT_TRUE(kept); });
+  const auto after = store.state(counter_slot, k);
+  ASSERT_TRUE(after);
+  EXPECT_EQ(after->promised, (agree::Ballot{2, {}, {}}));
+  ASSERT_TRUE(after->value);
+  EXPECT_EQ(*after->value, value);
+  EXPECT_EQ(after->summary, Store::summary(value));
+}
+
 struct Op {
   uint64_t invoked = 0;
   uint64_t completed = 0;

@@ -34,7 +34,7 @@ class Store final : public agree::AcceptorStore {
  public:
   explicit Store(bool persist) : _persist(persist) {}
 
-  void load(agree::Slot slot, std::span<const agree::Name> names, bool every, std::function<void(agree::Held)> done) override {
+  void load(agree::Slot slot, std::span<const agree::Name> names, bool every, bool values, std::function<void(agree::Held)> done) override {
     agree::Held out;
     out.floor = _current.floor;
     const auto record = _current.slots.find(slot);
@@ -52,6 +52,8 @@ class Store final : public agree::AcceptorStore {
         out.names.push_back(name);
         out.states.push_back(state);
       }
+    if (!values)
+      for (auto& state : out.states) state.value.reset();
     done(std::move(out));
   }
   void keep(agree::Slot slot, const agree::Held& held, std::function<void(bool)> done) override {
@@ -97,12 +99,38 @@ class Store final : public agree::AcceptorStore {
     layer.floor = held.floor;
     layer.slots[slot] = held.slot;
     for (size_t i = 0; i < held.names.size(); ++i) {
-      if (held.states[i] == agree::AcceptorState{})
-        layer.names.erase({slot, text(held.names[i])});
-      else
-        layer.names[{slot, text(held.names[i])}] = held.states[i];
+      const std::pair<agree::Slot, std::string> key{slot, text(held.names[i])};
+      auto state = held.states[i];
+      if (state == agree::AcceptorState{}) {
+        layer.names.erase(key);
+        continue;
+      }
+      if (state.has_value && !state.value) {
+        // Held, not carried: the value and its summary stay as they are.
+        const auto before = layer.names.find(key);
+        if (before != layer.names.end()) {
+          state.value = before->second.value;
+          state.summary = before->second.summary;
+        }
+      } else {
+        state.has_value = state.value.has_value();
+        state.summary = state.value ? summary_of(*state.value) : agree::Bytes{};
+      }
+      layer.names[key] = std::move(state);
     }
   }
+  // This store's summary: the value's length, eight bytes big-endian.
+  static agree::Bytes summary_of(const agree::Bytes& value) {
+    agree::Bytes out(8);
+    for (int i = 0; i < 8; ++i) out[static_cast<size_t>(i)] = static_cast<uint8_t>(static_cast<uint64_t>(value.size()) >> (56 - 8 * i));
+    return out;
+  }
+
+ public:
+  // The summary this store gives a value, for a test's checks.
+  static agree::Bytes summary(const agree::Bytes& value) { return summary_of(value); }
+
+ private:
   bool _persist;
   bool _ready = true;
   Layer _current;

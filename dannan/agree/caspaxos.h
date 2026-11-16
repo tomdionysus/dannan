@@ -63,17 +63,31 @@ inline constexpr uint32_t max_slots = 8192;
 // Throws std::invalid_argument for a count of zero or above max_slots.
 Slot slot_of(std::span<const uint8_t> name, uint32_t count);
 
+// The owner's summary of one name's value: at most this many bytes, the store's to choose (a
+// version, a length, a digest of merge state). Dannan carries it and never reads it.
+inline constexpr size_t max_summary = 64;
+
 // What one acceptor keeps for one name: the hosted system's to hold, in memory or
 // durably, and the protocol's to change.
 struct AcceptorState {
   Ballot promised;
   Ballot accepted;
+  // Empty either when nothing is held or when the state was loaded value-less;
+  // `has_value` says which.
   std::optional<Bytes> value;
   // The ballot of the last change that altered the value: a fencing token, stable across
   // identity changes and strict reads (Louhi's review).
   Ballot changed_at;
+  // The store's, set by keep() for a value it takes (the design's "Value-less prepare and
+  // deltas"). An accept leaves it empty for the store to fill.
+  Bytes summary{};
+  // Whether a value is held, loaded or not. A state that holds one but carries none is kept
+  // with the store's value unchanged.
+  bool has_value = false;
   auto operator<=>(const AcceptorState&) const = default;
 };
+// Whether a state holds a value, whether it was loaded with it or not.
+inline bool holds_value(const AcceptorState& state) noexcept { return state.has_value || state.value.has_value(); }
 
 // What one acceptor keeps for one slot. Unrecorded (no `served`) until a change or a
 // transfer is accepted for it.
@@ -99,11 +113,14 @@ struct Held {
   std::vector<AcceptorState> states;
 };
 
-// One name's state as a prepare answer carries it.
+// One name's state as a prepare answer carries it: the value only when the prepare wanted
+// values, and always whether one is held and the store's summary of it.
 struct NameState {
   Ballot accepted;
   std::optional<Bytes> value;
   Ballot changed_at;
+  Bytes summary{};
+  bool has_value = false;
 };
 
 // A plain change names `set`; a transfer names the set it moves from as `set`, and `to`.
@@ -114,6 +131,9 @@ struct Prepare {
   Ballot ballot;
   // A plain change's names; empty for a transfer, which is answered with every name held.
   std::vector<Name> names;
+  // Whether the answers carry values. Without, each carries whether it holds one and its
+  // summary, and the proposer fetches what it needs.
+  bool values = true;
 };
 
 // A refusal names why: a higher ballot to pass, or the set this acceptor serves the slot by

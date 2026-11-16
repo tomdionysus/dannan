@@ -7,6 +7,8 @@
 
 #include "dannan/agree/wire.h"
 
+#include <stdexcept>
+
 namespace dannan::agree {
 namespace {
 
@@ -138,6 +140,7 @@ net::Bytes encode(const PrepareMessage& message) {
   out.u32(message.prepare.slot);
   put(out, message.prepare.ballot);
   put_names(out, message.prepare.names);
+  out.u8(message.prepare.values ? 1 : 0);
   return out.take();
 }
 
@@ -224,6 +227,9 @@ net::Bytes encode(const PrepareAnswer& answer) {
     put(out, state.accepted);
     put(out, state.value);
     put(out, state.changed_at);
+    if (state.summary.size() > max_summary) throw std::invalid_argument("a summary is at most 64 bytes");
+    out.bytes(state.summary);
+    out.u8(state.has_value || state.value ? 1 : 0);
   }
   return out.take();
 }
@@ -248,6 +254,9 @@ PrepareMessage decode_prepare(std::span<const uint8_t> bytes) {
   out.prepare.names = get_names(in);
   // A transfer is answered with every name held, so it names none itself.
   if (out.prepare.to && !out.prepare.names.empty()) throw DecodeError("a transfer's prepare names registers");
+  const auto values = in.u8();
+  if (values > 1) throw DecodeError("a prepare's values wanted is 0 or 1");
+  out.prepare.values = values == 1;
   in.finish();
   return out;
 }
@@ -292,6 +301,11 @@ PrepareAnswer decode_prepare_answer(std::span<const uint8_t> bytes) {
     state.accepted = get_ballot(in);
     state.value = get_value(in);
     state.changed_at = get_ballot(in);
+    state.summary = in.bytes(max_summary);
+    const auto held = in.u8();
+    if (held > 1) throw DecodeError("a name's has-value is 0 or 1");
+    state.has_value = held == 1;
+    if (state.value && !state.has_value) throw DecodeError("a value carried for a name that holds none");
     out.states.push_back(std::move(state));
   }
   in.finish();

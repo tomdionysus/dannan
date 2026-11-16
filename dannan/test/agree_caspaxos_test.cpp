@@ -247,6 +247,80 @@ TEST(Agreement, AForgottenNameStaysForgotten) {
   EXPECT_EQ(text(*acceptors.held[node(1)]["j"].value), "w");
 }
 
+// Value-less prepare (the design's "Value-less prepare and deltas"): an answer says whether
+// a value is held and carries the store's summary, and carries the value only when wanted.
+// A store that loaded value-less answers the same.
+TEST(ValueLess, APrepareWithoutValuesAnswersWhatIsHeldAndItsSummary) {
+  const AcceptorState stored{ballot(1, 1), ballot(1, 1), bytes("a megabyte"), ballot(1, 1), bytes("v3"), true};
+  const SlotState served{three, std::nullopt, Ballot{}};
+  Held held{served, {}, {bytes("k"), bytes("j")}, {stored, AcceptorState{}}};
+  Prepare request{three, std::nullopt, slot, ballot(2, 1), {bytes("k"), bytes("j")}, false};
+  const auto check = [&](const PrepareStep& step, bool carried) {
+    ASSERT_FALSE(step.answer.refused);
+    ASSERT_EQ(step.answer.states.size(), 2u);
+    const auto& k = step.answer.states[0];
+    EXPECT_EQ(k.accepted, ballot(1, 1));
+    EXPECT_EQ(k.changed_at, ballot(1, 1));
+    EXPECT_TRUE(k.has_value);
+    EXPECT_EQ(text(k.summary), "v3");
+    EXPECT_EQ(k.value.has_value(), carried);
+    if (carried) {
+      EXPECT_EQ(text(*k.value), "a megabyte");
+    }
+    EXPECT_FALSE(step.answer.states[1].has_value);
+    EXPECT_FALSE(step.answer.states[1].value);
+  };
+  check(on_prepare(node(1), node(1), request, held, genesis), false);
+  held.states[0].value.reset();
+  const auto loaded_without = on_prepare(node(1), node(1), request, held, genesis);
+  check(loaded_without, false);
+  // What it keeps is still held without its value, for the store to leave as it is.
+  ASSERT_TRUE(loaded_without.keep);
+  EXPECT_TRUE(loaded_without.keep->states[0].has_value);
+  EXPECT_EQ(loaded_without.keep->states[0].promised, ballot(2, 1));
+  held.states[0].value = bytes("a megabyte");
+  request.values = true;
+  check(on_prepare(node(1), node(1), request, held, genesis), true);
+}
+
+// An accept carries a whole value: the state holds it, or holds none for a tombstone, and its
+// summary is left empty for the store to give it.
+TEST(ValueLess, AnAcceptMarksTheValueHeldAndLeavesItsSummaryToTheStore) {
+  const AcceptorState stored{ballot(1, 1), ballot(1, 1), std::nullopt, ballot(1, 1), bytes("old"), true};
+  const Held held{{three, std::nullopt, Ballot{}}, {}, {bytes("k")}, {stored}};
+  const auto written =
+      on_accept(node(1), node(1), Accept{three, std::nullopt, slot, ballot(2, 1), {bytes("k")}, {bytes("new")}, {ballot(2, 1)}, {}, {}}, held, genesis);
+  ASSERT_TRUE(written.keep);
+  EXPECT_TRUE(written.keep->states[0].has_value);
+  EXPECT_EQ(text(*written.keep->states[0].value), "new");
+  EXPECT_TRUE(written.keep->states[0].summary.empty());
+  const auto deleted =
+      on_accept(node(1), node(1), Accept{three, std::nullopt, slot, ballot(2, 1), {bytes("k")}, {std::nullopt}, {ballot(2, 1)}, {}, {}}, held, genesis);
+  ASSERT_TRUE(deleted.keep);
+  EXPECT_FALSE(deleted.keep->states[0].has_value);
+  EXPECT_FALSE(deleted.keep->states[0].value);
+}
+
+// A purge forgets only a tombstone: a value loaded value-less is still a value.
+TEST(ValueLess, APurgeTellsATombstoneFromAValueLoadedWithoutIt) {
+  const Purge request{three, slot, ballot(2, 2), {bytes("k")}};
+  const SlotState served{three, std::nullopt, Ballot{}};
+  const Held value{served, {}, {bytes("k")}, {AcceptorState{ballot(2, 2), ballot(2, 2), std::nullopt, ballot(2, 2), {}, true}}};
+  EXPECT_EQ(on_purge(node(1), node(2), request, value).forgotten, 0u);
+  const Held tombstone{served, {}, {bytes("k")}, {AcceptorState{ballot(2, 2), ballot(2, 2), std::nullopt, ballot(2, 2), {}, false}}};
+  EXPECT_EQ(on_purge(node(1), node(2), request, tombstone).forgotten, 1u);
+}
+
+// The summary is the store's, but bounded: one over 64 bytes refuses the prepare, and nothing
+// is kept.
+TEST(ValueLess, ASummaryOverSixtyFourBytesIsRefused) {
+  const AcceptorState stored{ballot(1, 1), ballot(1, 1), std::nullopt, ballot(1, 1), Bytes(max_summary + 1, 7), true};
+  const Held held{{three, std::nullopt, Ballot{}}, {}, {bytes("k")}, {stored}};
+  const auto step = on_prepare(node(1), node(1), Prepare{three, std::nullopt, slot, ballot(2, 1), {bytes("k")}, false}, held, genesis);
+  EXPECT_TRUE(step.answer.refused);
+  EXPECT_FALSE(step.keep);
+}
+
 // A minority answers: nothing commits.
 TEST(Agreement, AMinorityCommitsNothing) {
   Acceptors acceptors;
@@ -687,6 +761,8 @@ TEST(AgreementWire, EveryMessageRoundTrips) {
   EXPECT_EQ(prepared.prepare.slot, slot);
   EXPECT_EQ(prepared.prepare.ballot, ballot(4, 1));
   EXPECT_EQ(prepared.prepare.names, prepare.prepare.names);
+  EXPECT_TRUE(prepared.prepare.values);
+  EXPECT_FALSE(decode_prepare(encode(PrepareMessage{"mimir", {three, std::nullopt, slot, ballot(4, 1), {binary}, false}})).prepare.values);
 
   const auto four = ReplicaSet::of({node(1), node(2), node(3), node(4)}, 2);
   const auto moving = decode_prepare(encode(PrepareMessage{"mimir", {three, four, slot, ballot(5, 1), {}}}));
@@ -705,14 +781,27 @@ TEST(AgreementWire, EveryMessageRoundTrips) {
   EXPECT_FALSE(accepted.accept.values[0]);
   EXPECT_EQ(accepted.accept.changed_at[0], ballot(2, 2));
 
-  const PrepareAnswer promise{std::nullopt, four, three, {binary, bytes("b")}, {{ballot(1, 1), bytes("v"), ballot(1, 1)}, {Ballot{}, std::nullopt, Ballot{}}}};
+  const PrepareAnswer promise{std::nullopt,
+                              four,
+                              three,
+                              {binary, bytes("b"), bytes("c")},
+                              {{ballot(1, 1), bytes("v"), ballot(1, 1), bytes("sum"), true},
+                               {Ballot{}, std::nullopt, Ballot{}, {}, false},
+                               {ballot(2, 1), std::nullopt, ballot(2, 1), Bytes(max_summary, 9), true}}};
   const auto promised = decode_prepare_answer(encode(promise));
-  ASSERT_EQ(promised.states.size(), 2u);
+  ASSERT_EQ(promised.states.size(), 3u);
   EXPECT_EQ(promised.served, four);
   EXPECT_EQ(promised.pending_from, three);
   EXPECT_EQ(promised.names, promise.names);
   EXPECT_EQ(text(*promised.states[0].value), "v");
+  EXPECT_EQ(text(promised.states[0].summary), "sum");
+  EXPECT_TRUE(promised.states[0].has_value);
   EXPECT_FALSE(promised.states[1].value);
+  EXPECT_FALSE(promised.states[1].has_value);
+  // Held, not carried: a value-less prepare's answer.
+  EXPECT_FALSE(promised.states[2].value);
+  EXPECT_TRUE(promised.states[2].has_value);
+  EXPECT_EQ(promised.states[2].summary, Bytes(max_summary, 9));
 
   const AcceptAnswer refusal{Refusal{"the slot is served by another replica set", ballot(9, 3), four, three}};
   const auto refused = decode_accept_answer(encode(refusal));
@@ -752,6 +841,21 @@ TEST(AgreementWire, RefusesWhatItCannotTrust) {
   auto trailing = encode(AcceptAnswer{});
   trailing.push_back(0);
   EXPECT_THROW(decode_accept_answer(trailing), net::DecodeError);
+  // A prepare's values flag other than 0 or 1.
+  auto flag = encode(PrepareMessage{"mimir", {three, std::nullopt, slot, ballot(4, 1), {bytes("k")}}});
+  flag.back() = 2;
+  EXPECT_THROW(decode_prepare(flag), net::DecodeError);
+  // An answer's has-value bit (its last byte) other than 0 or 1, or a value carried for a name
+  // that holds none.
+  const PrepareAnswer carried{std::nullopt, {}, {}, {}, {{ballot(1, 1), bytes("v"), ballot(1, 1), {}, true}}};
+  auto held = encode(carried);
+  held.back() = 2;
+  EXPECT_THROW(decode_prepare_answer(held), net::DecodeError);
+  held.back() = 0;
+  EXPECT_THROW(decode_prepare_answer(held), net::DecodeError);
+  // A summary over 64 bytes is neither sent nor taken.
+  const PrepareAnswer long_summary{std::nullopt, {}, {}, {}, {{ballot(1, 1), std::nullopt, ballot(1, 1), Bytes(max_summary + 1, 1), true}}};
+  EXPECT_THROW(encode(long_summary), std::invalid_argument);
 }
 
 // The fencing token's bytes order as the ballots do.

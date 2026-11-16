@@ -101,17 +101,26 @@ PrepareStep on_prepare(const identity::NodeId& self, const identity::NodeId& fro
     out.answer.refused = Refusal{"a higher ballot is promised", highest, std::nullopt, std::nullopt};
     return out;
   }
+  const auto answered = request.to ? held.states.size() : names;
+  for (size_t i = 0; i < answered; ++i)
+    if (held.states[i].summary.size() > max_summary) {
+      out.answer.refused = refusal("the store's summary of a name is over 64 bytes");
+      return out;
+    }
+  const auto answer_of = [&request](const AcceptorState& state) {
+    return NameState{state.accepted, request.values ? state.value : std::nullopt, state.changed_at, state.summary, holds_value(state)};
+  };
   Held keep = held;
   out.answer.served = held.slot.served;
   out.answer.pending_from = held.slot.pending_from;
   if (request.to) {
     keep.slot.promised = request.ballot;
     out.answer.names = held.names;
-    for (const auto& state : held.states) out.answer.states.push_back({state.accepted, state.value, state.changed_at});
+    for (const auto& state : held.states) out.answer.states.push_back(answer_of(state));
   } else {
     for (size_t i = 0; i < names; ++i) {
       keep.states[i].promised = request.ballot;
-      out.answer.states.push_back({held.states[i].accepted, held.states[i].value, held.states[i].changed_at});
+      out.answer.states.push_back(answer_of(held.states[i]));
     }
   }
   out.keep = std::move(keep);
@@ -162,6 +171,9 @@ AcceptStep on_accept(const identity::NodeId& self, const identity::NodeId& from,
     keep.states[i].promised = request.reserve.value_or(request.ballot);
     keep.states[i].accepted = request.ballot;
     keep.states[i].value = request.values[i];
+    keep.states[i].has_value = request.values[i].has_value();
+    // The store summarises the value it takes.
+    keep.states[i].summary.clear();
     keep.states[i].changed_at = request.changed_at[i];
   }
   if (request.to) {
@@ -216,7 +228,7 @@ PurgeStep on_purge(const identity::NodeId& self, const identity::NodeId& from, c
   for (size_t i = 0; i < request.names.size(); ++i) {
     auto& state = out.keep.states[i];
     // Only the tombstone itself: a newer write, or a state that never saw it, stays.
-    if (state.accepted != request.ballot || state.value) continue;
+    if (state.accepted != request.ballot || holds_value(state)) continue;
     out.keep.floor = std::max({out.keep.floor, state.promised, state.accepted});
     state = AcceptorState{};
     ++out.forgotten;
@@ -225,7 +237,7 @@ PurgeStep on_purge(const identity::NodeId& self, const identity::NodeId& from, c
 }
 
 Attempt::Attempt(ReplicaSet set, Slot slot, Ballot ballot, std::vector<Name> names, Change change, Reduce reduce, ReplicaSet genesis)
-    : _prepare{std::move(set), std::nullopt, slot, ballot, std::move(names)},
+    : _prepare{std::move(set), std::nullopt, slot, ballot, std::move(names), true},
       _change(std::move(change)),
       _reduce(std::move(reduce)),
       _genesis(std::move(genesis)) {
@@ -238,7 +250,7 @@ Attempt Attempt::transfer(ReplicaSet from, ReplicaSet to, Slot slot, Ballot ball
   if (ballot.zero()) throw std::invalid_argument("a ballot's counter starts at one");
   if (!(to.version > from.version)) throw std::invalid_argument("a transfer's new set has a version above the old one's");
   Attempt out;
-  out._prepare = Prepare{std::move(from), std::move(to), slot, ballot, {}};
+  out._prepare = Prepare{std::move(from), std::move(to), slot, ballot, {}, true};
   out._reduce = std::move(reduce);
   out._recipients = out._prepare.set.nodes;
   for (const auto& node : out._prepare.to->nodes)

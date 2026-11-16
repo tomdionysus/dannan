@@ -38,10 +38,13 @@ class AcceptorStore {
   // What is held for `names` in `slot`: the slot's record, the space's floor, and one
   // state per name in order (a name never seen is a default AcceptorState). With `every`,
   // `Held::names` and `Held::states` go on with every other name held in the slot, in any
-  // order: a transfer moves them all.
-  virtual void load(Slot slot, std::span<const Name> names, bool every, std::function<void(Held)> done) = 0;
+  // order: a transfer moves them all. Without `values`, each state's value is left empty,
+  // with `has_value` and `summary` saying what is held (a value-less prepare).
+  virtual void load(Slot slot, std::span<const Name> names, bool every, bool values, std::function<void(Held)> done) = 0;
   // Keeps all of `held` for `slot`: the record, the floor, and each name's state (a default
-  // state may be dropped). done(false) if it could not, and the request is refused.
+  // state may be dropped). A state with `has_value` and no value keeps the value and summary
+  // already held; a state carrying a value is given the store's summary of it, at most
+  // max_summary bytes. done(false) if it could not, and the request is refused.
   virtual void keep(Slot slot, const Held& held, std::function<void(bool)> done) = 0;
   // Whether this acceptor may vote: false after a restart that lost its state, until it
   // has caught up (the design's rule; a store that votes with lost state can commit two

@@ -78,6 +78,8 @@ struct Request {
   std::optional<Settle> settle;
   // The sender's slot table's fingerprint.
   uint64_t table = 0;
+  // Whether the store loads values: a value-less prepare's answers carry none.
+  bool values = true;
 };
 
 Request decode_request(const net::Message& message) {
@@ -85,19 +87,20 @@ Request decode_request(const net::Message& message) {
   Request out{};
   if (message.type == m::agree_prepare) {
     auto decoded = decode_prepare(message.payload);
+    const bool values = decoded.prepare.values;
     out =
         Request{Request::Kind::prepare, decoded.space, decoded.prepare.slot, decoded.prepare.names, decoded.prepare.to.has_value(), decoded.prepare, {}, {}, {},
-                decoded.table};
+                decoded.table,          values};
   } else if (message.type == m::agree_accept) {
     auto decoded = decode_accept(message.payload);
     out = Request{Request::Kind::accept, decoded.space, decoded.accept.slot, decoded.accept.names, decoded.accept.to.has_value(), {}, decoded.accept, {}, {},
-                  decoded.table};
+                  decoded.table,         true};
   } else if (message.type == m::agree_purge) {
     auto decoded = decode_purge(message.payload);
-    out = Request{Request::Kind::purge, decoded.space, decoded.purge.slot, decoded.purge.names, false, {}, {}, decoded.purge, {}, decoded.table};
+    out = Request{Request::Kind::purge, decoded.space, decoded.purge.slot, decoded.purge.names, false, {}, {}, decoded.purge, {}, decoded.table, true};
   } else {
     auto decoded = decode_settle(message.payload);
-    out = Request{Request::Kind::settle, decoded.space, decoded.settle.slot, {}, false, {}, {}, {}, decoded.settle, decoded.table};
+    out = Request{Request::Kind::settle, decoded.space, decoded.settle.slot, {}, false, {}, {}, {}, decoded.settle, decoded.table, true};
   }
   return out;
 }
@@ -252,9 +255,10 @@ struct Agreement::Core : std::enable_shared_from_this<Core> {
          answer = std::move(answer)](std::function<void()> done) mutable {
           const auto slot = request.slot;
           const auto every = request.every;
+          const auto values = request.values;
           auto names = request.names;
           space->store->load(
-              slot, names, every, [core, space, me, genesis, from, refusal, request = std::move(request), replied, answer, done](Held held) mutable {
+              slot, names, every, values, [core, space, me, genesis, from, refusal, request = std::move(request), replied, answer, done](Held held) mutable {
                 if (held.states.size() != held.names.size() || held.names.size() < request.names.size()) {
                   answer(refusal("the store loaded a different count"));
                   return done();
@@ -830,9 +834,10 @@ void Agreement::catch_up(std::string space, Slot slot, std::vector<Name> names, 
   read(space, slot, names, replicas, version, {}, deadline, executor, [core, space, slot, names, set, done = std::move(done)](Outcome outcome) mutable {
     const auto served = core->find(space);
     if (!outcome.committed || !served) return done(std::move(outcome));
-    served->store->load(slot, names, false, [core, space, served, slot, set, outcome = std::move(outcome), done = std::move(done)](Held held) mutable {
+    // Every state is replaced whole, so none is loaded with its value.
+    served->store->load(slot, names, false, false, [core, space, served, slot, set, outcome = std::move(outcome), done = std::move(done)](Held held) mutable {
       for (size_t i = 0; i < held.states.size() && i < outcome.values.size(); ++i)
-        held.states[i] = AcceptorState{outcome.ballot, outcome.ballot, outcome.values[i], outcome.changed_at[i]};
+        held.states[i] = AcceptorState{outcome.ballot, outcome.ballot, outcome.values[i], outcome.changed_at[i], {}, outcome.values[i].has_value()};
       held.slot.served = set;
       held.slot.pending_from.reset();
       served->store->keep(slot, held, [core, space, slot, record = held.slot, done = std::move(done), outcome = std::move(outcome)](bool kept) mutable {

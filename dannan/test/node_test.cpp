@@ -2256,7 +2256,7 @@ TEST(Node, ARestartOnASharedIoContextLeavesNothingBehind) {
 // An acceptor store as a hosted system would keep one in memory.
 class MemoryStore final : public agree::AcceptorStore {
  public:
-  void load(agree::Slot slot, std::span<const agree::Name> names, bool every, std::function<void(agree::Held)> done) override {
+  void load(agree::Slot slot, std::span<const agree::Name> names, bool every, bool values, std::function<void(agree::Held)> done) override {
     agree::Held out;
     {
       std::lock_guard lock(_mutex);
@@ -2274,6 +2274,8 @@ class MemoryStore final : public agree::AcceptorStore {
           out.states.push_back(state);
         }
     }
+    if (!values)
+      for (auto& state : out.states) state.value.reset();
     done(std::move(out));
   }
   void keep(agree::Slot slot, const agree::Held& held, std::function<void(bool)> done) override {
@@ -2281,7 +2283,13 @@ class MemoryStore final : public agree::AcceptorStore {
       std::lock_guard lock(_mutex);
       _slots[slot] = held.slot;
       _floor = held.floor;
-      for (size_t i = 0; i < held.names.size(); ++i) _held[{slot, std::string(held.names[i].begin(), held.names[i].end())}] = held.states[i];
+      for (size_t i = 0; i < held.names.size(); ++i) {
+        auto& kept = _held[{slot, std::string(held.names[i].begin(), held.names[i].end())}];
+        auto state = held.states[i];
+        // Held, not carried: the value stays as it is.
+        if (state.has_value && !state.value) state.value = kept.value;
+        kept = std::move(state);
+      }
     }
     done(true);
   }
