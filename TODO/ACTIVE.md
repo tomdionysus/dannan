@@ -190,7 +190,21 @@ gold-plating beyond what the design and its reviews ask.
         - **Still to do:** a whole resend larger than one message, in pieces; the "ballot only" accept. Both belong
           with `transfer()` in part 5. The fast path sends whole values.
         - The suite on node-a ran 813 tests: 812 passed and 1 skipped (it is skipped when run as root).
-     5. `transfer()` over all of it, then the simulator with large values and deltas under faults.
+     5. `transfer()` over all of it, then the simulator with large values and deltas under faults. **Built** at
+        `1c624d3`.
+        - A transfer is value-less, its bases fetched from holders in either set.
+        - An accept's third form is the ballot only (Kvasir's "already held"), for a value left as it is.
+        - Every compact form carries its base's ballot and summary, and the rule asks whole where either differs.
+        - An acceptor not heard from is sent the compact form and asks for what it lacks.
+        - Tests:
+          - `Held.*`;
+          - `Simulation.ATransferWhoseNewAcceptorsHoldTheValuesSendsNoValue` (every accept under 64 KiB);
+          - `Simulation.LargeValuesAndDeltasStayConsistentUnderFaults` (8 seeds; drops, duplicates, delays and a
+            crash; every append applied once).
+        - The suite on node-a ran 817 tests: 816 passed and 1 skipped (it is skipped when run as root).
+        - The store interface is final; Mimir and Kvasir were told.
+        - **Open:** Kvasir is asked whether a whole resend in pieces is still needed. Today a whole value in an accept
+          is one message, up to `max_value`. Once he answers, the branch merges to develop.
 
    Tests are named there: one-node genesis grown to five, the root unreachable, the fast path lost across a
    transfer.
