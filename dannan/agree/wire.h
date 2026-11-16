@@ -66,6 +66,8 @@ struct FetchMessage {
   uint64_t offset = 0;
   uint64_t table = 0;
   std::optional<Bytes> since{};
+  // A transfer's new set: the sender and the acceptor may be in either.
+  std::optional<ReplicaSet> to{};
 };
 // Refused; or not held (the acceptor has moved on from that ballot, or never held it); or
 // held, with the answer's whole size and the piece at `offset`. `past`: the answer is only

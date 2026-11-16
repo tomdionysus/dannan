@@ -672,6 +672,101 @@ TEST(Simulation, ADeltaIsAppliedInPlaceAndAnAcceptorBehindIsSentTheWholeValue) {
   EXPECT_EQ(decode(whole.result), megabyte.size() + 4);
 }
 
+// Kvasir's ranges: a transfer whose new acceptors were caught up beforehand by the store's own
+// means sends no value at all. Every prepare answer is value-less, every accept carries the
+// ballot only, and the new acceptors hold the value at the transfer's ballot.
+TEST(Simulation, ATransferWhoseNewAcceptorsHoldTheValuesSendsNoValue) {
+  World world(31);
+  Cluster cluster(world, 5, NetworkFaults{}, true, 3);
+  const auto told = [&](auto start) {
+    std::optional<agree::Outcome> out;
+    start([&](agree::Outcome outcome) { out = std::move(outcome); });
+    world.run_until([&] { return out.has_value(); }, 5'000'000);
+    world.run_until([] { return false; }, 200'000);
+    return out.value_or(agree::Outcome{});
+  };
+  constexpr agree::Slot moved_slot = 1;
+  const agree::Bytes megabyte(1024 * 1024, 'r');
+  const auto written = told([&](auto done) {
+    cluster.agreement(0).change(Cluster::space, moved_slot, {agree::Name{'m'}}, cluster.ids({0, 1, 2}), 0, put(megabyte), {}, 5000ms, world.io.get_executor(),
+                                done);
+  });
+  ASSERT_TRUE(written.committed) << written.why;
+  // Nodes 3 and 4 copy the range from node 0, as a store's own catch-up would.
+  const auto state = cluster.store(0).state(moved_slot, agree::Name{'m'});
+  ASSERT_TRUE(state);
+  for (const size_t at : {3, 4}) {
+    agree::Held copy;
+    copy.names = {agree::Name{'m'}};
+    copy.states = {*state};
+    cluster.store(at).keep(moved_slot, copy, [](Store::Kept kept) { ASSERT_TRUE(kept.kept); });
+  }
+  cluster.recording = true;
+  const auto moved = told([&](auto done) {
+    cluster.agreement(2).transfer(Cluster::space, moved_slot, cluster.ids({0, 1, 2}), 0, cluster.ids({2, 3, 4}), 1, 5000ms, world.io.get_executor(), done);
+  });
+  ASSERT_TRUE(moved.committed) << moved.why;
+  EXPECT_FALSE(a_prepare_answer_carried_a_value(cluster));
+  for (const auto& each : cluster.crossed)
+    if (each.type == net::message::agree_accept) {
+      EXPECT_LT(each.request_bytes, 64u * 1024) << "an accept to node " << each.to;
+    }
+  for (const size_t at : {3, 4}) {
+    const auto held = cluster.store(at).state(moved_slot, agree::Name{'m'});
+    ASSERT_TRUE(held);
+    EXPECT_EQ(held->accepted, moved.ballot);
+    ASSERT_TRUE(held->value);
+    EXPECT_EQ(*held->value, megabyte);
+  }
+}
+
+// Large values and deltas under faults: lost, duplicated and delayed messages, and a crash
+// and restart. Every append is a delta on a megabyte; a duplicated or replayed accept must
+// never apply one twice, and every committed append is where its result says.
+TEST(Simulation, LargeValuesAndDeltasStayConsistentUnderFaults) {
+  for (uint64_t seed = 1; seed <= seeds(8); ++seed) {
+    SCOPED_TRACE("seed " + std::to_string(seed));
+    World world(seed);
+    Cluster cluster(world, 3, NetworkFaults{20, 20, 20});
+    const auto change_at = [&](size_t at, agree::Change change) {
+      std::optional<agree::Outcome> out;
+      cluster.agreement(at).change(Cluster::space, counter_slot, {agree::Name{'m'}}, cluster.ids(), Cluster::genesis_version, std::move(change), {}, 5000ms,
+                                   world.io.get_executor(), [&](agree::Outcome outcome) { out = std::move(outcome); });
+      world.run_until([&] { return out.has_value(); }, 5'000'000);
+      return out.value_or(agree::Outcome{});
+    };
+    const agree::Bytes megabyte(1024 * 1024, '.');
+    bool based = false;
+    for (int tries = 0; tries < 5 && !based; ++tries) based = change_at(0, put(megabyte)).committed;
+    ASSERT_TRUE(based);
+    std::vector<std::pair<uint64_t, uint8_t>> committed;
+    for (uint8_t i = 0; i < 24; ++i) {
+      if (i == 12) {
+        cluster.crash(1);
+        cluster.restart(1);
+      }
+      const uint8_t byte = static_cast<uint8_t>('A' + i);
+      const auto outcome = change_at(i % 3, append_with_delta(byte));
+      if (outcome.committed) committed.emplace_back(decode(outcome.result), byte);
+    }
+    cluster.faults() = NetworkFaults{};
+    const auto read = change_at(0, [](std::span<const std::optional<agree::Bytes>> current) { return agree::Changed{{current[0]}, {}}; });
+    ASSERT_TRUE(read.committed) << read.why;
+    ASSERT_TRUE(read.values[0]);
+    const auto& value = *read.values[0];
+    ASSERT_GE(value.size(), megabyte.size());
+    EXPECT_TRUE(std::equal(megabyte.begin(), megabyte.end(), value.begin()));
+    // Each append once at most, in the place its result names.
+    std::set<uint8_t> seen;
+    for (size_t at = megabyte.size(); at < value.size(); ++at) EXPECT_TRUE(seen.insert(value[at]).second) << "applied twice: " << value[at];
+    for (const auto& [length, byte] : committed) {
+      ASSERT_LE(length, value.size());
+      EXPECT_EQ(value[length - 1], byte);
+    }
+    EXPECT_FALSE(committed.empty());
+  }
+}
+
 // The fast path through the runtime: a node's second change of the same names commits in
 // one round; another node's change in between sends its next one the full way, still
 // committed, and the counter counts every increment once.

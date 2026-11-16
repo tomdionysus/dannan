@@ -188,6 +188,14 @@ struct Accept {
   // `bases[i]`, not `values[i]` (left empty); the proposer still knows the whole value.
   std::vector<std::optional<Bytes>> deltas{};
   std::vector<Ballot> bases{};
+  // The ballot only (Kvasir's "already held"), one per name or none at all: where `held[i]` is
+  // 1, this acceptor already holds the value at exactly `bases[i]`, unchanged by the change,
+  // and is sent neither it nor a delta (`values[i]` left empty).
+  std::vector<uint8_t> held{};
+  // With the compact forms, each one's base summary: an acceptor at the base's ballot whose
+  // summary differs (a merge write outside agreement) holds another value, and asks whole.
+  // Empty: the ballot alone is checked.
+  std::vector<Bytes> summaries{};
 };
 
 // Refused; or, for an accept whose deltas this acceptor could not take (its state not at a
@@ -312,6 +320,8 @@ class Attempt {
   struct Wanted {
     size_t id = 0;
     size_t name = 0;
+    // The name itself (a transfer's names are the promisers', not the prepare's).
+    Name key;
     std::optional<size_t> answer;
     Ballot ballot;
     std::optional<Bytes> since;
@@ -337,8 +347,8 @@ class Attempt {
   // change is already in it: the attempt commits it unchanged and reports that result, so a
   // retry after a partial accept never applies the change twice.
   void own(std::vector<std::pair<Ballot, Bytes>> earlier) { _own = std::move(earlier); }
-  // Asks for no values where it can: a plain change, not yet prepared. Its answers then say
-  // what is held, and once a majority has promised the attempt is fetching until every base
+  // Asks for no values where it can: a change or a transfer, not yet prepared. Its answers then
+  // say what is held, and once enough have promised the attempt is fetching until every base
   // that holds a value, and every answer the reduction asks for, is in. Returns whether it
   // asks for none.
   bool value_less();
@@ -360,8 +370,10 @@ class Attempt {
   // No holder gave a base's value: refused, for another ballot.
   void unfetched(std::string why);
   // The accept as `node` is sent it, from `accept` (the attempt's, with anything the runtime
-  // added): a delta only where `node` answered the prepare holding that delta's base (ballot
-  // and summary) and has not asked for that name whole; everything else whole.
+  // added). For a name whose base holds a value, unless `node` answered the prepare holding
+  // something else or has asked for it whole: the ballot only if the value is unchanged, else
+  // the delta if the change gave one, each with the base's ballot and summary. A node not heard
+  // from is sent these too, and asks for what it lacks whole. Everything else whole.
   Accept accept_for(const identity::NodeId& node, Accept accept) const;
   // An answer to the accept. An acceptor that needs names whole is not counted: the accept to
   // send it again, with those names whole. One that needs whole a name it was sent whole is
@@ -399,6 +411,11 @@ class Attempt {
   void want(size_t name, std::optional<size_t> answer, const NameState& of, std::optional<Bytes> since);
   // A plain change's accept from its names' current values.
   Accept change_bases(std::vector<std::optional<Bytes>> current);
+  // A transfer's accept: every name's current value, unchanged by any change.
+  Accept transfer_bases(std::vector<std::optional<Bytes>> current);
+  // Once `_names`, `_per_name` and `_from` are set: the bases, then fetching or reducing.
+  std::optional<Accept> gather();
+  void note_unchanged(const Accept& accept);
   std::optional<Accept> transfer_accept();
   // The accept made: the attempt is accepting.
   Accept accepting(Accept accept);
@@ -413,9 +430,13 @@ class Attempt {
   std::vector<identity::NodeId> _heard;
   std::vector<PrepareAnswer> _answers;  // per promise
   std::vector<identity::NodeId> _promised;
-  // A plain change's base per name, and the answers it came from, once a majority promised.
+  // Once enough have promised: the names (a transfer's, every one any promiser holds), each
+  // one's base, its answers and who gave each, and whether the accept leaves it unchanged.
+  std::vector<Name> _names;
   std::vector<NameState> _bases;
   std::vector<std::vector<NameState>> _per_name;
+  std::vector<std::vector<identity::NodeId>> _from;
+  std::vector<uint8_t> _unchanged;
   // Each name's current value once reduced, and the answers its reduction has asked for.
   std::vector<std::optional<std::optional<Bytes>>> _current;
   std::vector<std::vector<size_t>> _asked;

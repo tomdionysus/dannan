@@ -160,17 +160,27 @@ net::Bytes encode(const AcceptMessage& message) {
   if (message.accept.fast_from) put(out, *message.accept.fast_from);
   out.u8(message.accept.reserve ? 1 : 0);
   if (message.accept.reserve) put(out, *message.accept.reserve);
-  // Deltas: none, or one entry per name, each absent or a base ballot and the delta.
+  // Compact forms: none, or one entry per name: 0 whole, 1 a base ballot and the delta, 2 a
+  // base ballot only (already held).
   const auto& accept = message.accept;
-  if (!accept.deltas.empty() && (accept.deltas.size() != accept.names.size() || accept.bases.size() != accept.names.size()))
+  const auto count = accept.names.size();
+  const bool compact = !accept.deltas.empty() || !accept.held.empty();
+  if ((!accept.deltas.empty() && accept.deltas.size() != count) || (!accept.held.empty() && accept.held.size() != count) ||
+      (compact && accept.bases.size() != count) || (!accept.summaries.empty() && accept.summaries.size() != count))
     throw std::invalid_argument("an accept's deltas name a different count");
-  out.u8(accept.deltas.empty() ? 0 : 1);
-  for (size_t i = 0; i < accept.deltas.size(); ++i) {
-    out.u8(accept.deltas[i] ? 1 : 0);
-    if (!accept.deltas[i]) continue;
-    put(out, accept.bases[i]);
-    out.bytes(*accept.deltas[i]);
-  }
+  out.u8(compact ? 1 : 0);
+  if (compact)
+    for (size_t i = 0; i < count; ++i) {
+      const bool held = !accept.held.empty() && accept.held[i];
+      const bool delta = !accept.deltas.empty() && accept.deltas[i];
+      out.u8(held ? 2 : delta ? 1 : 0);
+      if (!held && !delta) continue;
+      put(out, accept.bases[i]);
+      const auto& summary = accept.summaries.empty() ? Bytes{} : accept.summaries[i];
+      if (summary.size() > max_summary) throw std::invalid_argument("a base's summary is at most 64 bytes");
+      out.bytes(summary);
+      if (delta && !held) out.bytes(*accept.deltas[i]);
+    }
   return out.take();
 }
 
@@ -300,14 +310,20 @@ AcceptMessage decode_accept(std::span<const uint8_t> bytes) {
   if (deltas) {
     const auto count = out.accept.names.size();
     out.accept.deltas.resize(count);
+    out.accept.held.resize(count, 0);
     out.accept.bases.resize(count);
+    out.accept.summaries.resize(count);
     for (size_t i = 0; i < count; ++i) {
-      const auto present = in.u8();
-      if (present > 1) throw DecodeError("a delta's presence is 0 or 1");
-      if (!present) continue;
+      const auto form = in.u8();
+      if (form > 2) throw DecodeError("a name's form is 0, 1 or 2");
+      if (!form) continue;
       out.accept.bases[i] = get_ballot(in);
-      out.accept.deltas[i] = in.bytes(max_value);
-      if (out.accept.values[i]) throw DecodeError("a name carried both whole and as a delta");
+      out.accept.summaries[i] = in.bytes(max_summary);
+      if (form == 1)
+        out.accept.deltas[i] = in.bytes(max_value);
+      else
+        out.accept.held[i] = 1;
+      if (out.accept.values[i]) throw DecodeError("a name carried in two forms");
     }
   }
   in.finish();
@@ -369,6 +385,7 @@ net::Bytes encode(const FetchMessage& message) {
   out.u64(message.offset);
   if (message.since && message.since->size() > max_summary) throw std::invalid_argument("a fetch's since is a summary, at most 64 bytes");
   put(out, message.since);
+  put(out, message.to);
   return out.take();
 }
 
@@ -400,6 +417,7 @@ FetchMessage decode_fetch(std::span<const uint8_t> bytes) {
   const auto since = in.u8();
   if (since > 1) throw DecodeError("a fetch's since's presence is 0 or 1");
   if (since) out.since = in.bytes(max_summary);
+  out.to = get_optional_set(in, "a transfer's set");
   in.finish();
   return out;
 }

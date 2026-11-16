@@ -341,8 +341,9 @@ struct Agreement::Core : std::enable_shared_from_this<Core> {
       return net::Message{m::agree_fetch_reply, encode(FetchAnswer{refusal_of(std::move(why)), false, 0, 0, {}}), {}};
     };
     if (fetch.table != fingerprint) return refusal("the sender's slot table (count or genesis set) differs from this node's");
-    if (!fetch.set.contains(self)) return refusal("this node is not in the replica set named");
-    if (!fetch.set.contains(from)) return refusal("the sender is not in the replica set named");
+    const auto in_either = [&fetch](const identity::NodeId& node) { return fetch.set.contains(node) || (fetch.to && fetch.to->contains(node)); };
+    if (!in_either(self)) return refusal("this node is not in the replica set named");
+    if (!in_either(from)) return refusal("the sender is not in the replica set named");
     if (!space->store->ready()) return refusal("this acceptor is catching up");
     space->enqueue(
         [space, fetch = std::move(fetch), refusal, answer = std::move(answer)](std::function<void()> done) mutable {
@@ -482,12 +483,10 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
         return send_accept(*attempt->accept());
       }
     attempt = std::make_unique<Attempt>(finishing ? Attempt::transfer(finishing->first, finishing->second, slot, ballot) : make(ballot));
-    if (!attempt->prepare().to) {
-      attempt->own(sent);
-      // No answer carries a value; the bases are fetched, from this node's own acceptor when it
-      // holds them (a change with a reduction still asks for every value).
-      attempt->value_less();
-    }
+    if (!attempt->prepare().to) attempt->own(sent);
+    // No answer carries a value; the bases are fetched, from this node's own acceptor when it
+    // holds them.
+    attempt->value_less();
     outstanding = attempt->recipients().size();
     const auto request = encode(PrepareMessage{space, attempt->prepare(), core->fingerprint});
     for (const auto& node : attempt->recipients())
@@ -516,6 +515,7 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
   struct Fetching {
     size_t id = 0;
     size_t name = 0;
+    Name key;
     Ballot ballot;
     std::optional<Bytes> since;
     std::vector<identity::NodeId> holders;
@@ -537,6 +537,7 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
       auto fetching = std::make_shared<Fetching>();
       fetching->id = wanted.id;
       fetching->name = wanted.name;
+      fetching->key = wanted.key;
       fetching->ballot = wanted.ballot;
       fetching->since = wanted.since;
       fetching->holders = wanted.holders;
@@ -552,8 +553,8 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
       return settle_or_retry();
     }
     const auto& prepare = attempt->prepare();
-    const auto request = encode(
-        FetchMessage{space, prepare.set, slot, prepare.names[fetching->name], fetching->ballot, fetching->value.size(), core->fingerprint, fetching->since});
+    const auto request =
+        encode(FetchMessage{space, prepare.set, slot, fetching->key, fetching->ballot, fetching->value.size(), core->fingerprint, fetching->since, prepare.to});
     core->send(fetching->holders[fetching->holder], net::message::agree_fetch, request, left(),
                [self = shared_from_this(), at = generation, fetching](std::optional<net::Bytes> answer, std::string) {
                  asio::post(self->strand, [self, at, fetching, answer = std::move(answer)] { self->fetched_piece(at, fetching, answer); });
@@ -602,10 +603,18 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
       reserved = accept.reserve;
     }
     outstanding = attempt->recipients().size();
-    // One message for all, unless deltas make it differ by recipient.
-    const auto shared = accept.deltas.empty() ? std::optional<net::Bytes>(encode(AcceptMessage{space, accept, core->fingerprint})) : std::nullopt;
-    for (const auto& to : attempt->recipients())
-      send_accept_to(to, shared ? *shared : encode(AcceptMessage{space, attempt->accept_for(to, accept), core->fingerprint}));
+    // Each recipient's own form: the ballot only or a delta where it holds the base, else whole.
+    // Every recipient sent the whole accept shares one encoding.
+    std::optional<net::Bytes> whole;
+    for (const auto& to : attempt->recipients()) {
+      auto mine = attempt->accept_for(to, accept);
+      if (!mine.deltas.empty() || !mine.held.empty()) {
+        send_accept_to(to, encode(AcceptMessage{space, std::move(mine), core->fingerprint}));
+        continue;
+      }
+      if (!whole) whole = encode(AcceptMessage{space, std::move(mine), core->fingerprint});
+      send_accept_to(to, *whole);
+    }
   }
 
   void send_accept_to(const identity::NodeId& to, net::Bytes request) {
