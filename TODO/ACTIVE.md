@@ -133,6 +133,17 @@ local commits from `fbcbb90` on, need a push, which waits on the maintainer's wo
      the record, the decide and the finishing;
    - a pluggable conflict rule (the maintainer ruled that a decided or replicated commit wins over an undecided one);
    - a commit stamp by the hybrid clock at decide.
+9. **Ruled (the maintainer, 2026-11-16, relayed by Lir): both calls below in 0.9, no 0.8.x stopgap.** Lir holds a new prefix's
+   SUBACK until the advert is held or the deadline passes. On a miss it grants the subscription and logs the peers that
+   missed it. The ask: push a changed advert and learn who holds it.
+   - The finding: on Lir's cluster a QoS 1 publish right after a SUBACK on another node is lost for that subscriber.
+     It was delivered 0 of 20 times at 0 ms and 8 of 8 at 5 s. The cause is the interest advert travelling at heartbeat
+     pace (`net/fanout.h:29`), and nothing records the gap.
+   - Recommended:
+     - `Nodes::advertise(key, value, deadline, executor, done)`, which sends the changed self record over the members
+       exchange (type 2) to every active peer and reports held and missed;
+     - `Fanout::subscribe(..., deadline, executor, done)` on top of it.
+   - A virtual interface addition, so 0.9.
 8. **Export the fuzz harness** (Kvasir's ask, 2026-11-15; Mimir wants it too), so hosted systems link it rather than
    copy it (the stack's rule 3): `fuzz/fuzz.h`'s Target and Registration, `targets()`, the replay driver, and
    `fuzz_smoke_test.cpp`'s mutate and seeds-then-mutations-then-noise loop as a callable, installed header-only with
@@ -149,7 +160,11 @@ local commits from `fbcbb90` on, need a push, which waits on the maintainer's wo
 so it may roll its upgrade one node at a time.
 
 **Where things are built and tested** (the maintainer, 2026-11-14: "STOP all builds on the Mac now. Use the RPi cluster only."):
-- Never build or run tests on the Mac. Editing, git, gh, reading CI logs and clang-format are fine.
+- Never build or run tests on the Mac. Editing, git, gh, reading CI logs and clang-format are fine. The one exception
+  (the maintainer, 2026-11-16, told to every session): "TSan may be run on the mac IF AND ONLY IF bughunting." Since 2026-11-16
+  every Pi boots the 4K-page kernel (the maintainer had the cluster manager switch them), so g++ TSan runs on all four and clang
+  19 TSan on all but node-d. No sanitizer builds on node-d: it has 4 GB, and Dannan's ASan build hung it. Use node-b or
+  node-c, after `free -m`.
 - Hosted CI (`.github/workflows/ci.yml`) is the gate: 15 jobs on Debian x86-64 and arm64 and macOS, with `abi`
   against the minor's last tag. To run it on a feature branch, add a temporary commit putting the branch in
   `on.push.branches`, and drop it before the merge with `git rebase --onto X^ X`. Its logs come down with

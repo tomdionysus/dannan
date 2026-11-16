@@ -14,6 +14,7 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/strand.hpp>
 #include <fstream>
@@ -128,6 +129,54 @@ TEST(Node, TwoNodesFormOneCluster) {
     return std::any_of(all.begin(), all.end(), [&](const status::Telemetry& t) { return t.node_id() == b && t.text(status::field::version) == "0.1.0-test"; });
   }));
   EXPECT_TRUE(eventually([&] { return pair.b->context().nodes().latency(a).has_value(); }));
+}
+
+// Lir's TSan report against 0.8.3 (run 43773090610): nodes joining while adverts change and
+// dials run, in one process on one io_context of four threads. A dial's handshake carries a
+// copy of its node's record and the server observes the peer's; neither may share anything
+// with the other or with the roster. Every join completes, and under TSan nothing races.
+TEST(Node, NodesJoinWhileAdvertsChangeAndNothingIsShared) {
+  Io io;
+  test::TempDir dir;
+  const auto key = cluster_key(dir.path());
+  Node a(io.context, config(dir.path() / "a", key));
+  a.start();
+  std::atomic<bool> churning{true};
+  // The node joining this round, held under the mutex while the churn uses it.
+  std::mutex joining_mutex;
+  Node* joining = nullptr;
+  // Adverts change on both sides throughout, as a hosted system's subscriptions do.
+  std::thread churn([&] {
+    for (uint64_t i = 0; churning; ++i) {
+      const auto name = "interest/" + std::to_string(i % 7);
+      const net::Bytes value(1 + i % 13, static_cast<uint8_t>(i));
+      a.context().nodes().advertise(name, value);
+      if (i % 3 == 0) a.context().nodes().withdraw(name);
+      std::lock_guard lock(joining_mutex);
+      if (!joining) continue;
+      joining->context().nodes().advertise(name, value);
+      if (i % 3 == 0) joining->context().nodes().withdraw(name);
+      std::this_thread::yield();
+    }
+  });
+  for (int round = 0; round < 12; ++round) {
+    auto b = std::make_unique<Node>(io.context, config(dir.path() / ("b" + std::to_string(round)), key, {{"127.0.0.1", a.port()}}));
+    b->start();
+    {
+      std::lock_guard lock(joining_mutex);
+      joining = b.get();
+    }
+    const auto id = b->context().identity().id();
+    EXPECT_TRUE(eventually([&] { return knows(a, id) && knows(*b, a.context().identity().id()); })) << "round " << round;
+    {
+      std::lock_guard lock(joining_mutex);
+      joining = nullptr;
+    }
+    b->stop();
+  }
+  churning = false;
+  churn.join();
+  a.stop();
 }
 
 // The transport writes through the sink the node was given, so a hosted
