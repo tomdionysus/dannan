@@ -484,6 +484,20 @@ has no merging reduction. Two needs, which replace any store-driven catch-up hoo
    - a base the store holds but cannot apply the delta to (its own check fails) answers `need_whole`, not an error,
      so the proposer resends whole.
 
+**Found in building part 4 (2026-11-16): `apply()` as its own call breaks atomicity.**
+- An accept changes the ballots of every name it carries and, at a delta's name, the value. With a separate
+  `apply(slot, name, base_ballot, new_ballot, delta)` followed by `keep()`, a crash between the two leaves the store's
+  value at the new ballot while its recorded state says the old one. The next prepare answers the old ballot and the
+  new value, so a fetch by ballot gives the wrong bytes.
+- With several names, `apply()` can succeed for one name and answer `need_whole` for another. The first is then
+  applied though the accept as a whole is not taken.
+- **Proposed:** the delta goes into `keep()`. A state in `Held` may carry `delta` and `base` (its base ballot).
+  `keep()` applies every delta and keeps the whole of `held`, all of it or nothing, and answers
+  `Kept{kept, need_whole}`, naming the names whose delta it could not apply (Kvasir's own-check case). An acceptor
+  whose recorded state is not at the base answers `need_whole` from the rule itself, before the store is asked.
+  Mimir's and Kvasir's points stand: applied in place, as durable as a whole accept, and no bytes in and out.
+- Waiting on the maintainer's choice before part 4 is built.
+
 **Tests named:**
 - a megabyte register changed with no prepare answer carrying its value;
 - a value larger than one message fetched, and resent whole, in pieces;
