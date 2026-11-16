@@ -265,6 +265,31 @@ gold-plating beyond what the design and its reviews ask.
    - the history with faults and resolutions;
    - the checkers and the broken-protocol list;
    - `dannan_sim_checkers`.
+
+   Phase one is built already: the world, its generator, `SimTime`, and a cluster with message faults and store
+   crashes, wipes and lying syncs. Agreement runs on it with a counter-only check. In order, each with its tests and
+   commit (2026-11-16):
+   1. **The history and the linearizability checker.** `history.h` holds operations with an id, client, keys,
+      invocation, response (ok, none or cancelled), optional resolution, and the faults as events.
+      `dannan_sim_checkers` is a static library holding the Wing-Gong search over owner-supplied models: state as
+      bytes; a model answers the allowed next states for an operation and its result, more than one allowed; groups
+      of keys are split by the operations that touch them; an operation with no response may or may not take
+      effect. The counter simulation moves onto it.
+   2. **Agreement's own invariants on every step**, and the broken protocols, each refused with its seed:
+      - voting after losing state (exists);
+      - a proposer skipping prepare;
+      - an acceptor accepting below its promise;
+      - a reducer rolling the base back;
+      - a lying sync trusted;
+      - two proposers with different rosters naming different sets;
+      - a reducer dropping a `replicated` merge write.
+   3. **Correlated kills** (a majority at one step), and the durability rules per `ack_level` judged against the
+      faults in the history.
+   4. **Membership, Routes and placement in the world.** This needs a transport seam under the node. A design note
+      goes to Kvasir and Mimir first.
+   5. **The transaction checker** (Adya cycles by isolation level, Kvasir's model), the convergence checker
+      (Mimir's merge class), client actors, and the worker pool in the world.
+   6. **`SimDisk`** on the durable-file contract, once Dagda says which one (asked; still open).
 4. **The file-system interface** (`2026-11-15-file-system-interface.md`, Dagda's review taken).
 5. **The hybrid clock** (`2026-11-15-hlc-design.md`, reviewed).
 6. **The rest of 0.9.0:**
