@@ -1,5 +1,20 @@
 # Current release
 
+## 0.8.5: a sign-in's back-off, and a node destroyed after its io stopped
+
+`listen::Backoff` (`dannan/listen/backoff.h`, header-only): failed sign-ins per key (a
+principal, a source address), answered with a growing wait rather than a lock, so knowing a
+user's name cannot lock them out. Some free failures, then a wait doubling up to a ceiling,
+forgotten after an idle time; keys bounded by pruning the forgotten; on injected time;
+thread-safe. Ask it before any costly check. Lugh's, moved into Dannan so Lugh and Kvasir
+link one copy.
+
+Fixed: a node stopped while its io ran, then destroyed after the io had stopped, hung in its
+client's and its server's second stop, each of which posted to the stopped io and waited for
+it (Louhi). A second stop now waits only for what is still in flight.
+
+The ABI is 0.8.0's.
+
 ## 0.8.4: StartTLS with no answer, a stoppable wait for node events, and a deferred answer's slot freed in time
 
 `Stream::start_tls_unanswered(done)`: StartTLS for a protocol that sends no answer, where
