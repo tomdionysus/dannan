@@ -331,6 +331,8 @@ net::Bytes encode(const FetchMessage& message) {
   out.bytes(message.name);
   put(out, message.ballot);
   out.u64(message.offset);
+  if (message.since && message.since->size() > max_summary) throw std::invalid_argument("a fetch's since is a summary, at most 64 bytes");
+  put(out, message.since);
   return out.take();
 }
 
@@ -358,6 +360,9 @@ FetchMessage decode_fetch(std::span<const uint8_t> bytes) {
   out.ballot = get_ballot(in);
   out.offset = in.u64();
   if (out.offset > max_value) throw DecodeError("a fetch's offset is past the largest value");
+  const auto since = in.u8();
+  if (since > 1) throw DecodeError("a fetch's since's presence is 0 or 1");
+  if (since) out.since = in.bytes(max_summary);
   in.finish();
   return out;
 }

@@ -241,12 +241,30 @@ struct Changed {
 };
 using Change = std::function<Changed(std::span<const std::optional<Bytes>> current)>;
 
-// How a majority's answers for one name become its current value (Mimir's review, ask
-// B). Given the highest-ballot answer (the base) and every answer; the default is the
-// base's value. Contract: the result is the base advanced by zero or more operations,
-// each later than the base's commit in the owner's total order and not already in it;
-// never rolled back to an earlier state; deterministic over its input.
-using Reduce = std::function<std::optional<Bytes>(const NameState& base, std::span<const NameState> answers)>;
+// What a reduction makes of one name's answers: its value (none: absent); or, before it can
+// say, the answers whose values it needs.
+struct Reduced {
+  // One answer's value, by its index in `answers`: whole, or with `since` (a summary, the
+  // owner's) only what the holder keeps past it, in the owner's own form (Mimir: the merge
+  // operations past a frontier).
+  struct Need {
+    size_t answer = 0;
+    std::optional<Bytes> since{};
+  };
+  std::optional<Bytes> value{};
+  std::vector<Need> need{};
+};
+
+// How a majority's answers for one name become its current value (Mimir's review, ask B,
+// and option (a) of the design's "Value-less prepare and deltas"). Given the highest-ballot
+// answer (the base), with its value, and every answer, each with its summary; an answer's
+// value is there only when the prepare carried values or the reduction asked for it. It
+// returns the value, or what it needs; once that is fetched it is called again, with those
+// values in. Asking twice for one answer refuses the attempt. The default is the base's
+// value. Contract: the result is the base advanced by zero or more operations, each later
+// than the base's commit in the owner's total order and not already in it; never rolled
+// back to an earlier state; deterministic over its input.
+using Reduce = std::function<Reduced(const NameState& base, std::span<const NameState> answers)>;
 
 // One proposer's attempt under one ballot: prepare, reduce, change, accept. Fed each answer
 // as it arrives, in any order; once committed or refused it ignores more.
@@ -262,12 +280,18 @@ class Attempt {
  public:
   enum class Phase : uint8_t { preparing, fetching, accepting, committed, refused };
 
-  // A base to fetch (the design's "Value-less prepare and deltas"): the index of its name,
-  // the ballot whose value it is, and the promisers that answered holding exactly that
-  // ballot, in node order. Any of them has the same value, so a fetch may move between them.
+  // A value to fetch (the design's "Value-less prepare and deltas"): a name's base, or an
+  // answer the owner's reduction asked for. The index of the name, and of the answer (none:
+  // the base); the ballot whose value it is; the summary to fetch past (none: the whole
+  // value); and the promisers that answered holding exactly that ballot with the same
+  // summary, in node order. Any of them holds the same value, so a fetch may move between
+  // them. `id` names it to fetched().
   struct Wanted {
+    size_t id = 0;
     size_t name = 0;
+    std::optional<size_t> answer;
     Ballot ballot;
+    std::optional<Bytes> since;
     std::vector<identity::NodeId> holders;
   };
 
@@ -290,9 +314,10 @@ class Attempt {
   // change is already in it: the attempt commits it unchanged and reports that result, so a
   // retry after a partial accept never applies the change twice.
   void own(std::vector<std::pair<Ballot, Bytes>> earlier) { _own = std::move(earlier); }
-  // Asks for no values where it can: a plain change with no reduction, not yet prepared. Its
-  // answers then say what is held, and once a majority has promised the attempt is fetching
-  // until every base that holds a value is in. Returns whether it asks for none.
+  // Asks for no values where it can: a plain change, not yet prepared. Its answers then say
+  // what is held, and once a majority has promised the attempt is fetching until every base
+  // that holds a value, and every answer the reduction asks for, is in. Returns whether it
+  // asks for none.
   bool value_less();
 
   const Prepare& prepare() const noexcept { return _prepare; }
@@ -303,11 +328,11 @@ class Attempt {
   // An answer to the prepare; the accept to send to every recipient once enough have
   // promised, and only then.
   std::optional<Accept> on_prepare(const identity::NodeId& from, const PrepareAnswer& answer);
-  // Fetching: the bases still to fetch.
+  // Fetching: the values still to fetch.
   const std::vector<Wanted>& wanted() const noexcept { return _wanted; }
-  // The value of the base of name `name`, fetched by its ballot; the accept to send once every
-  // base is in. Ignored unless fetching and that base is still wanted.
-  std::optional<Accept> fetched(size_t name, Bytes value);
+  // The value of `wanted()`'s entry `id`, fetched by its ballot (past its `since`, if it has
+  // one); the accept to send once everything is in. Ignored unless fetching and still wanted.
+  std::optional<Accept> fetched(size_t id, Bytes value);
   // No holder gave a base's value: refused, for another ballot.
   void unfetched(std::string why);
   void on_accept(const identity::NodeId& from, const AcceptAnswer& answer);
@@ -335,8 +360,14 @@ class Attempt {
   // Whether `nodes` hold a majority of the set, and of `to` for a transfer.
   bool enough(const std::vector<identity::NodeId>& nodes) const;
   std::optional<Accept> plain_accept();
-  // A plain change's accept from its bases, every one with its value in.
-  Accept change_bases();
+  // Once every base is in: each name reduced, fetching what a reduction asks for, then the
+  // change's accept. None while fetching, or once refused.
+  std::optional<Accept> reduce_names();
+  // Adds a value to fetch: from the promisers that answered `name` with `of`'s ballot and
+  // summary.
+  void want(size_t name, std::optional<size_t> answer, const NameState& of, std::optional<Bytes> since);
+  // A plain change's accept from its names' current values.
+  Accept change_bases(std::vector<std::optional<Bytes>> current);
   std::optional<Accept> transfer_accept();
   // The accept made: the attempt is accepting.
   Accept accepting(Accept accept);
@@ -354,7 +385,11 @@ class Attempt {
   // A plain change's base per name, and the answers it came from, once a majority promised.
   std::vector<NameState> _bases;
   std::vector<std::vector<NameState>> _per_name;
+  // Each name's current value once reduced, and the answers its reduction has asked for.
+  std::vector<std::optional<std::optional<Bytes>>> _current;
+  std::vector<std::vector<size_t>> _asked;
   std::vector<Wanted> _wanted;
+  size_t _next_wanted = 0;
   std::vector<identity::NodeId> _accepted;
   std::vector<identity::NodeId> _refusers;
   std::optional<Accept> _accept;

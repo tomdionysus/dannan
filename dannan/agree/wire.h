@@ -52,9 +52,11 @@ struct SettleMessage {
   uint64_t table = 0;
 };
 
-// A value-less prepare's base, fetched from a promiser that holds it (the design's
-// "Value-less prepare and deltas"): the value of `name` that the acceptor holds at exactly
-// `ballot`, from `offset`. The sender and the acceptor are both in `set`. Changes nothing.
+// A value-less prepare's base, or an answer the owner's reduction asked for, fetched from a
+// promiser that holds it (the design's "Value-less prepare and deltas"): the value of `name`
+// that the acceptor holds at exactly `ballot`, from `offset`; with `since` (a summary, at
+// most max_summary bytes), only what the store keeps past it, in the owner's form. The sender
+// and the acceptor are both in `set`. Changes nothing.
 struct FetchMessage {
   std::string space;
   ReplicaSet set;
@@ -63,6 +65,7 @@ struct FetchMessage {
   Ballot ballot;
   uint64_t offset = 0;
   uint64_t table = 0;
+  std::optional<Bytes> since{};
 };
 // Refused; or not held (the acceptor has moved on from that ballot, or never held it); or
 // held, with the value's whole size and the piece at `offset`.

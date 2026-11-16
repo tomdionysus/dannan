@@ -339,12 +339,14 @@ TEST(ValueLess, ABaseIsFetchedByItsBallotFromThePromisersHoldingIt) {
   ASSERT_EQ(attempt.phase(), Attempt::Phase::fetching);
   ASSERT_EQ(attempt.wanted().size(), 1u);
   EXPECT_EQ(attempt.wanted()[0].name, 0u);
+  EXPECT_FALSE(attempt.wanted()[0].answer);
+  EXPECT_FALSE(attempt.wanted()[0].since);
   EXPECT_EQ(attempt.wanted()[0].ballot, ballot(1, 1));
   // The majority that promised first, both holding the base.
   EXPECT_EQ(attempt.wanted()[0].holders, (std::vector<identity::NodeId>{node(1), node(2)}));
-  // A fetch for a name not wanted is ignored.
-  EXPECT_FALSE(attempt.fetched(1, bytes("x")));
-  const auto accept = attempt.fetched(0, bytes("v"));
+  // A fetch not wanted is ignored.
+  EXPECT_FALSE(attempt.fetched(attempt.wanted()[0].id + 1, bytes("x")));
+  const auto accept = attempt.fetched(attempt.wanted()[0].id, bytes("v"));
   ASSERT_TRUE(accept);
   EXPECT_EQ(attempt.phase(), Attempt::Phase::accepting);
   EXPECT_EQ(text(*accept->values[0]), "v+");
@@ -395,25 +397,101 @@ TEST(ValueLess, NoHolderGivingTheBaseRefusesTheAttempt) {
   ASSERT_TRUE(attempt.value_less());
   for (const auto& at : three.nodes) attempt.on_prepare(at, acceptors.prepare(at, node(2), attempt.prepare()));
   ASSERT_EQ(attempt.phase(), Attempt::Phase::fetching);
+  const auto id = attempt.wanted()[0].id;
   attempt.unfetched("no holder answered");
   EXPECT_EQ(attempt.phase(), Attempt::Phase::refused);
   EXPECT_EQ(attempt.why(), "no holder answered");
-  EXPECT_FALSE(attempt.fetched(0, bytes("v")));
+  EXPECT_FALSE(attempt.fetched(id, bytes("v")));
 }
 
-// Value-less is a plain change's without a reduction (part 3 takes reductions), asked before
-// the prepare goes.
-TEST(ValueLess, AReductionOrATransferStillAsksForValues) {
-  const Reduce reduce = [](const NameState& base, std::span<const NameState>) { return base.value; };
+// Value-less is a plain change's, with a reduction or without, asked before the prepare
+// goes; a transfer still carries every value.
+TEST(ValueLess, ATransferOrAPreparedAttemptStillAsksForValues) {
+  const Reduce reduce = [](const NameState& base, std::span<const NameState>) { return Reduced{base.value, {}}; };
   Attempt reducing(three, slot, ballot(1, 1), {bytes("k")}, put("v"), reduce, genesis);
-  EXPECT_FALSE(reducing.value_less());
-  EXPECT_TRUE(reducing.prepare().values);
+  EXPECT_TRUE(reducing.value_less());
+  EXPECT_FALSE(reducing.prepare().values);
   auto moving = Attempt::transfer(three, ReplicaSet::of({node(1), node(2), node(3), node(4)}, 2), slot, ballot(1, 1));
   EXPECT_FALSE(moving.value_less());
   Acceptors acceptors;
   Attempt prepared(three, slot, ballot(1, 1), {bytes("k")}, put("v"), {}, genesis);
   prepared.on_prepare(node(1), acceptors.prepare(node(1), node(1), prepared.prepare()));
   EXPECT_FALSE(prepared.value_less());
+}
+
+// Mimir's option (a): the reduction decides on summaries. Matching summaries mean nothing to
+// fetch beyond the base. One that differs is asked for, past the base's summary (Mimir: the
+// merge operations past a frontier), fetched by that answer's ballot, and the reduction,
+// called again, folds it in.
+TEST(ValueLess, AReductionDecidesOnSummariesAndFetchesOnlyWhatItAsksFor) {
+  Acceptors acceptors;
+  ASSERT_EQ(run(acceptors, three, node(1), ballot(1, 1), {bytes("k")}, put("a")).phase(), Attempt::Phase::committed);
+  for (const auto& at : three.nodes) acceptors.held[at]["k"].summary = bytes("f1");
+  size_t calls = 0;
+  const Reduce merge = [&calls](const NameState& base, std::span<const NameState> answers) {
+    ++calls;
+    Reduced out{base.value, {}};
+    for (size_t i = 0; i < answers.size(); ++i) {
+      if (answers[i].summary == base.summary) continue;
+      if (!answers[i].value) {
+        out.need.push_back({i, base.summary});
+        continue;
+      }
+      out.value = bytes(text(*out.value) + text(*answers[i].value));
+    }
+    return out;
+  };
+  const auto prepared = [&](Attempt& attempt) {
+    EXPECT_TRUE(attempt.value_less());
+    for (const auto& at : three.nodes) attempt.on_prepare(at, acceptors.prepare(at, node(2), attempt.prepare()));
+    EXPECT_EQ(attempt.phase(), Attempt::Phase::fetching);
+    EXPECT_EQ(attempt.wanted().size(), 1u);
+  };
+
+  // Every summary matches: the base alone, and one call.
+  Attempt same(three, slot, ballot(2, 2), {bytes("k")}, identity_change(), merge, genesis);
+  prepared(same);
+  const auto plain = same.fetched(same.wanted()[0].id, bytes("a"));
+  ASSERT_TRUE(plain);
+  EXPECT_EQ(text(*plain->values[0]), "a");
+  EXPECT_EQ(calls, 1u);
+
+  // A merge write reached node 2 outside agreement: its summary moved, its ballot did not.
+  calls = 0;
+  acceptors.held[node(2)]["k"].summary = bytes("f2");
+  Attempt merged(three, slot, ballot(3, 2), {bytes("k")}, identity_change(), merge, genesis);
+  prepared(merged);
+  EXPECT_FALSE(merged.fetched(merged.wanted()[0].id, bytes("a")));
+  ASSERT_EQ(merged.phase(), Attempt::Phase::fetching);
+  ASSERT_EQ(merged.wanted().size(), 1u);
+  const auto asked = merged.wanted()[0];
+  ASSERT_TRUE(asked.answer);
+  EXPECT_EQ(asked.ballot, ballot(1, 1));
+  ASSERT_TRUE(asked.since);
+  EXPECT_EQ(text(*asked.since), "f1");
+  // Only the acceptor holding that state: the same ballot is not the same value here.
+  EXPECT_EQ(asked.holders, std::vector<identity::NodeId>{node(2)});
+  const auto folded = merged.fetched(asked.id, bytes("+b"));
+  ASSERT_TRUE(folded);
+  EXPECT_EQ(text(*folded->values[0]), "a+b");
+  EXPECT_EQ(calls, 2u);
+}
+
+// A reduction that asks again for an answer it was given refuses the attempt, rather than
+// fetching for ever.
+TEST(ValueLess, AReductionAskingTwiceForOneAnswerRefuses) {
+  Acceptors acceptors;
+  ASSERT_EQ(run(acceptors, three, node(1), ballot(1, 1), {bytes("k")}, put("a")).phase(), Attempt::Phase::committed);
+  const Reduce greedy = [](const NameState&, std::span<const NameState>) { return Reduced{std::nullopt, {{0, bytes("s")}}}; };
+  Attempt attempt(three, slot, ballot(2, 2), {bytes("k")}, identity_change(), greedy, genesis);
+  ASSERT_TRUE(attempt.value_less());
+  for (const auto& at : three.nodes) attempt.on_prepare(at, acceptors.prepare(at, node(2), attempt.prepare()));
+  ASSERT_EQ(attempt.phase(), Attempt::Phase::fetching);
+  EXPECT_FALSE(attempt.fetched(attempt.wanted()[0].id, bytes("a")));
+  ASSERT_EQ(attempt.phase(), Attempt::Phase::fetching);
+  EXPECT_FALSE(attempt.fetched(attempt.wanted()[0].id, bytes("past s")));
+  EXPECT_EQ(attempt.phase(), Attempt::Phase::refused);
+  EXPECT_FALSE(attempt.why().empty());
 }
 
 // A minority answers: nothing commits.
@@ -740,7 +818,7 @@ TEST(Agreement, TheOwnersReductionAdvancesTheBase) {
     auto out = base.value;
     for (const auto& each : answers)
       if (each.value && out && each.value->size() > out->size()) out = each.value;
-    return out;
+    return Reduced{out, {}};
   };
   const auto read = run(acceptors, three, node(2), ballot(2, 2), {bytes("k")}, identity_change(), join);
   ASSERT_EQ(read.phase(), Attempt::Phase::committed);
@@ -919,7 +997,11 @@ TEST(AgreementWire, EveryMessageRoundTrips) {
   const auto purged = decode_purge(encode(PurgeMessage{"mimir", {three, slot, ballot(6, 2), {binary}}}));
   EXPECT_EQ(purged.purge.names, std::vector<Name>{binary});
 
+  const auto since = decode_fetch(encode(FetchMessage{"mimir", three, slot, binary, ballot(3, 2), 0, table, bytes("frontier")}));
+  ASSERT_TRUE(since.since);
+  EXPECT_EQ(text(*since.since), "frontier");
   const auto fetch = decode_fetch(encode(FetchMessage{"mimir", three, slot, binary, ballot(3, 2), 1024, table}));
+  EXPECT_FALSE(fetch.since);
   EXPECT_EQ(fetch.space, "mimir");
   EXPECT_EQ(fetch.set, three);
   EXPECT_EQ(fetch.slot, slot);
@@ -973,6 +1055,8 @@ TEST(AgreementWire, RefusesWhatItCannotTrust) {
   EXPECT_THROW(decode_fetch_answer(encode(FetchAnswer{std::nullopt, true, 100, 101, {}})), net::DecodeError);
   EXPECT_THROW(decode_fetch_answer(encode(FetchAnswer{std::nullopt, false, 100, 0, Bytes(1, 1)})), net::DecodeError);
   EXPECT_THROW(encode(FetchAnswer{std::nullopt, true, max_piece + 1, 0, Bytes(max_piece + 1, 1)}), std::invalid_argument);
+  // A since over 64 bytes is not a summary.
+  EXPECT_THROW(encode(FetchMessage{"mimir", three, slot, bytes("k"), ballot(1, 1), 0, 0, Bytes(max_summary + 1, 1)}), std::invalid_argument);
   // A fetch offset past the largest value.
   EXPECT_THROW(decode_fetch(encode(FetchMessage{"mimir", three, slot, bytes("k"), ballot(1, 1), max_value + 1, 0})), net::DecodeError);
 }

@@ -341,19 +341,25 @@ Accept Attempt::accepting(Accept accept) {
 }
 
 bool Attempt::value_less() {
-  if (_prepare.to || _reduce || _phase != Phase::preparing || !_promised.empty() || _accept) return false;
+  if (_prepare.to || _phase != Phase::preparing || !_promised.empty() || _accept) return false;
   _prepare.values = false;
   return true;
 }
 
-std::optional<Accept> Attempt::fetched(size_t name, Bytes value) {
+std::optional<Accept> Attempt::fetched(size_t id, Bytes value) {
   if (_phase != Phase::fetching) return std::nullopt;
-  const auto wanted = std::find_if(_wanted.begin(), _wanted.end(), [name](const Wanted& each) { return each.name == name; });
+  const auto wanted = std::find_if(_wanted.begin(), _wanted.end(), [id](const Wanted& each) { return each.id == id; });
   if (wanted == _wanted.end()) return std::nullopt;
-  _bases[name].value = std::move(value);
+  if (wanted->answer)
+    _per_name[wanted->name][*wanted->answer].value = std::move(value);
+  else
+    _bases[wanted->name].value = std::move(value);
   _wanted.erase(wanted);
   if (!_wanted.empty()) return std::nullopt;
-  return accepting(change_bases());
+  // Reduced, asking for more (fetching again), refused, or the accept.
+  auto accept = reduce_names();
+  if (!accept) return std::nullopt;
+  return accepting(std::move(*accept));
 }
 
 void Attempt::unfetched(std::string why) {
@@ -393,28 +399,82 @@ std::optional<Accept> Attempt::plain_accept() {
   // answered holding exactly that ballot. One that holds none (never written, or a
   // tombstone) needs nothing.
   _wanted.clear();
+  _current.assign(count, std::nullopt);
+  _asked.assign(count, {});
   if (!_prepare.values)
-    for (size_t i = 0; i < count; ++i) {
-      if (!_bases[i].has_value || _bases[i].value) continue;
-      Wanted wanted{i, _bases[i].accepted, {}};
-      for (size_t at = 0; at < _answers.size(); ++at)
-        if (_answers[at].states[i].has_value && _answers[at].states[i].accepted == _bases[i].accepted) wanted.holders.push_back(_promised[at]);
-      std::sort(wanted.holders.begin(), wanted.holders.end());
-      _wanted.push_back(std::move(wanted));
-    }
+    for (size_t i = 0; i < count; ++i)
+      if (_bases[i].has_value && !_bases[i].value) want(i, std::nullopt, _bases[i], std::nullopt);
   if (!_wanted.empty()) {
     _phase = Phase::fetching;
     return std::nullopt;
   }
-  return change_bases();
+  return reduce_names();
 }
 
-Accept Attempt::change_bases() {
+void Attempt::want(size_t name, std::optional<size_t> answer, const NameState& of, std::optional<Bytes> since) {
+  Wanted wanted{_next_wanted++, name, answer, of.accepted, std::move(since), {}};
+  // Holders of exactly that state: its ballot, and its summary, since a merge write outside
+  // agreement leaves acceptors at one ballot with different values, told apart by summary.
+  for (size_t at = 0; at < _answers.size(); ++at) {
+    const auto& state = _answers[at].states[name];
+    if (state.has_value && state.accepted == of.accepted && state.summary == of.summary) wanted.holders.push_back(_promised[at]);
+  }
+  std::sort(wanted.holders.begin(), wanted.holders.end());
+  _wanted.push_back(std::move(wanted));
+}
+
+std::optional<Accept> Attempt::reduce_names() {
+  const size_t count = _prepare.names.size();
+  if (!_reduce) {
+    std::vector<std::optional<Bytes>> current;
+    for (const auto& base : _bases) current.push_back(base.value);
+    return change_bases(std::move(current));
+  }
+  // Each name not yet reduced; a reduction that needs more asks, and is called again once it
+  // is in. Every answer is asked for at most once per name, so this ends.
+  for (size_t i = 0; i < count; ++i) {
+    while (!_current[i]) {
+      auto reduced = _reduce(_bases[i], _per_name[i]);
+      if (reduced.need.empty()) {
+        _current[i].emplace(std::move(reduced.value));
+        break;
+      }
+      bool fetching = false;
+      for (auto& need : reduced.need) {
+        auto& answers = _per_name[i];
+        auto& asked = _asked[i];
+        if (need.answer >= answers.size() || std::find(asked.begin(), asked.end(), need.answer) != asked.end()) {
+          _why = "the owner's reduction asked for an answer it was given, or that does not exist";
+          _phase = Phase::refused;
+          return std::nullopt;
+        }
+        asked.push_back(need.answer);
+        auto& answer = answers[need.answer];
+        // Nothing held: given as it is. The base's state, whole: the base's value.
+        if (!answer.has_value || answer.value) continue;
+        if (!need.since && answer.accepted == _bases[i].accepted && answer.summary == _bases[i].summary) {
+          answer.value = _bases[i].value;
+          continue;
+        }
+        want(i, need.answer, answer, std::move(need.since));
+        fetching = true;
+      }
+      if (fetching) break;
+    }
+  }
+  if (!_wanted.empty()) {
+    _phase = Phase::fetching;
+    return std::nullopt;
+  }
+  std::vector<std::optional<Bytes>> current;
+  for (auto& value : _current) current.push_back(std::move(*value));
+  return change_bases(std::move(current));
+}
+
+Accept Attempt::change_bases(std::vector<std::optional<Bytes>> current) {
   const auto& set = _prepare.set;
   const size_t count = _prepare.names.size();
   const auto& bases = _bases;
-  std::vector<std::optional<Bytes>> current;
-  for (size_t i = 0; i < count; ++i) current.push_back(_reduce ? _reduce(bases[i], _per_name[i]) : bases[i].value);
   // This proposer's own earlier accept is the newest for every name: its change is already in
   // the values, which are committed as they are, with that attempt's result.
   if (count > 0 && !_reduce) {
@@ -456,7 +516,18 @@ std::optional<Accept> Attempt::transfer_accept() {
   for (const auto& [key, answers] : by_name) {
     const auto base = *std::max_element(answers.begin(), answers.end(), [](const NameState& a, const NameState& b) { return a.accepted < b.accepted; });
     accept.names.emplace_back(key.begin(), key.end());
-    accept.values.push_back(_reduce ? _reduce(base, answers) : base.value);
+    if (!_reduce) {
+      accept.values.push_back(base.value);
+    } else {
+      // A transfer's answers carry every value, so the reduction has all it can ask for.
+      auto reduced = _reduce(base, answers);
+      if (!reduced.need.empty()) {
+        _why = "the owner's reduction asked for more than a transfer's answers carry";
+        _phase = Phase::refused;
+        return std::nullopt;
+      }
+      accept.values.push_back(std::move(reduced.value));
+    }
     accept.changed_at.push_back(base.changed_at);
   }
   return accept;

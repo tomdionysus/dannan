@@ -16,6 +16,7 @@
 #include <memory>
 #include <mutex>
 #include <random>
+#include <set>
 #include <stdexcept>
 
 #include "dannan/agree/wire.h"
@@ -340,7 +341,8 @@ struct Agreement::Core : std::enable_shared_from_this<Core> {
           const auto slot = fetch.slot;
           const auto name = fetch.name;
           const auto ballot = fetch.ballot;
-          space->store->value(slot, name, ballot, [fetch = std::move(fetch), refusal, answer, done](std::optional<Bytes> value) {
+          const auto since = fetch.since;
+          space->store->value(slot, name, ballot, since, [fetch = std::move(fetch), refusal, answer, done](std::optional<Bytes> value) {
             if (!value) {
               answer(net::Message{m::agree_fetch_reply, encode(FetchAnswer{}), {}});
               return done();
@@ -407,6 +409,8 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
   uint32_t finished_transfers = 0;
   uint64_t generation = 0;
   size_t outstanding = 0;
+  // The current attempt's fetches already asked for, by their id.
+  std::set<size_t> fetches_started;
   bool finished = false;
   uint32_t attempts = 0;
   // Which backoff is current: a retry superseded by another does nothing.
@@ -454,6 +458,7 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
     if (core->time->now() >= deadline) return fail(attempt ? attempt->why() : std::string(), true);
     ++generation;
     ++attempts;
+    fetches_started.clear();
     const auto ballot = core->next_ballot(above);
     // The first try of a plain change whose names this node committed last: one round.
     if (!finishing && attempts == 1 && make_fast)
@@ -492,24 +497,30 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
     settle_or_retry();
   }
 
-  // One base being fetched: its holders in the order tried, and what has come so far.
+  // One value being fetched: its holders in the order tried, and what has come so far.
   struct Fetching {
+    size_t id = 0;
     size_t name = 0;
     Ballot ballot;
+    std::optional<Bytes> since;
     std::vector<identity::NodeId> holders;
     size_t holder = 0;
     Bytes value;
     std::optional<uint64_t> total;
   };
 
-  // Every base the attempt wants, each from its holders: this node's own acceptor first,
-  // which needs no message. A holder that has moved on, refuses or is silent gives way to the
-  // next, from the same offset, since every holder of the ballot holds the same value.
+  // Every value the attempt wants and this run has not yet asked for, each from its holders:
+  // this node's own acceptor first, which needs no message. A holder that has moved on,
+  // refuses or is silent gives way to the next, from the same offset, since every holder of
+  // the ballot holds the same value.
   void fetch_bases() {
     for (const auto& wanted : attempt->wanted()) {
+      if (!fetches_started.insert(wanted.id).second) continue;
       auto fetching = std::make_shared<Fetching>();
+      fetching->id = wanted.id;
       fetching->name = wanted.name;
       fetching->ballot = wanted.ballot;
+      fetching->since = wanted.since;
       fetching->holders = wanted.holders;
       const auto own = std::find(fetching->holders.begin(), fetching->holders.end(), core->self);
       if (own != fetching->holders.end()) std::rotate(fetching->holders.begin(), own, own + 1);
@@ -523,8 +534,8 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
       return settle_or_retry();
     }
     const auto& prepare = attempt->prepare();
-    const auto request =
-        encode(FetchMessage{space, prepare.set, slot, prepare.names[fetching->name], fetching->ballot, fetching->value.size(), core->fingerprint});
+    const auto request = encode(
+        FetchMessage{space, prepare.set, slot, prepare.names[fetching->name], fetching->ballot, fetching->value.size(), core->fingerprint, fetching->since});
     core->send(fetching->holders[fetching->holder], net::message::agree_fetch, request, left(),
                [self = shared_from_this(), at = generation, fetching](std::optional<net::Bytes> answer, std::string) {
                  asio::post(self->strand, [self, at, fetching, answer = std::move(answer)] { self->fetched_piece(at, fetching, answer); });
@@ -549,7 +560,10 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
     fetching->total = piece->total;
     fetching->value.insert(fetching->value.end(), piece->piece.begin(), piece->piece.end());
     if (fetching->value.size() < *fetching->total) return fetch_piece(fetching);
-    if (auto accept = attempt->fetched(fetching->name, std::move(fetching->value))) send_accept(*accept);
+    if (auto accept = attempt->fetched(fetching->id, std::move(fetching->value))) return send_accept(*accept);
+    // The owner's reduction asked for more, or refused.
+    if (attempt->phase() == Attempt::Phase::fetching) return fetch_bases();
+    if (attempt->phase() == Attempt::Phase::refused) settle_or_retry();
   }
 
   void send_accept(Accept accept) {

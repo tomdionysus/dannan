@@ -47,9 +47,12 @@ class AcceptorStore {
   // max_summary bytes. done(false) if it could not, and the request is refused.
   virtual void keep(Slot slot, const Held& held, std::function<void(bool)> done) = 0;
   // The value of `name` held at exactly `ballot`, for a proposer's fetch; nothing if the name
-  // holds another ballot or no value. The default loads it; a store holding large values may
-  // answer from where it keeps them.
-  virtual void value(Slot slot, const Name& name, const Ballot& ballot, std::function<void(std::optional<Bytes>)> done) {
+  // holds another ballot or no value. With `since` (a summary this store gave, asked for by the
+  // owner's reduction), it may answer only what it keeps past that summary, in the owner's
+  // form. The default loads the name and answers the whole value, whatever `since` says; a
+  // store holding large values may answer from where it keeps them.
+  virtual void value(Slot slot, const Name& name, const Ballot& ballot, const std::optional<Bytes>& since, std::function<void(std::optional<Bytes>)> done) {
+    (void)since;
     load(slot, std::vector<Name>{name}, false, true, [ballot, done = std::move(done)](Held held) {
       if (held.states.size() == 1 && held.states[0].accepted == ballot && held.states[0].value) return done(std::move(held.states[0].value));
       done(std::nullopt);

@@ -577,6 +577,44 @@ TEST(Simulation, ABaseIsFetchedFromAnotherHolderInPiecesWhenThisNodesAcceptorIsB
   EXPECT_GE(crossed_of(cluster, net::message::agree_fetch), 4u);
 }
 
+// The owner's reduction through the runtime: it asks for an answer behind the base, which is
+// fetched by that answer's own ballot (here from this node's own acceptor), and it sees that
+// older value.
+TEST(Simulation, AnAnswerTheReductionAsksForIsFetchedByItsOwnBallot) {
+  World world(23);
+  Cluster cluster(world, 3, NetworkFaults{});
+  const auto change_at = [&](size_t at, agree::Change change, agree::Reduce reduce) {
+    std::optional<agree::Outcome> out;
+    cluster.agreement(at).change(Cluster::space, counter_slot, {agree::Name{'m'}}, cluster.ids(), Cluster::genesis_version, std::move(change),
+                                 std::move(reduce), 5000ms, world.io.get_executor(), [&](agree::Outcome outcome) { out = std::move(outcome); });
+    world.run_until([&] { return out.has_value(); }, 5'000'000);
+    return out.value_or(agree::Outcome{});
+  };
+  ASSERT_TRUE(change_at(0, put(agree::Bytes{'o', 'l', 'd'}), {}).committed);
+  // Node 2 misses the next write.
+  cluster.block(0, 2);
+  ASSERT_TRUE(change_at(0, put(agree::Bytes{'n', 'e', 'w'}), {}).committed);
+  cluster.unblock_all();
+  std::vector<std::string> seen;
+  const agree::Reduce older = [&seen](const agree::NameState& base, std::span<const agree::NameState> answers) {
+    agree::Reduced out{base.value, {}};
+    for (size_t i = 0; i < answers.size(); ++i) {
+      if (answers[i].accepted == base.accepted) continue;
+      if (!answers[i].value) {
+        out.need.push_back({i, std::nullopt});
+        continue;
+      }
+      seen.emplace_back(answers[i].value->begin(), answers[i].value->end());
+    }
+    return out;
+  };
+  const auto read = change_at(2, append('!'), older);
+  ASSERT_TRUE(read.committed) << read.why;
+  ASSERT_TRUE(read.values[0]);
+  EXPECT_EQ(std::string(read.values[0]->begin(), read.values[0]->end()), "new!");
+  EXPECT_EQ(seen, std::vector<std::string>{"old"});
+}
+
 // The fast path through the runtime: a node's second change of the same names commits in
 // one round; another node's change in between sends its next one the full way, still
 // committed, and the counter counts every increment once.
