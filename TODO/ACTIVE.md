@@ -249,7 +249,11 @@ gold-plating beyond what the design and its reviews ask.
         - **Merged** to develop at `6686731`. Develop's CI run 43938400849 was green on every Linux job: release,
           ASan and TSan on x86-64, ASan on arm64, clang, coverage, abi, deb and package. The macOS job was cancelled
           after 15 minutes having run no step. It did the same on its rerun and on the next run (43941344441), so no
-          macOS runner is taking jobs. This is an account or runner matter, told to the maintainer; the code never reached macOS. Today a whole value in an accept
+          macOS runner is taking jobs. the maintainer: "There isn't a macos runner", "You use this mac". The hosted job was
+          removed (`9f1bce2`). The macOS gate now runs on the maintainer's Mac at each merge to develop and before a release,
+          against MacPorts `boost188` (installed 2026-11-16), with `-DBoost_ROOT=/opt/local/libexec/boost/1.88`.
+          - First run, develop at `9f1bce2`: 824 tests, 822 passed and 2 skipped, both Linux-only:
+            `CustodyTool.InitTakesCustodyBackWhenTheRootCannotBeWritten` and `PeerSocket.ChoosesBbrWhereOffered`. Today a whole value in an accept
           is one message, up to `max_value`. Once he answers, the branch merges to develop.
 
    Tests are named there: one-node genesis grown to five, the root unreachable, the fast path lost across a
