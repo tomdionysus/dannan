@@ -342,19 +342,26 @@ struct Agreement::Core : std::enable_shared_from_this<Core> {
           const auto name = fetch.name;
           const auto ballot = fetch.ballot;
           const auto since = fetch.since;
-          space->store->value(slot, name, ballot, since, [fetch = std::move(fetch), refusal, answer, done](std::optional<Bytes> value) {
-            if (!value) {
+          space->store->value(slot, name, ballot, since, [fetch = std::move(fetch), refusal, answer, done](std::optional<AcceptorStore::Fetched> fetched) {
+            if (!fetched) {
               answer(net::Message{m::agree_fetch_reply, encode(FetchAnswer{}), {}});
               return done();
             }
-            if (value->size() > max_value || fetch.offset > value->size()) {
-              answer(refusal(value->size() > max_value ? "the value is over the largest value" : "the offset is past the value"));
+            const auto& value = fetched->bytes;
+            if (value.size() > max_value || fetch.offset > value.size() || (fetched->past && !fetch.since)) {
+              answer(refusal(value.size() > max_value        ? "the value is over the largest value"
+                             : fetched->past && !fetch.since ? "the store answered past a summary it was not asked for"
+                                                             : "the offset is past the value"));
               return done();
             }
             const auto start = static_cast<size_t>(fetch.offset);
-            const auto length = std::min(max_piece, value->size() - start);
-            FetchAnswer piece{std::nullopt, true, value->size(), fetch.offset,
-                              Bytes(value->begin() + static_cast<std::ptrdiff_t>(start), value->begin() + static_cast<std::ptrdiff_t>(start + length))};
+            const auto length = std::min(max_piece, value.size() - start);
+            FetchAnswer piece{std::nullopt,
+                              true,
+                              value.size(),
+                              fetch.offset,
+                              Bytes(value.begin() + static_cast<std::ptrdiff_t>(start), value.begin() + static_cast<std::ptrdiff_t>(start + length)),
+                              fetched->past};
             answer(net::Message{m::agree_fetch_reply, encode(piece), {}});
             done();
           });
@@ -507,12 +514,15 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
     size_t holder = 0;
     Bytes value;
     std::optional<uint64_t> total;
+    // Whether what has come is only what lies past `since`: every piece from one holder says
+    // the same, and a fetch moving to another holder starts again.
+    bool past = false;
   };
 
   // Every value the attempt wants and this run has not yet asked for, each from its holders:
   // this node's own acceptor first, which needs no message. A holder that has moved on,
   // refuses or is silent gives way to the next, from the same offset, since every holder of
-  // the ballot holds the same value.
+  // the ballot and summary holds the same value (past a summary, from the beginning).
   void fetch_bases() {
     for (const auto& wanted : attempt->wanted()) {
       if (!fetches_started.insert(wanted.id).second) continue;
@@ -552,15 +562,24 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
       }
     }
     const bool usable = piece && !piece->refused && piece->held && piece->offset == fetching->value.size() &&
-                        (!fetching->total || *fetching->total == piece->total) && (!piece->piece.empty() || piece->total == piece->offset);
+                        (!fetching->total || (*fetching->total == piece->total && fetching->past == piece->past)) &&
+                        (!piece->piece.empty() || piece->total == piece->offset) && (!piece->past || fetching->since);
     if (!usable) {
       ++fetching->holder;
+      // Past a summary, one holder may answer what lies past it and another the whole value:
+      // the next starts from the beginning.
+      if (fetching->since) {
+        fetching->value.clear();
+        fetching->total.reset();
+        fetching->past = false;
+      }
       return fetch_piece(fetching);
     }
     fetching->total = piece->total;
+    fetching->past = piece->past;
     fetching->value.insert(fetching->value.end(), piece->piece.begin(), piece->piece.end());
     if (fetching->value.size() < *fetching->total) return fetch_piece(fetching);
-    if (auto accept = attempt->fetched(fetching->id, std::move(fetching->value))) return send_accept(*accept);
+    if (auto accept = attempt->fetched(fetching->id, std::move(fetching->value), fetching->past)) return send_accept(*accept);
     // The owner's reduction asked for more, or refused.
     if (attempt->phase() == Attempt::Phase::fetching) return fetch_bases();
     if (attempt->phase() == Attempt::Phase::refused) settle_or_retry();

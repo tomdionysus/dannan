@@ -437,7 +437,8 @@ TEST(ValueLess, AReductionDecidesOnSummariesAndFetchesOnlyWhatItAsksFor) {
         out.need.push_back({i, base.summary});
         continue;
       }
-      out.value = bytes(text(*out.value) + text(*answers[i].value));
+      // Past the frontier: folded in. Whole: taken as it is.
+      out.value = answers[i].past ? bytes(text(*out.value) + text(*answers[i].value)) : answers[i].value;
     }
     return out;
   };
@@ -461,6 +462,10 @@ TEST(ValueLess, AReductionDecidesOnSummariesAndFetchesOnlyWhatItAsksFor) {
   acceptors.held[node(2)]["k"].summary = bytes("f2");
   Attempt merged(three, slot, ballot(3, 2), {bytes("k")}, identity_change(), merge, genesis);
   prepared(merged);
+  // A base is fetched whole: an answer past a summary it never asked with is ignored.
+  EXPECT_FALSE(merged.fetched(merged.wanted()[0].id, bytes("a"), true));
+  ASSERT_EQ(merged.wanted().size(), 1u);
+  EXPECT_FALSE(merged.wanted()[0].answer);
   EXPECT_FALSE(merged.fetched(merged.wanted()[0].id, bytes("a")));
   ASSERT_EQ(merged.phase(), Attempt::Phase::fetching);
   ASSERT_EQ(merged.wanted().size(), 1u);
@@ -471,10 +476,19 @@ TEST(ValueLess, AReductionDecidesOnSummariesAndFetchesOnlyWhatItAsksFor) {
   EXPECT_EQ(text(*asked.since), "f1");
   // Only the acceptor holding that state: the same ballot is not the same value here.
   EXPECT_EQ(asked.holders, std::vector<identity::NodeId>{node(2)});
-  const auto folded = merged.fetched(asked.id, bytes("+b"));
+  const auto folded = merged.fetched(asked.id, bytes("+b"), true);
   ASSERT_TRUE(folded);
   EXPECT_EQ(text(*folded->values[0]), "a+b");
   EXPECT_EQ(calls, 2u);
+
+  // The holder could not serve past the frontier and answered whole: the reduction is told so.
+  Attempt whole(three, slot, ballot(4, 2), {bytes("k")}, identity_change(), merge, genesis);
+  prepared(whole);
+  EXPECT_FALSE(whole.fetched(whole.wanted()[0].id, bytes("a")));
+  ASSERT_EQ(whole.wanted().size(), 1u);
+  const auto taken = whole.fetched(whole.wanted()[0].id, bytes("a+b"), false);
+  ASSERT_TRUE(taken);
+  EXPECT_EQ(text(*taken->values[0]), "a+b");
 }
 
 // A reduction that asks again for an answer it was given refuses the attempt, rather than
@@ -1010,6 +1024,8 @@ TEST(AgreementWire, EveryMessageRoundTrips) {
   EXPECT_EQ(fetch.offset, 1024u);
   EXPECT_EQ(fetch.table, table);
   const auto piece = decode_fetch_answer(encode(FetchAnswer{std::nullopt, true, 3000, 1000, Bytes(1000, 7)}));
+  EXPECT_FALSE(piece.past);
+  EXPECT_TRUE(decode_fetch_answer(encode(FetchAnswer{std::nullopt, true, 10, 0, Bytes(10, 1), true})).past);
   EXPECT_TRUE(piece.held);
   EXPECT_EQ(piece.total, 3000u);
   EXPECT_EQ(piece.offset, 1000u);
@@ -1054,6 +1070,7 @@ TEST(AgreementWire, RefusesWhatItCannotTrust) {
   EXPECT_THROW(decode_fetch_answer(encode(FetchAnswer{std::nullopt, true, 100, 50, Bytes(51, 1)})), net::DecodeError);
   EXPECT_THROW(decode_fetch_answer(encode(FetchAnswer{std::nullopt, true, 100, 101, {}})), net::DecodeError);
   EXPECT_THROW(decode_fetch_answer(encode(FetchAnswer{std::nullopt, false, 100, 0, Bytes(1, 1)})), net::DecodeError);
+  EXPECT_THROW(decode_fetch_answer(encode(FetchAnswer{std::nullopt, false, 0, 0, {}, true})), net::DecodeError);
   EXPECT_THROW(encode(FetchAnswer{std::nullopt, true, max_piece + 1, 0, Bytes(max_piece + 1, 1)}), std::invalid_argument);
   // A since over 64 bytes is not a summary.
   EXPECT_THROW(encode(FetchMessage{"mimir", three, slot, bytes("k"), ballot(1, 1), 0, 0, Bytes(max_summary + 1, 1)}), std::invalid_argument);

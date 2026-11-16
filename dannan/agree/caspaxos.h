@@ -121,6 +121,10 @@ struct NameState {
   Ballot changed_at;
   Bytes summary{};
   bool has_value = false;
+  // Fetched for the owner's reduction with a `since`: true when `value` is only what the
+  // holder keeps past that summary, false when it is the whole value (a holder may always
+  // answer whole; Mimir's digest cannot always be served past).
+  bool past = false;
 };
 
 // A plain change names `set`; a transfer names the set it moves from as `set`, and `to`.
@@ -330,9 +334,10 @@ class Attempt {
   std::optional<Accept> on_prepare(const identity::NodeId& from, const PrepareAnswer& answer);
   // Fetching: the values still to fetch.
   const std::vector<Wanted>& wanted() const noexcept { return _wanted; }
-  // The value of `wanted()`'s entry `id`, fetched by its ballot (past its `since`, if it has
-  // one); the accept to send once everything is in. Ignored unless fetching and still wanted.
-  std::optional<Accept> fetched(size_t id, Bytes value);
+  // The value of `wanted()`'s entry `id`, fetched by its ballot: whole, or with `past` only
+  // what lies past its `since` (never for an entry without one); the accept to send once
+  // everything is in. Ignored unless fetching and still wanted, or `past` with no `since`.
+  std::optional<Accept> fetched(size_t id, Bytes value, bool past = false);
   // No holder gave a base's value: refused, for another ballot.
   void unfetched(std::string why);
   void on_accept(const identity::NodeId& from, const AcceptAnswer& answer);

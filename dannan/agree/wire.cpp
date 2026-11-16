@@ -345,6 +345,7 @@ net::Bytes encode(const FetchAnswer& answer) {
   out.u64(answer.total);
   out.u64(answer.offset);
   out.bytes(answer.piece);
+  out.u8(answer.past ? 1 : 0);
   return out.take();
 }
 
@@ -378,9 +379,12 @@ FetchAnswer decode_fetch_answer(std::span<const uint8_t> bytes) {
   out.total = in.u64();
   out.offset = in.u64();
   out.piece = in.bytes(max_piece);
+  const auto past = in.u8();
+  if (past > 1) throw DecodeError("a fetch's past is 0 or 1");
+  out.past = past == 1;
   in.finish();
   if (out.total > max_value) throw DecodeError("a fetched value over the largest value");
-  if (!out.held && (out.total || out.offset || !out.piece.empty())) throw DecodeError("a fetch not held carries a piece");
+  if (!out.held && (out.total || out.offset || !out.piece.empty() || out.past)) throw DecodeError("a fetch not held carries a piece");
   if (out.offset > out.total || out.piece.size() > out.total - out.offset) throw DecodeError("a fetched piece outside its value");
   return out;
 }

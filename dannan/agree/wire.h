@@ -68,13 +68,15 @@ struct FetchMessage {
   std::optional<Bytes> since{};
 };
 // Refused; or not held (the acceptor has moved on from that ballot, or never held it); or
-// held, with the value's whole size and the piece at `offset`.
+// held, with the answer's whole size and the piece at `offset`. `past`: the answer is only
+// what lies past the fetch's `since`, not the whole value.
 struct FetchAnswer {
   std::optional<Refusal> refused;
   bool held = false;
   uint64_t total = 0;
   uint64_t offset = 0;
   Bytes piece{};
+  bool past = false;
 };
 
 // FNV-1a 64 over the slot count (4 bytes) and the genesis set as the wire writes it.

@@ -346,14 +346,17 @@ bool Attempt::value_less() {
   return true;
 }
 
-std::optional<Accept> Attempt::fetched(size_t id, Bytes value) {
+std::optional<Accept> Attempt::fetched(size_t id, Bytes value, bool past) {
   if (_phase != Phase::fetching) return std::nullopt;
   const auto wanted = std::find_if(_wanted.begin(), _wanted.end(), [id](const Wanted& each) { return each.id == id; });
-  if (wanted == _wanted.end()) return std::nullopt;
-  if (wanted->answer)
-    _per_name[wanted->name][*wanted->answer].value = std::move(value);
-  else
+  if (wanted == _wanted.end() || (past && !wanted->since)) return std::nullopt;
+  if (wanted->answer) {
+    auto& answer = _per_name[wanted->name][*wanted->answer];
+    answer.value = std::move(value);
+    answer.past = past;
+  } else {
     _bases[wanted->name].value = std::move(value);
+  }
   _wanted.erase(wanted);
   if (!_wanted.empty()) return std::nullopt;
   // Reduced, asking for more (fetching again), refused, or the accept.
