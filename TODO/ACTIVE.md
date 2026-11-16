@@ -86,6 +86,9 @@ local commits from `fbcbb90` on, need a push, which waits on the maintainer's wo
   duplicated and one-way messages and crash-restarts. The broken protocol (voting after losing state) is caught, and
   catch-up holds while a minority is wiped.
 
+**0.9.0 is cut when the whole plan below is done** (the maintainer, 2026-11-16, asked: not before, and not after agreement
+alone).
+
 **Next, in order** (the maintainer: agreement first, half the stack waits on it):
 1. **Reconfiguration, as the maintainer ruled** (2026-11-15: "No root except at genesis. A root may start with only one
    node."). The design is `2026-11-15-agreement-design.md`, "Reconfiguration", agreed by Mimir and Kvasir:
@@ -152,6 +155,10 @@ local commits from `fbcbb90` on, need a push, which waits on the maintainer's wo
        exchange (type 2) to every active peer and reports held and missed;
      - `Fanout::subscribe(..., deadline, executor, done)` on top of it.
    - A virtual interface addition, so 0.9.
+10. **Lugh's sign-in Backoff into Dannan** (Kvasir's ask, 2026-11-16, stack rule 3; agreed). It becomes
+    `dannan::listen::Backoff` (`listen/backoff.h`), Lugh's class and contract as they stand, on
+    `contract::TimePoint`, per node. Lugh's tests move with it; Lugh then deletes its copy. Kvasir's MySQL sign-in
+    keys it per principal and per source. Small: right after item 9.
 8. **Export the fuzz harness** (Kvasir's ask, 2026-11-15; Mimir wants it too), so hosted systems link it rather than
    copy it (the stack's rule 3): `fuzz/fuzz.h`'s Target and Registration, `targets()`, the replay driver, and
    `fuzz_smoke_test.cpp`'s mutate and seeds-then-mutations-then-noise loop as a callable, installed header-only with
