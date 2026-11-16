@@ -133,11 +133,15 @@ gold-plating beyond what the design and its reviews ask.
    - **Built** at `c524a28`: every request carries the table's fingerprint and an acceptor with another table refuses
      it; the slot advert (`agree.slots/<space>`) and `Agreement::hint()`. The suite on node-d ran 778 tests: 777
      passed and 1 skipped (it is skipped when run as root).
-   - **Refused at join as well** (the maintainer, 2026-11-16, asked: "Also refuse at join"). Today a node with another table is
-     refused at every agreement request. To build: the table's fingerprint goes in the join handshake, and a node
-     whose fingerprint differs is refused with a reason naming the table. Tests first: a node with another slot count,
-     and one with another genesis set, are each refused at join, and a matching node joins. To be done after
-     value-less prepare and deltas, on its own branch.
+   - **Refused at join as well** (the maintainer, 2026-11-16, asked: "Also refuse at join"). **Built and merged** at `a521260`.
+     - Each node publishes its table's fingerprint as the `agree.table` advert on its record, which the handshake
+       already carries both ways, so no wire field was added.
+     - `Credentials::admit` checks an authenticated peer's record on both sides. The node refuses a differing
+       fingerprint, and the refusing node's journal names the table.
+     - A peer that publishes none (an older node) joins, and is refused at every agreement request.
+     - Tests: `Channel.APeerNotAdmittedByItsRecordIsRefusedBothWays`, and
+       `Node.ANodeWithAnotherSlotTableIsRefusedAtJoin` (another count, and another genesis set).
+     - The suite on node-c ran 825 tests: 824 passed and 1 skipped (it is skipped when run as root).
    - The test "the fast path lost across a transfer" is `FastPath.IsLostAcrossATransfer` (`6c90f50`).
 2. **The fast path: built** at `6c90f50`.
    - How it works: a plain accept reserves the proposer's next ballot (`Accept::reserve`), and the next change of the
@@ -244,7 +248,8 @@ gold-plating beyond what the design and its reviews ask.
           - The suite on node-d ran 823 tests: 822 passed and 1 skipped (it is skipped when run as root).
         - **Merged** to develop at `6686731`. Develop's CI run 43938400849 was green on every Linux job: release,
           ASan and TSan on x86-64, ASan on arm64, clang, coverage, abi, deb and package. The macOS job was cancelled
-          after 15 minutes having run no step (no runner took it); it was rerun alone. Today a whole value in an accept
+          after 15 minutes having run no step. It did the same on its rerun and on the next run (43941344441), so no
+          macOS runner is taking jobs. This is an account or runner matter, told to the maintainer; the code never reached macOS. Today a whole value in an accept
           is one message, up to `max_value`. Once he answers, the branch merges to develop.
 
    Tests are named there: one-node genesis grown to five, the root unreachable, the fast path lost across a
