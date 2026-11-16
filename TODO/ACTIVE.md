@@ -242,7 +242,9 @@ gold-plating beyond what the design and its reviews ask.
             megabyte delta with no fetch, the fast path, a read with no accept, need_whole named then caught up by
             an identity change, and a decline.
           - The suite on node-d ran 823 tests: 822 passed and 1 skipped (it is skipped when run as root).
-        - The branch merges to develop next, for hosted CI's sanitizers. Today a whole value in an accept
+        - **Merged** to develop at `6686731`. Develop's CI run 43938400849 was green on every Linux job: release,
+          ASan and TSan on x86-64, ASan on arm64, clang, coverage, abi, deb and package. The macOS job was cancelled
+          after 15 minutes having run no step (no runner took it); it was rerun alone. Today a whole value in an accept
           is one message, up to `max_value`. Once he answers, the branch merges to develop.
 
    Tests are named there: one-node genesis grown to five, the root unreachable, the fast path lost across a
