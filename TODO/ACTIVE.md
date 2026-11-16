@@ -93,6 +93,16 @@ current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluat
 
 **Waiting on the maintainer:** nothing.
 
+**A flake recurred, open:** `LevelZero.AChunkLostWithTheSendersSessionEndsTheCircuitWithinTheBound`
+(`reach_paths_test.cpp:592`).
+- It failed in develop's CI run 43900791401 (asan arm64, on `ba153ea`, a commit that touched only the plan), at
+  lines 604, 605 and 607. After A closed its data route to the hub, the hub's circuit did not end within 20 s, B did
+  not leave, and A counted no close with an unknown count.
+- The next run, on `6ab20b8`, was green.
+- It was seen once before, locally under clang at 0.5.x, and never in CI since.
+- Not investigated yet. It is to be pinned (did the close reach a live route, and did the transfer end before it?)
+  before anything is changed.
+
 **Release mechanics learned 2026-11-16:**
 - The `.deb`s CI builds before the tag exists come out versioned `<last>+gitN`. After pushing the tag, re-run
   `main`'s whole run (`gh run rerun <id>`; re-running a single deb job did not replace the arm64 artifact), then
@@ -146,7 +156,15 @@ alone).
         suite on node-b ran 799 tests: 798 passed and 1 skipped (it is skipped when run as root).
      2. The fetch: `agree_fetch` by name, ballot, offset and `since_summary`, answered in pieces; the store's
         `value(...)`. Then the Attempt's fetching phase between promise and accept, taking the base from this node's
-        own acceptor when it holds it.
+        own acceptor when it holds it. **Built** at `acaab48`.
+        - The pieces are at most 1 MiB (`max_piece`) and are resumed by offset. A fetch moves between holders of
+          the ballot from the same offset.
+        - `value()`'s default loads the name.
+        - The runtime asks every plain change without a reduction for no values.
+        - `since_summary` waits for part 3, where Mimir's reduction needs it. The first cut fetches whole by ballot,
+          as Mimir allowed.
+        - The suite on node-c ran 806 tests: 805 passed and 1 skipped (it is skipped when run as root).
+        - Hosted CI runs on develop only, so the branch's sanitizer runs come at its merge.
      3. The reduction on summaries (Mimir's (a)): it returns its result or the names it needs fetched.
      4. Deltas: a change may return a delta per name. The accept carries, per name, a whole value, a delta with its
         base ballot, or the ballot only (Kvasir's "already held"). The store's in-place `apply(slot, name,
