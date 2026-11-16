@@ -115,9 +115,11 @@ alone).
    - **Built** at `c524a28`: every request carries the table's fingerprint and an acceptor with another table refuses
      it; the slot advert (`agree.slots/<space>`) and `Agreement::hint()`. The suite on node-d ran 778 tests: 777
      passed and 1 skipped (it is skipped when run as root).
-   - **For the maintainer:** the design said a node with another table is "refused at join". It is refused at every agreement
-     request instead, which keeps membership free of agreement's settings. Whether join-time refusal is still wanted
-     on top is his call.
+   - **Refused at join as well** (the maintainer, 2026-11-16, asked: "Also refuse at join"). Today a node with another table is
+     refused at every agreement request. To build: the table's fingerprint goes in the join handshake, and a node
+     whose fingerprint differs is refused with a reason naming the table. Tests first: a node with another slot count,
+     and one with another genesis set, are each refused at join, and a matching node joins. To be done after
+     value-less prepare and deltas, on its own branch.
    - The test "the fast path lost across a transfer" is `FastPath.IsLostAcrossATransfer` (`6c90f50`).
 2. **The fast path: built** at `6c90f50`.
    - How it works: a plain accept reserves the proposer's next ballot (`Accept::reserve`), and the next change of the
