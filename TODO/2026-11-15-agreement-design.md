@@ -496,7 +496,23 @@ has no merging reduction. Two needs, which replace any store-driven catch-up hoo
   `Kept{kept, need_whole}`, naming the names whose delta it could not apply (Kvasir's own-check case). An acceptor
   whose recorded state is not at the base answers `need_whole` from the rule itself, before the store is asked.
   Mimir's and Kvasir's points stand: applied in place, as durable as a whole accept, and no bytes in and out.
-- Waiting on the maintainer's choice before part 4 is built.
+- the maintainer asked for Mimir's and Kvasir's review first. Both took it (2026-11-16): neither needs a separate `apply()`.
+  The contract, as they asked it to be stated:
+  1. **All or nothing.** If `need_whole` is not empty, `kept` is false and nothing of `held` changed: no ballots and
+     no values. The accept as a whole is not taken. The proposer resends those names whole, and the rest may go as
+     deltas again. Mimir's store checks every delta before applying any, under one lock, so it never rolls back.
+  2. **A repeated accept.** An accept at a new ballot the acceptor already holds (resent, retried, or replayed
+     after recovery) is answered as kept by the rule, from the recorded state, before the store is asked. The delta
+     is never applied twice: its base is gone by then, and LPUSH and INCRBY are not idempotent.
+  3. **One durable step.** Deltas applied and ballots recorded together, one append on Dagda's log. "Kept" means it
+     survives a crash at any point after the answer.
+  4. **Asynchronous.** `keep()` stays asynchronous, with its done on the caller's side, never inline on the
+     acceptor's strand.
+  5. **The base's check is the rule's.** The store's own check is only whether the delta fits the value (Mimir: a
+     type changed by a merge write at the same ballot). A failure answers `need_whole`.
+- Mimir also asked for a `past` flag on a fetch past `since`, since a digest cannot always be served past. Taken:
+  `value()` answers `Fetched{bytes, past}`, the fetch answer carries it, and the reduction sees `past` on the
+  answer.
 
 **Tests named:**
 - a megabyte register changed with no prepare answer carrying its value;
