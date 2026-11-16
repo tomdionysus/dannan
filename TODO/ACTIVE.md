@@ -165,7 +165,16 @@ alone).
           as Mimir allowed.
         - The suite on node-c ran 806 tests: 805 passed and 1 skipped (it is skipped when run as root).
         - Hosted CI runs on develop only, so the branch's sanitizer runs come at its merge.
-     3. The reduction on summaries (Mimir's (a)): it returns its result or the names it needs fetched.
+     3. The reduction on summaries (Mimir's (a)): it returns its result or the names it needs fetched. **Built** at
+        `5a09792`.
+        - `Reduce` returns `Reduced{value, need}`. A need is an answer, whole or past a `since` summary. It is
+          fetched by that answer's ballot and summary, and the reduction is called again. Asking twice for one
+          answer refuses the attempt.
+        - Holders match on ballot and summary, since merge writes leave one ballot with different values.
+        - A change with a reduction goes value-less too; a transfer still carries values.
+        - The fetch and `value()` carry `since`; the default `value()` answers whole.
+        - Mimir was told of the API change.
+        - The suite on node-a ran 809 tests: 808 passed and 1 skipped (it is skipped when run as root).
      4. Deltas: a change may return a delta per name. The accept carries, per name, a whole value, a delta with its
         base ballot, or the ballot only (Kvasir's "already held"). The store's in-place `apply(slot, name,
         base_ballot, new_ballot, delta, done(applied | need_whole))`. A "need whole" is resent in pieces.
