@@ -1,6 +1,6 @@
 # Dannan - Active Work
 
-Last updated: 2026-11-15 (rationalised: history to `COMPLETED.md`). Dannan is written in this repository as its own
+Last updated: 2026-11-16 (rationalised before a context clear: history to `COMPLETED.md`). Dannan is written in this repository as its own
 library, Macha's code at `00861dd` being the source of truth, and Macha is ported
 onto it.
 That reverses the morning's "in-tree first" (the maintainer, 2026-11-03: "I
@@ -32,66 +32,43 @@ live cluster is live-a and live-b, both Pi 5 on Debian 13 with Boost
 contract `API_VERSION` 24. The laptop is on MacPorts for everything. Macha's
 current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluation.md`.
 
-## Resume here (2026-11-16, in session)
+## Resume here (2026-11-16, written for a context clear)
 
 **State.**
-- `develop` is 0.9 (CMake 0.9.0, `libdannan0.9`), pushed at `ed5111d`. It holds reconfiguration and the fast path
-  (merged at `208c581`), the advert push (`e78b66c`), and `main` at 0.8.5 merged back.
-- **0.8.5 is the last release** (`main` and tag at `de631cc`, pushed at the maintainer's word; main's CI run 43800265662 green
-  on all 15 jobs). 0.8.4 went just before it (tag at `52fd53c`, CI run 43793449409 green). Both releases' records are
-  in `COMPLETED.md`.
-- No branch is in flight.
-- Next is step 2's remainder: value-less prepare and deltas.
-
-**Lir's TSan report, open, and recurred on 0.8.5 with sharper frames** (Lir run 43802763961, tsan x86-64,
-`ClusterTest.ARuleWrittenOnOneNodeAppliesOnEvery`; log `../lir/build/ci-logs/run-43802763961.log`).
-- Both accesses are on one io thread (T1454), so this is no race:
-  1. Lir's `SystemTopics::on_roster` (a `Nodes::watch` callback) takes `nodes().snapshot()`.
-  2. It publishes: `ChannelsNoun::publish`, then `Fanout::publish`, then `Fanout::destinations` (`fanout.cpp:146`),
-     whose roster copy's `~NodeRecord` frees a map node.
-  3. Leaving the callback, `~RosterSnapshot` reads that freed node.
-- Both copies are deep and taken under the members' lock, and Membership writes `_self` and `_nodes` only under
-  it, so two fresh copies "sharing" a node means the allocator handed one block out twice.
-- **Explained, by reading (2026-11-16): heap corruption from the ledger defect Lir suppresses.** At 0.8.5,
-  `RetainedMemoryLedger::release` on a destroyed ledger erases from `_allocations` and `_owner_bytes`, whose nodes
-  were freed with the ledger. That is a double free. TSan files a use-after-free under `race:` suppressions, and Lir
-  suppresses `race:dannan::sched::RetainedMemoryLedger::release`, so the first bad write went unreported. The
-  test before the failing one, `HeldMessagesAreLeasedInTheNodesLedger`, is the one that triggers it. Fixed on
-  develop at `79dfa2e` (0.9 ABI).
-- **Lir's checks on node-c (2026-11-16).**
-  - ASan on 0.8.5: the defect fired in 1 run of 30 of `ClusterTest.*`. The report was a use-after-free read in
-    `release` (`_allocations.find`), from a `Lease` in a fanout replay's completion, after `~LirNode` freed the
-    ledger in `HeldMessagesAreLeasedInTheNodesLedger`'s teardown.
-  - TSan with print_suppressions: 30 runs, no warnings, the ledger suppression never matched, and the NodeRecord
-    report was not reproduced.
-  - So the defect is confirmed, and the NodeRecord report is attributed to it by mechanism, not reproduced.
-- **Lir waits for the 0.9.0 tag** rather than pinning develop (the maintainer, to Lir directly). It stays on 0.8.5 with the
-  suppression until then, and will say at once if the NodeRecord report appears on a build with the fix. The
-  one-thread reproduction is dropped unless it does.
-
-**Lir's first TSan report against 0.8.3** (2026-11-16).
-- What: a heap-use-after-free in `~NodeRecord`, in Lir run 43773090610 (`ClusterTest.ConnectingOnAnotherNodeTakesTheClientOver`, two
-  nodes in one process, 4 io threads). The log is at `../lir/build/ci-logs/tsan-43773090610.log`.
-  - The read: `~ClientHandshake` (`_local`, a copy of `Membership::self()`) under `~DialState` (`net/session.cpp:462`).
-  - The earlier free, of the same map node: `~vector<NodeRecord>` of `observe_direct`'s `before` (`_members.active()`),
-    from the server's established callback.
-- Ruled out by reading: every Membership accessor and setter holds `_mutex`; `self()`, `active()` and `all()` return
-  deep copies; ClientHandshake takes `local` by value; the dial and accept states share no record.
-- Lir confirmed its `_deps` Dannan build uses lir_tests' flags (same g++ 14, C++20, no `_GLIBCXX_*` defines).
-- Not reproduced in Dannan (2026-11-16):
-  - `Node.NodesJoinWhileAdvertsChangeAndNothingIsShared` (`0358243`): 8 of 8 clean under clang 19 TSan (node-a), 8 of
-    8 clean under g++ 14 TSan (node-c).
-  - The whole suite (785 tests) clean under both.
-- Not reproduced in Lir either (Lir, 2026-11-16, node-c, g++ 14 TSan at CI's flags, Dannan 0.8.3, Lir at `82352e6`):
-  0 reports in 53 processes (the test alone 40 times, `ClusterTest.*` 10 times, the full suite 3 times).
-- Lir keeps no record across threads. Its one reference handed to Dannan, the `const NodeRecord&` to
-  `routes().call`, is copied at once: `place_call` takes it by value (`node.cpp:211-213`).
-- **Status: open, unexplained, not suppressed.** Most likely the CI runner's timing, possibly a TSan artifact. If it
-  recurs, a second report with other frames is what pins it; until then this stops being the first item.
-- Lir also saw two other intermittent failures, being looked at on Lir's side: run 43757235866 (TSan) and run
-  43765626713 (release arm64).
+- `develop` is 0.9 in progress (CMake 0.9.0, `libdannan0.9`), pushed. **Agreement is complete** (steps 1 and 2:
+  reconfiguration, the fast path, value-less prepare and deltas in six parts, refusal at join), and step 3's part 1
+  (the simulation history and the linearizability checker) is merged at `f917920`. The record is `COMPLETED.md`'s
+  2026-11-16 entry.
+- **0.8.5 is the last release** (`main` and tag at `de631cc`). 0.9.0 is cut only when the whole plan below is done.
+- No branch is in flight. The worktree in use is `build/wt-feature`, on `develop`.
+- **Next, first: step 3, part 2** (agreement's invariants on every step, and the broken protocols).
+- **Gates.**
+  - The last full suite, on node-b at step 3 part 1, ran 834 tests: 833 passed and 1 skipped (it is skipped when
+    run as root).
+  - Develop's hosted CI was green on every job at `6dbec1d` (run 43965857206).
+  - The macOS gate runs on the maintainer's Mac at each merge to develop and before a release. Build directory:
+    `build/macos`, configured with `-DBoost_ROOT=/opt/local/libexec/boost/1.88
+    -DOPENSSL_ROOT_DIR=/opt/local/libexec/openssl3
+    "-DCMAKE_CXX_FLAGS=-I/Users/dev/devroot/dannan/build/ssl3-include --system-header-prefix=openssl/"`, Release,
+    testing on, warnings as errors.
+  - Build with `cmake --build build/macos -j 4 --target dannan_tests`, logging to `build/macos-build.log`; run
+    `build/macos/dannan_tests`, logging to `build/macos-tests.log`. Local grep is blocked, so read the log's end
+    with Read.
+  - Its last run: `9f1bce2`, 824 tests, 822 passed and 2 skipped (both Linux-only). The run at `f917920` was in
+    flight at the clear; rerun it if its result is not recorded below.
+- **Builds go to the Pi cluster.** node-a, node-b and node-c have 16 GB; node-d has 4 GB, so sanitizer builds
+  there use -j1. All four run a 4K-page 48-bit kernel, so ASan, UBSan and TSan work on all of them. node-a has no
+  ninja; use Makefiles there. Claim cores first and release them after. Copy the tree with
+  `git ls-files -z --cached --others --exclude-standard | tar ... | ssh root@<ip> 'tar -x -C /root/dannan-vlp'`.
 
 **Waiting on the maintainer:** nothing.
+
+**Waiting on others:** Dagda, on which durable-file contract `SimDisk` implements: Dannan's
+`identity/durable_file.h`, or Dagda's own (step 3, part 6).
+
+**Lir's NodeRecord TSan reports** (0.8.3 and 0.8.5): attributed by mechanism to the 0.8 ledger double free that Lir
+suppresses, fixed on develop at `79dfa2e`. Lir waits for 0.9.0 and will say at once if the report appears on a build
+with the fix. Reopen only then. The details are in `COMPLETED.md`.
 
 **A flake recurred, open:** `LevelZero.AChunkLostWithTheSendersSessionEndsTheCircuitWithinTheBound`
 (`reach_paths_test.cpp:592`).
@@ -107,175 +84,21 @@ current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluat
 - The `.deb`s CI builds before the tag exists come out versioned `<last>+gitN`. After pushing the tag, re-run
   `main`'s whole run (`gh run rerun <id>`; re-running a single deb job did not replace the arm64 artifact), then
   download that attempt's artifacts by id.
-- Since 2026-11-16 every Pi runs a 4K-page 48-bit kernel, so a release's local gate is release, ASan and TSan again.
-  On 4 GB node-d use -j1.
-
-**Built for 0.9.0 so far** (see `COMPLETED.md`):
-- Agreement: the CASPaxos core (`agree/caspaxos.h`), its wire (types 22 to 24, replies 110 to 112) and fuzz target,
-  the runtime (`agree/agreement.h`), the node's wiring and `Context::agreement()`, `forget()` with tombstones and a
-  per-space floor, and `catch_up()` for a store that lost its state.
-- The simulation harness, phase one (`test/fixtures/sim/`): five real nodes stay linearizable under lost, delayed,
-  duplicated and one-way messages and crash-restarts. The broken protocol (voting after losing state) is caught, and
-  catch-up holds while a minority is wiped.
+- A release's local gate is release, ASan and TSan on a Pi, and the macOS gate on the maintainer's Mac.
 
 **0.9.0 is cut when the whole plan below is done** (the maintainer, 2026-11-16, asked: not before, and not after agreement
 alone). Asked again later that day, he kept it: "I'd rather do it right - but it is becoming a chokepoint, we've been
 at this some time. Complete it properly." Lir, Mimir and Kvasir wait on the tag, so keep each step moving: no
 gold-plating beyond what the design and its reviews ask.
 
-**Next, in order** (the maintainer: agreement first, half the stack waits on it):
-1. **Reconfiguration, as the maintainer ruled** (2026-11-15: "No root except at genesis. A root may start with only one
-   node."). The design is `2026-11-15-agreement-design.md`, "Reconfiguration", agreed by Mimir and Kvasir:
-   - **Merged** to develop at `208c581` after the branch's CI (run 43786450604, 15 of 15).
-   - **Built** on `feature/agreement-reconfiguration` (`2329b9f`), with the gap's fix: per-slot records, `transfer()`,
-     settle, `found()`, the proof rule, the laggard rule. The table is `NodeConfig::agreement_slots` and
-     `agreement_genesis` (genesis at version 0).
-   - **Built** at `c524a28`: every request carries the table's fingerprint and an acceptor with another table refuses
-     it; the slot advert (`agree.slots/<space>`) and `Agreement::hint()`. The suite on node-d ran 778 tests: 777
-     passed and 1 skipped (it is skipped when run as root).
-   - **Refused at join as well** (the maintainer, 2026-11-16, asked: "Also refuse at join"). **Built and merged** at `a521260`.
-     - Each node publishes its table's fingerprint as the `agree.table` advert on its record, which the handshake
-       already carries both ways, so no wire field was added.
-     - `Credentials::admit` checks an authenticated peer's record on both sides. The node refuses a differing
-       fingerprint, and the refusing node's journal names the table.
-     - A peer that publishes none (an older node) joins, and is refused at every agreement request.
-     - Tests: `Channel.APeerNotAdmittedByItsRecordIsRefusedBothWays`, and
-       `Node.ANodeWithAnotherSlotTableIsRefusedAtJoin` (another count, and another genesis set).
-     - The suite on node-c ran 825 tests: 824 passed and 1 skipped (it is skipped when run as root).
-   - The test "the fast path lost across a transfer" is `FastPath.IsLostAcrossATransfer` (`6c90f50`).
-2. **The fast path: built** at `6c90f50`.
-   - How it works: a plain accept reserves the proposer's next ballot (`Accept::reserve`), and the next change of the
-     same names is an accept at that ballot with `fast_from`. A change with an owner's reduction never goes fast (merge
-     writes are seen only in a prepare). The runtime caches the last commit per space, slot, set and names; a miss
-     goes the full way at once.
-   - What the simulator found on the way: a fast ballot chosen at send time could outrank a commit made in between;
-     reserving it is CASPaxos's own form, and fixes it. A retry after a partial accept applied its change twice; a
-     retry that finds its own accept newest now commits it unchanged.
-   - The suite on node-d ran 784 tests: 783 passed and 1 skipped (it is skipped when run as root).
-   - Still to do in step 2: **value-less prepare and deltas**. Designed and reviewed by Mimir and Kvasir
-     (`2026-11-15-agreement-design.md`, "Value-less prepare and deltas", at `82c18a8`). Build order, each with its
-     tests first and its own commit:
-     1. The summary (per name, 64 bytes, set by the store) and the has-value bit in `AcceptorState` and `NameState`;
-        a "values wanted" flag on prepare; `load()` leaving values empty when value-less. **Built** on
-        `feature/valueless-prepare` at `c71eb20`. `keep()`'s contract now says a state held but not carried keeps the
-        store's value and summary, which part 4's in-place apply needs too. Every attempt still asks for values. The
-        suite on node-b ran 799 tests: 798 passed and 1 skipped (it is skipped when run as root).
-     2. The fetch: `agree_fetch` by name, ballot, offset and `since_summary`, answered in pieces; the store's
-        `value(...)`. Then the Attempt's fetching phase between promise and accept, taking the base from this node's
-        own acceptor when it holds it. **Built** at `acaab48`.
-        - The pieces are at most 1 MiB (`max_piece`) and are resumed by offset. A fetch moves between holders of
-          the ballot from the same offset.
-        - `value()`'s default loads the name.
-        - The runtime asks every plain change without a reduction for no values.
-        - `since_summary` waits for part 3, where Mimir's reduction needs it. The first cut fetches whole by ballot,
-          as Mimir allowed.
-        - The suite on node-c ran 806 tests: 805 passed and 1 skipped (it is skipped when run as root).
-        - Hosted CI runs on develop only, so the branch's sanitizer runs come at its merge.
-     3. The reduction on summaries (Mimir's (a)): it returns its result or the names it needs fetched. **Built** at
-        `5a09792`.
-        - `Reduce` returns `Reduced{value, need}`. A need is an answer, whole or past a `since` summary. It is
-          fetched by that answer's ballot and summary, and the reduction is called again. Asking twice for one
-          answer refuses the attempt.
-        - Holders match on ballot and summary, since merge writes leave one ballot with different values.
-        - A change with a reduction goes value-less too; a transfer still carries values.
-        - The fetch and `value()` carry `since`; the default `value()` answers whole.
-        - Mimir was told of the API change.
-        - The suite on node-a ran 809 tests: 808 passed and 1 skipped (it is skipped when run as root).
-     4. Deltas: a change may return a delta per name. The accept carries, per name, a whole value, a delta with its
-        base ballot, or the ballot only (Kvasir's "already held"). The store's in-place `apply(slot, name,
-        base_ballot, new_ballot, delta, done(applied | need_whole))`. A "need whole" is resent in pieces.
-        **Built** at `3d771a1`, with the delta inside `keep()`, not a separate `apply()`. A separate call could not be
-        atomic. the maintainer asked for review first, and Mimir and Kvasir took it; the contract is in the design document.
-        - A delta goes only to an acceptor that answered holding its base (ballot and summary).
-        - The rule asks for a name whole off the base, and answers a replay at the new ballot without the delta.
-        - `keep()` answers `Kept{kept, need_whole}`, all or nothing.
-        - The proposer resends names whole to an acceptor that asks.
-        - The `past` flag on a fetch past `since` is in (`0275e67`, Mimir's ask).
-        - **Still to do:** a whole resend larger than one message, in pieces; the "ballot only" accept. Both belong
-          with `transfer()` in part 5. The fast path sends whole values.
-        - The suite on node-a ran 813 tests: 812 passed and 1 skipped (it is skipped when run as root).
-     5. `transfer()` over all of it, then the simulator with large values and deltas under faults. **Built** at
-        `1c624d3`.
-        - A transfer is value-less, its bases fetched from holders in either set.
-        - An accept's third form is the ballot only (Kvasir's "already held"), for a value left as it is.
-        - Every compact form carries its base's ballot and summary, and the rule asks whole where either differs.
-        - An acceptor not heard from is sent the compact form and asks for what it lacks.
-        - Tests:
-          - `Held.*`;
-          - `Simulation.ATransferWhoseNewAcceptorsHoldTheValuesSendsNoValue` (every accept under 64 KiB);
-          - `Simulation.LargeValuesAndDeltasStayConsistentUnderFaults` (8 seeds; drops, duplicates, delays and a
-            crash; every append applied once).
-        - The suite on node-a ran 817 tests: 816 passed and 1 skipped (it is skipped when run as root).
-        - The store interface is final; Mimir and Kvasir were told.
-        - Mimir accepted the store side as final (2026-11-16).
-        - Kvasir accepted the store side too. **A whole resend in pieces is not needed** (Kvasir): ranges stay below
-          `max_value` by Kvasir's own split, and a lagging acceptor is caught up by the store before it is sent
-          anything.
-     6. **The value-less change** (Mimir's and Kvasir's ask; the maintainer, 2026-11-16: "Include in 0.9.0", since under the
-        ABI rule it would otherwise wait for 0.10.0). Every write to a large collection or range otherwise copies the
-        whole value at the proposer. Kvasir commits every 10 to 20 ms.
-        - `change_deltas(...)`. The change is given each name's base (ballot, summary, has-value) and whether this
-          node's own acceptor holds exactly it. It returns a delta per name (none: unchanged) and a result.
-        - No fetch and no whole value anywhere. Holders get the delta, or the ballot only for an unchanged name.
-        - A majority must take it. An acceptor needing the whole value is not counted and gets no resend; the
-          Outcome names it, for the owner to catch up.
-        - The fast path keeps ballots and summaries, not bytes. A transfer and catch_up() are unchanged.
-        - The API went to Mimir and Kvasir before it was built. Kvasir agreed it as written (2026-11-16):
-          - the fast path checking by ballot only is right for ranges;
-          - need_whole nodes are reported, not resent;
-          - `local` false may return no deltas.
-        - Kvasir's read: a `change_deltas` with no delta for any name commits without an accept when every answer
-          in the promising majority names the same ballot and summary. That state is already chosen, so a current
-          read is one round and no sync. Otherwise it falls back to the ballot-only accept. The proof rule applies.
-        - Mimir's review, taken (2026-11-16):
-          - `Deltas::decline` ends the change at once (`why = "declined"`), for a base not local or moved under
-            Mimir's lock.
-          - `Deltas::summaries`: per name, the summary keep() will set. The fast path keeps ballot and summary and
-            checks both, and a name with none takes no fast path. Commutation is not relied on: a reply computed
-            from a merged-over base would be wrong.
-          - Contract: DeltaChange runs on the agreement's strand, never under a Dannan lock or waiting on a store
-            completion. need_whole acceptors are caught up by an identity change(), and they block nothing beyond
-            liveness.
-        - Kvasir was told of the summary rule; it can supply summaries and keep the fast path.
-        - The read's promises are kept like any prepare's (Kvasir's option (a)): one round and one sync per promiser.
-          **After 0.9.0:** a read-only prepare that is not kept, returning only when all answers match and otherwise
-          starting again with a kept prepare. Option (b) as first stated is unsafe through its fallback accept. It
-          needs Kvasir's simulator run: crashes between the read's promise and a lower-ballot accept.
-        - **Built** at `c23086a`.
-          - Tests: `ValueLessChange.*`, and `Simulation.AValueLessChangeCarriesOnlyDeltas`. The simulation covers a
-            megabyte delta with no fetch, the fast path, a read with no accept, need_whole named then caught up by
-            an identity change, and a decline.
-          - The suite on node-d ran 823 tests: 822 passed and 1 skipped (it is skipped when run as root).
-        - **Merged** to develop at `6686731`. Develop's CI run 43938400849 was green on every Linux job: release,
-          ASan and TSan on x86-64, ASan on arm64, clang, coverage, abi, deb and package. The macOS job was cancelled
-          after 15 minutes having run no step. It did the same on its rerun and on the next run (43941344441), so no
-          macOS runner is taking jobs. the maintainer: "There isn't a macos runner", "You use this mac". The hosted job was
-          removed (`9f1bce2`). The macOS gate now runs on the maintainer's Mac at each merge to develop and before a release,
-          against MacPorts `boost188` (installed 2026-11-16), with `-DBoost_ROOT=/opt/local/libexec/boost/1.88`.
-          - First run, develop at `9f1bce2`: 824 tests, 822 passed and 2 skipped, both Linux-only:
-            `CustodyTool.InitTakesCustodyBackWhenTheRootCannotBeWritten` and `PeerSocket.ChoosesBbrWhereOffered`. Today a whole value in an accept
-          is one message, up to `max_value`. Once he answers, the branch merges to develop.
-
-   Tests are named there: one-node genesis grown to five, the root unreachable, the fast path lost across a
-   transfer.
-   Value-less prepare and deltas come before a transfer of large values (Kvasir's ranges: new acceptors are caught up
-   by the store first, and the joint round then carries a version or a delta).
-3. **The harness's next phase** (`2026-11-15-simulation-harness.md`):
-   - membership, Routes, placement and correlated kills in the world;
-   - the history with faults and resolutions;
-   - the checkers and the broken-protocol list;
-   - `dannan_sim_checkers`.
-
-   Phase one is built already: the world, its generator, `SimTime`, and a cluster with message faults and store
-   crashes, wipes and lying syncs. Agreement runs on it with a counter-only check. In order, each with its tests and
-   commit (2026-11-16):
-   1. **The history and the linearizability checker.** `history.h` holds operations with an id, client, keys,
-      invocation, response (ok, none or cancelled), optional resolution, and the faults as events.
-      `dannan_sim_checkers` is a static library holding the Wing-Gong search over owner-supplied models: state as
-      bytes; a model answers the allowed next states for an operation and its result, more than one allowed; groups
-      of keys are split by the operations that touch them; an operation with no response may or may not take
-      effect. The counter simulation moves onto it.
-   2. **Agreement's own invariants on every step**, and the broken protocols, each refused with its seed:
+**Next, in order** (steps 1 and 2, agreement, are done: `COMPLETED.md`):
+3. **The harness's next phase** (`2026-11-15-simulation-harness.md`, reviewed by Kvasir and Mimir). Phase one (the
+   world, its generator, `SimTime`, a cluster with message faults and store crashes, wipes and lying syncs) and part 1
+   below are built. The fixtures are in `dannan/test/fixtures/sim/`: `world.h`, `agreement.h` (the cluster),
+   `history.h`, `linearizable.h` and `.cpp` (the `dannan_sim_checkers` library), and `models.h`. In order, each with
+   its tests and commit:
+   1. **Done** (`f917920`): the history and the linearizability checker; the counter simulation runs on it.
+   2. **Next: agreement's own invariants on every step**, and the broken protocols, each refused with its seed:
       - voting after losing state (exists);
       - a proposer skipping prepare;
       - an acceptor accepting below its promise;
@@ -312,35 +135,19 @@ gold-plating beyond what the design and its reviews ask.
      the record, the decide and the finishing;
    - a pluggable conflict rule (the maintainer ruled that a decided or replicated commit wins over an undecided one);
    - a commit stamp by the hybrid clock at decide.
-9. **Built and merged** at `e78b66c` (787 tests on node-c: 786 passed, 1 skipped). Two Node tests run with a 30 s
-   heartbeat: `APushedAdvertIsHeldByEveryPeerBeforeItIsDone` and `ASubscriptionHeldBeforeItsDoneGetsTheNextPublish`.
-   It also serialises readvertise: two racing subscribes could leave the older prefix list advertised. Lir confirmed it
-   on a local branch: it holds SUBACK on a 1 s deadline, and `SlowGossipClusterTest.AMessagePublishedElsewhereRight
-   AfterSubackArrives` passed 20 of 20, with its suite at 355 of 355. No API change asked; it merges at 0.9.0.
-   **Ruled (the maintainer, 2026-11-16, relayed by Lir): both calls below in 0.9, no 0.8.x stopgap.** Lir holds a new prefix's
-   SUBACK until the advert is held or the deadline passes. On a miss it grants the subscription and logs the peers that
-   missed it. The ask: push a changed advert and learn who holds it.
-   - The finding: on Lir's cluster a QoS 1 publish right after a SUBACK on another node is lost for that subscriber.
-     It was delivered 0 of 20 times at 0 ms and 8 of 8 at 5 s. The cause is the interest advert travelling at heartbeat
-     pace (`net/fanout.h:29`), and nothing records the gap.
-   - Recommended:
-     - `Nodes::advertise(key, value, deadline, executor, done)`, which sends the changed self record over the members
-       exchange (type 2) to every active peer and reports held and missed;
-     - `Fanout::subscribe(..., deadline, executor, done)` on top of it.
-   - A virtual interface addition, so 0.9.
-10. **Released in 0.8.5** (the maintainer chose a patch). **Lugh's sign-in Backoff into Dannan** (Kvasir's ask, 2026-11-16,
-    stack rule 3; agreed). It becomes
-    `dannan::listen::Backoff` (`listen/backoff.h`), Lugh's class and contract as they stand, on
-    `contract::TimePoint`, per node. Lugh's tests move with it (`lugh/test/authn_backoff_test.cpp`, suite Backoff:
-    FreeFailuresThenDoublingWaits, TheWaitHasACeiling, KeysAreSeparateAndSuccessClearsOne, QuietKeysAreForgotten,
-    MadeUpKeysDoNotGrowWithoutBound). Once it is tagged, Lugh switches its Authenticator and deletes its copy and
-    tests; the cluster-wide sum stays Lugh's (P8). Kvasir's MySQL sign-in keys it per principal and per source.
-    Small: right after item 9. Header-only and additive, so it could also go out in an 0.8.x patch: the maintainer's call.
 8. **Export the fuzz harness** (Kvasir's ask, 2026-11-15; Mimir wants it too), so hosted systems link it rather than
    copy it (the stack's rule 3): `fuzz/fuzz.h`'s Target and Registration, `targets()`, the replay driver, and
    `fuzz_smoke_test.cpp`'s mutate and seeds-then-mutations-then-noise loop as a callable, installed header-only with
    the test fixtures. A hosted system then runs its targets in its own test binary with no clang, which no build Pi
    has.
+
+The advert push (`Nodes::advertise` with a deadline, Lir's ask) and Lugh's `listen::Backoff` are done: the first
+merged at `e78b66c`, the second released in 0.8.5 (`COMPLETED.md`).
+
+**After 0.9.0** (asked, agreed, deliberately later):
+- A sync-free current read (Kvasir): a read-only prepare that is not kept, returning only when every answer matches,
+  and otherwise starting again with a kept prepare. Option (b) as first stated is unsafe through its fallback accept.
+  It needs Kvasir's simulator run: crashes between the read's promise and a lower-ballot accept.
 
 **Standing, from the maintainer's rulings (2026-11-15):**
 - Anything that can use agreement waits for it: no stack project builds its own consensus meanwhile.
@@ -348,17 +155,22 @@ gold-plating beyond what the design and its reviews ask.
 - The `ack_level` names are standard: ephemeral, persisted, decided, replicated (relayed by Kvasir).
 - The sim harness is built once, in Dannan (relayed by Kvasir).
 
-**Peers' open threads:** Mimir and Kvasir are building on the slot table. Lir was told 0.7.0 and 0.8.3 interoperate,
-so it may roll its upgrade one node at a time.
+**Peers' open threads:**
+- Mimir and Kvasir accepted the final `AcceptorStore` and `change_deltas` (2026-11-16) and build on 0.9.0 once it
+  is tagged.
+- Lir waits for 0.9.0, on 0.8.5 with its ledger suppression.
+- Dagda owes the `SimDisk` answer.
 
 **Where things are built and tested** (the maintainer, 2026-11-14: "STOP all builds on the Mac now. Use the RPi cluster only."):
-- Never build or run tests on the Mac. Editing, git, gh, reading CI logs and clang-format are fine. The one exception
-  (the maintainer, 2026-11-16, told to every session): "TSan may be run on the mac IF AND ONLY IF bughunting." Since 2026-11-16
-  every Pi boots the 4K-page kernel (the maintainer had the cluster manager switch them), so g++ TSan runs on all four and clang
-  19 TSan on all but node-d. No sanitizer builds on node-d: it has 4 GB, and Dannan's ASan build hung it. Use node-b or
-  node-c, after `free -m`.
-- Hosted CI (`.github/workflows/ci.yml`) is the gate: 15 jobs on Debian x86-64 and arm64 and macOS, with `abi`
-  against the minor's last tag. To run it on a feature branch, add a temporary commit putting the branch in
+- No general builds on the Mac. Editing, git, gh, reading CI logs and clang-format are fine. Two exceptions (the maintainer,
+  2026-11-16):
+  - the macOS gate at each merge to develop and before a release ("There isn't a macos runner", "You use this mac");
+    the setup is in "Resume here";
+  - TSan "IF AND ONLY IF bughunting".
+- Every Pi boots a 4K-page 48-bit kernel, so ASan, UBSan and TSan run on all four (no clang on node-d). Node-d has
+  4 GB: a sanitizer build there is -j1, after `free -m`.
+- Hosted CI (`.github/workflows/ci.yml`) is the gate on Debian x86-64 and arm64 (release, clang, ASan, TSan,
+  coverage, abi, deb, package), with `abi` against the minor's last tag. To run it on a feature branch, add a temporary commit putting the branch in
   `on.push.branches`, and drop it before the merge with `git rebase --onto X^ X`. Its logs come down with
   `curl` and `gh auth token` into `build/ci/` (`gh run view --log` waits for the whole run). CodeQL is a separate run
   on the same commit: don't take it for the tests.

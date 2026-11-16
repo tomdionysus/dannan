@@ -3,6 +3,52 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
+## Agreement completed, and the harness's history and checker, 2026-11-16 (develop)
+
+The step-by-step notes, with every review and finding, are in `ACTIVE.md` as it stood at `2ed2653`; this is the
+record.
+
+**Value-less prepare and deltas** (`2026-11-15-agreement-design.md`), merged at `6686731`:
+- Part 1, `c71eb20`: the store's summary (at most 64 bytes, the owner's) and the has-value bit; prepare's values
+  flag; `load(..., values, ...)`; `keep()` leaves a state held but not carried as it is.
+- Part 2, `acaab48`: `agree_fetch` (type 26, reply 114), 1 MiB pieces resumed by offset, from this node's acceptor
+  first; the store's `value()`.
+- Part 3, `5a09792`, and `0275e67`: Mimir's reduction on summaries. `Reduced{value, need}`, needs fetched by
+  ballot and summary, past a `since` with the `past` flag.
+- Part 4, `3d771a1`: deltas inside `keep()`, all or nothing (`Kept{kept, need_whole}`). The separate `apply()` the
+  design first had could not be atomic; Mimir and Kvasir reviewed the change, and their contract points are in the
+  design document.
+- Part 5, `1c624d3`: a transfer value-less; the ballot-only form; every compact form carries its base's ballot and
+  summary.
+- Part 6, `c23086a`: `change_deltas()`, the value-less change (Mimir's and Kvasir's ask; the maintainer: "Include in 0.9.0").
+  It never sees a whole value, has a decline, names need_whole acceptors, and makes a read with no accept. Its fast
+  path keeps ballots and summaries.
+- The store interface is final, accepted by Mimir and Kvasir. Kvasir needs no whole resend in pieces.
+- Gate: node-d, 823 tests, 822 passed, 1 skipped (as root). Develop's CI run 43938400849 was green on every Linux
+  job, ASan and TSan included.
+
+**A node with another slot table is refused at join** (the maintainer: "Also refuse at join"), merged at `a521260`: the
+`agree.table` advert on each record, and `Credentials::admit` at the handshake both ways. Gate: node-c, 825 tests,
+824 passed, 1 skipped.
+
+**CI and the macOS gate.** There is no hosted macOS runner (the maintainer). The hosted job was removed (`9f1bce2`); macOS is
+built and tested on the maintainer's Mac at each merge to develop and before a release, against MacPorts `boost188`. First run at
+`9f1bce2`: 824 tests, 822 passed, 2 skipped (Linux-only). Develop's CI run 43965857206 at `6dbec1d` was green on every
+job.
+
+**The harness's history and linearizability checker** (step 3, part 1), merged at `f917920`:
+- `history.h`; and `dannan_sim_checkers`, a Wing-Gong search with Lowe's memo over groups of keys and owner models.
+- Unanswered operations alike in keys and input are taken in invocation order, which keeps the search linear in
+  them.
+- `models.h`: a register and a counter.
+- The agreement simulations' counter check runs on it, and still refuses the acceptor that votes after losing its
+  state.
+- Gate: node-b, 834 tests, 833 passed, 1 skipped.
+
+**Lir's NodeRecord TSan reports** (0.8.3, 0.8.5): attributed by mechanism to the 0.8 ledger double free Lir
+suppresses. `RetainedMemoryLedger::release` on a destroyed ledger is fixed on develop at `79dfa2e`. Lir's ASan run
+confirmed the defect fires (1 in 30); the NodeRecord report itself was not reproduced. Lir waits for 0.9.0 (the maintainer).
+
 ## Releases and merges, 2026-11-16 (the maintainer: "cut 0.8.4 and tell everyone"; push word for all)
 
 **0.8.5 is released** (`main` and tag at `de631cc`; main's CI run 43800265662 green on all 15 jobs, ABI kept).
