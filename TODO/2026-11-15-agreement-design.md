@@ -450,6 +450,25 @@ Agreement's wire is unreleased on 0.9, so it changes in place, at version 1.
 by its ballot: an acceptor answers only for exactly that ballot. A delta is applied only on
 exactly its base. A missing or wrong delta becomes a whole send, never a guess.
 
+**Mimir's review (2026-11-16), taken:**
+1. **(a), not (b).** Every Mimir key can take merge writes, so (b) would make every Mimir prepare
+   carry whole values again. The reduction is given every answer's summary and the base's value.
+   It returns either its result or the names it needs more for; only those are fetched, and
+   usually there are none. Mimir's summary is a digest of the key's merge state (its dot
+   frontier), so matching summaries mean nothing to fetch.
+2. **The fetch:** `value(slot, name, ballot, since_summary)`, where the holder may answer with
+   owner-defined bytes past that summary (Mimir: the merge ops past a frontier). The first cut
+   may fetch the whole value by ballot, with "since" added later.
+3. **`apply` in place:** `apply(slot, name, base_ballot, new_ballot, delta, done(applied |
+   need_whole))`. The store applies the delta to what it holds at exactly `base_ballot` and
+   keeps the result. Mimir's store holds live lists, hashes and sorted sets, not bytes, and a
+   bytes-in, bytes-out apply would rebuild a whole list per write. Dannan never needs the new
+   value's bytes, since it only relays the delta: the proposer computes the value itself
+   from the base it fetched. So an `AcceptorState` accepted by a delta keeps its ballots in
+   `keep()`, and its value stays with the store.
+4. `value()` returns bytes (Mimir: Valkey's DUMP form; fetches are rare). `load()` returns
+   empty values when value-less. The summary is per name, 64 bytes.
+
 **Tests named:**
 - a megabyte register changed with no prepare answer carrying its value;
 - the fetch from another holder when this node's acceptor is behind;
