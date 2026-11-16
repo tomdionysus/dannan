@@ -12,6 +12,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "dannan/identity/node_id.h"
@@ -83,6 +84,14 @@ struct NodeRecord {
 
 // The eight bytes advert_u64 reads.
 net::Bytes u64_advert(uint64_t value);
+
+// What pushing this node's record to its peers reached (Nodes::advertise with a deadline;
+// the maintainer, 2026-11-16, for Lir): the peers that hold it as pushed, or a newer one of this
+// node's, and those that did not answer so within the deadline, each with why.
+struct Pushed {
+  std::vector<identity::NodeId> held;
+  std::vector<std::pair<identity::NodeId, std::string>> missed;
+};
 
 void encode(net::Writer&, const NodeRecord&);
 // Strings are bounded at 4096 bytes, candidates, adverts and their sizes as

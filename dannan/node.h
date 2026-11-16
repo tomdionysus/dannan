@@ -282,6 +282,10 @@ class Node final : public Context {
   net::Handled handle(const membership::NodeRecord& peer, sched::FrameType frame, net::Message request, net::Answer& answer);
   void observe_direct(const membership::NodeRecord& peer);
   void merge(std::span<const uint8_t> payload);
+  // Sets or clears an advert, then sends this node's record to every active peer over the
+  // members exchange; `done` on `executor` with who holds it (Nodes::advertise).
+  void push_advert(const std::string& key, std::optional<net::Bytes> value, std::chrono::milliseconds deadline, boost::asio::any_io_executor executor,
+                   std::function<void(membership::Pushed)> done);
   std::shared_ptr<net::CallHandle> place_call(std::optional<membership::NodeRecord> peer, const net::Endpoint& endpoint, net::MessageType type,
                                               net::Bytes payload, sched::FrameType frame, std::chrono::milliseconds deadline,
                                               boost::asio::any_io_executor executor, net::Client::Done done, net::CallWatch watch = {});

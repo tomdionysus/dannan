@@ -179,6 +179,99 @@ TEST(Node, NodesJoinWhileAdvertsChangeAndNothingIsShared) {
   a.stop();
 }
 
+// Two nodes whose gossip is slow (a 30 s heartbeat), so only a push carries an advert
+// within a test: B bootstraps from A, and each learns the other in the handshake.
+struct SlowGossip {
+  Io io;
+  test::TempDir dir;
+  identity::ClusterKey key = cluster_key(dir.path());
+  std::unique_ptr<Node> a;
+  std::unique_ptr<Node> b;
+  SlowGossip() {
+    auto a_config = config(dir.path() / "a", key);
+    a_config.heartbeat = 30s;
+    a_config.dead_after = 90s;
+    a = std::make_unique<Node>(io.context, a_config);
+    a->start();
+    auto b_config = config(dir.path() / "b", key, {{"127.0.0.1", a->port()}});
+    b_config.heartbeat = 30s;
+    b_config.dead_after = 90s;
+    b = std::make_unique<Node>(io.context, b_config);
+    b->start();
+  }
+  ~SlowGossip() {
+    if (b) b->stop();
+    if (a) a->stop();
+  }
+  // `of`'s advert `key` as `at` holds it.
+  static std::optional<net::Bytes> advert_at(Node& at, const identity::NodeId& of, const std::string& key) {
+    for (const auto& record : at.context().nodes().active())
+      if (record.id == of)
+        if (const auto value = record.advert(key)) return net::Bytes(value->begin(), value->end());
+    return std::nullopt;
+  }
+};
+
+membership::Pushed pushed_now(const std::function<void(std::function<void(membership::Pushed)>)>& start) {
+  auto told = std::make_shared<std::promise<membership::Pushed>>();
+  start([told](membership::Pushed pushed) { told->set_value(std::move(pushed)); });
+  auto future = told->get_future();
+  if (future.wait_for(30s) != std::future_status::ready) return {};
+  return future.get();
+}
+
+// Nodes::advertise with a deadline (the maintainer, 2026-11-16, for Lir): the changed record goes to
+// every active peer at once and each merges it before answering, so when `done` says a
+// peer holds it, it does; a withdrawal the same; a peer that is gone is named as missed.
+TEST(Node, APushedAdvertIsHeldByEveryPeerBeforeItIsDone) {
+  SlowGossip cluster;
+  const auto a = cluster.a->context().identity().id();
+  const auto b = cluster.b->context().identity().id();
+  ASSERT_TRUE(eventually([&] { return knows(*cluster.a, b) && knows(*cluster.b, a); }));
+  const net::Bytes value{1, 2, 3};
+  const auto set = pushed_now([&](auto done) { cluster.a->context().nodes().advertise("lir.interest", value, 5s, cluster.io.context.get_executor(), done); });
+  EXPECT_EQ(set.held, std::vector<identity::NodeId>{b});
+  EXPECT_TRUE(set.missed.empty());
+  EXPECT_EQ(SlowGossip::advert_at(*cluster.b, a, "lir.interest"), value);
+
+  const auto cleared =
+      pushed_now([&](auto done) { cluster.a->context().nodes().advertise("lir.interest", std::nullopt, 5s, cluster.io.context.get_executor(), done); });
+  EXPECT_EQ(cleared.held, std::vector<identity::NodeId>{b});
+  EXPECT_FALSE(SlowGossip::advert_at(*cluster.b, a, "lir.interest"));
+
+  cluster.b->stop();
+  const auto gone = pushed_now([&](auto done) { cluster.a->context().nodes().advertise("lir.interest", value, 2s, cluster.io.context.get_executor(), done); });
+  EXPECT_TRUE(gone.held.empty());
+  ASSERT_EQ(gone.missed.size(), 1u);
+  EXPECT_EQ(gone.missed[0].first, b);
+  EXPECT_FALSE(gone.missed[0].second.empty());
+}
+
+// Lir's window (2026-11-16): a subscription's interest travelled at the heartbeat's pace, so
+// a publish just after a SUBACK went nowhere. Subscribed with a deadline, the interest is
+// held by the publisher before `done`, and the very next publish reaches the subscriber.
+TEST(Node, ASubscriptionHeldBeforeItsDoneGetsTheNextPublish) {
+  SlowGossip cluster;
+  const auto a = cluster.a->context().identity().id();
+  const auto b = cluster.b->context().identity().id();
+  ASSERT_TRUE(eventually([&] { return knows(*cluster.a, b) && knows(*cluster.b, a); }));
+  cluster.a->context().channels().open("events", net::Delivery::stream);
+  cluster.b->context().channels().open("events", net::Delivery::stream);
+  auto received = std::make_shared<std::promise<std::string>>();
+  const auto subscribed = pushed_now([&](auto done) {
+    (void)cluster.b->context().channels().subscribe(
+        "events", "sensors/", cluster.io.context.get_executor(),
+        [received](const net::ChannelMessage& message) { received->set_value(std::string(message.payload.begin(), message.payload.end())); }, 5s,
+        cluster.io.context.get_executor(), done);
+  });
+  EXPECT_EQ(subscribed.held, std::vector<identity::NodeId>{a});
+  const auto published = cluster.a->context().channels().publish("events", "sensors/1", net::Bytes{'h', 'i'});
+  EXPECT_NE(std::find(published.to.begin(), published.to.end(), b), published.to.end());
+  auto message = received->get_future();
+  ASSERT_EQ(message.wait_for(10s), std::future_status::ready);
+  EXPECT_EQ(message.get(), "hi");
+}
+
 // The transport writes through the sink the node was given, so a hosted
 // system's own sink keeps its line format.
 TEST(Node, TheTransportWritesThroughTheNodesSink) {

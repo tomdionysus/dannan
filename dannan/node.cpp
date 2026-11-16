@@ -120,6 +120,10 @@ class Node::NodesNoun final : public Nodes {
     return placement::by_capacity(key, candidates, copies, scheme);
   }
   void advertise(const std::string& key, net::Bytes value) override { _node._members.set_advert(key, std::move(value)); }
+  void advertise(const std::string& key, std::optional<net::Bytes> value, std::chrono::milliseconds deadline, asio::any_io_executor executor,
+                 std::function<void(membership::Pushed)> done) override {
+    _node.push_advert(key, std::move(value), deadline, std::move(executor), std::move(done));
+  }
   uint64_t watch(asio::any_io_executor executor, std::function<void(RosterChange)> handler) override {
     contract::Lock lock(_node._watch_mutex);
     const auto id = _node._next_watcher++;
@@ -240,6 +244,10 @@ class Node::ChannelsNoun final : public Channels {
   void open(std::string name, net::Delivery delivery, size_t replay_bytes) override { _node._fanout->open(std::move(name), delivery, replay_bytes); }
   uint64_t subscribe(const std::string& channel, std::string prefix, asio::any_io_executor executor, net::ChannelHandler handler) override {
     return _node._fanout->subscribe(channel, std::move(prefix), std::move(executor), std::move(handler));
+  }
+  uint64_t subscribe(const std::string& channel, std::string prefix, asio::any_io_executor executor, net::ChannelHandler handler,
+                     std::chrono::milliseconds deadline, asio::any_io_executor done_executor, std::function<void(membership::Pushed)> done) override {
+    return _node._fanout->subscribe(channel, std::move(prefix), std::move(executor), std::move(handler), deadline, std::move(done_executor), std::move(done));
   }
   void unsubscribe(uint64_t id) override { _node._fanout->unsubscribe(id); }
   net::Published publish(const std::string& channel, std::string topic, net::Bytes payload) override {
@@ -553,6 +561,8 @@ Node::Node(asio::io_context& io, NodeConfig config)
     else
       _members.clear_advert(key);
   };
+  hooks.push = [this](const std::string& key, std::optional<net::Bytes> value, std::chrono::milliseconds deadline, asio::any_io_executor executor,
+                      std::function<void(membership::Pushed)> done) { push_advert(key, std::move(value), deadline, std::move(executor), std::move(done)); };
   hooks.call = [this](const NodeRecord& peer, net::MessageType type, net::Bytes payload, sched::FrameType frame, std::chrono::milliseconds deadline,
                       asio::any_io_executor executor, net::Client::Done done) {
     if (!_client || _stopping || _calls_cancelled) return asio::post(executor, [done] { done({std::nullopt, "the node is not running", {}}); });
@@ -901,6 +911,21 @@ net::Handled Node::handle(const NodeRecord& peer, sched::FrameType frame, net::M
   _activity.note(frame, request.payload.size());
   if (type == m::ping) return net::Handled::processed();
   if (type == m::members) {
+    // A pushed record (Nodes::advertise with a deadline): the sender's own, merged before
+    // the answer, so the roster sent back shows whether it was taken. Empty: the plain
+    // exchange, as every older node sends it.
+    if (!request.payload.empty()) {
+      try {
+        net::Reader reader(request.payload);
+        if (reader.u32() != 1) throw net::DecodeError("a pushed record is one record");
+        auto pushed = membership::decode(reader);
+        reader.finish();
+        if (pushed.id != peer.id) return net::Handled::failed(403, "not_permitted", "a pushed record is the sender's own");
+        observe_direct(pushed);
+      } catch (const net::DecodeError& error) {
+        return net::Handled::failed(400, "invalid_request", error.what());
+      }
+    }
     const auto nodes = _members.all();
     net::Writer writer;
     writer.u32(static_cast<uint32_t>(nodes.size()));
@@ -1079,6 +1104,78 @@ void Node::observe_direct(const NodeRecord& peer) {
   if (_client && peer.id != _identity.id) _client->note_peer(peer);
   if (changed) topology_changed();
   signal_telemetry();
+}
+
+void Node::push_advert(const std::string& key, std::optional<net::Bytes> value, std::chrono::milliseconds deadline, asio::any_io_executor executor,
+                       std::function<void(membership::Pushed)> done) {
+  if (value)
+    _members.set_advert(key, std::move(*value));
+  else
+    _members.clear_advert(key);
+  const auto self = _members.self();
+  net::Writer writer;
+  writer.u32(1);
+  membership::encode(writer, self);
+  const auto payload = writer.take();
+  std::vector<NodeRecord> peers;
+  for (auto& node : _members.active())
+    if (node.id != self.id) peers.push_back(std::move(node));
+  if (peers.empty()) return asio::post(executor, [done = std::move(done)] { done({}); });
+
+  struct Gathered {
+    std::mutex mutex;
+    membership::Pushed out;
+    size_t left = 0;
+    std::function<void(membership::Pushed)> done;
+  };
+  auto gathered = std::make_shared<Gathered>();
+  gathered->left = peers.size();
+  gathered->done = std::move(done);
+  const auto answered = [gathered, self](const identity::NodeId& peer, net::CallOutcome outcome) {
+    // Held: the roster the peer sent back, after merging, carries this node's record as
+    // pushed or newer. Anything else, an older peer that ignored the push included, missed.
+    std::optional<std::string> why;
+    if (!outcome.reply) {
+      why = outcome.failure.empty() ? "no answer" : outcome.failure;
+    } else if (outcome.reply->type != net::message::members_reply) {
+      why = "the peer refused the push";
+    } else {
+      try {
+        net::Reader reader(outcome.reply->payload);
+        const auto count = reader.u32();
+        std::optional<NodeRecord> mine;
+        for (uint32_t i = 0; i < count && i < 100000; ++i) {
+          auto record = membership::decode(reader);
+          if (record.id == self.id) mine = std::move(record);
+        }
+        if (!mine)
+          why = "the peer does not list this node";
+        else if (!(*mine == self) && !(mine->seen_unix_ms > self.seen_unix_ms))
+          why = "the peer holds an older record of this node";
+      } catch (const net::DecodeError& error) {
+        why = std::string("an unreadable roster: ") + error.what();
+      }
+    }
+    bool last = false;
+    {
+      std::lock_guard lock(gathered->mutex);
+      if (why)
+        gathered->out.missed.emplace_back(peer, std::move(*why));
+      else
+        gathered->out.held.push_back(peer);
+      last = --gathered->left == 0;
+    }
+    if (last) gathered->done(std::move(gathered->out));
+  };
+  for (const auto& peer : peers) {
+    if (!_client || _stopping || _calls_cancelled) {
+      // Posted, as every completion is, never called inline.
+      asio::post(executor, [answered, id = peer.id] { answered(id, {std::nullopt, "the node is not running", {}}); });
+      continue;
+    }
+    (void)place_call(peer, {peer.host, peer.port}, net::message::members, payload, sched::FrameType::control, deadline, executor,
+                     [answered, id = peer.id](net::CallOutcome outcome) { answered(id, std::move(outcome)); });
+  }
 }
 
 void Node::merge(std::span<const uint8_t> payload) {
