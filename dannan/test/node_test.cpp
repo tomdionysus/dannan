@@ -2278,7 +2278,12 @@ class MemoryStore final : public agree::AcceptorStore {
       for (auto& state : out.states) state.value.reset();
     done(std::move(out));
   }
-  void keep(agree::Slot slot, const agree::Held& held, std::function<void(bool)> done) override {
+  // Takes no deltas: every one is asked for whole, and nothing kept.
+  void keep(agree::Slot slot, const agree::Held& held, std::function<void(Kept)> done) override {
+    Kept out;
+    for (size_t i = 0; i < held.states.size(); ++i)
+      if (held.states[i].delta) out.need_whole.push_back(i);
+    if (!out.need_whole.empty()) return done(std::move(out));
     {
       std::lock_guard lock(_mutex);
       _slots[slot] = held.slot;
@@ -2291,7 +2296,8 @@ class MemoryStore final : public agree::AcceptorStore {
         kept = std::move(state);
       }
     }
-    done(true);
+    out.kept = true;
+    done(std::move(out));
   }
   bool ready() const override { return true; }
 

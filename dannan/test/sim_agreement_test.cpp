@@ -65,7 +65,7 @@ TEST(SimStore, AValueLessLoadKeepsTheValueAndItsSummary) {
   agree::Held written;
   written.names = {k};
   written.states = {agree::AcceptorState{agree::Ballot{1, {}, {}}, agree::Ballot{1, {}, {}}, value, agree::Ballot{1, {}, {}}, {}, true}};
-  store.keep(counter_slot, written, [](bool kept) { ASSERT_TRUE(kept); });
+  store.keep(counter_slot, written, [](Store::Kept kept) { ASSERT_TRUE(kept.kept); });
   ASSERT_TRUE(store.state(counter_slot, k));
   EXPECT_EQ(store.state(counter_slot, k)->summary, Store::summary(value));
 
@@ -78,7 +78,7 @@ TEST(SimStore, AValueLessLoadKeepsTheValueAndItsSummary) {
   EXPECT_EQ(loaded->states[0].summary, Store::summary(value));
 
   loaded->states[0].promised = agree::Ballot{2, {}, {}};
-  store.keep(counter_slot, *loaded, [](bool kept) { ASSERT_TRUE(kept); });
+  store.keep(counter_slot, *loaded, [](Store::Kept kept) { ASSERT_TRUE(kept.kept); });
   const auto after = store.state(counter_slot, k);
   ASSERT_TRUE(after);
   EXPECT_EQ(after->promised, (agree::Ballot{2, {}, {}}));
@@ -613,6 +613,63 @@ TEST(Simulation, AnAnswerTheReductionAsksForIsFetchedByItsOwnBallot) {
   ASSERT_TRUE(read.values[0]);
   EXPECT_EQ(std::string(read.values[0]->begin(), read.values[0]->end()), "new!");
   EXPECT_EQ(seen, std::vector<std::string>{"old"});
+}
+
+// An append that also returns its delta: the byte appended (the simulator's store applies a
+// delta by appending it).
+agree::Change append_with_delta(uint8_t byte) {
+  return [byte](std::span<const std::optional<agree::Bytes>> current) {
+    auto next = current[0].value_or(agree::Bytes{});
+    next.push_back(byte);
+    return agree::Changed{{next}, encode(next.size()), {agree::Bytes{byte}}};
+  };
+}
+
+// Deltas through the runtime: to an acceptor holding the base only the delta crosses the
+// network, applied in place by its store; one that missed the base is sent the whole value.
+// When a store's own check refuses every delta, the names go whole and the change still
+// commits. Every acceptor ends with the same value.
+TEST(Simulation, ADeltaIsAppliedInPlaceAndAnAcceptorBehindIsSentTheWholeValue) {
+  World world(29);
+  Cluster cluster(world, 3, NetworkFaults{});
+  const auto change_at = [&](size_t at, agree::Change change) {
+    std::optional<agree::Outcome> out;
+    cluster.agreement(at).change(Cluster::space, counter_slot, {agree::Name{'m'}}, cluster.ids(), Cluster::genesis_version, std::move(change), {}, 5000ms,
+                                 world.io.get_executor(), [&](agree::Outcome outcome) { out = std::move(outcome); });
+    world.run_until([&] { return out.has_value(); }, 5'000'000);
+    // Let every accept still in flight land.
+    world.run_until([] { return false; }, 200'000);
+    return out.value_or(agree::Outcome{});
+  };
+  const agree::Bytes megabyte(1024 * 1024, 'a');
+  ASSERT_TRUE(change_at(0, put(megabyte)).committed);
+  // Every acceptor holds the base: the other promiser is sent only the delta.
+  cluster.recording = true;
+  ASSERT_TRUE(change_at(1, append_with_delta('b')).committed);
+  const auto small_accept = std::any_of(cluster.crossed.begin(), cluster.crossed.end(),
+                                        [](const Cluster::Crossed& each) { return each.type == net::message::agree_accept && each.request_bytes < 4096; });
+  EXPECT_TRUE(small_accept);
+  // Node 2 misses the next change, then changes the register itself: its own acceptor is
+  // behind the base, so it is sent the whole value.
+  cluster.block(0, 2);
+  ASSERT_TRUE(change_at(0, append_with_delta('c')).committed);
+  cluster.unblock_all();
+  const auto changed = change_at(2, append_with_delta('d'));
+  ASSERT_TRUE(changed.committed) << changed.why;
+  EXPECT_EQ(decode(changed.result), megabyte.size() + 3);
+  for (size_t at = 0; at < 3; ++at) {
+    const auto held = cluster.store(at).state(counter_slot, agree::Name{'m'});
+    if (!held || held->accepted != changed.ballot) continue;
+    ASSERT_TRUE(held->value);
+    EXPECT_EQ(held->value->size(), megabyte.size() + 3) << "at " << at;
+    EXPECT_EQ(held->value->back(), 'd');
+  }
+
+  // Every store now refuses deltas: they go whole, and the change commits.
+  for (size_t at = 0; at < 3; ++at) cluster.store(at).refuse_deltas = true;
+  const auto whole = change_at(1, append_with_delta('e'));
+  ASSERT_TRUE(whole.committed) << whole.why;
+  EXPECT_EQ(decode(whole.result), megabyte.size() + 4);
 }
 
 // The fast path through the runtime: a node's second change of the same names commits in

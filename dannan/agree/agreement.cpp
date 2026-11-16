@@ -301,13 +301,21 @@ struct Agreement::Core : std::enable_shared_from_this<Core> {
                   answer({replied, std::move(reply), {}});
                   return done();
                 }
-                space->store->keep(
-                    request.slot, *keep,
-                    [core, space, slot = request.slot, record = keep->slot, answer, done, replied, refusal, reply = std::move(reply)](bool kept) {
-                      if (kept) core->note(space->name, slot, record);
-                      answer(kept ? net::Message{replied, reply, {}} : refusal("the store could not keep"));
-                      done();
-                    });
+                space->store->keep(request.slot, *keep,
+                                   [core, space, slot = request.slot, record = keep->slot, answer, done, replied, refusal, reply = std::move(reply),
+                                    kind = request.kind, carried = request.names.size()](AcceptorStore::Kept kept) {
+                                     if (kept.kept) {
+                                       core->note(space->name, slot, record);
+                                       answer(net::Message{replied, reply, {}});
+                                     } else if (kind == Request::Kind::accept && !kept.need_whole.empty() &&
+                                                std::all_of(kept.need_whole.begin(), kept.need_whole.end(), [carried](size_t i) { return i < carried; })) {
+                                       // The store's own check refused a delta: nothing kept, those names asked for whole.
+                                       answer(net::Message{replied, encode(AcceptAnswer{std::nullopt, std::move(kept.need_whole)}), {}});
+                                     } else {
+                                       answer(refusal("the store could not keep"));
+                                     }
+                                     done();
+                                   });
               });
         },
         space);
@@ -594,12 +602,17 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
       reserved = accept.reserve;
     }
     outstanding = attempt->recipients().size();
-    const auto request = encode(AcceptMessage{space, accept, core->fingerprint});
+    // One message for all, unless deltas make it differ by recipient.
+    const auto shared = accept.deltas.empty() ? std::optional<net::Bytes>(encode(AcceptMessage{space, accept, core->fingerprint})) : std::nullopt;
     for (const auto& to : attempt->recipients())
-      core->send(to, net::message::agree_accept, request, left(),
-                 [self = shared_from_this(), at = generation, to](std::optional<net::Bytes> replied, std::string) {
-                   asio::post(self->strand, [self, at, to, replied = std::move(replied)] { self->accepted(at, to, replied); });
-                 });
+      send_accept_to(to, shared ? *shared : encode(AcceptMessage{space, attempt->accept_for(to, accept), core->fingerprint}));
+  }
+
+  void send_accept_to(const identity::NodeId& to, net::Bytes request) {
+    core->send(to, net::message::agree_accept, std::move(request), left(),
+               [self = shared_from_this(), at = generation, to](std::optional<net::Bytes> replied, std::string) {
+                 asio::post(self->strand, [self, at, to, replied = std::move(replied)] { self->accepted(at, to, replied); });
+               });
   }
 
   void accepted(uint64_t at, const identity::NodeId& node, const std::optional<net::Bytes>& answer) {
@@ -607,7 +620,13 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
     --outstanding;
     if (answer) {
       try {
-        attempt->on_accept(node, decode_accept_answer(*answer));
+        // An acceptor that needs names whole is sent the accept again, those names whole, with
+        // the reservation the first carried.
+        if (auto again = attempt->on_accept(node, decode_accept_answer(*answer))) {
+          if (!again->to) again->reserve = reserved;
+          ++outstanding;
+          return send_accept_to(node, encode(AcceptMessage{space, std::move(*again), core->fingerprint}));
+        }
       } catch (const net::DecodeError&) {
       }
     }
@@ -988,14 +1007,15 @@ void Agreement::catch_up(std::string space, Slot slot, std::vector<Name> names, 
         held.states[i] = AcceptorState{outcome.ballot, outcome.ballot, outcome.values[i], outcome.changed_at[i], {}, outcome.values[i].has_value()};
       held.slot.served = set;
       held.slot.pending_from.reset();
-      served->store->keep(slot, held, [core, space, slot, record = held.slot, done = std::move(done), outcome = std::move(outcome)](bool kept) mutable {
-        if (kept) core->note(space, slot, record);
-        if (!kept) {
-          outcome.committed = false;
-          outcome.why = "the store could not keep what was caught up";
-        }
-        done(std::move(outcome));
-      });
+      served->store->keep(slot, held,
+                          [core, space, slot, record = held.slot, done = std::move(done), outcome = std::move(outcome)](AcceptorStore::Kept kept) mutable {
+                            if (kept.kept) core->note(space, slot, record);
+                            if (!kept.kept) {
+                              outcome.committed = false;
+                              outcome.why = "the store could not keep what was caught up";
+                            }
+                            done(std::move(outcome));
+                          });
     });
   });
 }

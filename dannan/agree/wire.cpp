@@ -160,6 +160,17 @@ net::Bytes encode(const AcceptMessage& message) {
   if (message.accept.fast_from) put(out, *message.accept.fast_from);
   out.u8(message.accept.reserve ? 1 : 0);
   if (message.accept.reserve) put(out, *message.accept.reserve);
+  // Deltas: none, or one entry per name, each absent or a base ballot and the delta.
+  const auto& accept = message.accept;
+  if (!accept.deltas.empty() && (accept.deltas.size() != accept.names.size() || accept.bases.size() != accept.names.size()))
+    throw std::invalid_argument("an accept's deltas name a different count");
+  out.u8(accept.deltas.empty() ? 0 : 1);
+  for (size_t i = 0; i < accept.deltas.size(); ++i) {
+    out.u8(accept.deltas[i] ? 1 : 0);
+    if (!accept.deltas[i]) continue;
+    put(out, accept.bases[i]);
+    out.bytes(*accept.deltas[i]);
+  }
   return out.take();
 }
 
@@ -238,6 +249,8 @@ net::Bytes encode(const AcceptAnswer& answer) {
   Writer out;
   out.u8(message_version);
   put(out, answer.refused);
+  out.u32(static_cast<uint32_t>(answer.need_whole.size()));
+  for (const auto i : answer.need_whole) out.u32(static_cast<uint32_t>(i));
   return out.take();
 }
 
@@ -282,6 +295,21 @@ AcceptMessage decode_accept(std::span<const uint8_t> bytes) {
   if (reserved) out.accept.reserve = get_ballot(in);
   // The fast path is a plain change's alone.
   if ((out.accept.fast_from || out.accept.reserve) && out.accept.to) throw DecodeError("a transfer on the fast path");
+  const auto deltas = in.u8();
+  if (deltas > 1) throw DecodeError("an accept's deltas' presence is 0 or 1");
+  if (deltas) {
+    const auto count = out.accept.names.size();
+    out.accept.deltas.resize(count);
+    out.accept.bases.resize(count);
+    for (size_t i = 0; i < count; ++i) {
+      const auto present = in.u8();
+      if (present > 1) throw DecodeError("a delta's presence is 0 or 1");
+      if (!present) continue;
+      out.accept.bases[i] = get_ballot(in);
+      out.accept.deltas[i] = in.bytes(max_value);
+      if (out.accept.values[i]) throw DecodeError("a name carried both whole and as a delta");
+    }
+  }
   in.finish();
   return out;
 }
@@ -317,6 +345,14 @@ AcceptAnswer decode_accept_answer(std::span<const uint8_t> bytes) {
   open(in);
   AcceptAnswer out;
   out.refused = get_refusal(in);
+  const auto count = in.u32();
+  if (count > max_names) throw DecodeError("an answer needing " + std::to_string(count) + " names whole");
+  for (uint32_t i = 0; i < count; ++i) {
+    const auto index = in.u32();
+    if (index >= max_names) throw DecodeError("a name needed whole past the largest accept");
+    out.need_whole.push_back(index);
+  }
+  if (out.refused && !out.need_whole.empty()) throw DecodeError("a refusal that also needs names whole");
   in.finish();
   return out;
 }

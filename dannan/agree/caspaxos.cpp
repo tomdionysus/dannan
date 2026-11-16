@@ -134,10 +134,17 @@ AcceptStep on_accept(const identity::NodeId& self, const identity::NodeId& from,
     out.answer.refused = std::move(refused);
     return out;
   }
-  if (request.values.size() != names || request.changed_at.size() != names) {
+  if (request.values.size() != names || request.changed_at.size() != names ||
+      (!request.deltas.empty() && (request.deltas.size() != names || request.bases.size() != names))) {
     out.answer.refused = refusal("the accept names, values and changes differ in count");
     return out;
   }
+  const auto delta_at = [&request](size_t i) { return !request.deltas.empty() && request.deltas[i].has_value(); };
+  for (size_t i = 0; i < names; ++i)
+    if (delta_at(i) && request.values[i]) {
+      out.answer.refused = refusal("an accept carries a name both whole and as a delta");
+      return out;
+    }
   // The fast path: nothing may have been prepared since its last ballot, here, for these
   // names or for the slot, and the slot is still the set's, settled.
   if (request.fast_from) {
@@ -166,15 +173,33 @@ AcceptStep on_accept(const identity::NodeId& self, const identity::NodeId& from,
     out.answer.refused = refusal("a reservation is a plain accept's, above its ballot");
     return out;
   }
+  // A delta needs its base held here exactly; otherwise the name is asked for whole and
+  // nothing is kept. A name already at this ballot is this accept again (resent, or replayed):
+  // kept already, its delta never applied twice.
+  for (size_t i = 0; i < names; ++i)
+    if (delta_at(i) && held.states[i].accepted != request.ballot && held.states[i].accepted != request.bases[i]) out.answer.need_whole.push_back(i);
+  if (!out.answer.need_whole.empty()) return out;
   Held keep = held;
   for (size_t i = 0; i < names; ++i) {
-    keep.states[i].promised = request.reserve.value_or(request.ballot);
-    keep.states[i].accepted = request.ballot;
-    keep.states[i].value = request.values[i];
-    keep.states[i].has_value = request.values[i].has_value();
+    auto& state = keep.states[i];
+    state.promised = request.reserve.value_or(request.ballot);
+    state.changed_at = request.changed_at[i];
+    if (delta_at(i)) {
+      if (held.states[i].accepted == request.ballot) continue;
+      // Applied by the store to what it holds at the base, and summarised.
+      state.accepted = request.ballot;
+      state.value.reset();
+      state.has_value = true;
+      state.summary.clear();
+      state.delta = request.deltas[i];
+      state.base = request.bases[i];
+      continue;
+    }
+    state.accepted = request.ballot;
+    state.value = request.values[i];
+    state.has_value = request.values[i].has_value();
     // The store summarises the value it takes.
-    keep.states[i].summary.clear();
-    keep.states[i].changed_at = request.changed_at[i];
+    state.summary.clear();
   }
   if (request.to) {
     // Pending until settled, unless this acceptor already holds the move settled.
@@ -493,10 +518,16 @@ Accept Attempt::change_bases(std::vector<std::optional<Bytes>> current) {
   }
   auto changed = _change(current);
   if (changed.values.size() != count) throw std::logic_error("a change returned a different count of values");
+  if (!changed.deltas.empty() && changed.deltas.size() != count) throw std::logic_error("a change returned a different count of deltas");
   Accept accept{set, std::nullopt, _prepare.slot, _prepare.ballot, _prepare.names, std::move(changed.values), {}, std::nullopt, std::nullopt};
   for (size_t i = 0; i < count; ++i)
     // Unaltered, a value keeps the ballot that last changed it: a stable fencing token.
     accept.changed_at.push_back(accept.values[i] == bases[i].value ? bases[i].changed_at : _prepare.ballot);
+  // Each delta is against the base the change was given.
+  if (std::any_of(changed.deltas.begin(), changed.deltas.end(), [](const std::optional<Bytes>& delta) { return delta.has_value(); })) {
+    accept.deltas = std::move(changed.deltas);
+    for (const auto& base : bases) accept.bases.push_back(base.accepted);
+  }
   _result = std::move(changed.result);
   return accept;
 }
@@ -536,16 +567,65 @@ std::optional<Accept> Attempt::transfer_accept() {
   return accept;
 }
 
-void Attempt::on_accept(const identity::NodeId& from, const AcceptAnswer& answer) {
-  // Committed, it still records who else accepted: the evidence names them all.
-  if (_phase == Phase::committed && !answer.refused && counted(from)) {
-    _accepted.push_back(from);
-    return;
+Accept Attempt::accept_for(const identity::NodeId& node, Accept accept) const {
+  if (accept.deltas.empty()) return accept;
+  // What `node` answered the prepare, if it promised.
+  const auto promised = std::find(_promised.begin(), _promised.end(), node);
+  const PrepareAnswer* answered = promised == _promised.end() ? nullptr : &_answers[static_cast<size_t>(promised - _promised.begin())];
+  const auto whole = _whole.find(node);
+  bool any = false;
+  for (size_t i = 0; i < accept.deltas.size(); ++i) {
+    if (!accept.deltas[i]) continue;
+    const bool asked_whole = whole != _whole.end() && std::find(whole->second.begin(), whole->second.end(), i) != whole->second.end();
+    const bool holds_base = answered && i < answered->states.size() && i < _bases.size() && answered->states[i].accepted == accept.bases[i] &&
+                            answered->states[i].summary == _bases[i].summary;
+    if (holds_base && !asked_whole) {
+      accept.values[i].reset();
+      any = true;
+    } else {
+      accept.deltas[i].reset();
+    }
   }
-  if (_phase != Phase::accepting || !counted(from)) return;
-  if (answer.refused) return refuse(from, *answer.refused);
+  if (!any) {
+    accept.deltas.clear();
+    accept.bases.clear();
+  }
+  return accept;
+}
+
+std::optional<Accept> Attempt::on_accept(const identity::NodeId& from, const AcceptAnswer& answer) {
+  // Committed, it still records who else accepted: the evidence names them all.
+  if (_phase == Phase::committed && !answer.refused && answer.need_whole.empty() && counted(from)) {
+    _accepted.push_back(from);
+    return std::nullopt;
+  }
+  if (_phase != Phase::accepting || !_accept) return std::nullopt;
+  if (!answer.refused && !answer.need_whole.empty()) {
+    if (!std::binary_search(_recipients.begin(), _recipients.end(), from) || std::find(_heard.begin(), _heard.end(), from) != _heard.end()) return std::nullopt;
+    // Asked whole for a name it was sent whole, or one with no delta: nothing more to send.
+    auto& whole = _whole[from];
+    bool more = false;
+    for (const auto i : answer.need_whole) {
+      if (i >= _accept->names.size() || _accept->deltas.empty() || !_accept->deltas[i] || std::find(whole.begin(), whole.end(), i) != whole.end()) {
+        more = false;
+        break;
+      }
+      whole.push_back(i);
+      more = true;
+    }
+    if (more) return accept_for(from, *_accept);
+    counted(from);
+    refuse(from, refusal("the acceptor asked whole for what it was sent whole"));
+    return std::nullopt;
+  }
+  if (!counted(from)) return std::nullopt;
+  if (answer.refused) {
+    refuse(from, *answer.refused);
+    return std::nullopt;
+  }
   _accepted.push_back(from);
   if (enough(_accepted)) _phase = Phase::committed;
+  return std::nullopt;
 }
 
 }  // namespace dannan::agree

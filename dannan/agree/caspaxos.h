@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <optional>
 #include <span>
 #include <string>
@@ -84,6 +85,11 @@ struct AcceptorState {
   // Whether a value is held, loaded or not. A state that holds one but carries none is kept
   // with the store's value unchanged.
   bool has_value = false;
+  // Only in what an accept gives keep(), never loaded: the delta keep() applies to the value
+  // it holds at exactly `base` (the value is empty and `has_value` set). keep() applies every
+  // delta and keeps everything, or nothing.
+  std::optional<Bytes> delta{};
+  Ballot base{};
   auto operator<=>(const AcceptorState&) const = default;
 };
 // Whether a state holds a value, whether it was loaded with it or not.
@@ -177,10 +183,19 @@ struct Accept {
   // must pass the reservation at a majority, so it outranks the fast value wherever both are.
   std::optional<Ballot> fast_from{};
   std::optional<Ballot> reserve{};
+  // Deltas (the design's "Value-less prepare and deltas"), one per name or none at all: where
+  // `deltas[i]` is set, this acceptor is sent the delta against the value it holds at exactly
+  // `bases[i]`, not `values[i]` (left empty); the proposer still knows the whole value.
+  std::vector<std::optional<Bytes>> deltas{};
+  std::vector<Ballot> bases{};
 };
 
+// Refused; or, for an accept whose deltas this acceptor could not take (its state not at a
+// delta's base, or the store's own check), the names it needs whole, by their index in the
+// accept, and nothing kept. Otherwise accepted.
 struct AcceptAnswer {
   std::optional<Refusal> refused;
+  std::vector<size_t> need_whole{};
 };
 
 // After a transfer committed on majorities of both sets: the slot's move is settled.
@@ -242,6 +257,10 @@ PurgeStep on_purge(const identity::NodeId& self, const identity::NodeId& from, c
 struct Changed {
   std::vector<std::optional<Bytes>> values;
   Bytes result;
+  // Optional, one per name: the owner's delta from the value it was given to `values[i]`, sent
+  // instead of the whole value to every acceptor that holds that base. The owner's store
+  // applies it in keep(); Dannan never reads it. Empty: every value goes whole.
+  std::vector<std::optional<Bytes>> deltas{};
 };
 using Change = std::function<Changed(std::span<const std::optional<Bytes>> current)>;
 
@@ -340,7 +359,14 @@ class Attempt {
   std::optional<Accept> fetched(size_t id, Bytes value, bool past = false);
   // No holder gave a base's value: refused, for another ballot.
   void unfetched(std::string why);
-  void on_accept(const identity::NodeId& from, const AcceptAnswer& answer);
+  // The accept as `node` is sent it, from `accept` (the attempt's, with anything the runtime
+  // added): a delta only where `node` answered the prepare holding that delta's base (ballot
+  // and summary) and has not asked for that name whole; everything else whole.
+  Accept accept_for(const identity::NodeId& node, Accept accept) const;
+  // An answer to the accept. An acceptor that needs names whole is not counted: the accept to
+  // send it again, with those names whole. One that needs whole a name it was sent whole is
+  // counted as refusing.
+  std::optional<Accept> on_accept(const identity::NodeId& from, const AcceptAnswer& answer);
 
   Phase phase() const noexcept { return _phase; }
   // Committed: the names (a transfer's: every name it carried), the values and the change's
@@ -395,6 +421,8 @@ class Attempt {
   std::vector<std::vector<size_t>> _asked;
   std::vector<Wanted> _wanted;
   size_t _next_wanted = 0;
+  // The names each acceptor asked for whole, by index.
+  std::map<identity::NodeId, std::vector<size_t>> _whole;
   std::vector<identity::NodeId> _accepted;
   std::vector<identity::NodeId> _refusers;
   std::optional<Accept> _accept;

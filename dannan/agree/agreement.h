@@ -41,11 +41,26 @@ class AcceptorStore {
   // order: a transfer moves them all. Without `values`, each state's value is left empty,
   // with `has_value` and `summary` saying what is held (a value-less prepare).
   virtual void load(Slot slot, std::span<const Name> names, bool every, bool values, std::function<void(Held)> done) = 0;
-  // Keeps all of `held` for `slot`: the record, the floor, and each name's state (a default
-  // state may be dropped). A state with `has_value` and no value keeps the value and summary
-  // already held; a state carrying a value is given the store's summary of it, at most
-  // max_summary bytes. done(false) if it could not, and the request is refused.
-  virtual void keep(Slot slot, const Held& held, std::function<void(bool)> done) = 0;
+  // What keep() did: everything, or nothing. Not kept with `need_whole` empty: it could not, and
+  // the request is refused. Not kept with `need_whole`: the names, by index in `held`, whose
+  // delta it could not apply (its own check of the delta against the value), asked for whole.
+  struct Kept {
+    bool kept = false;
+    std::vector<size_t> need_whole{};
+  };
+  // Keeps all of `held` for `slot`, as one durable step, all of it or nothing (Mimir's and
+  // Kvasir's review): the record, the floor, and each name's state (a default state may be
+  // dropped).
+  // - A state carrying a value is given the store's summary of it, at most max_summary bytes.
+  // - A state with `has_value` and no value keeps the value and summary already held.
+  // - A state with a `delta` has it applied, in place, to the value held at exactly its
+  //   `base` (the rule has checked that the state is there), and the result summarised.
+  //   Every delta is checked before any is applied; one the store cannot apply answers
+  //   `need_whole`, and nothing of `held` is kept: no ballots and no values. A repeated accept
+  //   at a ballot already held never reaches here with its delta: the rule answers it.
+  // "Kept" means it survives a crash at any point after done. done may be called from any
+  // thread, never inline from a store's lengthy work on the caller's strand.
+  virtual void keep(Slot slot, const Held& held, std::function<void(Kept)> done) = 0;
   // What value() answers: the bytes, and whether they are only what lies past the `since` asked
   // with (false: the whole value).
   struct Fetched {
