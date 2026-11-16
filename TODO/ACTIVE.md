@@ -43,7 +43,22 @@ current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluat
 - No branch is in flight.
 - Next is step 2's remainder: value-less prepare and deltas.
 
-**Lir's TSan report against 0.8.3, open** (2026-11-16).
+**Lir's TSan report, open, and recurred on 0.8.5 with sharper frames** (Lir run 43802763961, tsan x86-64,
+`ClusterTest.ARuleWrittenOnOneNodeAppliesOnEvery`; log `../lir/build/ci-logs/run-43802763961.log`).
+- Both accesses are on one io thread (T1454), so this is no race:
+  1. Lir's `SystemTopics::on_roster` (a `Nodes::watch` callback) takes `nodes().snapshot()`.
+  2. It publishes: `ChannelsNoun::publish`, then `Fanout::publish`, then `Fanout::destinations` (`fanout.cpp:146`),
+     whose roster copy's `~NodeRecord` frees a map node.
+  3. Leaving the callback, `~RosterSnapshot` reads that freed node.
+- So a snapshot's record and a record from the fanout's roster hook (`_members.active()`) shared a map node. Both
+  are deep copies under the members' lock by reading (`snapshot()` moves `all_and_active()`'s vectors out). Not yet
+  explained.
+- **Next, first:** a one-thread reproduction. A roster-watch callback on the io thread takes a snapshot, publishes
+  on a channel a peer subscribes to, and lets the snapshot go, while the roster and adverts change. Run it under TSan
+  on node-a (clang) and on node-c (g++, Lir's compiler). It is deterministic on one thread once the interleaving
+  happens, so a hit pins it.
+
+**Lir's first TSan report against 0.8.3** (2026-11-16).
 - What: a heap-use-after-free in `~NodeRecord`, in Lir run 43773090610 (`ClusterTest.ConnectingOnAnotherNodeTakesTheClientOver`, two
   nodes in one process, 4 io threads). The log is at `../lir/build/ci-logs/tsan-43773090610.log`.
   - The read: `~ClientHandshake` (`_local`, a copy of `Membership::self()`) under `~DialState` (`net/session.cpp:462`).
