@@ -228,6 +228,8 @@ Established ClientHandshake::finish(std::span<const uint8_t> response) {
       const auto cluster = identity::cluster_id_of(_credentials.certificate->ca);
       salt.assign(cluster.begin(), cluster.end());
     }
+    if (_credentials.admit)
+      if (const auto why = _credentials.admit(peer); !why.empty()) throw HandshakeRefused(why);
 
     const auto shared = identity::x25519_shared(_ephemeral.private_key, server_public);
     identity::cleanse(_ephemeral.private_key);
@@ -341,6 +343,8 @@ ServerReply server_handshake(const Credentials& credentials, const membership::N
       throw HandshakeRefused(std::string("not the expected ") + purpose_name(expected->purpose) + " connection");
     }
     if (peer.host.empty() || peer.host == "0.0.0.0" || peer.host == "::") peer.host = remote.host;
+    if (credentials.admit)
+      if (const auto why = credentials.admit(peer); !why.empty()) throw HandshakeRefused(why);
 
     const auto negotiated = std::min(peer_max, max_frame);
     const auto server_nonce = random32();

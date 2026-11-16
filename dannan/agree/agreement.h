@@ -138,6 +138,10 @@ class Agreement {
   // node's record says it serves slot i. A hint, never authority (the design's "Finding a
   // moved slot"): the acceptors' records and their refusals are the truth.
   static std::string slot_advert(const std::string& space) { return "agree.slots/" + space; }
+  // The advert a node's slot table is published under: its fingerprint (table_fingerprint), a
+  // u64. A node whose table differs is refused when it joins (the maintainer, 2026-11-16), as well as at
+  // every agreement request.
+  static std::string table_advert() { return "agree.table"; }
 
   // The cluster's slot table, fixed for its life: the count, and the genesis set that
   // serves a slot no acceptor has recorded (the maintainer, 2026-11-15: "No root except at genesis. A

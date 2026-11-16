@@ -131,6 +131,38 @@ TEST(Node, TwoNodesFormOneCluster) {
   EXPECT_TRUE(eventually([&] { return pair.b->context().nodes().latency(a).has_value(); }));
 }
 
+// A node with another agreement slot table (another count, or another genesis set) is refused
+// when it joins (the maintainer, 2026-11-16): the node it dials refuses the handshake and says why in its
+// journal, and neither node lists the other. A matching node joins (TwoNodesFormOneCluster).
+TEST(Node, ANodeWithAnotherSlotTableIsRefusedAtJoin) {
+  const std::vector<std::function<void(NodeConfig&)>> others = {
+      [](NodeConfig& config) { config.agreement_slots = 512; },
+      [](NodeConfig& config) { config.agreement_genesis = {identity::NodeId::random()}; },
+  };
+  for (const auto& other : others) {
+    Io io;
+    test::TempDir dir;
+    const auto key = cluster_key(dir.path());
+    auto log = std::make_shared<test::RecordingSink>();
+    auto a_config = config(dir.path() / "a", key);
+    a_config.log = log;
+    Node a(io.context, a_config);
+    a.start();
+    auto b_config = config(dir.path() / "b", key, {{"127.0.0.1", a.port()}});
+    other(b_config);
+    Node b(io.context, b_config);
+    b.start();
+    // B's dial is refused by A, which says why; B sees only the session end.
+    const auto refused = b.context().routes().call_and_wait(net::Endpoint{"127.0.0.1", a.port()}, net::message::telemetry, {}, sched::FrameType::control, 5s);
+    EXPECT_FALSE(refused.reply);
+    EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::debug, "slot table") > 0; }));
+    EXPECT_FALSE(knows(a, b.context().identity().id()));
+    EXPECT_FALSE(knows(b, a.context().identity().id()));
+    b.stop();
+    a.stop();
+  }
+}
+
 // Lir's TSan report against 0.8.3 (run 43773090610): nodes joining while adverts change and
 // dials run, in one process on one io_context of four threads. A dial's handshake carries a
 // copy of its node's record and the server observes the peer's; neither may share anything
