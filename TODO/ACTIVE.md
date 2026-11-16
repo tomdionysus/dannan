@@ -132,7 +132,10 @@ alone).
      (`2026-11-15-agreement-design.md`, "Value-less prepare and deltas", at `82c18a8`). Build order, each with its
      tests first and its own commit:
      1. The summary (per name, 64 bytes, set by the store) and the has-value bit in `AcceptorState` and `NameState`;
-        a "values wanted" flag on prepare; `load()` leaving values empty when value-less.
+        a "values wanted" flag on prepare; `load()` leaving values empty when value-less. **Built** on
+        `feature/valueless-prepare` at `c71eb20`. `keep()`'s contract now says a state held but not carried keeps the
+        store's value and summary, which part 4's in-place apply needs too. Every attempt still asks for values. The
+        suite on node-b ran 799 tests: 798 passed and 1 skipped (it is skipped when run as root).
      2. The fetch: `agree_fetch` by name, ballot, offset and `since_summary`, answered in pieces; the store's
         `value(...)`. Then the Attempt's fetching phase between promise and accept, taking the base from this node's
         own acceptor when it holds it.
