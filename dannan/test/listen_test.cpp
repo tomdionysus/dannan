@@ -1217,6 +1217,45 @@ TEST(StreamListener, HandsStreamsUpOnTheExecutorGivenWhenAsked) {
   listener.stop();
 }
 
+// StartTLS with no answer (Kvasir's ask, for MySQL): the client sends its request and its
+// ClientHello at once, with nothing from the server between them. Once the hosted system
+// has read exactly the request, the bytes waiting are the client's handshake: the
+// upgrade takes them, and a second upgrade is refused.
+TEST(StreamListener, StartTlsUnansweredTakesAClientHelloRightBehindTheRequest) {
+  Io io;
+  Pki pki;
+  auto config = tls_config(std::make_shared<Certificates>(pki.server()), "mysql");
+  config.start_tls = true;
+  std::promise<std::string> upgraded;
+  std::promise<std::string> again;
+  StreamListener listener(io.context, config);
+  listener.start(io.context.get_executor(), [&](std::shared_ptr<Stream> stream) {
+    auto request = std::make_shared<std::array<char, 7>>();
+    asio::async_read(*stream, asio::buffer(*request), [&, stream, request](boost::system::error_code error, std::size_t) {
+      if (error) return;
+      stream->start_tls_unanswered([&, stream](std::string why) {
+        upgraded.set_value(why);
+        if (!why.empty()) return;
+        stream->start_tls_unanswered([&](std::string second) { again.set_value(second); });
+        echo(stream);
+      });
+    });
+  });
+  Client client;
+  client.connect_plain(listener.port());
+  // The request, then the handshake at once: no answer is awaited between them.
+  asio::write(client.plain, asio::buffer("SSLREQ\n", 7));
+  ASSERT_FALSE(client.upgrade());
+  auto first = upgraded.get_future();
+  ASSERT_EQ(first.wait_for(10s), std::future_status::ready);
+  EXPECT_EQ(first.get(), "");
+  EXPECT_EQ(client.round_trip(*client.tls, "private"), "private");
+  auto second = again.get_future();
+  ASSERT_EQ(second.wait_for(10s), std::future_status::ready);
+  EXPECT_NE(second.get().find("already started"), std::string::npos);
+  listener.stop();
+}
+
 // StartTLS is refused while bytes send() queued are not yet written: they would follow
 // the answer in plaintext (Lugh's review).
 TEST(StreamListener, StartTlsIsRefusedWhileSendStillHoldsBytes) {
