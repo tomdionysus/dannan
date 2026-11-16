@@ -110,7 +110,19 @@ alone).
      reserving it is CASPaxos's own form, and fixes it. A retry after a partial accept applied its change twice; a
      retry that finds its own accept newest now commits it unchanged.
    - The suite on node-d ran 784 tests: 783 passed and 1 skipped (it is skipped when run as root).
-   - Still to do in step 2: **value-less prepare and deltas**.
+   - Still to do in step 2: **value-less prepare and deltas**. Designed and reviewed by Mimir and Kvasir
+     (`2026-11-15-agreement-design.md`, "Value-less prepare and deltas", at `82c18a8`). Build order, each with its
+     tests first and its own commit:
+     1. The summary (per name, 64 bytes, set by the store) and the has-value bit in `AcceptorState` and `NameState`;
+        a "values wanted" flag on prepare; `load()` leaving values empty when value-less.
+     2. The fetch: `agree_fetch` by name, ballot, offset and `since_summary`, answered in pieces; the store's
+        `value(...)`. Then the Attempt's fetching phase between promise and accept, taking the base from this node's
+        own acceptor when it holds it.
+     3. The reduction on summaries (Mimir's (a)): it returns its result or the names it needs fetched.
+     4. Deltas: a change may return a delta per name. The accept carries, per name, a whole value, a delta with its
+        base ballot, or the ballot only (Kvasir's "already held"). The store's in-place `apply(slot, name,
+        base_ballot, new_ballot, delta, done(applied | need_whole))`. A "need whole" is resent in pieces.
+     5. `transfer()` over all of it, then the simulator with large values and deltas under faults.
 
    Tests are named there: one-node genesis grown to five, the root unreachable, the fast path lost across a
    transfer.
