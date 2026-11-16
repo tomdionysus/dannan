@@ -1,5 +1,24 @@
 # Current release
 
+## 0.8.4: StartTLS with no answer, a stoppable wait for node events, and a deferred answer's slot freed in time
+
+`Stream::start_tls_unanswered(done)`: StartTLS for a protocol that sends no answer, where
+the client begins its handshake right behind its request (MySQL's SSLRequest, then its
+ClientHello: Kvasir). Nothing is written and the bytes already waiting are taken as the
+handshake. Every other check of `start_tls` stands: certificates present, once only,
+nothing queued by `send()`. The hosted system must have read exactly the request.
+
+`NodeEvents::wait_for_change(seen, timeout, std::stop_token)`: returns when the total
+moves, when the token is stopped, or at the timeout; `milliseconds::max()` waits with no
+timeout. A component's stop ends its wait at once, with no polling and no artificial kind
+(Macha, whose NodeEvents become Dannan's).
+
+Fixed: a deferred `Answer` sent its reply before giving back its `max_deferred` place and
+bytes, so a caller that asked again at once could be refused as overloaded. Found by ASan
+in hosted CI.
+
+The ABI is 0.8.0's.
+
 ## 0.8.3: connecting out, and RS256 for WebAuthn
 
 `dannan::listen`'s outbound side, `StreamConnector`: connects over TCP or TLS and hands
