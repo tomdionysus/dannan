@@ -181,7 +181,8 @@ struct NodeConfig {
 void fit_memory_limit(NodeConfig& config, std::vector<sched::MemoryPart>& hosted);
 
 // The io context is the caller's, run on its threads; the loops have their
-// own. Thread-safe. Lock order: the client's route table before the
+// own. Stop the node while its io runs: stopping closes sessions on it.
+// Once stopped, the node may be destroyed after the io has stopped. Thread-safe. Lock order: the client's route table before the
 // roster's (the client calls `local` with its table held).
 class Node final : public Context {
  public:
