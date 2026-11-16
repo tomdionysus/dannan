@@ -49,9 +49,13 @@ local commits from `fbcbb90` on, need a push, which waits on the maintainer's wo
     from the server's established callback.
 - Ruled out by reading: every Membership accessor and setter holds `_mutex`; `self()`, `active()` and `all()` return
   deep copies; ClientHandshake takes `local` by value; the dial and accept states share no record.
-- Next: reproduce under TSan in Dannan (two nodes, one process, 4 threads, repeated dials while adverts change), the
-  allowed local sanitizer hunt. Ask Lir whether its `_deps` Dannan build matches lir_tests' flags: both binaries
-  instantiate `~NodeRecord`.
+- Lir confirmed its `_deps` Dannan build uses lir_tests' flags (same g++ 14, C++20, no `_GLIBCXX_*` defines).
+- Not reproduced in Dannan (2026-11-16):
+  - `Node.NodesJoinWhileAdvertsChangeAndNothingIsShared` (`0358243`): 8 of 8 clean under clang 19 TSan (node-a), 8 of
+    8 clean under g++ 14 TSan (node-c).
+  - The whole suite (785 tests) clean under both.
+- Next: Lir runs its own test repeatedly under g++ TSan on the cluster at 0.8.3, with its join-order fix reverted, for
+  a rate and a second report. Kept open as unexplained, not suppressed.
 - Lir also saw two other intermittent failures, being looked at on Lir's side: run 43757235866 (TSan) and run
   43765626713 (release arm64).
 
