@@ -15,6 +15,8 @@ left green. `ACTIVE.md` is the plan and this is the record.
 - Gate on node-c: release 755 ran, 754 passed, 1 skipped; TSan the same. The first run found the test still hanging
   in `Server::stop`; gdb named it.
 - Kvasir, Lugh and Louhi move their pins to it.
+- The `.deb`s are staged in `../tomcully-apt/incoming/dannan/0.8.5/` and checked (shlibs `libdannan0.8 (>= 0.8.5)`),
+  from main's run 43800265662 re-run after the tag.
 
 **0.8.4 is released** (`main` and tag at `52fd53c`; main's CI run 43793449409 green on all 15 jobs, ABI kept).
 - What it carries:
