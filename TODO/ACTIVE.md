@@ -157,8 +157,11 @@ alone).
    - A virtual interface addition, so 0.9.
 10. **Lugh's sign-in Backoff into Dannan** (Kvasir's ask, 2026-11-16, stack rule 3; agreed). It becomes
     `dannan::listen::Backoff` (`listen/backoff.h`), Lugh's class and contract as they stand, on
-    `contract::TimePoint`, per node. Lugh's tests move with it; Lugh then deletes its copy. Kvasir's MySQL sign-in
-    keys it per principal and per source. Small: right after item 9.
+    `contract::TimePoint`, per node. Lugh's tests move with it (`lugh/test/authn_backoff_test.cpp`, suite Backoff:
+    FreeFailuresThenDoublingWaits, TheWaitHasACeiling, KeysAreSeparateAndSuccessClearsOne, QuietKeysAreForgotten,
+    MadeUpKeysDoNotGrowWithoutBound). Once it is tagged, Lugh switches its Authenticator and deletes its copy and
+    tests; the cluster-wide sum stays Lugh's (P8). Kvasir's MySQL sign-in keys it per principal and per source.
+    Small: right after item 9. Header-only and additive, so it could also go out in an 0.8.x patch: the maintainer's call.
 8. **Export the fuzz harness** (Kvasir's ask, 2026-11-15; Mimir wants it too), so hosted systems link it rather than
    copy it (the stack's rule 3): `fuzz/fuzz.h`'s Target and Registration, `targets()`, the replay driver, and
    `fuzz_smoke_test.cpp`'s mutate and seeds-then-mutations-then-noise loop as a callable, installed header-only with
