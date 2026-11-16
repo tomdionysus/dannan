@@ -26,6 +26,9 @@
 #include "dannan/agree/wire.h"
 #include "dannan/net/routes.h"
 #include "dannan/test/fixtures/sim/agreement.h"
+#include "dannan/test/fixtures/sim/history.h"
+#include "dannan/test/fixtures/sim/linearizable.h"
+#include "dannan/test/fixtures/sim/models.h"
 
 namespace dannan::test::sim {
 namespace {
@@ -95,30 +98,22 @@ struct Op {
   uint64_t result = 0;
 };
 
-// A counter's history is linearizable when every committed increment returned a distinct
-// value, a value no later than one invoked after it completed, and the final value is
-// explained by what committed and what may have (an increment with no committed answer may
-// or may not have taken effect).
-std::optional<std::string> check(const std::vector<Op>& history, uint64_t final_value) {
-  std::set<uint64_t> seen;
-  size_t committed = 0;
-  size_t unknown = 0;
-  for (const auto& op : history) {
-    if (!op.committed) {
-      ++unknown;
-      continue;
-    }
-    ++committed;
-    if (!seen.insert(op.result).second) return "two increments both returned " + std::to_string(op.result);
-    if (op.result > final_value) return "an increment returned " + std::to_string(op.result) + " above the final " + std::to_string(final_value);
+// The counter's history, checked by the harness's linearizability checker against its counter
+// model: each increment an operation (one not committed may or may not have taken effect),
+// then a read of the final value after everything.
+std::optional<std::string> check(const std::vector<Op>& ops, uint64_t final_value) {
+  History history;
+  uint64_t last = 0;
+  for (size_t i = 0; i < ops.size(); ++i) {
+    const auto at = history.invoke(i, {"c"}, Bytes{'i'}, ops[i].invoked);
+    if (ops[i].committed) history.answer(at, CounterModel::number(ops[i].result), ops[i].completed);
+    last = std::max({last, ops[i].invoked, ops[i].completed});
   }
-  if (final_value < committed) return "the final value " + std::to_string(final_value) + " is below the " + std::to_string(committed) + " committed";
-  if (final_value > committed + unknown) return "the final value " + std::to_string(final_value) + " is above everything that may have taken effect";
-  for (const auto& a : history)
-    for (const auto& b : history)
-      if (a.committed && b.committed && a.completed < b.invoked && !(a.result < b.result))
-        return "real time: " + std::to_string(a.result) + " completed before " + std::to_string(b.result) + " was invoked";
-  return std::nullopt;
+  const auto read = history.invoke(ops.size(), {"c"}, Bytes{'r'}, last + 1);
+  history.answer(read, CounterModel::number(final_value), last + 2);
+  const auto verdict = check_linearizable(history, CounterModel{});
+  if (verdict.linearizable) return std::nullopt;
+  return verdict.why;
 }
 
 struct Run {
