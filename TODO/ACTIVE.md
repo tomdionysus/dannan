@@ -57,9 +57,17 @@ current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluat
   were freed with the ledger. That is a double free. TSan files a use-after-free under `race:` suppressions, and Lir
   suppresses `race:dannan::sched::RetainedMemoryLedger::release`, so the first bad write went unreported. The
   test before the failing one, `HeldMessagesAreLeasedInTheNodesLedger`, is the one that triggers it. Fixed on
-  develop at `79dfa2e` (0.9 ABI). Lir was told to confirm it one of two ways: pin a develop commit and drop the
-  suppression, or run 0.8.5 under ASan and expect a double free in `release`. The one-thread reproduction is
-  dropped unless Lir's check says otherwise.
+  develop at `79dfa2e` (0.9 ABI).
+- **Lir's checks on node-c (2026-11-16).**
+  - ASan on 0.8.5: the defect fired in 1 run of 30 of `ClusterTest.*`. The report was a use-after-free read in
+    `release` (`_allocations.find`), from a `Lease` in a fanout replay's completion, after `~LirNode` freed the
+    ledger in `HeldMessagesAreLeasedInTheNodesLedger`'s teardown.
+  - TSan with print_suppressions: 30 runs, no warnings, the ledger suppression never matched, and the NodeRecord
+    report was not reproduced.
+  - So the defect is confirmed, and the NodeRecord report is attributed to it by mechanism, not reproduced.
+- **Lir waits for the 0.9.0 tag** rather than pinning develop (the maintainer, to Lir directly). It stays on 0.8.5 with the
+  suppression until then, and will say at once if the NodeRecord report appears on a build with the fix. The
+  one-thread reproduction is dropped unless it does.
 
 **Lir's first TSan report against 0.8.3** (2026-11-16).
 - What: a heap-use-after-free in `~NodeRecord`, in Lir run 43773090610 (`ClusterTest.ConnectingOnAnotherNodeTakesTheClientOver`, two
@@ -83,8 +91,7 @@ current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluat
 - Lir also saw two other intermittent failures, being looked at on Lir's side: run 43757235866 (TSan) and run
   43765626713 (release arm64).
 
-**Waiting on the maintainer:** nothing. Lir may pin a develop commit with the ledger fix once its TSan check is back (the maintainer,
-2026-11-16).
+**Waiting on the maintainer:** nothing.
 
 **Release mechanics learned 2026-11-16:**
 - The `.deb`s CI builds before the tag exists come out versioned `<last>+gitN`. After pushing the tag, re-run
