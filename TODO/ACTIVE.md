@@ -204,13 +204,19 @@ gold-plating beyond what the design and its reviews ask.
         - The suite on node-a ran 817 tests: 816 passed and 1 skipped (it is skipped when run as root).
         - The store interface is final; Mimir and Kvasir were told.
         - Mimir accepted the store side as final (2026-11-16).
-        - **After 0.9.0, first** (Mimir's ask, additive): a change that sees no whole bytes where the proposer's own
-          store holds the base. Change is told "held locally" for that name and returns a delta only. The whole value
-          is built lazily, only for a need_whole or an Outcome. The fast path's cache keeps ballots and summaries, not
-          bytes. Today every agreement write to a large collection costs O(n) to serialize at the proposer. Mimir
-          routes writes to a node in the slot's set meanwhile, so the base fetch is local (self is tried first, with
-          no message).
-        - **Open:** Kvasir is asked whether a whole resend in pieces is still needed. Today a whole value in an accept
+        - Kvasir accepted the store side too. **A whole resend in pieces is not needed** (Kvasir): ranges stay below
+          `max_value` by Kvasir's own split, and a lagging acceptor is caught up by the store before it is sent
+          anything.
+     6. **The value-less change** (Mimir's and Kvasir's ask; the maintainer, 2026-11-16: "Include in 0.9.0", since under the
+        ABI rule it would otherwise wait for 0.10.0). Every write to a large collection or range otherwise copies the
+        whole value at the proposer. Kvasir commits every 10 to 20 ms.
+        - `change_deltas(...)`. The change is given each name's base (ballot, summary, has-value) and whether this
+          node's own acceptor holds exactly it. It returns a delta per name (none: unchanged) and a result.
+        - No fetch and no whole value anywhere. Holders get the delta, or the ballot only for an unchanged name.
+        - A majority must take it. An acceptor needing the whole value is not counted and gets no resend; the
+          Outcome names it, for the owner to catch up.
+        - The fast path keeps ballots and summaries, not bytes. A transfer and catch_up() are unchanged.
+        - The API goes to Mimir and Kvasir before it is built. Then the branch merges. Today a whole value in an accept
           is one message, up to `max_value`. Once he answers, the branch merges to develop.
 
    Tests are named there: one-node genesis grown to five, the root unreachable, the fast path lost across a
