@@ -145,7 +145,9 @@ alone).
    - a commit stamp by the hybrid clock at decide.
 9. **Built and merged** at `e78b66c` (787 tests on node-c: 786 passed, 1 skipped). Two Node tests run with a 30 s
    heartbeat: `APushedAdvertIsHeldByEveryPeerBeforeItIsDone` and `ASubscriptionHeldBeforeItsDoneGetsTheNextPublish`.
-   It also serialises readvertise: two racing subscribes could leave the older prefix list advertised.
+   It also serialises readvertise: two racing subscribes could leave the older prefix list advertised. Lir confirmed it
+   on a local branch: it holds SUBACK on a 1 s deadline, and `SlowGossipClusterTest.AMessagePublishedElsewhereRight
+   AfterSubackArrives` passed 20 of 20, with its suite at 355 of 355. No API change asked; it merges at 0.9.0.
    **Ruled (the maintainer, 2026-11-16, relayed by Lir): both calls below in 0.9, no 0.8.x stopgap.** Lir holds a new prefix's
    SUBACK until the advert is held or the deadline passes. On a miss it grants the subscription and logs the peers that
    missed it. The ask: push a changed advert and learn who holds it.

@@ -394,6 +394,69 @@ Tests:
 - a plain change racing a transfer either is carried or refuses the transfer;
 - one-node genesis grown to five under the simulator's faults.
 
+## Value-less prepare and deltas (proposed 2026-11-16, for Mimir's and Kvasir's review)
+
+The design's step 2, and the "Values without shipping them" answer to Mimir's ask A, made
+concrete. Values can be megabytes (a Redis list), or whole ranges (Kvasir), so neither a
+prepare's answers nor an accept should carry them whole when they need not.
+
+**Prepare answers carry no values.** Each name's answer is its accepted ballot, its
+`changed_at`, whether it holds a value, and an owner summary: at most 64 bytes, the store's
+to choose, such as a version or a length. Dannan never reads it. The value itself stays at
+the acceptor.
+
+**The proposer fetches the base.** Once a majority has promised, the base for each name is
+the answer with the highest accepted ballot, as now. Its value is taken from:
+- this node's own acceptor, when it promised and holds the base ballot (Mimir's usual case:
+  the proposer is a replica), read through the store with no message;
+- otherwise one promiser that holds the base ballot, by a new `agree_fetch(space, slot,
+  name, ballot)`. The answer is the value if that acceptor still holds exactly that ballot,
+  or "moved on". On "moved on", the next holder is asked. If no holder answers, the attempt
+  retries.
+
+A transfer fetches every name the same way. A name whose base is absent needs no fetch.
+
+**The owner's reduction** sees the base's value and every answer's summary, not every value.
+That breaks one case: a reduction that merges other answers' values (Mimir's merge writes)
+would also need those values. Two options for Mimir to choose between:
+- (a) keep it value-less, and let the reduction ask for the values it needs, by ballot and
+  holder, through a fetch callback;
+- (b) a space that reduces gets its prepares answered with values, as now.
+
+I recommend (b): it is simple and leaves today's behaviour exactly as it is.
+
+**An accept may carry a delta.** The change returns, for each name, either a whole value or
+a delta against the base it was given, which the owner produces. Dannan sends the delta
+only to acceptors whose last accepted ballot is that base, which every promiser answered
+with. The acceptor applies it through a new store call, `apply(slot, name, base value,
+delta)`, which returns the new value. An acceptor that no longer holds the base answers
+"need whole" for that name, and the proposer sends it the whole value. Only the delta
+crosses the network.
+
+**The store interface after this:**
+- `load(slot, names, every, done)` as now, with the states' values left empty when the
+  request was value-less;
+- `value(slot, name, ballot, done)` for the fetch;
+- `apply(...)` for deltas;
+- `keep(...)` and `records(...)` as now;
+- the summary carried in `AcceptorState`, as the store's to set.
+
+**Wire:** prepare gains a flag for "values wanted". The prepare answer's `NameState` loses
+its value and gains the summary and a has-value bit. The accept carries, per name, a whole
+value or a delta with its base ballot. The accept answer gains a per-name "need whole" list.
+Agreement's wire is unreleased on 0.9, so it changes in place, at version 1.
+
+**Safety:** unchanged. The value a change works from is the base's, which the fetch proves
+by its ballot: an acceptor answers only for exactly that ballot. A delta is applied only on
+exactly its base. A missing or wrong delta becomes a whole send, never a guess.
+
+**Tests named:**
+- a megabyte register changed with no prepare answer carrying its value;
+- the fetch from another holder when this node's acceptor is behind;
+- a delta refused for a moved base and resent whole;
+- a transfer of a slot with large values;
+- the simulator with deltas under faults.
+
 ## Deleting a name (Dagda's review, safety 2)
 
 Acceptor state otherwise grows without bound (Mimir's `DEL` and expiry), and removing it
