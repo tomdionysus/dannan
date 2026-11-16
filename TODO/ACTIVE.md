@@ -223,7 +223,17 @@ gold-plating beyond what the design and its reviews ask.
         - Kvasir's read: a `change_deltas` with no delta for any name commits without an accept when every answer
           in the promising majority names the same ballot and summary. That state is already chosen, so a current
           read is one round and no sync. Otherwise it falls back to the ballot-only accept. The proof rule applies.
-        - Waiting on Mimir's answer on the fast path under merge writes. Then it is built, and the branch merges. Today a whole value in an accept
+        - Mimir's review, taken (2026-11-16):
+          - `Deltas::decline` ends the change at once (`why = "declined"`), for a base not local or moved under
+            Mimir's lock.
+          - `Deltas::summaries`: per name, the summary keep() will set. The fast path keeps ballot and summary and
+            checks both, and a name with none takes no fast path. Commutation is not relied on: a reply computed
+            from a merged-over base would be wrong.
+          - Contract: DeltaChange runs on the agreement's strand, never under a Dannan lock or waiting on a store
+            completion. need_whole acceptors are caught up by an identity change(), and they block nothing beyond
+            liveness.
+        - Kvasir was told of the summary rule; it can supply summaries and keep the fast path.
+        - To build now; then the branch merges. Today a whole value in an accept
           is one message, up to `max_value`. Once he answers, the branch merges to develop.
 
    Tests are named there: one-node genesis grown to five, the root unreachable, the fast path lost across a
