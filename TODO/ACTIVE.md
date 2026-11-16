@@ -54,8 +54,9 @@ current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluat
   - Build with `cmake --build build/macos -j 4 --target dannan_tests`, logging to `build/macos-build.log`; run
     `build/macos/dannan_tests`, logging to `build/macos-tests.log`. Local grep is blocked, so read the log's end
     with Read.
-  - Its last run: `9f1bce2`, 824 tests, 822 passed and 2 skipped (both Linux-only). The run at `f917920` was in
-    flight at the clear; rerun it if its result is not recorded below.
+  - Its last run: `f917920`, 833 tests, 831 passed and 2 skipped (both Linux-only:
+    `CustodyTool.InitTakesCustodyBackWhenTheRootCannotBeWritten` and `PeerSocket.ChoosesBbrWhereOffered`). The Mac
+    runs one test fewer than the Pis, which run 834.
 - **Builds go to the Pi cluster.** node-a, node-b and node-c have 16 GB; node-d has 4 GB, so sanitizer builds
   there use -j1. All four run a 4K-page 48-bit kernel, so ASan, UBSan and TSan work on all of them. node-a has no
   ninja; use Makefiles there. Claim cores first and release them after. Copy the tree with
