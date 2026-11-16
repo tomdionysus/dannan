@@ -178,6 +178,16 @@ alone).
      4. Deltas: a change may return a delta per name. The accept carries, per name, a whole value, a delta with its
         base ballot, or the ballot only (Kvasir's "already held"). The store's in-place `apply(slot, name,
         base_ballot, new_ballot, delta, done(applied | need_whole))`. A "need whole" is resent in pieces.
+        **Built** at `3d771a1`, with the delta inside `keep()`, not a separate `apply()`. A separate call could not be
+        atomic. the maintainer asked for review first, and Mimir and Kvasir took it; the contract is in the design document.
+        - A delta goes only to an acceptor that answered holding its base (ballot and summary).
+        - The rule asks for a name whole off the base, and answers a replay at the new ballot without the delta.
+        - `keep()` answers `Kept{kept, need_whole}`, all or nothing.
+        - The proposer resends names whole to an acceptor that asks.
+        - The `past` flag on a fetch past `since` is in (`0275e67`, Mimir's ask).
+        - **Still to do:** a whole resend larger than one message, in pieces; the "ballot only" accept. Both belong
+          with `transfer()` in part 5. The fast path sends whole values.
+        - The suite on node-a ran 813 tests: 812 passed and 1 skipped (it is skipped when run as root).
      5. `transfer()` over all of it, then the simulator with large values and deltas under faults.
 
    Tests are named there: one-node genesis grown to five, the root unreachable, the fast path lost across a
