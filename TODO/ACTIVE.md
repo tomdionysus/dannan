@@ -83,9 +83,8 @@ current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluat
 - Lir also saw two other intermittent failures, being looked at on Lir's side: run 43757235866 (TSan) and run
   43765626713 (release arm64).
 
-**Waiting on the maintainer:**
-- Whether a node with another slot table should also be refused at join; today every agreement request refuses it
-  (step 1 below).
+**Waiting on the maintainer:** nothing. Lir may pin a develop commit with the ledger fix once its TSan check is back (the maintainer,
+2026-11-16).
 
 **Release mechanics learned 2026-11-16:**
 - The `.deb`s CI builds before the tag exists come out versioned `<last>+gitN`. After pushing the tag, re-run
