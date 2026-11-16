@@ -297,6 +297,29 @@ struct Reduced {
 // back to an earlier state; deterministic over its input.
 using Reduce = std::function<Reduced(const NameState& base, std::span<const NameState> answers)>;
 
+// The value-less change (part 6, Mimir's and Kvasir's ask): one name's base as it is given
+// such a change, with no value. `local`: this node's own acceptor answered holding exactly it
+// (on the fast path: this node took the last commit), so the owner may read it in place; the
+// owner checks its own state still is that base before relying on it.
+struct Base {
+  Ballot ballot;
+  Bytes summary{};
+  bool has_value = false;
+  bool local = false;
+};
+// What a value-less change makes of its bases: a delta per name (none: unchanged) and a
+// result; or `decline`, which ends the change at once ("declined"), sending nothing.
+// `summaries`, per name: the summary the owner's keep() will set for the base and its delta
+// (or the base unchanged). A name without one takes no fast path. A summary that differs from
+// what keep() then sets is the owner's bug, costing a slow round, never safety.
+struct Deltas {
+  std::vector<std::optional<Bytes>> deltas;
+  Bytes result;
+  bool decline = false;
+  std::vector<std::optional<Bytes>> summaries{};
+};
+using DeltaChange = std::function<Deltas(std::span<const Base> bases)>;
+
 // One proposer's attempt under one ballot: prepare, reduce, change, accept. Fed each answer
 // as it arrives, in any order; once committed or refused it ignores more.
 //
@@ -340,8 +363,28 @@ class Attempt {
   // std::invalid_argument for a ballot not above `last`.
   static Attempt fast(ReplicaSet set, Slot slot, Ballot ballot, std::vector<Name> names, Change change, Ballot last,
                       const std::vector<std::optional<Bytes>>& values, const std::vector<Ballot>& changed_at);
+  // A value-less change of `names` by `self` (part 6): value-less, nothing fetched, the change
+  // run on the bases. Every recipient is sent the same accept: the deltas, the ballot only for
+  // a name left as it is. An acceptor that lacks a base answers need_whole: it is not counted,
+  // and is named in need_whole(). Where no name has a delta and every promiser answered every
+  // name with its base, that state is chosen already, and the attempt commits with no accept
+  // (a current read: one round). Throws std::invalid_argument for a ballot of zero or no change.
+  static Attempt deltas(ReplicaSet set, Slot slot, Ballot ballot, std::vector<Name> names, DeltaChange change, ReplicaSet genesis, identity::NodeId self);
+  // Its fast path: the last commit of `names` by this node was at `last`, reserving `ballot`,
+  // leaving each name with `summaries` and `changed_at`; `local` if this node took it. Throws
+  // std::invalid_argument for a ballot not above `last` or counts that differ.
+  static Attempt fast_deltas(ReplicaSet set, Slot slot, Ballot ballot, std::vector<Name> names, DeltaChange change, Ballot last,
+                             const std::vector<Bytes>& summaries, const std::vector<Ballot>& changed_at, bool local, identity::NodeId self);
   // Whether this attempt is on the fast path.
   bool is_fast() const noexcept { return _accept && _accept->fast_from.has_value(); }
+  // A value-less change: whether the owner declined; the acceptors that needed a name whole;
+  // each name's summary as the owner said the commit leaves it; whether it committed without an
+  // accept.
+  bool declined() const noexcept { return _declined; }
+  const std::vector<identity::NodeId>& need_whole() const noexcept { return _need_whole_nodes; }
+  const std::vector<std::optional<Bytes>>& summaries() const noexcept { return _new_summaries; }
+  bool read_only() const noexcept { return _read_only; }
+  bool is_deltas() const noexcept { return static_cast<bool>(_deltas_change); }
   // The ballots this proposer's earlier attempts at the same change sent accepts under, with
   // each one's result. Where a majority's newest value for every name is one of them, the
   // change is already in it: the attempt commits it unchanged and reports that result, so a
@@ -413,6 +456,12 @@ class Attempt {
   Accept change_bases(std::vector<std::optional<Bytes>> current);
   // A transfer's accept: every name's current value, unchanged by any change.
   Accept transfer_bases(std::vector<std::optional<Bytes>> current);
+  // A value-less change's accept from its bases, or none once committed (read) or declined.
+  std::optional<Accept> delta_bases();
+  // An accept carrying `deltas` (none: the ballot only, where the base holds a value) against
+  // `bases`, with `summaries` the bases' summaries.
+  Accept compact(std::vector<std::optional<Bytes>> deltas, const std::vector<Ballot>& bases, const std::vector<Bytes>& summaries,
+                 const std::vector<uint8_t>& has_value, const std::vector<Ballot>& changed_at) const;
   // Once `_names`, `_per_name` and `_from` are set: the bases, then fetching or reducing.
   std::optional<Accept> gather();
   void note_unchanged(const Accept& accept);
@@ -444,6 +493,13 @@ class Attempt {
   size_t _next_wanted = 0;
   // The names each acceptor asked for whole, by index.
   std::map<identity::NodeId, std::vector<size_t>> _whole;
+  // A value-less change's.
+  DeltaChange _deltas_change;
+  identity::NodeId _self;
+  bool _declined = false;
+  bool _read_only = false;
+  std::vector<identity::NodeId> _need_whole_nodes;
+  std::vector<std::optional<Bytes>> _new_summaries;
   std::vector<identity::NodeId> _accepted;
   std::vector<identity::NodeId> _refusers;
   std::optional<Accept> _accept;

@@ -152,6 +152,10 @@ struct Agreement::Core : std::enable_shared_from_this<Core> {
     Ballot reserved;
     std::vector<std::optional<Bytes>> values;
     std::vector<Ballot> changed_at;
+    // A value-less change's instead of values: each name's summary as its commit left it, and
+    // whether this node's acceptor took it. Kept under a key of its own.
+    std::vector<Bytes> summaries{};
+    bool local = false;
   };
   static constexpr size_t max_lasts = 65536;
   contract::Mutex lasts_mutex;
@@ -480,6 +484,8 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
     if (!finishing && attempts == 1 && make_fast)
       if (auto fast = make_fast()) {
         attempt = std::make_unique<Attempt>(std::move(*fast));
+        // A value-less change may decline before anything is sent.
+        if (!attempt->accept()) return settle_or_retry();
         return send_accept(*attempt->accept());
       }
     attempt = std::make_unique<Attempt>(finishing ? Attempt::transfer(finishing->first, finishing->second, slot, ballot) : make(ballot));
@@ -508,6 +514,8 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
     }
     if (accept) return send_accept(*accept);
     if (attempt->phase() == Attempt::Phase::fetching) return fetch_bases();
+    // A value-less read whose promisers all held the base: committed with no accept.
+    if (attempt->phase() == Attempt::Phase::committed) return committed();
     settle_or_retry();
   }
 
@@ -657,13 +665,16 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
       ++finished_transfers;
       return begin(0);
     }
-    if (on_commit && reserved) on_commit(*attempt, *reserved);
+    // A read committed with no accept reserved nothing.
+    if (on_commit && reserved && !attempt->read_only()) on_commit(*attempt, *reserved);
     succeed();
   }
 
   // Refused, or every recipient heard from without enough: another ballot, a transfer to
   // finish, or the end.
   void settle_or_retry() {
+    // The owner declined its value-less change: the end, at once.
+    if (attempt->declined()) return fail(attempt->why(), false);
     // The fast path missed: the full way at once, no backoff (Mimir's "one round, kept one").
     const bool missed = attempt->phase() == Attempt::Phase::refused || outstanding == 0;
     if (attempt->is_fast() && missed && !(attempt->phase() == Attempt::Phase::refused && attempt->serving() && !attempt->unfinished()))
@@ -701,6 +712,7 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
     out.ballot = attempt->prepare().ballot;
     out.accepted = attempt->accepted();
     out.refused = attempt->refused();
+    out.need_whole = attempt->need_whole();
     for (const auto& node : attempt->recipients())
       if (std::find(out.accepted.begin(), out.accepted.end(), node) == out.accepted.end() &&
           std::find(out.refused.begin(), out.refused.end(), node) == out.refused.end())
@@ -713,7 +725,8 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
     auto out = evidence();
     out.committed = true;
     out.fast = attempt->is_fast();
-    out.values = attempt->values();
+    // A value-less change has no values to give.
+    if (!attempt->is_deltas()) out.values = attempt->values();
     out.changed_at = attempt->changed_at();
     out.result = attempt->result();
     if (attempt->prepare().to) out.names = attempt->names();
@@ -846,6 +859,37 @@ void Agreement::change(std::string space, Slot slot, std::vector<Name> names, st
       core->keep_last(key, Core::Last{committed.prepare().ballot, reserved, committed.values(), committed.changed_at()});
     };
   }
+  Run::start(run);
+}
+
+void Agreement::change_deltas(std::string space, Slot slot, std::vector<Name> names, std::vector<identity::NodeId> replicas, uint64_t version,
+                              DeltaChange change, std::chrono::milliseconds deadline, asio::any_io_executor executor, std::function<void(Outcome)> done) {
+  check_slot(slot, _core->table);
+  if (!change) throw std::invalid_argument("a value-less change needs its change");
+  const auto set = ReplicaSet::of(std::move(replicas), version);
+  // A key of its own: a whole-value change's cache holds values, this one's summaries.
+  const auto key = "deltas/" + Core::last_key(space, slot, set, names);
+  auto make = [set, slot, names, change, genesis = _core->table.genesis, self = _core->self](Ballot ballot) {
+    return Attempt::deltas(set, slot, ballot, names, change, genesis, self);
+  };
+  auto run = std::make_shared<Run>(_core, std::move(space), slot, std::move(make), _core->time->now() + deadline, std::move(executor), std::move(done));
+  run->make_fast = [core = _core, key, set, slot, names, change]() -> std::optional<Attempt> {
+    auto last = core->take_last(key);
+    if (!last) return std::nullopt;
+    return Attempt::fast_deltas(set, slot, last->reserved, names, change, last->ballot, last->summaries, last->changed_at, last->local, core->self);
+  };
+  run->on_commit = [core = _core, key](const Attempt& committed, const Ballot& reserved) {
+    // Only where every name's summary after the commit is known: a name without one takes no
+    // fast path, so neither does the change.
+    std::vector<Bytes> summaries;
+    for (const auto& summary : committed.summaries()) {
+      if (!summary) return;
+      summaries.push_back(*summary);
+    }
+    const auto& took = committed.accepted();
+    const bool local = std::find(took.begin(), took.end(), core->self) != took.end();
+    core->keep_last(key, Core::Last{committed.prepare().ballot, reserved, {}, committed.changed_at(), std::move(summaries), local});
+  };
   Run::start(run);
 }
 

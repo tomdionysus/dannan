@@ -701,6 +701,117 @@ TEST(Held, ATransferFetchesItsBasesAndSendsTheBallotOnlyToAcceptorsHoldingThem) 
   EXPECT_EQ(acceptors.held[node(4)]["a"].accepted, ballot(3, 1));
 }
 
+// The value-less change (part 6): the change sees each name's base, never its value, and
+// returns a delta; no value is fetched or sent, and the acceptors apply the delta in place.
+TEST(ValueLessChange, CommitsADeltaWithNoValueAnywhere) {
+  Acceptors acceptors;
+  ASSERT_EQ(run(acceptors, three, node(1), ballot(1, 1), {bytes("k")}, put("a")).phase(), Attempt::Phase::committed);
+  std::vector<Base> seen;
+  const DeltaChange plus = [&seen](std::span<const Base> bases) {
+    seen.assign(bases.begin(), bases.end());
+    return Deltas{{Bytes{'+'}}, bytes("ok")};
+  };
+  auto attempt = Attempt::deltas(three, slot, ballot(2, 1), {bytes("k")}, plus, genesis, node(1));
+  EXPECT_FALSE(attempt.prepare().values);
+  std::optional<Accept> accept;
+  for (const auto& at : three.nodes)
+    if (auto next = attempt.on_prepare(at, acceptors.prepare(at, node(1), attempt.prepare()))) accept = next;
+  ASSERT_TRUE(accept);
+  EXPECT_TRUE(attempt.wanted().empty());
+  ASSERT_EQ(seen.size(), 1u);
+  EXPECT_EQ(seen[0].ballot, ballot(1, 1));
+  EXPECT_TRUE(seen[0].has_value);
+  EXPECT_TRUE(seen[0].local);
+  EXPECT_FALSE(accept->values[0]);
+  ASSERT_TRUE(accept->deltas[0]);
+  EXPECT_EQ(attempt.accept_for(node(3), *accept).deltas, accept->deltas);
+  for (const auto& at : three.nodes) attempt.on_accept(at, acceptors.accept(at, node(1), *accept));
+  EXPECT_EQ(attempt.phase(), Attempt::Phase::committed);
+  EXPECT_EQ(text(attempt.result()), "ok");
+  for (const auto& at : three.nodes) EXPECT_EQ(text(*acceptors.held[at]["k"].value), "a+");
+}
+
+// A value-less read: no delta, and every promiser at the base, so that state is chosen
+// already. It commits with no accept, and nothing changes at any acceptor.
+TEST(ValueLessChange, AReadWhosePromisersAgreeCommitsWithNoAccept) {
+  Acceptors acceptors;
+  ASSERT_EQ(run(acceptors, three, node(1), ballot(1, 1), {bytes("k")}, put("a")).phase(), Attempt::Phase::committed);
+  const DeltaChange none = [](std::span<const Base> bases) { return Deltas{std::vector<std::optional<Bytes>>(bases.size()), bytes("read")}; };
+  auto read = Attempt::deltas(three, slot, ballot(2, 2), {bytes("k")}, none, genesis, node(2));
+  for (const auto& at : three.nodes) EXPECT_FALSE(read.on_prepare(at, acceptors.prepare(at, node(2), read.prepare())));
+  EXPECT_EQ(read.phase(), Attempt::Phase::committed);
+  EXPECT_TRUE(read.read_only());
+  EXPECT_EQ(read.changed_at()[0], ballot(1, 1));
+  for (const auto& at : three.nodes) EXPECT_EQ(acceptors.held[at]["k"].accepted, ballot(1, 1));
+
+  // One promiser behind: not chosen by this majority, so the ballot only goes out.
+  Attempt write(three, slot, ballot(3, 1), {bytes("k")}, put("b"), {}, genesis);
+  drive(acceptors, write, node(1), {}, {node(1), node(2)});
+  auto behind = Attempt::deltas(three, slot, ballot(4, 2), {bytes("k")}, none, genesis, node(2));
+  EXPECT_FALSE(behind.on_prepare(node(2), acceptors.prepare(node(2), node(2), behind.prepare())));
+  const auto accept = behind.on_prepare(node(3), acceptors.prepare(node(3), node(2), behind.prepare()));
+  ASSERT_TRUE(accept);
+  EXPECT_FALSE(behind.read_only());
+  ASSERT_EQ(accept->held.size(), 1u);
+  EXPECT_EQ(accept->held[0], 1);
+  EXPECT_EQ(accept->bases[0], ballot(3, 1));
+}
+
+// The owner declines (its base not local, or moved under its lock): nothing is sent, and the
+// attempt ends, "declined".
+TEST(ValueLessChange, ADeclinedChangeEndsAtOnce) {
+  Acceptors acceptors;
+  const DeltaChange decline = [](std::span<const Base>) { return Deltas{{}, {}, true}; };
+  auto attempt = Attempt::deltas(three, slot, ballot(1, 1), {bytes("k")}, decline, genesis, node(1));
+  for (const auto& at : three.nodes) EXPECT_FALSE(attempt.on_prepare(at, acceptors.prepare(at, node(1), attempt.prepare())));
+  EXPECT_EQ(attempt.phase(), Attempt::Phase::refused);
+  EXPECT_TRUE(attempt.declined());
+  EXPECT_EQ(attempt.why(), "declined");
+  EXPECT_FALSE(attempt.accept());
+}
+
+// An acceptor lacking the base needs the name whole, which a value-less change does not carry:
+// it is named and not counted, and is sent nothing more.
+TEST(ValueLessChange, AnAcceptorNeedingANameWholeIsNamedNotResent) {
+  Acceptors acceptors;
+  ASSERT_EQ(run(acceptors, three, node(1), ballot(1, 1), {bytes("k")}, put("a")).phase(), Attempt::Phase::committed);
+  const DeltaChange plus = [](std::span<const Base>) { return Deltas{{Bytes{'+'}}, {}}; };
+  auto attempt = Attempt::deltas(three, slot, ballot(2, 1), {bytes("k")}, plus, genesis, node(1));
+  for (const auto& at : three.nodes) attempt.on_prepare(at, acceptors.prepare(at, node(1), attempt.prepare()));
+  ASSERT_EQ(attempt.phase(), Attempt::Phase::accepting);
+  EXPECT_FALSE(attempt.on_accept(node(3), AcceptAnswer{std::nullopt, {0}}));
+  EXPECT_EQ(attempt.need_whole(), std::vector<identity::NodeId>{node(3)});
+  EXPECT_EQ(attempt.refused(), std::vector<identity::NodeId>{node(3)});
+  attempt.on_accept(node(1), AcceptAnswer{});
+  attempt.on_accept(node(2), AcceptAnswer{});
+  EXPECT_EQ(attempt.phase(), Attempt::Phase::committed);
+}
+
+// A retry that finds this proposer's own earlier accept newest commits it as it stands, the
+// ballot only: the delta is never applied twice.
+TEST(ValueLessChange, ARetryAfterAPartialAcceptNeverAppliesItsDeltaTwice) {
+  Acceptors acceptors;
+  ASSERT_EQ(run(acceptors, three, node(1), ballot(1, 1), {bytes("k")}, put("a")).phase(), Attempt::Phase::committed);
+  size_t calls = 0;
+  const DeltaChange plus = [&calls](std::span<const Base>) {
+    ++calls;
+    return Deltas{{Bytes{'+'}}, bytes("first")};
+  };
+  auto first = Attempt::deltas(three, slot, ballot(2, 1), {bytes("k")}, plus, genesis, node(1));
+  drive(acceptors, first, node(1), {}, {node(1)});
+  EXPECT_NE(first.phase(), Attempt::Phase::committed);
+  auto retry = Attempt::deltas(three, slot, ballot(3, 1), {bytes("k")}, plus, genesis, node(1));
+  retry.own({{ballot(2, 1), bytes("first")}});
+  std::optional<Accept> accept;
+  for (const auto& at : {node(1), node(2)})
+    if (auto next = retry.on_prepare(at, acceptors.prepare(at, node(1), retry.prepare()))) accept = next;
+  ASSERT_TRUE(accept);
+  EXPECT_EQ(calls, 1u);
+  EXPECT_FALSE(accept->deltas[0]);
+  EXPECT_EQ(accept->held[0], 1);
+  EXPECT_EQ(text(retry.result()), "first");
+}
+
 // A minority answers: nothing commits.
 TEST(Agreement, AMinorityCommitsNothing) {
   Acceptors acceptors;

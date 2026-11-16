@@ -313,6 +313,133 @@ Attempt Attempt::fast(ReplicaSet set, Slot slot, Ballot ballot, std::vector<Name
   return out;
 }
 
+Attempt Attempt::deltas(ReplicaSet set, Slot slot, Ballot ballot, std::vector<Name> names, DeltaChange change, ReplicaSet genesis, identity::NodeId self) {
+  if (ballot.zero()) throw std::invalid_argument("a ballot's counter starts at one");
+  if (!change) throw std::invalid_argument("an attempt needs its change");
+  Attempt out;
+  out._prepare = Prepare{std::move(set), std::nullopt, slot, ballot, std::move(names), false};
+  out._recipients = out._prepare.set.nodes;
+  out._genesis = std::move(genesis);
+  out._deltas_change = std::move(change);
+  out._self = self;
+  return out;
+}
+
+Attempt Attempt::fast_deltas(ReplicaSet set, Slot slot, Ballot ballot, std::vector<Name> names, DeltaChange change, Ballot last,
+                             const std::vector<Bytes>& summaries, const std::vector<Ballot>& changed_at, bool local, identity::NodeId self) {
+  if (!(ballot > last)) throw std::invalid_argument("the fast path's ballot is above its last");
+  if (summaries.size() != names.size() || changed_at.size() != names.size()) throw std::invalid_argument("the fast path's last state names a different count");
+  auto out = deltas(std::move(set), slot, ballot, std::move(names), std::move(change), ReplicaSet{}, self);
+  const size_t count = out._prepare.names.size();
+  std::vector<Base> bases;
+  for (size_t i = 0; i < count; ++i) bases.push_back(Base{last, summaries[i], true, local});
+  auto made = out._deltas_change(bases);
+  if (made.decline) {
+    out._declined = true;
+    out._why = "declined";
+    out._phase = Phase::refused;
+    return out;
+  }
+  if ((!made.deltas.empty() && made.deltas.size() != count) || (!made.summaries.empty() && made.summaries.size() != count))
+    throw std::logic_error("a value-less change returned a different count");
+  made.deltas.resize(count);
+  made.summaries.resize(count);
+  out._names = out._prepare.names;
+  std::vector<Ballot> at(count, last);
+  std::vector<uint8_t> has_value(count, 1);
+  std::vector<Ballot> moved;
+  for (size_t i = 0; i < count; ++i) moved.push_back(made.deltas[i] ? ballot : changed_at[i]);
+  auto accept = out.compact(std::move(made.deltas), at, summaries, has_value, moved);
+  accept.fast_from = last;
+  for (size_t i = 0; i < count; ++i)
+    if (!made.summaries[i]) made.summaries[i] = summaries[i];
+  out._new_summaries = std::move(made.summaries);
+  out._result = std::move(made.result);
+  out._accept = std::move(accept);
+  out._phase = Phase::accepting;
+  return out;
+}
+
+Accept Attempt::compact(std::vector<std::optional<Bytes>> deltas, const std::vector<Ballot>& bases, const std::vector<Bytes>& summaries,
+                        const std::vector<uint8_t>& has_value, const std::vector<Ballot>& changed_at) const {
+  const size_t count = _prepare.names.size();
+  Accept accept{_prepare.set, std::nullopt, _prepare.slot, _prepare.ballot, _prepare.names, std::vector<std::optional<Bytes>>(count),
+                changed_at,   std::nullopt, std::nullopt};
+  accept.held.assign(count, 0);
+  for (size_t i = 0; i < count; ++i)
+    if (!deltas[i] && has_value[i]) accept.held[i] = 1;
+  accept.deltas = std::move(deltas);
+  accept.bases = bases;
+  accept.summaries = summaries;
+  return accept;
+}
+
+std::optional<Accept> Attempt::delta_bases() {
+  const size_t count = _names.size();
+  std::vector<Ballot> at;
+  std::vector<Bytes> summaries;
+  std::vector<uint8_t> has_value;
+  std::vector<Ballot> changed_at;
+  for (const auto& base : _bases) {
+    at.push_back(base.accepted);
+    summaries.push_back(base.summary);
+    has_value.push_back(base.has_value ? 1 : 0);
+    changed_at.push_back(base.changed_at);
+  }
+  // This proposer's own earlier accept is the newest for every name: its deltas are already in
+  // it. It is committed as it stands, the ballot only, never applied twice.
+  const auto own = std::find_if(_own.begin(), _own.end(), [this](const std::pair<Ballot, Bytes>& earlier) {
+    return !_bases.empty() && std::all_of(_bases.begin(), _bases.end(), [&earlier](const NameState& base) { return base.accepted == earlier.first; });
+  });
+  if (own != _own.end()) {
+    _result = own->second;
+    _new_summaries.assign(summaries.begin(), summaries.end());
+    return compact(std::vector<std::optional<Bytes>>(count), at, summaries, has_value, changed_at);
+  }
+  std::vector<Base> bases;
+  for (size_t i = 0; i < count; ++i) {
+    Base base{_bases[i].accepted, _bases[i].summary, _bases[i].has_value, false};
+    const auto mine = std::find(_from[i].begin(), _from[i].end(), _self);
+    if (mine != _from[i].end()) {
+      const auto& answered = _per_name[i][static_cast<size_t>(mine - _from[i].begin())];
+      base.local = answered.accepted == base.ballot && answered.summary == base.summary && answered.has_value == base.has_value;
+    }
+    bases.push_back(std::move(base));
+  }
+  auto made = _deltas_change(bases);
+  if (made.decline) {
+    _declined = true;
+    _why = "declined";
+    _phase = Phase::refused;
+    return std::nullopt;
+  }
+  if ((!made.deltas.empty() && made.deltas.size() != count) || (!made.summaries.empty() && made.summaries.size() != count))
+    throw std::logic_error("a value-less change returned a different count");
+  made.deltas.resize(count);
+  made.summaries.resize(count);
+  for (size_t i = 0; i < count; ++i)
+    if (!made.summaries[i] && !made.deltas[i]) made.summaries[i] = summaries[i];
+  _new_summaries = std::move(made.summaries);
+  _result = std::move(made.result);
+  const bool any = std::any_of(made.deltas.begin(), made.deltas.end(), [](const std::optional<Bytes>& delta) { return delta.has_value(); });
+  // A read whose promisers all answered every name with its base: chosen already, by them.
+  bool agreed = true;
+  for (size_t i = 0; i < count && agreed; ++i)
+    for (const auto& answer : _per_name[i])
+      if (answer.accepted != _bases[i].accepted || answer.summary != _bases[i].summary || answer.has_value != _bases[i].has_value) agreed = false;
+  if (!any && agreed) {
+    _accept = Accept{_prepare.set, std::nullopt, _prepare.slot, _prepare.ballot, _names, std::vector<std::optional<Bytes>>(count),
+                     changed_at,   std::nullopt, std::nullopt};
+    _accepted = _promised;
+    _read_only = true;
+    _phase = Phase::committed;
+    return std::nullopt;
+  }
+  for (size_t i = 0; i < count; ++i)
+    if (made.deltas[i]) changed_at[i] = _prepare.ballot;
+  return compact(std::move(made.deltas), at, summaries, has_value, changed_at);
+}
+
 // Each recipient is heard once per phase; anything else (a stranger, a repeat) is ignored.
 bool Attempt::counted(const identity::NodeId& from) {
   if (!std::binary_search(_recipients.begin(), _recipients.end(), from)) return false;
@@ -452,7 +579,8 @@ std::optional<Accept> Attempt::gather() {
   _wanted.clear();
   _current.assign(count, std::nullopt);
   _asked.assign(count, {});
-  if (!_prepare.values)
+  // A value-less change fetches nothing: it never sees a value.
+  if (!_prepare.values && !_deltas_change)
     for (size_t i = 0; i < count; ++i)
       if (_bases[i].has_value && !_bases[i].value) want(i, std::nullopt, _bases[i], std::nullopt);
   if (!_wanted.empty()) {
@@ -477,6 +605,7 @@ void Attempt::want(size_t name, std::optional<size_t> answer, const NameState& o
 
 std::optional<Accept> Attempt::reduce_names() {
   const size_t count = _names.size();
+  if (_deltas_change) return delta_bases();
   if (!_reduce) {
     std::vector<std::optional<Bytes>> current;
     for (const auto& base : _bases) current.push_back(base.value);
@@ -597,6 +726,9 @@ Accept Attempt::transfer_bases(std::vector<std::optional<Bytes>> current) {
 }
 
 Accept Attempt::accept_for(const identity::NodeId& node, Accept accept) const {
+  // A value-less change has no whole value to send: every recipient gets the compact accept,
+  // and one lacking a base asks for it whole.
+  if (_deltas_change) return accept;
   const size_t count = accept.names.size();
   if (count != _names.size() || _bases.size() != count) return accept;
   const auto whole = _whole.find(node);
@@ -651,6 +783,14 @@ std::optional<Accept> Attempt::on_accept(const identity::NodeId& from, const Acc
   if (_phase != Phase::accepting || !_accept) return std::nullopt;
   if (!answer.refused && !answer.need_whole.empty()) {
     if (!std::binary_search(_recipients.begin(), _recipients.end(), from) || std::find(_heard.begin(), _heard.end(), from) != _heard.end()) return std::nullopt;
+    // A value-less change has nothing whole to send: the acceptor is named, for its owner to
+    // catch up, and not counted.
+    if (_deltas_change) {
+      counted(from);
+      _need_whole_nodes.push_back(from);
+      refuse(from, refusal("the acceptor needs a name whole, which a value-less change does not carry"));
+      return std::nullopt;
+    }
     // Asked whole again for a name already sent whole: nothing more to send.
     auto& whole = _whole[from];
     bool more = false;

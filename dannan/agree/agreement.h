@@ -112,6 +112,9 @@ struct Outcome {
   bool fast = false;
   // forget(): every replica held the tombstone and was told to purge it.
   bool forgotten = false;
+  // change_deltas(): the acceptors that needed a name whole, which it does not carry; the
+  // owner catches them up by its own copy, or by an identity change().
+  std::vector<identity::NodeId> need_whole;
 };
 
 class Agreement {
@@ -176,6 +179,19 @@ class Agreement {
   // posted to `executor` once. From any thread.
   void change(std::string space, Slot slot, std::vector<Name> names, std::vector<identity::NodeId> replicas, uint64_t version, Change change, Reduce reduce,
               std::chrono::milliseconds deadline, boost::asio::any_io_executor executor, std::function<void(Outcome)> done);
+  // A value-less change (the design's part 6, Mimir's and Kvasir's ask): `change` is given each
+  // name's base (ballot, summary, whether it holds a value, whether this node's own acceptor
+  // holds exactly it) and returns a delta per name, or declines. No value is fetched, built or
+  // sent: holders take the delta, or the ballot only for a name left as it is. It commits on a
+  // majority that takes it; an acceptor needing a name whole is not counted and is named in
+  // `Outcome::need_whole`. A change that declines ends at once ("declined"). With no delta and
+  // every promiser at the base, it commits with no accept (a current read: one round; each
+  // promise kept as any prepare's). `Outcome::values` is empty; `changed_at` is set. The fast
+  // path keeps each name's ballot and the summary the change said its commit leaves; a name
+  // without one takes no fast path. `change` runs on the agreement's own strand, never while
+  // Dannan holds a lock or waits on a store's completion. From any thread.
+  void change_deltas(std::string space, Slot slot, std::vector<Name> names, std::vector<identity::NodeId> replicas, uint64_t version, DeltaChange change,
+                     std::chrono::milliseconds deadline, boost::asio::any_io_executor executor, std::function<void(Outcome)> done);
   // A strict read: an identity change, so it returns only what a majority holds (Mimir's
   // ruling 5); a minority side is refused.
   void read(std::string space, Slot slot, std::vector<Name> names, std::vector<identity::NodeId> replicas, uint64_t version, Reduce reduce,

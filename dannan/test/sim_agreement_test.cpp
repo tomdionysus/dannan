@@ -672,6 +672,104 @@ TEST(Simulation, ADeltaIsAppliedInPlaceAndAnAcceptorBehindIsSentTheWholeValue) {
   EXPECT_EQ(decode(whole.result), megabyte.size() + 4);
 }
 
+// The value-less change through the runtime (part 6): a delta on a megabyte is committed with
+// no value fetched or sent; the next takes the fast path, its summary checked; a read with no
+// delta commits with no accept; an acceptor lacking the base is named, caught up by an
+// identity change(), and counted again after; a declined change ends at once.
+TEST(Simulation, AValueLessChangeCarriesOnlyDeltas) {
+  World world(37);
+  Cluster cluster(world, 3, NetworkFaults{});
+  const auto settle = [&] { world.run_until([] { return false; }, 200'000); };
+  const auto deltas_at = [&](size_t at, agree::DeltaChange change, std::chrono::milliseconds deadline = 5000ms) {
+    std::optional<agree::Outcome> out;
+    cluster.agreement(at).change_deltas(Cluster::space, counter_slot, {agree::Name{'m'}}, cluster.ids(), Cluster::genesis_version, std::move(change), deadline,
+                                        world.io.get_executor(), [&](agree::Outcome outcome) { out = std::move(outcome); });
+    world.run_until([&] { return out.has_value(); }, 5'000'000);
+    settle();
+    return out.value_or(agree::Outcome{});
+  };
+  const auto whole_at = [&](size_t at, agree::Change change) {
+    std::optional<agree::Outcome> out;
+    cluster.agreement(at).change(Cluster::space, counter_slot, {agree::Name{'m'}}, cluster.ids(), Cluster::genesis_version, std::move(change), {}, 5000ms,
+                                 world.io.get_executor(), [&](agree::Outcome outcome) { out = std::move(outcome); });
+    world.run_until([&] { return out.has_value(); }, 5'000'000);
+    settle();
+    return out.value_or(agree::Outcome{});
+  };
+  // The simulator's store summarises a value by its length and applies a delta by appending,
+  // so a change knows exactly the summary its commit leaves.
+  const auto append = [](uint8_t byte) {
+    return agree::DeltaChange([byte](std::span<const agree::Base> bases) {
+      const auto length = bases[0].has_value ? decode(std::optional<agree::Bytes>(bases[0].summary)) : 0;
+      return agree::Deltas{{agree::Bytes{byte}}, encode(length + 1), false, {encode(length + 1)}};
+    });
+  };
+  const agree::Bytes megabyte(1024 * 1024, 'v');
+  ASSERT_TRUE(whole_at(0, put(megabyte)).committed);
+
+  cluster.recording = true;
+  bool local = false;
+  const auto first = deltas_at(1, [&](std::span<const agree::Base> bases) {
+    local = bases[0].local;
+    return agree::Deltas{{agree::Bytes{'a'}}, encode(megabyte.size() + 1), false, {encode(megabyte.size() + 1)}};
+  });
+  ASSERT_TRUE(first.committed) << first.why;
+  EXPECT_TRUE(local);
+  EXPECT_TRUE(first.values.empty());
+  EXPECT_FALSE(a_prepare_answer_carried_a_value(cluster));
+  EXPECT_EQ(crossed_of(cluster, net::message::agree_fetch), 0u);
+  for (const auto& each : cluster.crossed) {
+    if (each.type == net::message::agree_accept) {
+      EXPECT_LT(each.request_bytes, 4096u);
+    }
+  }
+  const auto fast = deltas_at(1, append('b'));
+  ASSERT_TRUE(fast.committed) << fast.why;
+  EXPECT_TRUE(fast.fast);
+  EXPECT_EQ(decode(fast.result), megabyte.size() + 2);
+
+  // A read with no delta: one round, no accept.
+  cluster.crossed.clear();
+  const agree::DeltaChange none = [](std::span<const agree::Base> bases) {
+    return agree::Deltas{std::vector<std::optional<agree::Bytes>>(bases.size()), agree::Bytes(bases[0].summary)};
+  };
+  const auto read = deltas_at(2, none);
+  ASSERT_TRUE(read.committed) << read.why;
+  EXPECT_EQ(decode(read.result), megabyte.size() + 2);
+  EXPECT_EQ(crossed_of(cluster, net::message::agree_accept), 0u);
+
+  // Node 2 misses a change, and node 1 goes down: a majority now needs node 2, which lacks
+  // the base. It is named, and the change cannot commit. (Node 0 has no fast path cached, so
+  // it goes the full way at once.)
+  cluster.block(1, 2);
+  ASSERT_TRUE(deltas_at(1, append('c')).committed);
+  cluster.unblock_all();
+  cluster.crash(1);
+  const auto stuck = deltas_at(0, append('d'), 800ms);
+  EXPECT_FALSE(stuck.committed);
+  EXPECT_EQ(stuck.need_whole, cluster.ids({2}));
+  // An identity change() sends node 2 the whole value; then the value-less change commits.
+  const auto caught = whole_at(0, [](std::span<const std::optional<agree::Bytes>> current) {
+    return agree::Changed{std::vector<std::optional<agree::Bytes>>(current.begin(), current.end()), {}};
+  });
+  ASSERT_TRUE(caught.committed) << caught.why;
+  const auto after = deltas_at(0, append('e'));
+  ASSERT_TRUE(after.committed) << after.why;
+  EXPECT_TRUE(after.need_whole.empty());
+  // 'd', accepted by node 0 alone, may have been carried on by the catch-up, as Paxos allows.
+  const auto held = cluster.store(2).state(counter_slot, agree::Name{'m'});
+  ASSERT_TRUE(held && held->value);
+  EXPECT_EQ(decode(after.result), held->value->size());
+  EXPECT_GE(held->value->size(), megabyte.size() + 4);
+  EXPECT_EQ(held->value->back(), 'e');
+
+  // Declined: at once, nothing sent.
+  const auto declined = deltas_at(0, [](std::span<const agree::Base>) { return agree::Deltas{{}, {}, true}; });
+  EXPECT_FALSE(declined.committed);
+  EXPECT_EQ(declined.why, "declined");
+  EXPECT_EQ(declined.attempts, 1u);
+}
+
 // Kvasir's ranges: a transfer whose new acceptors were caught up beforehand by the store's own
 // means sends no value at all. Every prepare answer is value-less, every accept carries the
 // ballot only, and the new acceptors hold the value at the transfer's ballot.
