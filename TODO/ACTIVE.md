@@ -54,8 +54,12 @@ local commits from `fbcbb90` on, need a push, which waits on the maintainer's wo
   - `Node.NodesJoinWhileAdvertsChangeAndNothingIsShared` (`0358243`): 8 of 8 clean under clang 19 TSan (node-a), 8 of
     8 clean under g++ 14 TSan (node-c).
   - The whole suite (785 tests) clean under both.
-- Next: Lir runs its own test repeatedly under g++ TSan on the cluster at 0.8.3, with its join-order fix reverted, for
-  a rate and a second report. Kept open as unexplained, not suppressed.
+- Not reproduced in Lir either (Lir, 2026-11-16, node-c, g++ 14 TSan at CI's flags, Dannan 0.8.3, Lir at `82352e6`):
+  0 reports in 53 processes (the test alone 40 times, `ClusterTest.*` 10 times, the full suite 3 times).
+- Lir keeps no record across threads. Its one reference handed to Dannan, the `const NodeRecord&` to
+  `routes().call`, is copied at once: `place_call` takes it by value (`node.cpp:211-213`).
+- **Status: open, unexplained, not suppressed.** Most likely the CI runner's timing, possibly a TSan artifact. If it
+  recurs, a second report with other frames is what pins it; until then this stops being the first item.
 - Lir also saw two other intermittent failures, being looked at on Lir's side: run 43757235866 (TSan) and run
   43765626713 (release arm64).
 
