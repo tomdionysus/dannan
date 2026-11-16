@@ -231,6 +231,7 @@ struct Agreement::Core : std::enable_shared_from_this<Core> {
 
   // Serves a request: an answer at once, or nothing when `answer` will be called.
   std::optional<net::Message> serve(const identity::NodeId& from, const net::Message& message, std::function<void(net::Message)> answer) {
+    if (message.type == net::message::agree_fetch) return serve_fetch(from, message, std::move(answer));
     Request request;
     try {
       request = decode_request(message);
@@ -307,6 +308,54 @@ struct Agreement::Core : std::enable_shared_from_this<Core> {
                       done();
                     });
               });
+        },
+        space);
+    return std::nullopt;
+  }
+
+  // A fetch: the value held at exactly the ballot asked, the piece from the offset asked.
+  // Read in the space's order with its other requests; nothing is kept.
+  std::optional<net::Message> serve_fetch(const identity::NodeId& from, const net::Message& message, std::function<void(net::Message)> answer) {
+    namespace m = net::message;
+    FetchMessage fetch;
+    try {
+      fetch = decode_fetch(message.payload);
+    } catch (const net::DecodeError& error) {
+      return net::error_reply(400, "invalid_request", error.what());
+    }
+    if (fetch.slot >= table.slots) return net::error_reply(400, "invalid_request", "slot " + std::to_string(fetch.slot) + " is past this cluster's table");
+    const auto space = find(fetch.space);
+    if (!space) return net::error_reply(404, "no_space", "this node serves no space " + fetch.space);
+    if (from != self && !advertises(from, space->capability))
+      return net::error_reply(403, "not_permitted", "the sender does not advertise " + space->capability);
+    const auto refusal = [](std::string why) {
+      return net::Message{m::agree_fetch_reply, encode(FetchAnswer{refusal_of(std::move(why)), false, 0, 0, {}}), {}};
+    };
+    if (fetch.table != fingerprint) return refusal("the sender's slot table (count or genesis set) differs from this node's");
+    if (!fetch.set.contains(self)) return refusal("this node is not in the replica set named");
+    if (!fetch.set.contains(from)) return refusal("the sender is not in the replica set named");
+    if (!space->store->ready()) return refusal("this acceptor is catching up");
+    space->enqueue(
+        [space, fetch = std::move(fetch), refusal, answer = std::move(answer)](std::function<void()> done) mutable {
+          const auto slot = fetch.slot;
+          const auto name = fetch.name;
+          const auto ballot = fetch.ballot;
+          space->store->value(slot, name, ballot, [fetch = std::move(fetch), refusal, answer, done](std::optional<Bytes> value) {
+            if (!value) {
+              answer(net::Message{m::agree_fetch_reply, encode(FetchAnswer{}), {}});
+              return done();
+            }
+            if (value->size() > max_value || fetch.offset > value->size()) {
+              answer(refusal(value->size() > max_value ? "the value is over the largest value" : "the offset is past the value"));
+              return done();
+            }
+            const auto start = static_cast<size_t>(fetch.offset);
+            const auto length = std::min(max_piece, value->size() - start);
+            FetchAnswer piece{std::nullopt, true, value->size(), fetch.offset,
+                              Bytes(value->begin() + static_cast<std::ptrdiff_t>(start), value->begin() + static_cast<std::ptrdiff_t>(start + length))};
+            answer(net::Message{m::agree_fetch_reply, encode(piece), {}});
+            done();
+          });
         },
         space);
     return std::nullopt;
@@ -413,7 +462,12 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
         return send_accept(*attempt->accept());
       }
     attempt = std::make_unique<Attempt>(finishing ? Attempt::transfer(finishing->first, finishing->second, slot, ballot) : make(ballot));
-    if (!attempt->prepare().to) attempt->own(sent);
+    if (!attempt->prepare().to) {
+      attempt->own(sent);
+      // No answer carries a value; the bases are fetched, from this node's own acceptor when it
+      // holds them (a change with a reduction still asks for every value).
+      attempt->value_less();
+    }
     outstanding = attempt->recipients().size();
     const auto request = encode(PrepareMessage{space, attempt->prepare(), core->fingerprint});
     for (const auto& node : attempt->recipients())
@@ -434,7 +488,68 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
       }
     }
     if (accept) return send_accept(*accept);
+    if (attempt->phase() == Attempt::Phase::fetching) return fetch_bases();
     settle_or_retry();
+  }
+
+  // One base being fetched: its holders in the order tried, and what has come so far.
+  struct Fetching {
+    size_t name = 0;
+    Ballot ballot;
+    std::vector<identity::NodeId> holders;
+    size_t holder = 0;
+    Bytes value;
+    std::optional<uint64_t> total;
+  };
+
+  // Every base the attempt wants, each from its holders: this node's own acceptor first,
+  // which needs no message. A holder that has moved on, refuses or is silent gives way to the
+  // next, from the same offset, since every holder of the ballot holds the same value.
+  void fetch_bases() {
+    for (const auto& wanted : attempt->wanted()) {
+      auto fetching = std::make_shared<Fetching>();
+      fetching->name = wanted.name;
+      fetching->ballot = wanted.ballot;
+      fetching->holders = wanted.holders;
+      const auto own = std::find(fetching->holders.begin(), fetching->holders.end(), core->self);
+      if (own != fetching->holders.end()) std::rotate(fetching->holders.begin(), own, own + 1);
+      fetch_piece(fetching);
+    }
+  }
+
+  void fetch_piece(const std::shared_ptr<Fetching>& fetching) {
+    if (fetching->holder >= fetching->holders.size()) {
+      attempt->unfetched("no acceptor holding a base's ballot gave its value");
+      return settle_or_retry();
+    }
+    const auto& prepare = attempt->prepare();
+    const auto request =
+        encode(FetchMessage{space, prepare.set, slot, prepare.names[fetching->name], fetching->ballot, fetching->value.size(), core->fingerprint});
+    core->send(fetching->holders[fetching->holder], net::message::agree_fetch, request, left(),
+               [self = shared_from_this(), at = generation, fetching](std::optional<net::Bytes> answer, std::string) {
+                 asio::post(self->strand, [self, at, fetching, answer = std::move(answer)] { self->fetched_piece(at, fetching, answer); });
+               });
+  }
+
+  void fetched_piece(uint64_t at, const std::shared_ptr<Fetching>& fetching, const std::optional<net::Bytes>& answer) {
+    if (finished || at != generation || attempt->phase() != Attempt::Phase::fetching) return;
+    std::optional<FetchAnswer> piece;
+    if (answer) {
+      try {
+        piece = decode_fetch_answer(*answer);
+      } catch (const net::DecodeError&) {
+      }
+    }
+    const bool usable = piece && !piece->refused && piece->held && piece->offset == fetching->value.size() &&
+                        (!fetching->total || *fetching->total == piece->total) && (!piece->piece.empty() || piece->total == piece->offset);
+    if (!usable) {
+      ++fetching->holder;
+      return fetch_piece(fetching);
+    }
+    fetching->total = piece->total;
+    fetching->value.insert(fetching->value.end(), piece->piece.begin(), piece->piece.end());
+    if (fetching->value.size() < *fetching->total) return fetch_piece(fetching);
+    if (auto accept = attempt->fetched(fetching->name, std::move(fetching->value))) send_accept(*accept);
   }
 
   void send_accept(Accept accept) {

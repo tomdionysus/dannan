@@ -46,6 +46,15 @@ class AcceptorStore {
   // already held; a state carrying a value is given the store's summary of it, at most
   // max_summary bytes. done(false) if it could not, and the request is refused.
   virtual void keep(Slot slot, const Held& held, std::function<void(bool)> done) = 0;
+  // The value of `name` held at exactly `ballot`, for a proposer's fetch; nothing if the name
+  // holds another ballot or no value. The default loads it; a store holding large values may
+  // answer from where it keeps them.
+  virtual void value(Slot slot, const Name& name, const Ballot& ballot, std::function<void(std::optional<Bytes>)> done) {
+    load(slot, std::vector<Name>{name}, false, true, [ballot, done = std::move(done)](Held held) {
+      if (held.states.size() == 1 && held.states[0].accepted == ballot && held.states[0].value) return done(std::move(held.states[0].value));
+      done(std::nullopt);
+    });
+  }
   // Whether this acceptor may vote: false after a restart that lost its state, until it
   // has caught up (the design's rule; a store that votes with lost state can commit two
   // values for one name).

@@ -321,6 +321,65 @@ AcceptAnswer decode_accept_answer(std::span<const uint8_t> bytes) {
   return out;
 }
 
+net::Bytes encode(const FetchMessage& message) {
+  Writer out;
+  out.u8(message_version);
+  out.string(message.space);
+  out.u64(message.table);
+  put(out, message.set);
+  out.u32(message.slot);
+  out.bytes(message.name);
+  put(out, message.ballot);
+  out.u64(message.offset);
+  return out.take();
+}
+
+net::Bytes encode(const FetchAnswer& answer) {
+  if (answer.piece.size() > max_piece) throw std::invalid_argument("a fetched piece is at most 1 MiB");
+  Writer out;
+  out.u8(message_version);
+  put(out, answer.refused);
+  out.u8(answer.held ? 1 : 0);
+  out.u64(answer.total);
+  out.u64(answer.offset);
+  out.bytes(answer.piece);
+  return out.take();
+}
+
+FetchMessage decode_fetch(std::span<const uint8_t> bytes) {
+  Reader in(bytes);
+  open(in);
+  FetchMessage out;
+  out.space = in.string(max_space);
+  out.table = in.u64();
+  out.set = get_set(in);
+  out.slot = get_slot(in);
+  out.name = in.bytes(max_name);
+  out.ballot = get_ballot(in);
+  out.offset = in.u64();
+  if (out.offset > max_value) throw DecodeError("a fetch's offset is past the largest value");
+  in.finish();
+  return out;
+}
+
+FetchAnswer decode_fetch_answer(std::span<const uint8_t> bytes) {
+  Reader in(bytes);
+  open(in);
+  FetchAnswer out;
+  out.refused = get_refusal(in);
+  const auto held = in.u8();
+  if (held > 1) throw DecodeError("a fetch's held is 0 or 1");
+  out.held = held == 1;
+  out.total = in.u64();
+  out.offset = in.u64();
+  out.piece = in.bytes(max_piece);
+  in.finish();
+  if (out.total > max_value) throw DecodeError("a fetched value over the largest value");
+  if (!out.held && (out.total || out.offset || !out.piece.empty())) throw DecodeError("a fetch not held carries a piece");
+  if (out.offset > out.total || out.piece.size() > out.total - out.offset) throw DecodeError("a fetched piece outside its value");
+  return out;
+}
+
 uint64_t table_fingerprint(uint32_t slots, const ReplicaSet& genesis) {
   Writer out;
   out.u32(slots);

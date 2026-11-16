@@ -60,6 +60,8 @@ inline constexpr MessageType agree_prepare{22};
 inline constexpr MessageType agree_accept{23};
 inline constexpr MessageType agree_purge{24};
 inline constexpr MessageType agree_settle{25};
+// A value-less prepare's base, fetched by its ballot, in pieces.
+inline constexpr MessageType agree_fetch{26};
 inline constexpr MessageType ok{100};
 inline constexpr MessageType members_reply{101};
 inline constexpr MessageType telemetry_reply{102};
@@ -74,6 +76,7 @@ inline constexpr MessageType agree_prepare_reply{110};
 inline constexpr MessageType agree_accept_reply{111};
 inline constexpr MessageType agree_purge_reply{112};
 inline constexpr MessageType agree_settle_reply{113};
+inline constexpr MessageType agree_fetch_reply{114};
 inline constexpr MessageType error{127};
 }  // namespace message
 

@@ -260,7 +260,16 @@ using Reduce = std::function<std::optional<Bytes>(const NameState& base, std::sp
 // sets, and its accept carries every name the promisers hold, reduced, unchanged.
 class Attempt {
  public:
-  enum class Phase : uint8_t { preparing, accepting, committed, refused };
+  enum class Phase : uint8_t { preparing, fetching, accepting, committed, refused };
+
+  // A base to fetch (the design's "Value-less prepare and deltas"): the index of its name,
+  // the ballot whose value it is, and the promisers that answered holding exactly that
+  // ballot, in node order. Any of them has the same value, so a fetch may move between them.
+  struct Wanted {
+    size_t name = 0;
+    Ballot ballot;
+    std::vector<identity::NodeId> holders;
+  };
 
   // A plain change of `names` (none: the slot's record alone, as founding writes it).
   // Throws std::invalid_argument for a ballot of zero or no change.
@@ -281,6 +290,10 @@ class Attempt {
   // change is already in it: the attempt commits it unchanged and reports that result, so a
   // retry after a partial accept never applies the change twice.
   void own(std::vector<std::pair<Ballot, Bytes>> earlier) { _own = std::move(earlier); }
+  // Asks for no values where it can: a plain change with no reduction, not yet prepared. Its
+  // answers then say what is held, and once a majority has promised the attempt is fetching
+  // until every base that holds a value is in. Returns whether it asks for none.
+  bool value_less();
 
   const Prepare& prepare() const noexcept { return _prepare; }
   // The accept, once there is one (at once, on the fast path).
@@ -290,6 +303,13 @@ class Attempt {
   // An answer to the prepare; the accept to send to every recipient once enough have
   // promised, and only then.
   std::optional<Accept> on_prepare(const identity::NodeId& from, const PrepareAnswer& answer);
+  // Fetching: the bases still to fetch.
+  const std::vector<Wanted>& wanted() const noexcept { return _wanted; }
+  // The value of the base of name `name`, fetched by its ballot; the accept to send once every
+  // base is in. Ignored unless fetching and that base is still wanted.
+  std::optional<Accept> fetched(size_t name, Bytes value);
+  // No holder gave a base's value: refused, for another ballot.
+  void unfetched(std::string why);
   void on_accept(const identity::NodeId& from, const AcceptAnswer& answer);
 
   Phase phase() const noexcept { return _phase; }
@@ -315,7 +335,11 @@ class Attempt {
   // Whether `nodes` hold a majority of the set, and of `to` for a transfer.
   bool enough(const std::vector<identity::NodeId>& nodes) const;
   std::optional<Accept> plain_accept();
+  // A plain change's accept from its bases, every one with its value in.
+  Accept change_bases();
   std::optional<Accept> transfer_accept();
+  // The accept made: the attempt is accepting.
+  Accept accepting(Accept accept);
 
   Prepare _prepare;
   std::vector<identity::NodeId> _recipients;
@@ -327,6 +351,10 @@ class Attempt {
   std::vector<identity::NodeId> _heard;
   std::vector<PrepareAnswer> _answers;  // per promise
   std::vector<identity::NodeId> _promised;
+  // A plain change's base per name, and the answers it came from, once a majority promised.
+  std::vector<NameState> _bases;
+  std::vector<std::vector<NameState>> _per_name;
+  std::vector<Wanted> _wanted;
   std::vector<identity::NodeId> _accepted;
   std::vector<identity::NodeId> _refusers;
   std::optional<Accept> _accept;

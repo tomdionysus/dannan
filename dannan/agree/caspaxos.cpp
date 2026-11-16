@@ -328,12 +328,39 @@ std::optional<Accept> Attempt::on_prepare(const identity::NodeId& from, const Pr
   if (!enough(_promised)) return std::nullopt;
   auto accept = _prepare.to ? transfer_accept() : plain_accept();
   if (!accept) return std::nullopt;
+  return accepting(std::move(*accept));
+}
+
+Accept Attempt::accepting(Accept accept) {
   _accept = accept;
   _phase = Phase::accepting;
   _heard.clear();
   _refusers.clear();
   _why.clear();
   return accept;
+}
+
+bool Attempt::value_less() {
+  if (_prepare.to || _reduce || _phase != Phase::preparing || !_promised.empty() || _accept) return false;
+  _prepare.values = false;
+  return true;
+}
+
+std::optional<Accept> Attempt::fetched(size_t name, Bytes value) {
+  if (_phase != Phase::fetching) return std::nullopt;
+  const auto wanted = std::find_if(_wanted.begin(), _wanted.end(), [name](const Wanted& each) { return each.name == name; });
+  if (wanted == _wanted.end()) return std::nullopt;
+  _bases[name].value = std::move(value);
+  _wanted.erase(wanted);
+  if (!_wanted.empty()) return std::nullopt;
+  return accepting(change_bases());
+}
+
+void Attempt::unfetched(std::string why) {
+  if (_phase != Phase::fetching) return;
+  _wanted.clear();
+  _why = std::move(why);
+  _phase = Phase::refused;
 }
 
 std::optional<Accept> Attempt::plain_accept() {
@@ -352,17 +379,42 @@ std::optional<Accept> Attempt::plain_accept() {
     _phase = Phase::refused;
     return std::nullopt;
   }
-  // Each name's current value from the answers, then the change.
+  // Each name's base: the answer with the highest accepted ballot.
   const size_t count = _prepare.names.size();
-  std::vector<NameState> bases;
-  std::vector<std::optional<Bytes>> current;
+  _bases.clear();
+  _per_name.clear();
   for (size_t i = 0; i < count; ++i) {
     std::vector<NameState> answers;
     for (const auto& each : _answers) answers.push_back(each.states[i]);
-    const auto base = *std::max_element(answers.begin(), answers.end(), [](const NameState& a, const NameState& b) { return a.accepted < b.accepted; });
-    current.push_back(_reduce ? _reduce(base, answers) : base.value);
-    bases.push_back(base);
+    _bases.push_back(*std::max_element(answers.begin(), answers.end(), [](const NameState& a, const NameState& b) { return a.accepted < b.accepted; }));
+    _per_name.push_back(std::move(answers));
   }
+  // Value-less: a base that holds a value is fetched, by its ballot, from a promiser that
+  // answered holding exactly that ballot. One that holds none (never written, or a
+  // tombstone) needs nothing.
+  _wanted.clear();
+  if (!_prepare.values)
+    for (size_t i = 0; i < count; ++i) {
+      if (!_bases[i].has_value || _bases[i].value) continue;
+      Wanted wanted{i, _bases[i].accepted, {}};
+      for (size_t at = 0; at < _answers.size(); ++at)
+        if (_answers[at].states[i].has_value && _answers[at].states[i].accepted == _bases[i].accepted) wanted.holders.push_back(_promised[at]);
+      std::sort(wanted.holders.begin(), wanted.holders.end());
+      _wanted.push_back(std::move(wanted));
+    }
+  if (!_wanted.empty()) {
+    _phase = Phase::fetching;
+    return std::nullopt;
+  }
+  return change_bases();
+}
+
+Accept Attempt::change_bases() {
+  const auto& set = _prepare.set;
+  const size_t count = _prepare.names.size();
+  const auto& bases = _bases;
+  std::vector<std::optional<Bytes>> current;
+  for (size_t i = 0; i < count; ++i) current.push_back(_reduce ? _reduce(bases[i], _per_name[i]) : bases[i].value);
   // This proposer's own earlier accept is the newest for every name: its change is already in
   // the values, which are committed as they are, with that attempt's result.
   if (count > 0 && !_reduce) {

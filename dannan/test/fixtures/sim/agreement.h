@@ -191,6 +191,17 @@ class Cluster {
   Store& store(size_t i) { return *_nodes.at(i)->store; }
   NetworkFaults& faults() { return _faults; }
 
+  // Every answer that crossed the world while `recording`: who asked whom, the request's type,
+  // and the answer's bytes. A node's own acceptor answers it without the world.
+  struct Crossed {
+    size_t from = 0;
+    size_t to = 0;
+    net::MessageType type{};
+    net::Bytes answer;
+  };
+  bool recording = false;
+  std::vector<Crossed> crossed;
+
   // Messages from `from` to `to` are lost until unblocked: a one-way partition.
   void block(size_t from, size_t to) { _blocked.insert({from, to}); }
   void unblock_all() { _blocked.clear(); }
@@ -277,8 +288,9 @@ class Cluster {
       if (lost(from, to)) continue;
       _world.after(delay(), [this, from, to, type, payload, finish] {
         if (!up(to)) return;
-        const auto answer = [this, from, to, finish](net::Message reply) {
+        const auto answer = [this, from, to, type, finish](net::Message reply) {
           if (lost(to, from)) return;
+          if (recording) crossed.push_back({from, to, type, reply.payload});
           _world.after(delay(), [finish, reply = std::move(reply)] {
             if (const auto refusal = net::refusal_of(reply)) return finish(std::nullopt, refusal->message);
             finish(reply.payload, {});
