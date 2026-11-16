@@ -34,14 +34,16 @@ current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluat
 
 ## Resume here (2026-11-16, in session)
 
-**State.** `develop` is 0.9 (CMake 0.9.0, `libdannan0.9`), at `a5d12df`, not pushed. 0.8.3 is the last release
-(`main` and tag at `00a3a12`; every 0.8 release's record is in `COMPLETED.md`). In flight:
-`feature/agreement-reconfiguration`, at `2329b9f`. Its suite on node-d ran 776 tests: 775 passed and 1 skipped (it is
-skipped when run as root). See the handoff in `COMPLETED.md`. Develop's CI is green up to the pushed `c6fed5e` (run
-43769767060, 15 of 15), and 43765614152 passed the scheduler fix under ASan. The branch's own CI, and develop's
-local commits from `fbcbb90` on, need a push, which waits on the maintainer's word.
+**State.**
+- `develop` is 0.9 (CMake 0.9.0, `libdannan0.9`), pushed at `ed5111d`. It holds reconfiguration and the fast path
+  (merged at `208c581`), the advert push (`e78b66c`), and `main` at 0.8.5 merged back.
+- **0.8.5 is the last release** (`main` and tag at `de631cc`, pushed at the maintainer's word; main's CI run 43800265662 green
+  on all 15 jobs). 0.8.4 went just before it (tag at `52fd53c`, CI run 43793449409 green). Both releases' records are
+  in `COMPLETED.md`.
+- No branch is in flight.
+- Next is step 2's remainder: value-less prepare and deltas.
 
-**First, before more 0.9 work: Lir's TSan report against 0.8.3** (2026-11-16).
+**Lir's TSan report against 0.8.3, open** (2026-11-16).
 - What: a heap-use-after-free in `~NodeRecord`, in Lir run 43773090610 (`ClusterTest.ConnectingOnAnotherNodeTakesTheClientOver`, two
   nodes in one process, 4 io threads). The log is at `../lir/build/ci-logs/tsan-43773090610.log`.
   - The read: `~ClientHandshake` (`_local`, a copy of `Membership::self()`) under `~DialState` (`net/session.cpp:462`).
@@ -64,19 +66,15 @@ local commits from `fbcbb90` on, need a push, which waits on the maintainer's wo
   43765626713 (release arm64).
 
 **Waiting on the maintainer:**
-- Whether the scheduler fix (`0ce0b82`: a deferred answer gives back its place and bytes before its reply is sent;
-  it shipped in 0.8 and ASan caught it) also goes out as **0.8.4**. It is internal to `net/scheduler.cpp`, so it
-  keeps the ABI. Stage it only at his word.
-- Whether 0.8.4 also carries **Kvasir's ask, `Stream::start_tls_unanswered(done)`**, for MySQL's in-place TLS. The
-  client sends SSLRequest and then its ClientHello at once, with no server answer between them, so today's
-  `start_tls` (`listen/stream.h:124`) refuses it: its waiting-bytes check finds the ClientHello. The variant writes
-  no answer and makes no waiting-bytes check. It goes straight to the server handshake under the listener's deadline,
-  keeping every other check: certificates present, once only, nothing queued by send(). The new member is additive,
-  so the ABI is kept. Write it test first, with a client that sends its ClientHello right behind the request. Kvasir
-  pins 0.8.2 and moves to the first tag carrying it.
-- Whether 0.8.4 also carries **`NodeEvents::wait_for_change(seen, timeout, std::stop_token)`** (`fbcbb90`, merged at
-  `a5d12df`), Macha Server's ask so its NodeEvents become Dannan's. It is additive, with the member layout unchanged,
-  so it keeps the ABI. The suite on node-d ran 767 tests: 766 passed and 1 skipped (it is skipped when run as root).
+- Whether a node with another slot table should also be refused at join; today every agreement request refuses it
+  (step 1 below).
+
+**Release mechanics learned 2026-11-16:**
+- The `.deb`s CI builds before the tag exists come out versioned `<last>+gitN`. After pushing the tag, re-run
+  `main`'s whole run (`gh run rerun <id>`; re-running a single deb job did not replace the arm64 artifact), then
+  download that attempt's artifacts by id.
+- ASan cannot start on the Pis' 4K-page 39-bit kernels, so until the 48-bit kernel lands a release's local sanitizer
+  gate is TSan, and ASan is hosted CI's.
 
 **Built for 0.9.0 so far** (see `COMPLETED.md`):
 - Agreement: the CASPaxos core (`agree/caspaxos.h`), its wire (types 22 to 24, replies 110 to 112) and fuzz target,
@@ -92,12 +90,13 @@ alone).
 **Next, in order** (the maintainer: agreement first, half the stack waits on it):
 1. **Reconfiguration, as the maintainer ruled** (2026-11-15: "No root except at genesis. A root may start with only one
    node."). The design is `2026-11-15-agreement-design.md`, "Reconfiguration", agreed by Mimir and Kvasir:
+   - **Merged** to develop at `208c581` after the branch's CI (run 43786450604, 15 of 15).
    - **Built** on `feature/agreement-reconfiguration` (`2329b9f`), with the gap's fix: per-slot records, `transfer()`,
      settle, `found()`, the proof rule, the laggard rule. The table is `NodeConfig::agreement_slots` and
      `agreement_genesis` (genesis at version 0).
    - **Built** at `c524a28`: every request carries the table's fingerprint and an acceptor with another table refuses
      it; the slot advert (`agree.slots/<space>`) and `Agreement::hint()`. The suite on node-d ran 778 tests: 777
-     passed and 1 skipped (it is skipped when run as root). Not merged: hosted CI first.
+     passed and 1 skipped (it is skipped when run as root).
    - **For the maintainer:** the design said a node with another table is "refused at join". It is refused at every agreement
      request instead, which keeps membership free of agreement's settings. Whether join-time refusal is still wanted
      on top is his call.
@@ -144,7 +143,10 @@ alone).
      the record, the decide and the finishing;
    - a pluggable conflict rule (the maintainer ruled that a decided or replicated commit wins over an undecided one);
    - a commit stamp by the hybrid clock at decide.
-9. **Ruled (the maintainer, 2026-11-16, relayed by Lir): both calls below in 0.9, no 0.8.x stopgap.** Lir holds a new prefix's
+9. **Built and merged** at `e78b66c` (787 tests on node-c: 786 passed, 1 skipped). Two Node tests run with a 30 s
+   heartbeat: `APushedAdvertIsHeldByEveryPeerBeforeItIsDone` and `ASubscriptionHeldBeforeItsDoneGetsTheNextPublish`.
+   It also serialises readvertise: two racing subscribes could leave the older prefix list advertised.
+   **Ruled (the maintainer, 2026-11-16, relayed by Lir): both calls below in 0.9, no 0.8.x stopgap.** Lir holds a new prefix's
    SUBACK until the advert is held or the deadline passes. On a miss it grants the subscription and logs the peers that
    missed it. The ask: push a changed advert and learn who holds it.
    - The finding: on Lir's cluster a QoS 1 publish right after a SUBACK on another node is lost for that subscriber.
@@ -155,7 +157,8 @@ alone).
        exchange (type 2) to every active peer and reports held and missed;
      - `Fanout::subscribe(..., deadline, executor, done)` on top of it.
    - A virtual interface addition, so 0.9.
-10. **Lugh's sign-in Backoff into Dannan** (Kvasir's ask, 2026-11-16, stack rule 3; agreed). It becomes
+10. **Released in 0.8.5** (the maintainer chose a patch). **Lugh's sign-in Backoff into Dannan** (Kvasir's ask, 2026-11-16,
+    stack rule 3; agreed). It becomes
     `dannan::listen::Backoff` (`listen/backoff.h`), Lugh's class and contract as they stand, on
     `contract::TimePoint`, per node. Lugh's tests move with it (`lugh/test/authn_backoff_test.cpp`, suite Backoff:
     FreeFailuresThenDoublingWaits, TheWaitHasACeiling, KeysAreSeparateAndSuccessClearsOne, QuietKeysAreForgotten,

@@ -3,6 +3,37 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
+## Releases and merges, 2026-11-16 (the maintainer: "cut 0.8.4 and tell everyone"; push word for all)
+
+**0.8.5 is released** (`main` and tag at `de631cc`; main's CI run 43800265662 green on all 15 jobs, ABI kept).
+- What it carries:
+  - `listen::Backoff`, Lugh's sign-in back-off on injected time with its five tests (Kvasir's ask, stack rule 3; the maintainer
+    chose a patch);
+  - the fix for Louhi's finding: a node stopped while its io ran, destroyed after the io had stopped, hung in its
+    client's and its server's second stop, each of which posted to the stopped io (`44109dd`, `36cd4a3`). Test:
+    `Node.ANodeStoppedThenDestroyedAfterItsIoStopsDoesNotHang`. Node's contract now says to stop it while its io runs.
+- Gate on node-c: release 755 ran, 754 passed, 1 skipped; TSan the same. The first run found the test still hanging
+  in `Server::stop`; gdb named it.
+- Kvasir, Lugh and Louhi move their pins to it.
+
+**0.8.4 is released** (`main` and tag at `52fd53c`; main's CI run 43793449409 green on all 15 jobs, ABI kept).
+- What it carries:
+  - the scheduler fix `0ce0b82`;
+  - `NodeEvents::wait_for_change(..., std::stop_token)` (`fbcbb90`), for Macha;
+  - `Stream::start_tls_unanswered(done)` (`383b6f5`), for Kvasir's MySQL. Test:
+    `StreamListener.StartTlsUnansweredTakesAClientHelloRightBehindTheRequest`.
+- Gate on node-c: release 749 ran, 748 passed, 1 skipped; TSan the same. ASan cannot start on the 39-bit kernels;
+  hosted CI's ASan passed.
+- The `.deb`s are staged in `../tomcully-apt/incoming/dannan/0.8.4/` and checked (shlibs `libdannan0.8 (>= 0.8.4)`),
+  after re-running main's run once the tag existed.
+- Everyone was told. Macha pins 0.8.4.
+
+**Merged to develop:**
+- `feature/agreement-reconfiguration` at `208c581` (its CI run 43786450604 green; the temporary CI-trigger commit was
+  dropped first, and the remote branch deleted);
+- `feature/advert-push` at `e78b66c`;
+- `main` at 0.8.5 at `ed5111d`.
+
 ## Handoff, 2026-11-16: reconfiguration built, with a safety gap found and closed
 
 - **A gap in the reviewed design, found in building it.**
