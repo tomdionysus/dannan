@@ -119,7 +119,9 @@ current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluat
   catch-up holds while a minority is wiped.
 
 **0.9.0 is cut when the whole plan below is done** (the maintainer, 2026-11-16, asked: not before, and not after agreement
-alone).
+alone). Asked again later that day, he kept it: "I'd rather do it right - but it is becoming a chokepoint, we've been
+at this some time. Complete it properly." Lir, Mimir and Kvasir wait on the tag, so keep each step moving: no
+gold-plating beyond what the design and its reviews ask.
 
 **Next, in order** (the maintainer: agreement first, half the stack waits on it):
 1. **Reconfiguration, as the maintainer ruled** (2026-11-15: "No root except at genesis. A root may start with only one
