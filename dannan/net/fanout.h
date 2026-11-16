@@ -89,6 +89,12 @@ class Fanout : public std::enable_shared_from_this<Fanout> {
     identity::NodeId incarnation;
     // Sets or clears an advert on this node's record.
     std::function<void(const std::string& key, std::optional<Bytes> value)> advertise;
+    // The same, and the record pushed to every active peer: `done` on `executor` with who
+    // holds it (Nodes::advertise with a deadline). Empty: subscribe with a deadline is
+    // told nobody holds it.
+    std::function<void(const std::string& key, std::optional<Bytes> value, std::chrono::milliseconds deadline, boost::asio::any_io_executor executor,
+                       std::function<void(membership::Pushed)> done)>
+        push;
     // A call to a peer whose outcome is posted to `executor`.
     std::function<void(const membership::NodeRecord& peer, MessageType type, Bytes payload, sched::FrameType frame, std::chrono::milliseconds deadline,
                        boost::asio::any_io_executor executor, Client::Done done)>
@@ -110,6 +116,10 @@ class Fanout : public std::enable_shared_from_this<Fanout> {
   void open(std::string name, Delivery delivery, size_t replay_bytes);
   // Throws std::invalid_argument for a channel not open.
   uint64_t subscribe(const std::string& channel, std::string prefix, boost::asio::any_io_executor executor, ChannelHandler handler);
+  // The same, and the channel's interest pushed to every active peer at once: `done` on
+  // `done_executor` with who holds it, so a publish made after it reaches this subscriber.
+  uint64_t subscribe(const std::string& channel, std::string prefix, boost::asio::any_io_executor executor, ChannelHandler handler,
+                     std::chrono::milliseconds deadline, boost::asio::any_io_executor done_executor, std::function<void(membership::Pushed)> done);
   void unsubscribe(uint64_t id);
   // notify and stream. Throws std::invalid_argument for a channel not open
   // or a bulk one.
@@ -159,7 +169,15 @@ class Fanout : public std::enable_shared_from_this<Fanout> {
   std::vector<membership::NodeRecord> destinations(const std::string& channel, const std::string& topic) const;
   bool local_interest(const std::string& channel, const std::string& topic) const DANNAN_REQUIRES(_mutex);
   void deliver_locally(ChannelMessage message) DANNAN_EXCLUDES(_mutex);
-  void readvertise(const std::string& channel) DANNAN_EXCLUDES(_mutex);
+  // Who to tell, and by when, that a readvertise was pushed.
+  struct Push {
+    std::chrono::milliseconds deadline;
+    boost::asio::any_io_executor executor;
+    std::function<void(membership::Pushed)> done;
+  };
+  // The channel's interest, from the subscriptions now; with `push`, sent to every active
+  // peer and told who holds it.
+  void readvertise(const std::string& channel, std::optional<Push> push = std::nullopt) DANNAN_EXCLUDES(_mutex, _advertising);
   // Delivers what is in order for `key`, and asks for a gap. Returns what
   // to deliver, in order.
   std::vector<ChannelMessage> settle_locked(const InboundKey& key, Inbound& inbound, const membership::NodeRecord& origin) DANNAN_REQUIRES(_mutex);
@@ -167,6 +185,10 @@ class Fanout : public std::enable_shared_from_this<Fanout> {
   void replayed(const membership::NodeRecord& origin, const std::string& channel, identity::NodeId incarnation, CallOutcome outcome) DANNAN_EXCLUDES(_mutex);
 
   const Hooks _hooks;
+  // Held across a readvertise, from reading the subscriptions to setting the advert, so two
+  // racing subscribes never leave the older list advertised last. Lock order: this, then
+  // _mutex; the roster's own lock is taken inside the advertise hook, after both.
+  contract::Mutex _advertising;
   mutable contract::Mutex _mutex;
   std::map<std::string, Channel> _channels DANNAN_GUARDED_BY(_mutex);
   std::map<uint64_t, Subscription> _subscriptions DANNAN_GUARDED_BY(_mutex);
