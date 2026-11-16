@@ -469,8 +469,21 @@ exactly its base. A missing or wrong delta becomes a whole send, never a guess.
 4. `value()` returns bytes (Mimir: Valkey's DUMP form; fetches are rare). `load()` returns
    empty values when value-less. The summary is per name, 64 bytes.
 
+**Kvasir's review (2026-11-16), taken.** The shape fits ranges. A range's value holds its rows and their
+intents; a delta is one commit's row changes, and the summary holds the range's version, row count and size. Kvasir
+has no merging reduction. Two needs, which replace any store-driven catch-up hook:
+1. **Values larger than a message.** `agree_fetch` answers in pieces, resumable by offset under the same ballot:
+   each answer is a piece, the total size and the ballot, and a holder that has moved on says so. A "need whole"
+   resend goes the same way, piece by piece, accepted only once whole and only at its ballot.
+2. **Nothing sent to an acceptor that already holds it.** In `transfer()`, and in any accept, a name that an acceptor
+   reported holding at the base ballot is not fetched for it or sent to it: the accept names the ballot only. A
+   range's new acceptors are caught up by the store's own means first (a copy from a replica, later Dagda's log);
+   the joint round then only checks the ballot.
+
 **Tests named:**
 - a megabyte register changed with no prepare answer carrying its value;
+- a value larger than one message fetched, and resent whole, in pieces;
+- a transfer whose new acceptors already hold the ranges sends no value;
 - the fetch from another holder when this node's acceptor is behind;
 - a delta refused for a moved base and resent whole;
 - a transfer of a slot with large values;
