@@ -216,7 +216,14 @@ gold-plating beyond what the design and its reviews ask.
         - A majority must take it. An acceptor needing the whole value is not counted and gets no resend; the
           Outcome names it, for the owner to catch up.
         - The fast path keeps ballots and summaries, not bytes. A transfer and catch_up() are unchanged.
-        - The API goes to Mimir and Kvasir before it is built. Then the branch merges. Today a whole value in an accept
+        - The API went to Mimir and Kvasir before it was built. Kvasir agreed it as written (2026-11-16):
+          - the fast path checking by ballot only is right for ranges;
+          - need_whole nodes are reported, not resent;
+          - `local` false may return no deltas.
+        - Kvasir's read: a `change_deltas` with no delta for any name commits without an accept when every answer
+          in the promising majority names the same ballot and summary. That state is already chosen, so a current
+          read is one round and no sync. Otherwise it falls back to the ballot-only accept. The proof rule applies.
+        - Waiting on Mimir's answer on the fast path under merge writes. Then it is built, and the branch merges. Today a whole value in an accept
           is one message, up to `max_value`. Once he answers, the branch merges to develop.
 
    Tests are named there: one-node genesis grown to five, the root unreachable, the fast path lost across a
