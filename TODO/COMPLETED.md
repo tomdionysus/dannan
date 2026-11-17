@@ -3,6 +3,11 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
+**0.9.0 is released** (`main` and tag at `59b7abc`, pushed at the maintainer's word, 2026-11-17; main's CI run 44158672535
+green on every job). The `.deb`s are staged in `../tomcully-apt/incoming/dannan/0.9.0/` and checked: SONAME
+`libdannan.so.0.9`, shlibs `libdannan0.9 (>= 0.9.0)`, `libdannan-dev` with the clock, storage and sim headers and
+`libdannan_sim_checkers.a`, for the maintainer to publish.
+
 ## 0.9.0's release preparation, 2026-11-17 evening
 
 - Scope from the sessions (the maintainer: "Find out what the other sessions actually need and that's your

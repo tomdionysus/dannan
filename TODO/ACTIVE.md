@@ -39,7 +39,11 @@ current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluat
   reconfiguration, the fast path, value-less prepare and deltas in six parts, refusal at join), and step 3's part 1
   (the simulation history and the linearizability checker) is merged at `f917920`. The record is `COMPLETED.md`'s
   2026-11-16 entry.
-- **0.8.5 is the last release** (`main` and tag at `de631cc`). 0.9.0 is cut only when the whole plan below is done.
+- **0.9.0 is the last release** (`main` and tag at `59b7abc`, pushed at the maintainer's word, 2026-11-17; main's CI run
+  44158672535 green). The `.deb`s are staged in `../tomcully-apt/incoming/dannan/0.9.0/` and checked (SONAME
+  `libdannan.so.0.9`, shlibs `libdannan0.9 (>= 0.9.0)`, `libdannan_sim_checkers.a` in `libdannan-dev`). Next is
+  0.10.0: DTLS/UDP, the peer-witnessed high-water mark, atomic commit, loader promotion (its design to Macha
+  first), the fuzz export. 0.9.0 is cut only when the whole plan below is done.
 - Step 3, part 2 (agreement's invariants on every step and all seven broken protocols) is merged at `e26f0cb`,
   not pushed: develop is 4 commits ahead of `origin/develop`, and its hosted CI waits on the maintainer's push word. No branch
   is in flight; the worktree in use is `build/wt-feature`, on `develop`. Its record is `COMPLETED.md`'s 2026-11-17
