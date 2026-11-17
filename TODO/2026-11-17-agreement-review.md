@@ -217,13 +217,66 @@ not (apply); otherwise unknown unless repeatable.
 - Gate: node-d, 858 tests, 856 passed, 1 skipped (as root), and finding 7's test failing by
   design.
 
+## Reviews taken (2026-11-17)
+
+- **Kvasir**: both fixes fit. A range's batch is made repeatable by its own transaction marks
+  (its DeltaChange runs only with `local`, checks whether its commits are in the base, and
+  returns no delta if they are), so it sets `Deltas::repeatable` and never wants `unknown` for a
+  commit. Ancestry is fine for its store. Asked for the contract to say a repeatable change is
+  always run again on the retry's own base: added to `Changed::repeatable`. Agrees with option
+  2; its multi-range transactions will use plan item 7.
+- **Mimir**: marks every change repeatable, by an operation id per write kept in the value with
+  its result (exactly-once whatever the base; it also resolves `unknown` by running the same
+  tagged change again). Does not need ancestry, and asked for it to be optional for a store
+  because of its cost per key: a store that does not keep it answers it empty, read as cut
+  short, which the rule already handles; now stated in the contract. Its reduction takes no
+  agreement change from any answer but the base, so ancestry stays the base's. Agrees with
+  option 2, and asked for change() of several names to be **refused** until item 7, not
+  documented: done for `change()`, `change_deltas()` and `forget()`; a read may still name
+  several (its identity accept changes nothing, half taken or whole).
+- **Lugh**: treats `unknown` as a refused code (the sign-in fails closed). Wants word when it is
+  merged and tagged.
+- The counter's linearizability: an exact counter check (`check_counter`) now decides, with
+  the general search as a cross-check where it decides within a small budget; they agreed on
+  every fixed seed.
+
 ## Finding 7: a change of several names can be half taken (proven)
 
 `Agreement.AChangeOfSeveralNamesIsNeverHalfTaken`: node 1 changes x and y together, accepted by
 acceptor 1 only. Node 2 changes x alone; its majority shows node 1's accept newest for x, so x
 carries it on. Node 3 changes y alone on acceptors that never saw it. x then holds node 1's
 change and y does not. Mimir's MULTI/EXEC within a slot, and any change of several names,
-relies on all or nothing. Per-name ancestry makes it detectable, not prevented: a proposer
-adopting part of a multi-name accept must adopt all of it, which means a change of a subset of
-names has to see, and carry, the other names of any multi-name accept it builds on. Not yet
-designed.
+relies on all or nothing.
+
+**Why.** CASPaxos is a single register; the paper has no multi-register change. Dannan's
+"several names in one accept" holds only while every change names the same set: each name's
+base is chosen on its own, so a change of a subset adopts one name's half of an unchosen
+multi-name accept that another subset change has already passed over.
+
+**What a fix has to get right** (worked through, not built):
+- A multi-name accept at β is chosen for every one of its names or for none (an acceptor keeps
+  an accept whole). By the paper's Lemma 1, a value accepted above a chosen β always descends
+  from it. So a companion name whose base is above β and, by complete ancestry, does not
+  descend from β proves β was never chosen, and with this prepare's promises never will be.
+- Proving β dead is not enough to skip it. The next answer below β at this majority may be
+  below a value θ that was chosen before β (the acceptor that would show θ answered β). Skipping
+  safely means taking β's own base, which needs that value fetched by its ballot from an
+  acceptor still holding it. It may be gone. Doable with care; not yet proven.
+- A subset change must also learn β's companions: each accepted state records the names of its
+  accept, bounded.
+
+**Options, for the maintainer and Mimir:**
+1. **Sound multi-name accepts**, as above: companions recorded per state, a dead-or-finish rule
+   per prepare, fetching β's base where β is skipped. Keeps one round for MULTI. Complex; needs
+   a written proof and the simulator's multi-name checker before it is trusted.
+2. **Multi-name changes through the atomic commit of plan item 7** (intents and a transaction
+   record), within a slot as across slots. Every name stays a plain CASPaxos register, which the
+   paper's proof covers. One mechanism for MULTI and CROSSSLOT; costs a transaction record and
+   intents per multi-name change.
+3. **Fixed groups**: names changed together are one register (the owner's group, as a hash tag
+   is), never changed apart. Sound and simple, but Mimir's MULTI touches arbitrary keys in a
+   slot.
+
+**Recommended: 2.** It keeps agreement to what the paper proves, and plan item 7 is being built
+for Mimir anyway. Until then, `change()` of several names should be documented as atomic only
+among changes that always name the same set, or refused for more than one name.

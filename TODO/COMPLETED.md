@@ -3,6 +3,30 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
+## Agreement reviewed against the CASPaxos paper, and its faults fixed, 2026-11-17 (`feature/attempt-timeout`)
+
+the maintainer, after the stall: "watch that commit fail, it sounds more serious than you're giving it credit
+for", then "read it and have a good think about it ... check the rest of the quorum design". The
+review is `2026-11-17-agreement-review.md`; the paper is in `research/` (not committed).
+- **A change was applied twice** (develop's runtime, 96 of 600 seeds), and with a reduction the
+  guard was off. Each accepted state now carries its value's **ancestry** (at most 16 ballots,
+  wire and store), so a retry tells whether its change is in: committed unchanged with the
+  first result, applied, or `Outcome::unknown` unless the change is `repeatable`. Over 6000
+  contended changes "could not tell" fell from 3141 to 347; none applied twice. A store may
+  decline ancestry (Mimir).
+- **A change of several names could be half taken.** `change()`, `change_deltas()` and
+  `forget()` take one name until plan item 7's atomic commit (Mimir's ask); a read may name
+  several.
+- **One silent acceptor held a change to its deadline**: `agree::first_round`, 250 ms doubling.
+- **`forget()` never purged**: an accept already taken is answered as taken.
+- **A lost transfer left an acceptor refusing the set that won**: settle moves it; a pending
+  refusal counts as one.
+- **`catch_up` lost the floor**: it raises it to the read's ballot.
+- The counter simulations' check is now exact (`check_counter`), cross-checked by the search.
+- Reviewed by Kvasir and Mimir (both fit; both mark changes repeatable by their own marks);
+  Lugh treats `unknown` as a refused code.
+- Gate: node-b, 859 tests, 858 passed, 1 skipped (as root).
+
 ## The harness, step 3 part 2: agreement's invariants and the broken protocols, 2026-11-17 (merged at `e26f0cb`)
 
 macOS gate at `e3230f9`: 846 tests, 844 passed, 2 skipped (Linux-only). Not pushed: hosted CI waits on the maintainer's word.
