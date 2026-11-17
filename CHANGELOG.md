@@ -1,5 +1,17 @@
 # Current release
 
+## 0.9.1: an advert change never ties a copy of the record already sent
+
+Fixed: an advert set or cleared in the same millisecond as a gossip reply or handshake that
+had carried the record before it got the same stamp, with new content, and a peer holding that
+copy refused it, keeping only a newer stamp. `Nodes::advertise` and `Channels::subscribe` with a
+deadline reported such peers as missed ("the peer holds an older record of this node"), and the
+interest an advert carried could reach them only at the next change, so a message published
+after a subscription was acknowledged could be lost (Lir, on 0.9.0). A change is now stamped
+after every copy of the record already handed out.
+
+The ABI is 0.9.0's.
+
 ## 0.9.0: agreement, the simulation harness, one file system, the hybrid clock
 
 A new minor: the ABI and some of the API change (below). Move a pin from 0.8.x in one step.
