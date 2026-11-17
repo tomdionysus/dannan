@@ -40,10 +40,11 @@ current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluat
   (the simulation history and the linearizability checker) is merged at `f917920`. The record is `COMPLETED.md`'s
   2026-11-16 entry.
 - **0.8.5 is the last release** (`main` and tag at `de631cc`). 0.9.0 is cut only when the whole plan below is done.
-- **In flight: `feature/sim-invariants`** (step 3, part 2: agreement's invariants on every step and all seven
-  broken protocols), committed, not merged; the worktree in use is `build/wt-feature`. Its record is
-  `COMPLETED.md`'s 2026-11-17 entry. Before merging: the macOS gate on this Mac, and hosted CI at the maintainer's push word.
-- **Next after it: step 3, part 3** (correlated kills, and durability per `ack_level` against the faults).
+- Step 3, part 2 (agreement's invariants on every step and all seven broken protocols) is merged at `e26f0cb`,
+  not pushed: develop is 4 commits ahead of `origin/develop`, and its hosted CI waits on the maintainer's push word. No branch
+  is in flight; the worktree in use is `build/wt-feature`, on `develop`. Its record is `COMPLETED.md`'s 2026-11-17
+  entry.
+- **Next: step 3, part 3** (correlated kills, and durability per `ack_level` against the faults).
 - **Gates.**
   - The last full suite, on node-b at step 3 part 2, ran 847 tests: 846 passed and 1 skipped (it is skipped when
     run as root).
@@ -56,9 +57,11 @@ current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluat
   - Build with `cmake --build build/macos -j 4 --target dannan_tests`, logging to `build/macos-build.log`; run
     `build/macos/dannan_tests`, logging to `build/macos-tests.log`. Local grep is blocked, so read the log's end
     with Read.
-  - Its last run: `f917920`, 833 tests, 831 passed and 2 skipped (both Linux-only:
+  - Its last run: `e3230f9` (merged at `e26f0cb`), 846 tests, 844 passed and 2 skipped (both Linux-only:
     `CustodyTool.InitTakesCustodyBackWhenTheRootCannotBeWritten` and `PeerSocket.ChoosesBbrWhereOffered`). The Mac
-    runs one test fewer than the Pis, which run 834.
+    runs one test fewer than the Pis, which run 847.
+  - The build directory is `/Users/dev/devroot/dannan/build/macos` (the main checkout's `build/`, not the
+    worktree's), configured against `build/wt-feature`; its logs are beside it.
 - **Builds go to the Pi cluster.** node-a, node-b and node-c have 16 GB; node-d has 4 GB, so sanitizer builds
   there use -j1. All four run a 4K-page 48-bit kernel, so ASan, UBSan and TSan work on all of them. node-a has no
   ninja; use Makefiles there. Claim cores first and release them after. Copy the tree with
@@ -101,7 +104,7 @@ gold-plating beyond what the design and its reviews ask.
    `history.h`, `linearizable.h` and `.cpp` (the `dannan_sim_checkers` library), and `models.h`. In order, each with
    its tests and commit:
    1. **Done** (`f917920`): the history and the linearizability checker; the counter simulation runs on it.
-   2. **Done** (`feature/sim-invariants`, not merged): agreement's own invariants on every step
+   2. **Done** (merged at `e26f0cb`): agreement's own invariants on every step
       (`fixtures/sim/invariants.h`), and all seven broken protocols refused with their seeds, the merge class's
       included. See `COMPLETED.md`, 2026-11-17.
    3. **Next: correlated kills** (a majority at one step), and the durability rules per `ack_level` judged against the

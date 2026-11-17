@@ -3,7 +3,10 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
-## The harness, step 3 part 2: agreement's invariants and the broken protocols, 2026-11-17 (`feature/sim-invariants`)
+## The harness, step 3 part 2: agreement's invariants and the broken protocols, 2026-11-17 (merged at `e26f0cb`)
+
+macOS gate at `e3230f9`: 846 tests, 844 passed, 2 skipped (Linux-only). Not pushed: hosted CI waits on the maintainer's word.
+
 
 - `fixtures/sim/invariants.h` (header-only) checks every acceptor's state after every world step (`World::observer`):
   - one value per ballot for a name;
