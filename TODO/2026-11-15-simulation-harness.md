@@ -169,6 +169,20 @@ over the world's network and time).
 - **One more broken protocol:** a reducer that drops a merge write acknowledged at
   `replicated` (Mimir's ruling 16: an agreement command sees every such write), refused.
 
+## As built (2026-11-17, step 3 part 5)
+
+- **Transactions are over lists**, as Elle's are (Kingsbury and Alvaro, 2020): a write appends
+  an element unique to it and a read returns the whole list. Kvasir's "read off the history,
+  not searched for" needs each key's version order, which a register's overwrite hides; a
+  list's longest read gives it. A store that offers registers only is driven through lists by
+  its test's client.
+- **Convergence is judged after one quiet command.** Agreement carries a merged state to every
+  replica only in a command's accept; a key no command touches after heal stays as the merge
+  writes left it. Repair without a command is the store's anti-entropy (the plan's
+  `trie_diff`), judged by the same checker once Dagda's store is in the world.
+- **The worker pool runs on the node's schedule** (`WorkerPoolConfig::schedule`), one task a
+  turn, with no CPU charged in the world.
+
 ## Packaging, settled
 
 The world, time, network, disk, history and models are header-only, as the other fixtures
