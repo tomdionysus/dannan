@@ -61,18 +61,22 @@ class World {
   // order they were scheduled.
   void after(uint64_t ms, std::function<void()> task) { _events.emplace(std::make_pair(_now + ms, _sequence++), std::move(task)); }
 
+  // Called after every step: a checker that looks at the whole world each time (agreement's
+  // invariants). Empty: none.
+  std::function<void()> observer;
+
   // One step: a ready handler if there is one, else the next event, moving time to it.
   // False when nothing is left to do.
   bool step() {
     io.restart();
-    if (io.poll_one() > 0) return true;
+    if (io.poll_one() > 0) return observed();
     if (_events.empty()) return false;
     auto next = _events.begin();
     _now = next->first.first;
     auto task = std::move(next->second);
     _events.erase(next);
     task();
-    return true;
+    return observed();
   }
 
   // Steps until `done` holds, or `max_steps` have run, or nothing is left; whether `done`
@@ -87,6 +91,11 @@ class World {
   }
 
  private:
+  bool observed() {
+    if (observer) observer();
+    return true;
+  }
+
   uint64_t _now = 1'000'000;
   uint64_t _sequence = 0;
   std::multimap<std::pair<uint64_t, uint64_t>, std::function<void()>> _events;

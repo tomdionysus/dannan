@@ -54,6 +54,10 @@ class Store final : public agree::AcceptorStore {
       }
     if (!values)
       for (auto& state : out.states) state.value.reset();
+    // The broken acceptor: each promise read back as no more than what it accepted, so the rule
+    // passes ballots below a promise it gave.
+    if (forget_promises)
+      for (auto& state : out.states) state.promised = state.accepted;
     done(std::move(out));
   }
   // This store's delta is bytes appended to the value; every delta is checked before any is
@@ -67,8 +71,9 @@ class Store final : public agree::AcceptorStore {
       if (at != held.states[i].base || refuse_deltas) out.need_whole.push_back(i);
     }
     if (!out.need_whole.empty()) return done(std::move(out));
-    keep_in(_current, slot, held);
-    if (_persist && !lying_sync) keep_in(_durable, slot, held);
+    keep_in(_current, slot, held, merging);
+    if (_persist && !lying_sync) keep_in(_durable, slot, held, merging);
+    ++_changes;
     out.kept = true;
     done(std::move(out));
   }
@@ -80,12 +85,51 @@ class Store final : public agree::AcceptorStore {
   }
 
   // A crash: what was not durable is gone.
-  void crash() { _current = _durable; }
+  void crash() {
+    _current = _durable;
+    ++_changes;
+  }
   // A restart that lost the disk too.
   void wipe() {
     _current = {};
     _durable = {};
+    ++_changes;
   }
+
+  // A promise loaded as no more than the ballot accepted: an acceptor that accepts below its
+  // promise (a broken protocol a checker must catch).
+  bool forget_promises = false;
+
+  // The merge class (Mimir's): a value is a set of bytes, sorted, each once. A whole value kept
+  // is merged into the one held, never replacing it, and merge() adds a byte outside agreement,
+  // synced at once, leaving every ballot as it is.
+  bool merging = false;
+  void merge(agree::Slot slot, const agree::Name& name, uint8_t element) {
+    for (auto* layer : {&_current, &_durable}) {
+      auto& state = layer->names[{slot, text(name)}];
+      state.value = united(state.value.value_or(agree::Bytes{}), agree::Bytes{element});
+      state.has_value = true;
+      state.summary = summary_of(*state.value, true);
+    }
+    ++_changes;
+  }
+  // Two sets of bytes as one.
+  static agree::Bytes united(agree::Bytes a, const agree::Bytes& b) {
+    a.insert(a.end(), b.begin(), b.end());
+    std::sort(a.begin(), a.end());
+    a.erase(std::unique(a.begin(), a.end()), a.end());
+    return a;
+  }
+
+  // For a checker: a count that moves whenever what is held may have, every name's state, every
+  // slot's record, and the floor.
+  uint64_t changes() const noexcept { return _changes; }
+  template <class Visit>
+  void each_name(Visit&& visit) const {
+    for (const auto& [key, state] : _current.names) visit(key.first, key.second, state);
+  }
+  const std::map<agree::Slot, agree::SlotState>& slots_held() const noexcept { return _current.slots; }
+  const agree::Ballot& floor() const noexcept { return _current.floor; }
   void set_ready(bool ready) { _ready = ready; }
   // A sync that reports success and keeps nothing (the broken store a checker must catch).
   bool lying_sync = false;
@@ -108,7 +152,7 @@ class Store final : public agree::AcceptorStore {
     agree::Ballot floor;
   };
   static std::string text(const agree::Name& name) { return std::string(name.begin(), name.end()); }
-  static void keep_in(Layer& layer, agree::Slot slot, const agree::Held& held) {
+  static void keep_in(Layer& layer, agree::Slot slot, const agree::Held& held, bool merging) {
     layer.floor = held.floor;
     layer.slots[slot] = held.slot;
     for (size_t i = 0; i < held.names.size(); ++i) {
@@ -124,7 +168,7 @@ class Store final : public agree::AcceptorStore {
         auto value = before != layer.names.end() && before->second.value ? *before->second.value : agree::Bytes{};
         value.insert(value.end(), state.delta->begin(), state.delta->end());
         state.value = std::move(value);
-        state.summary = summary_of(*state.value);
+        state.summary = summary_of(*state.value, merging);
         state.delta.reset();
         state.base = {};
       } else if (state.has_value && !state.value) {
@@ -135,16 +179,27 @@ class Store final : public agree::AcceptorStore {
           state.summary = before->second.summary;
         }
       } else {
+        if (merging && state.value) {
+          const auto before = layer.names.find(key);
+          if (before != layer.names.end() && before->second.value) state.value = united(*state.value, *before->second.value);
+        }
         state.has_value = state.value.has_value();
-        state.summary = state.value ? summary_of(*state.value) : agree::Bytes{};
+        state.summary = state.value ? summary_of(*state.value, merging) : agree::Bytes{};
       }
       layer.names[key] = std::move(state);
     }
   }
-  // This store's summary: the value's length, eight bytes big-endian.
-  static agree::Bytes summary_of(const agree::Bytes& value) {
+  // This store's summary: the value's length, eight bytes big-endian. The merge class's is a
+  // digest of the content (FNV-1a 64), as Mimir's is: two merged states of one length differ,
+  // and a proposer fetching by ballot and summary must not take one for the other.
+  static agree::Bytes summary_of(const agree::Bytes& value, bool merging = false) {
+    uint64_t word = value.size();
+    if (merging) {
+      word = 0xcbf29ce484222325ull;
+      for (const auto byte : value) word = (word ^ byte) * 0x100000001b3ull;
+    }
     agree::Bytes out(8);
-    for (int i = 0; i < 8; ++i) out[static_cast<size_t>(i)] = static_cast<uint8_t>(static_cast<uint64_t>(value.size()) >> (56 - 8 * i));
+    for (int i = 0; i < 8; ++i) out[static_cast<size_t>(i)] = static_cast<uint8_t>(word >> (56 - 8 * i));
     return out;
   }
 
@@ -155,6 +210,7 @@ class Store final : public agree::AcceptorStore {
  private:
   bool _persist;
   bool _ready = true;
+  uint64_t _changes = 0;
   Layer _current;
   Layer _durable;
 };
@@ -225,6 +281,18 @@ class Cluster {
   bool recording = false;
   std::vector<Crossed> crossed;
 
+  // Told of every restart that lost its state, before the node starts again: a checker of
+  // the acceptors' state starts that acceptor afresh. A loss it is not told of (a lying sync)
+  // is one it must catch.
+  std::function<void(size_t)> on_wipe;
+
+  // A request from node `from` to node `to` through the world, as the runtime's own calls go:
+  // for a test's own proposer (a broken one).
+  void call(size_t from, size_t to, net::MessageType type, net::Bytes payload, std::chrono::milliseconds deadline,
+            std::function<void(std::optional<net::Bytes>, std::string)> done) {
+    send(from, to, type, std::move(payload), deadline, std::move(done));
+  }
+
   // Messages from `from` to `to` are lost until unblocked: a one-way partition.
   void block(size_t from, size_t to) { _blocked.insert({from, to}); }
   void unblock_all() { _blocked.clear(); }
@@ -238,7 +306,10 @@ class Cluster {
   // lost its state must not vote until caught up: `ready` says whether it does anyway
   // (the broken protocol a checker must catch).
   void restart(size_t i, bool wiped = false, bool ready = true) {
-    if (wiped) _nodes.at(i)->store->wipe();
+    if (wiped) {
+      _nodes.at(i)->store->wipe();
+      if (on_wipe) on_wipe(i);
+    }
     _nodes.at(i)->store->set_ready(ready);
     start(i);
   }

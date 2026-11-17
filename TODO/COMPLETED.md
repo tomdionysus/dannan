@@ -3,6 +3,39 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
+## The harness, step 3 part 2: agreement's invariants and the broken protocols, 2026-11-17 (`feature/sim-invariants`)
+
+- `fixtures/sim/invariants.h` (header-only) checks every acceptor's state after every world step (`World::observer`):
+  - one value per ballot for a name;
+  - a chosen value (a majority of the set the acceptors record) advanced into every value accepted above it, by the
+    owner's order;
+  - `changed_at` ordered as the chosen ballots are;
+  - no promise or accept below a promise held.
+  A wipe is reported through `Cluster::on_wipe` and starts that acceptor afresh; a loss nobody reports is caught.
+  `changed_at` is checked only between chosen ballots: one acceptor's token legitimately goes back when a strict read
+  overwrites an unchosen accept.
+- The counter simulations (faults, catch-up, one-node genesis grown to five) now run under the invariants, with no
+  breach on any fixed seed.
+- Every broken protocol in the design is refused, each with its seed printed (`[ refused  ]`):
+  - an acceptor voting after losing its state;
+  - a proposer skipping prepare;
+  - an acceptor accepting below its promise (invariant 4, on the step);
+  - a reducer rolling the base back;
+  - a trusted lying sync;
+  - two rosters naming different sets (no proof rule; the laggard rule lets the acceptors promise);
+  - a merge-class reducer dropping a `replicated` merge write.
+  The rogue proposers are built in the test on the real wire to the real acceptors. Agreement itself is unchanged.
+- Mimir's merge class, positive case: with the union of every promiser's state, every command sees every merge write
+  acknowledged before it began (Mimir's ruling 16), 300 seeds clean. The sim store needed a content digest as its
+  merge-class summary: with only the length as the summary, a fetch by ballot and summary took one merged state for
+  another of the same size. The fault was the fixture's, not agreement's.
+- Seen, not pinned: one `change()` under 1-in-10 loss can fail to commit within 5 s of simulated time (the merge
+  run's first write, seed 1, "not committed within the deadline"). `LargeValuesAndDeltasStayConsistentUnderFaults`
+  already retries its first write for the same reason. Suspected: an attempt waits out a lost answer to the end of
+  the call's deadline instead of retrying sooner. It is not a safety question; it is worth a look in step 3's later
+  parts.
+- 13 new tests (6 `Invariants.*`, 7 `Simulation.*`). Gate: node-b, 847 tests, 846 passed, 1 skipped (as root).
+
 ## Agreement completed, and the harness's history and checker, 2026-11-16 (develop)
 
 The step-by-step notes, with every review and finding, are in `ACTIVE.md` as it stood at `2ed2653`; this is the
