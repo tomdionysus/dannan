@@ -58,7 +58,8 @@ current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluat
 - **Step 3, part 4, in progress.** Piece 2a (the loops on a schedule) is merged at `ae66bf7`:
   its branch's CI run 44081889012 was green on every job, TSan and abi included; macOS gate
   at `8118100`, 863 tests, 861 passed, 2 skipped (Linux-only). Piece 2b (whole nodes in the
-  world, `fixtures/sim/nodes.h`) is done on `feature/sim-transport` (`COMPLETED.md`).
+  world, `fixtures/sim/nodes.h`) is merged (`COMPLETED.md`); macOS gate at `cf0c43d`: 868 tests,
+  866 passed, 2 skipped (Linux-only).
   **Next in part 4**: agreement over real membership in the world, and "two rosters naming
   different sets" from real rosters.
 - **New for plan item 7**: multi-name changes in a slot go through the atomic commit too
