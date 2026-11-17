@@ -126,6 +126,10 @@ class Answer {
   explicit operator bool() const noexcept { return static_cast<bool>(_state); }
   void operator()(Message reply);
   void fail(uint16_t status, std::string_view code, std::string_view why);
+  // An answer that sends `reply` and holds no place and no bytes in a scheduler: for a
+  // transport that delivers requests to the handler itself (the simulation harness's). Given
+  // once; dropped ungiven, it refuses (500 "abandoned"), as any Answer does.
+  static Answer to(Reply reply);
 
  private:
   friend class RequestScheduler;
@@ -162,7 +166,11 @@ class RequestScheduler {
 
   // Queues `frame` from `peer`; `reply` is empty for a notification. Waits
   // on nothing.
-  void submit(membership::NodeRecord peer, Frame frame, Reply reply);
+  void submit(std::shared_ptr<const membership::NodeRecord> peer, Frame frame, Reply reply);
+  // The same with a record of its own, for a caller with no session's to share.
+  void submit(const membership::NodeRecord& peer, Frame frame, Reply reply) {
+    submit(std::make_shared<const membership::NodeRecord>(peer), std::move(frame), std::move(reply));
+  }
   // The peer promoted, or cancelled, a request still queued here.
   void promote(const identity::NodeId& peer, uint64_t request_id, sched::FrameType frame);
   void cancel(const identity::NodeId& peer, uint64_t request_id);
@@ -178,7 +186,8 @@ class RequestScheduler {
  private:
   enum class Queue { fast, control, ordered, foreground, read_ahead, loader, speculative };
   struct Job {
-    membership::NodeRecord peer;
+    // Its session's record, shared: a job never copies it (Dagda's profile).
+    std::shared_ptr<const membership::NodeRecord> peer;
     Frame frame;
     Reply reply;
     contract::TimePoint queued;

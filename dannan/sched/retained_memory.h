@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <vector>
 
@@ -67,8 +68,12 @@ struct RetainedMemoryStats {
 // borrow idle headroom only with a shed callback, which a higher class that
 // would otherwise wait calls before waiting.
 class RetainedMemoryLedger {
+  struct Anchor;
+
  public:
-  // Held bytes, released when the lease goes. Move-only.
+  // Held bytes, released when the lease goes. Move-only. A lease may outlive its ledger
+  // (a call completion still on a shared io context after its node is destroyed, Lir's
+  // TSan finding): its release then does nothing.
   class Lease {
    public:
     Lease() = default;
@@ -79,12 +84,12 @@ class RetainedMemoryLedger {
     ~Lease() { reset(); }
     void reset();
     uint64_t bytes() const noexcept { return _bytes; }
-    explicit operator bool() const noexcept { return _owner != nullptr; }
+    explicit operator bool() const noexcept { return _anchor != nullptr; }
 
    private:
     friend class RetainedMemoryLedger;
-    Lease(RetainedMemoryLedger& owner, uint64_t id, uint64_t bytes) : _owner(&owner), _id(id), _bytes(bytes) {}
-    RetainedMemoryLedger* _owner = nullptr;
+    Lease(std::shared_ptr<Anchor> anchor, uint64_t id, uint64_t bytes) : _anchor(std::move(anchor)), _id(id), _bytes(bytes) {}
+    std::shared_ptr<Anchor> _anchor;
     uint64_t _id = 0;
     uint64_t _bytes = 0;
   };
@@ -94,6 +99,9 @@ class RetainedMemoryLedger {
   // reassembly reserve.
   RetainedMemoryLedger(uint64_t capacity_bytes, uint64_t control_reserve_bytes, uint64_t foreground_reserve_bytes, uint64_t loader_reserve_bytes,
                        uint64_t reassembly_reserve_bytes);
+  // Leases still held go quiet: their release does nothing. Waits for a release in
+  // flight on another thread.
+  ~RetainedMemoryLedger();
   RetainedMemoryLedger(const RetainedMemoryLedger&) = delete;
   RetainedMemoryLedger& operator=(const RetainedMemoryLedger&) = delete;
   RetainedMemoryLedger(RetainedMemoryLedger&&) = delete;
@@ -126,6 +134,15 @@ class RetainedMemoryLedger {
     std::function<void()> shed;
   };
 
+  // What every lease holds in place of the ledger: the ledger while it lives, nothing
+  // after. A release holds it shared across the release; the ledger's end takes it
+  // exclusively. Lock order: the anchor's, then the ledger's _mutex.
+  struct Anchor {
+    explicit Anchor(RetainedMemoryLedger* owner) : ledger(owner) {}
+    contract::SharedMutex mutex;
+    RetainedMemoryLedger* ledger DANNAN_GUARDED_BY(mutex);
+  };
+
   static constexpr size_t index(WorkClass work) noexcept { return static_cast<size_t>(work); }
   bool available_locked(WorkClass, MemoryOwner, uint64_t bytes, bool reclaimable) const DANNAN_REQUIRES(_mutex);
   std::vector<std::function<void()>> request_shedding_locked(WorkClass incoming) DANNAN_REQUIRES(_mutex);
@@ -152,6 +169,7 @@ class RetainedMemoryLedger {
   uint64_t _shed_requests DANNAN_GUARDED_BY(_mutex) = 0;
   uint64_t _restored DANNAN_GUARDED_BY(_mutex) = 0;
   bool _stopping DANNAN_GUARDED_BY(_mutex) = false;
+  const std::shared_ptr<Anchor> _anchor = std::make_shared<Anchor>(this);
 };
 
 }  // namespace dannan::sched

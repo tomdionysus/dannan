@@ -14,10 +14,13 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/strand.hpp>
 #include <fstream>
 #include <future>
+#include <map>
+#include <mutex>
 #include <set>
 #include <thread>
 
@@ -90,12 +93,19 @@ struct Pair {
   identity::ClusterKey key = cluster_key(dir.path());
   std::unique_ptr<Node> a;
   std::unique_ptr<Node> b;
-  // `setup_a` runs before A starts: a hosted system registers its routes then.
-  explicit Pair(const std::function<void(NodeConfig&)>& tune_b = {}, const std::function<void(Node&)>& setup_a = {}) {
-    a = std::make_unique<Node>(io.context, config(dir.path() / "a", key));
+  // `setup_a` runs before A starts: a hosted system registers its routes then. With
+  // `genesis_on_a`, A alone is the agreement genesis set of both.
+  explicit Pair(const std::function<void(NodeConfig&)>& tune_b = {}, const std::function<void(Node&)>& setup_a = {}, bool genesis_on_a = false) {
+    auto a_config = config(dir.path() / "a", key);
+    if (genesis_on_a) {
+      // A's id is made with its state; a node built and dropped unstarted leaves it there.
+      a_config.agreement_genesis = {Node(io.context, a_config).context().identity().id()};
+    }
+    a = std::make_unique<Node>(io.context, a_config);
     if (setup_a) setup_a(*a);
     a->start();
     auto b_config = config(dir.path() / "b", key, {{"127.0.0.1", a->port()}});
+    b_config.agreement_genesis = a_config.agreement_genesis;
     if (tune_b) tune_b(b_config);
     b = std::make_unique<Node>(io.context, b_config);
   }
@@ -119,6 +129,179 @@ TEST(Node, TwoNodesFormOneCluster) {
     return std::any_of(all.begin(), all.end(), [&](const status::Telemetry& t) { return t.node_id() == b && t.text(status::field::version) == "0.1.0-test"; });
   }));
   EXPECT_TRUE(eventually([&] { return pair.b->context().nodes().latency(a).has_value(); }));
+}
+
+// A node with another agreement slot table (another count, or another genesis set) is refused
+// when it joins (the maintainer, 2026-11-16): the node it dials refuses the handshake and says why in its
+// journal, and neither node lists the other. A matching node joins (TwoNodesFormOneCluster).
+TEST(Node, ANodeWithAnotherSlotTableIsRefusedAtJoin) {
+  const std::vector<std::function<void(NodeConfig&)>> others = {
+      [](NodeConfig& config) { config.agreement_slots = 512; },
+      [](NodeConfig& config) { config.agreement_genesis = {identity::NodeId::random()}; },
+  };
+  for (const auto& other : others) {
+    Io io;
+    test::TempDir dir;
+    const auto key = cluster_key(dir.path());
+    auto log = std::make_shared<test::RecordingSink>();
+    auto a_config = config(dir.path() / "a", key);
+    a_config.log = log;
+    Node a(io.context, a_config);
+    a.start();
+    auto b_config = config(dir.path() / "b", key, {{"127.0.0.1", a.port()}});
+    other(b_config);
+    Node b(io.context, b_config);
+    b.start();
+    // B's dial is refused by A, which says why; B sees only the session end.
+    const auto refused = b.context().routes().call_and_wait(net::Endpoint{"127.0.0.1", a.port()}, net::message::telemetry, {}, sched::FrameType::control, 5s);
+    EXPECT_FALSE(refused.reply);
+    EXPECT_TRUE(eventually([&] { return log->count(status::LogLevel::debug, "slot table") > 0; }));
+    EXPECT_FALSE(knows(a, b.context().identity().id()));
+    EXPECT_FALSE(knows(b, a.context().identity().id()));
+    b.stop();
+    a.stop();
+  }
+}
+
+// Lir's TSan report against 0.8.3 (run 43773090610): nodes joining while adverts change and
+// dials run, in one process on one io_context of four threads. A dial's handshake carries a
+// copy of its node's record and the server observes the peer's; neither may share anything
+// with the other or with the roster. Every join completes, and under TSan nothing races.
+TEST(Node, NodesJoinWhileAdvertsChangeAndNothingIsShared) {
+  Io io;
+  test::TempDir dir;
+  const auto key = cluster_key(dir.path());
+  Node a(io.context, config(dir.path() / "a", key));
+  a.start();
+  std::atomic<bool> churning{true};
+  // The node joining this round, held under the mutex while the churn uses it.
+  std::mutex joining_mutex;
+  Node* joining = nullptr;
+  // Adverts change on both sides throughout, as a hosted system's subscriptions do.
+  std::thread churn([&] {
+    for (uint64_t i = 0; churning; ++i) {
+      const auto name = "interest/" + std::to_string(i % 7);
+      const net::Bytes value(1 + i % 13, static_cast<uint8_t>(i));
+      a.context().nodes().advertise(name, value);
+      if (i % 3 == 0) a.context().nodes().withdraw(name);
+      std::lock_guard lock(joining_mutex);
+      if (!joining) continue;
+      joining->context().nodes().advertise(name, value);
+      if (i % 3 == 0) joining->context().nodes().withdraw(name);
+      std::this_thread::yield();
+    }
+  });
+  for (int round = 0; round < 12; ++round) {
+    auto b = std::make_unique<Node>(io.context, config(dir.path() / ("b" + std::to_string(round)), key, {{"127.0.0.1", a.port()}}));
+    b->start();
+    {
+      std::lock_guard lock(joining_mutex);
+      joining = b.get();
+    }
+    const auto id = b->context().identity().id();
+    EXPECT_TRUE(eventually([&] { return knows(a, id) && knows(*b, a.context().identity().id()); })) << "round " << round;
+    {
+      std::lock_guard lock(joining_mutex);
+      joining = nullptr;
+    }
+    b->stop();
+  }
+  churning = false;
+  churn.join();
+  a.stop();
+}
+
+// Two nodes whose gossip is slow (a 30 s heartbeat), so only a push carries an advert
+// within a test: B bootstraps from A, and each learns the other in the handshake.
+struct SlowGossip {
+  Io io;
+  test::TempDir dir;
+  identity::ClusterKey key = cluster_key(dir.path());
+  std::unique_ptr<Node> a;
+  std::unique_ptr<Node> b;
+  SlowGossip() {
+    auto a_config = config(dir.path() / "a", key);
+    a_config.heartbeat = 30s;
+    a_config.dead_after = 90s;
+    a = std::make_unique<Node>(io.context, a_config);
+    a->start();
+    auto b_config = config(dir.path() / "b", key, {{"127.0.0.1", a->port()}});
+    b_config.heartbeat = 30s;
+    b_config.dead_after = 90s;
+    b = std::make_unique<Node>(io.context, b_config);
+    b->start();
+  }
+  ~SlowGossip() {
+    if (b) b->stop();
+    if (a) a->stop();
+  }
+  // `of`'s advert `key` as `at` holds it.
+  static std::optional<net::Bytes> advert_at(Node& at, const identity::NodeId& of, const std::string& key) {
+    for (const auto& record : at.context().nodes().active())
+      if (record.id == of)
+        if (const auto value = record.advert(key)) return net::Bytes(value->begin(), value->end());
+    return std::nullopt;
+  }
+};
+
+membership::Pushed pushed_now(const std::function<void(std::function<void(membership::Pushed)>)>& start) {
+  auto told = std::make_shared<std::promise<membership::Pushed>>();
+  start([told](membership::Pushed pushed) { told->set_value(std::move(pushed)); });
+  auto future = told->get_future();
+  if (future.wait_for(30s) != std::future_status::ready) return {};
+  return future.get();
+}
+
+// Nodes::advertise with a deadline (the maintainer, 2026-11-16, for Lir): the changed record goes to
+// every active peer at once and each merges it before answering, so when `done` says a
+// peer holds it, it does; a withdrawal the same; a peer that is gone is named as missed.
+TEST(Node, APushedAdvertIsHeldByEveryPeerBeforeItIsDone) {
+  SlowGossip cluster;
+  const auto a = cluster.a->context().identity().id();
+  const auto b = cluster.b->context().identity().id();
+  ASSERT_TRUE(eventually([&] { return knows(*cluster.a, b) && knows(*cluster.b, a); }));
+  const net::Bytes value{1, 2, 3};
+  const auto set = pushed_now([&](auto done) { cluster.a->context().nodes().advertise("lir.interest", value, 5s, cluster.io.context.get_executor(), done); });
+  EXPECT_EQ(set.held, std::vector<identity::NodeId>{b});
+  EXPECT_TRUE(set.missed.empty());
+  EXPECT_EQ(SlowGossip::advert_at(*cluster.b, a, "lir.interest"), value);
+
+  const auto cleared =
+      pushed_now([&](auto done) { cluster.a->context().nodes().advertise("lir.interest", std::nullopt, 5s, cluster.io.context.get_executor(), done); });
+  EXPECT_EQ(cleared.held, std::vector<identity::NodeId>{b});
+  EXPECT_FALSE(SlowGossip::advert_at(*cluster.b, a, "lir.interest"));
+
+  cluster.b->stop();
+  const auto gone = pushed_now([&](auto done) { cluster.a->context().nodes().advertise("lir.interest", value, 2s, cluster.io.context.get_executor(), done); });
+  EXPECT_TRUE(gone.held.empty());
+  ASSERT_EQ(gone.missed.size(), 1u);
+  EXPECT_EQ(gone.missed[0].first, b);
+  EXPECT_FALSE(gone.missed[0].second.empty());
+}
+
+// Lir's window (2026-11-16): a subscription's interest travelled at the heartbeat's pace, so
+// a publish just after a SUBACK went nowhere. Subscribed with a deadline, the interest is
+// held by the publisher before `done`, and the very next publish reaches the subscriber.
+TEST(Node, ASubscriptionHeldBeforeItsDoneGetsTheNextPublish) {
+  SlowGossip cluster;
+  const auto a = cluster.a->context().identity().id();
+  const auto b = cluster.b->context().identity().id();
+  ASSERT_TRUE(eventually([&] { return knows(*cluster.a, b) && knows(*cluster.b, a); }));
+  cluster.a->context().channels().open("events", net::Delivery::stream);
+  cluster.b->context().channels().open("events", net::Delivery::stream);
+  auto received = std::make_shared<std::promise<std::string>>();
+  const auto subscribed = pushed_now([&](auto done) {
+    (void)cluster.b->context().channels().subscribe(
+        "events", "sensors/", cluster.io.context.get_executor(),
+        [received](const net::ChannelMessage& message) { received->set_value(std::string(message.payload.begin(), message.payload.end())); }, 5s,
+        cluster.io.context.get_executor(), done);
+  });
+  EXPECT_EQ(subscribed.held, std::vector<identity::NodeId>{a});
+  const auto published = cluster.a->context().channels().publish("events", "sensors/1", net::Bytes{'h', 'i'});
+  EXPECT_NE(std::find(published.to.begin(), published.to.end(), b), published.to.end());
+  auto message = received->get_future();
+  ASSERT_EQ(message.wait_for(10s), std::future_status::ready);
+  EXPECT_EQ(message.get(), "hi");
 }
 
 // A node stopped while its io ran may be destroyed after the io has stopped (Louhi,
@@ -1340,7 +1523,8 @@ TEST(Node, RoutesBindAndUnbindWhileRunning) {
   EXPECT_EQ(done->get_future().get().reply->payload, net::Bytes{2});
   outcome = pair.b->context().routes().call_and_wait(a, echo_type, {3}, FrameType::control, 5s);
   EXPECT_EQ(net::refusal_of(*outcome.reply)->status, 501);
-  EXPECT_EQ(outcome.peer.id, a.id);
+  ASSERT_TRUE(outcome.peer);
+  EXPECT_EQ(outcome.peer->id, a.id);
 }
 
 // A hosted system's adverts ride in its record: set through the Context,
@@ -1867,6 +2051,54 @@ TEST(Node, TheOthersCarryOnWithoutTheSeed) {
   b.stop();
 }
 
+// The node's hybrid clock (the HLC design): on the Context, its ceiling in a durable file when the
+// node has no key custody, its counts on Diagnostics, and every stamp after a restart later than
+// every stamp before, the wall set back between.
+TEST(Node, ItsHybridClockIssuesLaterStampsAfterARestartWithTheWallSetBack) {
+  test::TempDir dir;
+  const auto key = cluster_key(dir.path());
+  test::SteppedWall wall(1'790'000'000'000);
+  contract::HlcStamp before;
+  {
+    Io io;
+    auto settings = config(dir.path() / "a", key);
+    settings.wall = &wall;
+    Node node(io.context, settings);
+    for (int i = 0; i < 100; ++i) before = node.context().hlc().now();
+    const auto far = node.context().hlc().receive(contract::HlcStamp::of(wall.unix_ms() + 120'000, 0), "far peer");
+    EXPECT_FALSE(far.merged);
+    EXPECT_EQ(node.context().diagnostics().hlc.not_merged, 1u);
+    EXPECT_EQ(node.context().diagnostics().hlc.peers.count("far peer"), 1u);
+    EXPECT_TRUE(std::filesystem::exists(dir.path() / "a" / "clock" / "hlc-ceiling"));
+  }
+  wall.advance(-60s);
+  Io io;
+  auto settings = config(dir.path() / "a", key);
+  settings.wall = &wall;
+  Node node(io.context, settings);
+  EXPECT_GT(node.context().hlc().now(), before);
+}
+
+// With key custody the ceiling is a sealed counter, "dannan/hlc", and no plain file is written.
+TEST(Node, ItsHybridClocksCeilingIsASealedCounterWithCustody) {
+  Io io;
+  test::TempDir dir;
+  const auto key = cluster_key(dir.path());
+  const auto source = identity::KeySource::typed_passphrase(
+      [] {
+        const std::string p = "node passphrase";
+        return identity::Secret(std::span(reinterpret_cast<const uint8_t*>(p.data()), p.size()));
+      },
+      identity::Argon2Costs{1024, 1, 1});
+  (void)identity::KeyCustody::create(dir.path() / "a", source);
+  auto with = config(dir.path() / "a", key);
+  with.custody = source;
+  Node node(io.context, with);
+  const auto stamp = node.context().hlc().now();
+  EXPECT_GT(node.context().identity().counter("dannan/hlc"), stamp.unix_ms());
+  EXPECT_FALSE(std::filesystem::exists(dir.path() / "a" / "clock" / "hlc-ceiling"));
+}
+
 // The loop re-probes on its cadence, and a capability it resolves reaches a
 // peer by gossip.
 TEST(Node, AnAutomaticNodeReprobesAndItsCapabilityReachesAPeer) {
@@ -2100,6 +2332,199 @@ TEST(Node, ARestartOnASharedIoContextLeavesNothingBehind) {
     flood.join();
   }
   b.stop();
+}
+
+// An acceptor store as a hosted system would keep one in memory.
+class MemoryStore final : public agree::AcceptorStore {
+ public:
+  void load(agree::Slot slot, std::span<const agree::Name> names, bool every, bool values, std::function<void(agree::Held)> done) override {
+    agree::Held out;
+    {
+      std::lock_guard lock(_mutex);
+      out.slot = _slots[slot];
+      out.floor = _floor;
+      for (const auto& name : names) {
+        out.names.push_back(name);
+        out.states.push_back(_held[{slot, std::string(name.begin(), name.end())}]);
+      }
+      if (every)
+        for (const auto& [key, state] : _held) {
+          const agree::Name name(key.second.begin(), key.second.end());
+          if (key.first != slot || std::find(names.begin(), names.end(), name) != names.end()) continue;
+          out.names.push_back(name);
+          out.states.push_back(state);
+        }
+    }
+    if (!values)
+      for (auto& state : out.states) state.value.reset();
+    done(std::move(out));
+  }
+  // Takes no deltas: every one is asked for whole, and nothing kept.
+  void keep(agree::Slot slot, const agree::Held& held, std::function<void(Kept)> done) override {
+    Kept out;
+    for (size_t i = 0; i < held.states.size(); ++i)
+      if (held.states[i].delta) out.need_whole.push_back(i);
+    if (!out.need_whole.empty()) return done(std::move(out));
+    {
+      std::lock_guard lock(_mutex);
+      _slots[slot] = held.slot;
+      _floor = held.floor;
+      for (size_t i = 0; i < held.names.size(); ++i) {
+        auto& kept = _held[{slot, std::string(held.names[i].begin(), held.names[i].end())}];
+        auto state = held.states[i];
+        // Held, not carried: the value stays as it is.
+        if (state.has_value && !state.value) state.value = kept.value;
+        kept = std::move(state);
+      }
+    }
+    out.kept = true;
+    done(std::move(out));
+  }
+  bool ready() const override { return true; }
+
+ private:
+  std::mutex _mutex;
+  // Keyed by the name's bytes as a string: GCC 14 at -O3 misreads a map of byte vectors.
+  std::map<std::pair<agree::Slot, std::string>, agree::AcceptorState> _held;
+  std::map<agree::Slot, agree::SlotState> _slots;
+  agree::Ballot _floor;
+};
+
+const agree::Slot k_slot = agree::slot_of(agree::Name{'k'}, agree::default_slots);
+
+agree::Outcome told_within(const std::function<void(std::function<void(agree::Outcome)>)>& start) {
+  auto told = std::make_shared<std::promise<agree::Outcome>>();
+  start([told](agree::Outcome outcome) { told->set_value(std::move(outcome)); });
+  auto future = told->get_future();
+  if (future.wait_for(30s) != std::future_status::ready) return {};
+  return future.get();
+}
+
+agree::Outcome agree_now(Node& node, const std::vector<identity::NodeId>& replicas, uint64_t version, agree::Change change, std::chrono::milliseconds deadline,
+                         Io& io) {
+  return told_within([&](std::function<void(agree::Outcome)> done) {
+    node.context().agreement().change("test", k_slot, {agree::Name{'k'}}, replicas, version, std::move(change), {}, deadline, io.context.get_executor(),
+                                      std::move(done));
+  });
+}
+
+// Agreement across the cluster (0.9.0): founded on A alone, the genesis, and grown to A and
+// B by a transfer; a change on both nodes' acceptors commits on both, and the other node's
+// strict read sees it; a node that does not advertise the space's capability is refused by
+// the others, so it cannot make a majority.
+TEST(Node, AgreementCommitsAcrossTheClusterAndRefusesANodeWithoutTheCapability) {
+  Pair pair({}, {}, true);
+  pair.b->start();
+  const auto a = pair.a->context().identity().id();
+  const auto b = pair.b->context().identity().id();
+  ASSERT_TRUE(eventually([&] { return knows(*pair.a, b) && knows(*pair.b, a); }));
+  pair.a->context().agreement().serve("test", "test", std::make_shared<MemoryStore>());
+  pair.b->context().agreement().serve("test", "test", std::make_shared<MemoryStore>());
+  pair.a->context().nodes().advertise("test", {});
+  pair.b->context().nodes().advertise("test", {});
+  const auto advertising = [](Node& node, const identity::NodeId& id) {
+    for (const auto& record : node.context().nodes().active())
+      if (record.id == id) return record.adverts.contains("test");
+    return false;
+  };
+  ASSERT_TRUE(eventually([&] { return advertising(*pair.a, b) && advertising(*pair.b, a); }));
+
+  const auto put = [](std::string value) {
+    return [value](std::span<const std::optional<agree::Bytes>> current) {
+      return agree::Changed{std::vector<std::optional<agree::Bytes>>(current.size(), agree::Bytes(value.begin(), value.end())), agree::Bytes{'o', 'k'}};
+    };
+  };
+  const auto founded = told_within([&](auto done) { pair.a->context().agreement().found("test", 10s, pair.io.context.get_executor(), std::move(done)); });
+  ASSERT_TRUE(founded.committed) << founded.why;
+  // Before the transfer, a set naming B is refused: the slot is A's.
+  const auto early = agree_now(*pair.a, {a, b}, 1, put("early"), 2s, pair.io);
+  EXPECT_FALSE(early.committed);
+  ASSERT_EQ(agree_now(*pair.a, {a}, 0, put("founded"), 10s, pair.io).committed, true);
+  const auto grown = told_within(
+      [&](auto done) { pair.a->context().agreement().transfer("test", k_slot, {a}, 0, {a, b}, 1, 10s, pair.io.context.get_executor(), std::move(done)); });
+  ASSERT_TRUE(grown.committed) << grown.why;
+  EXPECT_EQ(grown.names, std::vector<agree::Name>{agree::Name{'k'}});
+
+  const auto written = agree_now(*pair.a, {a, b}, 1, put("agreed"), 10s, pair.io);
+  ASSERT_TRUE(written.committed) << written.why;
+  EXPECT_GE(written.accepted.size(), 2u);
+  EXPECT_EQ(written.result, (agree::Bytes{'o', 'k'}));
+
+  const auto read = told_within([&](auto done) {
+    pair.b->context().agreement().read("test", k_slot, {agree::Name{'k'}}, {a, b}, 1, {}, 10s, pair.io.context.get_executor(), std::move(done));
+  });
+  ASSERT_TRUE(read.committed) << read.why;
+  ASSERT_TRUE(read.values[0]);
+  EXPECT_EQ(std::string(read.values[0]->begin(), read.values[0]->end()), "agreed");
+  EXPECT_EQ(read.changed_at[0], written.changed_at[0]);
+
+  // B no longer advertises the capability: A refuses it, and alone it is no majority.
+  pair.b->context().nodes().withdraw("test");
+  ASSERT_TRUE(eventually([&] { return !advertising(*pair.a, b); }));
+  const auto refused = agree_now(*pair.b, {a, b}, 1, put("stranger"), 500ms, pair.io);
+  EXPECT_FALSE(refused.committed);
+  EXPECT_FALSE(refused.why.empty());
+}
+
+// A schedule the test runs by hand (NodeConfig::schedule): each task with the delay it was
+// booked for, run only when the test says.
+struct HandSchedule {
+  std::mutex mutex;
+  std::vector<std::pair<std::chrono::milliseconds, std::function<void()>>> tasks;
+  std::function<void(std::chrono::milliseconds, std::function<void()>)> hook() {
+    return [this](std::chrono::milliseconds after, std::function<void()> task) {
+      std::lock_guard lock(mutex);
+      tasks.emplace_back(after, std::move(task));
+    };
+  }
+  // Runs every task booked so far, not those they book; how many ran.
+  size_t run() {
+    std::vector<std::pair<std::chrono::milliseconds, std::function<void()>>> now;
+    {
+      std::lock_guard lock(mutex);
+      now.swap(tasks);
+    }
+    for (auto& [_, task] : now) task();
+    return now.size();
+  }
+  bool booked(std::chrono::milliseconds after) {
+    std::lock_guard lock(mutex);
+    return std::any_of(tasks.begin(), tasks.end(), [after](const auto& task) { return task.first == after; });
+  }
+};
+
+// The simulation's schedule (step 3 part 4, piece 2a): with one, the node starts no loop threads.
+// Its loops' first steps run at start, and each books its next through the schedule, the
+// membership pass a heartbeat after it ends; Time::after() books through it too, and fires
+// only when the schedule runs it. After a stop, what was booked does nothing.
+TEST(Node, WithAScheduleItsLoopsAndTimersRunWhenTheScheduleRunsThem) {
+  Io io;
+  test::TempDir dir;
+  const auto key = cluster_key(dir.path());
+  Node a(io.context, config(dir.path() / "a", key));
+  a.start();
+  HandSchedule schedule;
+  auto b_config = config(dir.path() / "b", key, {{"127.0.0.1", a.port()}});
+  b_config.schedule = schedule.hook();
+  Node b(io.context, b_config);
+  b.start();
+  // The first membership pass ran at start: B learned A from its seed.
+  ASSERT_TRUE(eventually([&] { return knows(b, a.context().identity().id()); }));
+  ASSERT_TRUE(eventually([&] { return schedule.booked(b_config.heartbeat); }));
+  // A timer through the context is the schedule's.
+  std::atomic<bool> fired{false};
+  b.context().time().after(1234ms, [&] { fired = true; });
+  ASSERT_TRUE(schedule.booked(1234ms));
+  EXPECT_FALSE(fired.load());
+  EXPECT_GT(schedule.run(), 0u);
+  EXPECT_TRUE(eventually([&] { return fired.load(); }));
+  // A pass run again by the schedule exchanges again, and books its next.
+  ASSERT_TRUE(eventually([&] { return schedule.booked(b_config.heartbeat); }));
+  b.stop();
+  // Booked before the stop, run after it: nothing happens and nothing more is booked.
+  (void)schedule.run();
+  EXPECT_FALSE(schedule.booked(b_config.heartbeat));
+  a.stop();
 }
 
 }  // namespace

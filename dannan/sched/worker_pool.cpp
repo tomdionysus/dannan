@@ -88,13 +88,17 @@ WorkerPool::WorkerPool(WorkerPoolConfig config, ClassGates& gates, supervise::Su
       _time(time),
       _thread_cpu(thread_cpu ? std::move(thread_cpu) : ThreadCpu(thread_cpu_seconds)) {}
 
-WorkerPool::~WorkerPool() { stop(); }
+WorkerPool::~WorkerPool() {
+  stop();
+  _alive->store(false);
+}
 
 void WorkerPool::start() {
   {
     contract::Lock lock(_mutex);
     if (_started || _stopping) return;
     _started = true;
+    if (_config.schedule) return book(std::chrono::milliseconds(0));
   }
   for (size_t i = 0; i < _config.threads; ++i) {
     const auto name = _config.name + "-" + std::to_string(i);
@@ -145,6 +149,10 @@ WorkerPool::Submitted WorkerPool::submit(const WorkContext& context, Task task, 
     ++stats.accepted;
     ++stats.queued;
     _gates.note(context.work(), +1);
+    if (_config.schedule) {
+      if (_started) book(std::chrono::milliseconds(0));
+      return {true, Refused::none};
+    }
   }
   _wake.notify_one();
   return {true, Refused::none};
@@ -245,46 +253,89 @@ void WorkerPool::work(std::stop_token stop) {
       if (_stopping || stop.stop_requested()) return;
       continue;
     }
-    const auto which = class_at(index);
-    ClassGate* gate = background(which) ? &_gates.gate(which) : nullptr;
-    if (gate) gate->started();
-    std::string fault;
-    bool faulted = false;
-    const double cpu_before = _thread_cpu();
-    {
-      Turn turn(job->context, gate, _time);
-      try {
-        job->task(turn);
-      } catch (const std::exception& error) {
-        faulted = true;
-        fault = error.what();
-      } catch (...) {
-        faulted = true;
-        fault = "unknown exception";
-      }
-    }
-    std::chrono::milliseconds rested{0};
-    if (gate) {
-      gate->finished();
-      rested = gate->charge_and_rest(std::max(0.0, _thread_cpu() - cpu_before));
-    }
-    {
-      contract::Lock lock(_mutex);
-      auto& stats = _stats[index];
-      --stats.running;
-      --_running;
-      ++(faulted ? stats.faulted : stats.ran);
-      stats.rested += rested;
-      gone(index);
-    }
-    // A class's end can free a worker, a cap or a burst for any waiting class. A
-    // background class skipped because this worker held its burst (rest zero, so no
-    // wake time) does not hang on this: this worker picks again before it sleeps, and
-    // either takes it or sets the wake for the rest its burst earned. The rest of the
-    // waiters may be anywhere, so all are woken.
-    _wake.notify_all();
-    tell(*job, faulted ? End::faulted : End::ran, std::move(fault));
+    run(*job, index);
   }
+}
+
+void WorkerPool::run(Pending& job, size_t index) {
+  const auto which = class_at(index);
+  ClassGate* gate = background(which) ? &_gates.gate(which) : nullptr;
+  if (gate) gate->started();
+  std::string fault;
+  bool faulted = false;
+  const double cpu_before = _thread_cpu();
+  {
+    Turn turn(job.context, gate, _time);
+    try {
+      job.task(turn);
+    } catch (const std::exception& error) {
+      faulted = true;
+      fault = error.what();
+    } catch (...) {
+      faulted = true;
+      fault = "unknown exception";
+    }
+  }
+  std::chrono::milliseconds rested{0};
+  if (gate) {
+    gate->finished();
+    rested = gate->charge_and_rest(std::max(0.0, _thread_cpu() - cpu_before));
+  }
+  {
+    contract::Lock lock(_mutex);
+    auto& stats = _stats[index];
+    --stats.running;
+    --_running;
+    ++(faulted ? stats.faulted : stats.ran);
+    stats.rested += rested;
+    gone(index);
+  }
+  // A class's end can free a worker, a cap or a burst for any waiting class. A
+  // background class skipped because this worker held its burst (rest zero, so no
+  // wake time) does not hang on this: this worker picks again before it sleeps, and
+  // either takes it or sets the wake for the rest its burst earned. The rest of the
+  // waiters may be anywhere, so all are woken.
+  _wake.notify_all();
+  tell(job, faulted ? End::faulted : End::ran, std::move(fault));
+}
+
+void WorkerPool::book(std::chrono::milliseconds after) {
+  if (_booked || _stopping) return;
+  _booked = true;
+  _config.schedule(after, [this, alive = _alive] {
+    if (alive->load()) step();
+  });
+}
+
+void WorkerPool::step() {
+  std::optional<Pending> job;
+  size_t index = 0;
+  std::vector<std::pair<Pending, End>> ended;
+  {
+    contract::Lock lock(_mutex);
+    _booked = false;
+    if (_stopping) return;
+    const auto now = _time->now();
+    sweep(now, ended);
+    contract::TimePoint wake{};
+    if (const auto picked = pick(now, wake); picked.found) {
+      index = picked.index;
+      job = std::move(_queues[index].front());
+      _queues[index].pop_front();
+      --_stats[index].queued;
+      ++_stats[index].running;
+      ++_running;
+    } else if (wake != contract::TimePoint{}) {
+      // A rest holds the waiting class back until it ends.
+      book(std::max(std::chrono::ceil<std::chrono::milliseconds>(wake - now), std::chrono::milliseconds(1)));
+    }
+  }
+  for (auto& [pending, how] : ended) tell(pending, how);
+  if (!job) return;
+  run(*job, index);
+  contract::Lock lock(_mutex);
+  for (const auto& queue : _queues)
+    if (!queue.empty()) return book(std::chrono::milliseconds(0));
 }
 
 }  // namespace dannan::sched

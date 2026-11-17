@@ -7,11 +7,6 @@
 
 #include "dannan/identity/node_identity.h"
 
-#include <fcntl.h>
-#include <sys/file.h>
-#include <unistd.h>
-
-#include <cerrno>
 #include <cstring>
 #include <fstream>
 #include <stdexcept>
@@ -21,24 +16,20 @@
 
 namespace dannan::identity {
 
-StateLock::StateLock(const std::filesystem::path& root, std::string_view name) {
-  std::filesystem::create_directories(root);
+StateLock::StateLock(const std::filesystem::path& root, std::string_view name, storage::FileSystem& fs) {
+  // As create_directories made them: the process's umask decides.
+  if (const auto made = fs.make_directories(root, 0777); !made) throw storage::StorageError(made.error());
   const auto path = root / std::string(name);
-  _fd = ::open(path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
-  if (_fd < 0) throw std::runtime_error("cannot open the state lock " + path.string() + ": " + std::strerror(errno));
-  if (::flock(_fd, LOCK_EX | LOCK_NB) != 0) {
-    const std::string why = std::strerror(errno);
-    ::close(_fd);
-    _fd = -1;
-    throw std::runtime_error("the state path " + root.string() + " is already in use: " + why);
+  auto locked = fs.lock(path);
+  if (!locked) {
+    const auto& error = locked.error();
+    if (error.operation == "open lock") throw std::runtime_error("cannot open the state lock " + path.string() + ": " + std::strerror(error.code));
+    throw std::runtime_error("the state path " + root.string() + " is already in use: " + std::strerror(error.code));
   }
+  _lock = std::move(locked).value();
 }
 
-StateLock::~StateLock() {
-  if (_fd < 0) return;
-  (void)::flock(_fd, LOCK_UN);
-  ::close(_fd);
-}
+StateLock::~StateLock() = default;
 
 NodeId load_or_create_node_id(const std::filesystem::path& state) {
   std::filesystem::create_directories(state);
@@ -56,7 +47,7 @@ NodeId load_or_create_node_id(const std::filesystem::path& state) {
   return id;
 }
 
-NodeIdentity::NodeIdentity(const std::filesystem::path& state, ClusterKey cluster_key)
-    : key(std::move(cluster_key)), id(load_or_create_node_id(state)), durability_epoch(NodeId::random()) {}
+NodeIdentity::NodeIdentity(const std::filesystem::path& state, ClusterKey cluster_key, std::optional<NodeId> epoch)
+    : key(std::move(cluster_key)), id(load_or_create_node_id(state)), durability_epoch(epoch ? *epoch : NodeId::random()) {}
 
 }  // namespace dannan::identity

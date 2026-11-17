@@ -8,25 +8,29 @@
 #pragma once
 
 #include <filesystem>
+#include <memory>
+#include <optional>
 #include <string_view>
 
 #include "dannan/identity/cluster_key.h"
 #include "dannan/identity/node_id.h"
+#include "dannan/storage/file_system.h"
 
 namespace dannan::identity {
 
 // An exclusive lock on a state path, held for the process's life: taken
 // before any state file is read, so two processes never share one. Throws
-// std::runtime_error if the path is already in use.
+// std::runtime_error if the path is already in use. Taken through `fs` (the simulated disk in the
+// harness).
 class StateLock {
  public:
-  explicit StateLock(const std::filesystem::path& root, std::string_view name = ".dannan.lock");
+  explicit StateLock(const std::filesystem::path& root, std::string_view name = ".dannan.lock", storage::FileSystem& fs = storage::posix_file_system());
   ~StateLock();
   StateLock(const StateLock&) = delete;
   StateLock& operator=(const StateLock&) = delete;
 
  private:
-  int _fd = -1;
+  std::unique_ptr<storage::Lock> _lock;
 };
 
 // The node's durable id, from `state`/node-id (thirty-two hex digits),
@@ -38,7 +42,8 @@ NodeId load_or_create_node_id(const std::filesystem::path& state);
 // durability epoch, fresh on every start, so peers can tell a restart from
 // a reconnect. Built while the state lock is held; read-only afterwards.
 struct NodeIdentity {
-  NodeIdentity(const std::filesystem::path& state, ClusterKey key);
+  // `epoch`: the durability epoch; none, a fresh random one.
+  NodeIdentity(const std::filesystem::path& state, ClusterKey key, std::optional<NodeId> epoch = {});
 
   ClusterKey key;
   NodeId id;

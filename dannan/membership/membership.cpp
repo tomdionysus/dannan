@@ -136,7 +136,9 @@ void Membership::write(const Encoded& roster) { _file.write(roster.sequence, ros
 NodeRecord Membership::self() const {
   contract::Lock lock(_mutex);
   auto out = _self;
-  out.seen_unix_ms = _wall->unix_ms();
+  // Never behind its own last change: an advert set within this millisecond keeps the
+  // stamp it was given, so the record carrying it reads as newer.
+  out.seen_unix_ms = std::max(_wall->unix_ms(), _self.seen_unix_ms);
   return out;
 }
 
@@ -190,14 +192,16 @@ bool Membership::set_advert(const std::string& key, net::Bytes value) {
   if (found != _self.adverts.end() && found->second == value) return false;
   if (found == _self.adverts.end() && _self.adverts.size() >= max_adverts) throw std::invalid_argument("a node advertises at most 64 things");
   _self.adverts[key] = std::move(value);
-  _self.seen_unix_ms = _wall->unix_ms();
+  // Strictly newer than the record before it, even within one millisecond: a peer keeps
+  // only a newer stamp, so an advert pushed at once must not tie the last.
+  _self.seen_unix_ms = std::max(_wall->unix_ms(), _self.seen_unix_ms + 1);
   return true;
 }
 
 bool Membership::clear_advert(const std::string& key) {
   contract::Lock lock(_mutex);
   if (!_self.adverts.erase(key)) return false;
-  _self.seen_unix_ms = _wall->unix_ms();
+  _self.seen_unix_ms = std::max(_wall->unix_ms(), _self.seen_unix_ms + 1);
   return true;
 }
 
@@ -313,7 +317,7 @@ std::vector<IdentityReset> Membership::identity_resets() const {
 
 std::vector<NodeRecord> Membership::all_locked() const {
   std::vector<NodeRecord> out{_self};
-  out[0].seen_unix_ms = _wall->unix_ms();
+  out[0].seen_unix_ms = std::max(_wall->unix_ms(), _self.seen_unix_ms);
   for (const auto& [_, known] : _nodes) out.push_back(known.record);
   return out;
 }
@@ -321,7 +325,7 @@ std::vector<NodeRecord> Membership::all_locked() const {
 std::vector<NodeRecord> Membership::active_locked() const {
   const auto now = _time->now();
   std::vector<NodeRecord> out{_self};
-  out[0].seen_unix_ms = _wall->unix_ms();
+  out[0].seen_unix_ms = std::max(_wall->unix_ms(), _self.seen_unix_ms);
   for (const auto& [_, known] : _nodes)
     if (now - known.seen <= _dead_after) out.push_back(known.record);
   return out;

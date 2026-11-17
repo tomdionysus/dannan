@@ -19,6 +19,8 @@
 #include <string>
 #include <vector>
 
+#include "dannan/agree/agreement.h"
+#include "dannan/contract/hlc.h"
 #include "dannan/contract/scope.h"
 #include "dannan/contract/time_source.h"
 #include "dannan/identity/key_custody.h"
@@ -155,6 +157,14 @@ class Nodes {
   // an empty key or one over 256 bytes, a value over 1 KiB, or a 65th.
   virtual void advertise(const std::string& key, net::Bytes value) = 0;
   virtual void withdraw(const std::string& key) = 0;
+  // Sets `key` to `value`, or withdraws it (none), then sends this node's record straight
+  // to every active peer rather than at the heartbeat's pace; each merges it before it
+  // answers (the maintainer, 2026-11-16, for Lir). `done` is posted to `executor` once every peer
+  // answered or `deadline` passed: which peers hold the record as pushed or newer, which
+  // did not and why. A peer that connects later has it from the handshake. Waits on
+  // nothing. Throws as advertise() does.
+  virtual void advertise(const std::string& key, std::optional<net::Bytes> value, std::chrono::milliseconds deadline, boost::asio::any_io_executor executor,
+                         std::function<void(membership::Pushed)> done) = 0;
 
   // Which side of a split this node is on (P2; the maintainer, 2026-11-13), read against
   // the roster as last agreed: a majority only with more than half of it
@@ -243,6 +253,12 @@ class Channels {
   // Deliveries to `handler` are posted to `executor`, in order per origin
   // when it is a strand. Throws std::invalid_argument for a channel not open.
   virtual uint64_t subscribe(const std::string& channel, std::string prefix, boost::asio::any_io_executor executor, net::ChannelHandler handler) = 0;
+  // The same, and the channel's interest, this prefix included, is pushed to every active
+  // peer at once (Nodes::advertise with a deadline): `done` is posted to `done_executor`
+  // with which peers hold it, so a publish made after it reaches this subscriber. Hold an
+  // acknowledgement on it (Lir's SUBACK, the maintainer, 2026-11-16).
+  virtual uint64_t subscribe(const std::string& channel, std::string prefix, boost::asio::any_io_executor executor, net::ChannelHandler handler,
+                             std::chrono::milliseconds deadline, boost::asio::any_io_executor done_executor, std::function<void(membership::Pushed)> done) = 0;
   virtual void unsubscribe(uint64_t id) = 0;
   // notify and stream: sent now, never waiting; where it went is the
   // evidence. A destination with no route yet is reported, and a route is
@@ -288,6 +304,9 @@ struct Diagnostics {
   // Level 0: punches and relays tried and made, and the circuits through
   // this node with their bytes.
   reach::PathStats paths;
+  // The hybrid clock: stamps not merged, overflows, ceiling raises off the roster loop, and each
+  // peer's largest offsets.
+  contract::HlcStats hlc;
 };
 
 // Who this node is.
@@ -438,6 +457,14 @@ class Context {
   // The node's worker pool, on the gates, started with the node. A hosted system
   // may build a pool of its own beside it, on gates() and threads().
   virtual sched::WorkerPool& workers() = 0;
+  // Leaderless per-key agreement over the cluster (0.9.0, TODO/2026-11-15-agreement-
+  // design.md): a hosted system serves its space's acceptors from a store of its own
+  // and changes registers from any node. the maintainer, 2026-11-15: anything in the stack that
+  // can use agreement uses this, and builds no consensus of its own.
+  virtual agree::Agreement& agreement() = 0;
+  // The node's hybrid logical clock (0.9.0, TODO/2026-11-15-hlc-design.md): one per node, shared
+  // by every hosted system, its stamps never repeated across restarts.
+  virtual contract::HlcClock& hlc() = 0;
   virtual Diagnostics diagnostics() const = 0;
 };
 

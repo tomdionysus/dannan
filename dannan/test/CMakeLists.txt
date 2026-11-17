@@ -14,6 +14,8 @@ target_link_libraries(dannan_test_fixtures INTERFACE GTest::gtest Threads::Threa
 target_compile_definitions(dannan_test_fixtures INTERFACE DANNAN_TEST_TEMP_ROOT="${PROJECT_BINARY_DIR}/test-tmp")
 
 add_executable(dannan_tests
+  contract_hlc_test.cpp
+  agree_caspaxos_test.cpp
   contract_test.cpp
   custody_tool_test.cpp
   fixtures_test.cpp
@@ -52,6 +54,12 @@ add_executable(dannan_tests
   sched_walk_retry_test.cpp
   sched_work_test.cpp
   sched_worker_pool_test.cpp
+  sim_agreement_test.cpp
+  sim_checkers_test.cpp
+  sim_convergence_test.cpp
+  sim_isolation_test.cpp
+  sim_nodes_test.cpp
+  storage_file_system_test.cpp
   status_log_test.cpp
   status_observation_test.cpp
   status_process_test.cpp
@@ -66,7 +74,7 @@ add_executable(dannan_tests
   two_process_test.cpp
   version_test.cpp
 )
-target_link_libraries(dannan_tests PRIVATE dannan dannan_test_fixtures GTest::gtest_main dannan_warnings)
+target_link_libraries(dannan_tests PRIVATE dannan dannan_test_fixtures dannan_sim_checkers GTest::gtest_main dannan_warnings)
 # Every fuzz target, run by the smoke test.
 target_sources(dannan_tests PRIVATE $<TARGET_OBJECTS:dannan_fuzz_targets>)
 

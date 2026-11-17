@@ -11,6 +11,7 @@
 add_library(dannan SHARED
   config/config.cpp
   encoding/percent.cpp
+  contract/hlc.cpp
   contract/thread_safety.cpp
   identity/argon2.cpp
   identity/certificate.cpp
@@ -46,6 +47,9 @@ add_library(dannan SHARED
   reach/inbound.cpp
   reach/paths.cpp
   reach/upnp.cpp
+  agree/agreement.cpp
+  agree/caspaxos.cpp
+  agree/wire.cpp
   listen/certificates.cpp
   listen/connector.cpp
   listen/limits.cpp
@@ -67,6 +71,7 @@ add_library(dannan SHARED
   status/surface.cpp
   status/telemetry.cpp
   status/thread_cpu.cpp
+  storage/file_system.cpp
   supervise/startup.cpp
   supervise/supervised.cpp
   supervise/supervisor.cpp
@@ -94,8 +99,17 @@ add_library(dannan::dannan ALIAS dannan)
 # link dannan::dannan. Headers keep their tree, so "dannan/<subsystem>/x.h"
 # includes the same installed as in the tree; the test fixtures are shared
 # too, the tests and fuzz targets are not.
+# The simulation harness's checkers' search, compiled once (the harness design's "Packaging"),
+# built and installed whether or not the tests are, so a hosted system's tests link
+# dannan::sim_checkers with the installed header-only fixtures (dannan/test/fixtures/sim/), not a
+# copy (stack rule 3). Standard library only.
+add_library(dannan_sim_checkers STATIC test/fixtures/sim/linearizable.cpp test/fixtures/sim/serializable.cpp test/fixtures/sim/convergence.cpp)
+set_target_properties(dannan_sim_checkers PROPERTIES POSITION_INDEPENDENT_CODE ON EXPORT_NAME sim_checkers)
+target_include_directories(dannan_sim_checkers PUBLIC $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}> $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+target_link_libraries(dannan_sim_checkers PRIVATE $<BUILD_INTERFACE:dannan_warnings>)
+
 include(CMakePackageConfigHelpers)
-install(TARGETS dannan EXPORT dannanTargets LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR} ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+install(TARGETS dannan dannan_sim_checkers EXPORT dannanTargets LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR} ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/dannan FILES_MATCHING PATTERN "*.h"
         PATTERN "include" EXCLUDE PATTERN "fuzz" EXCLUDE PATTERN "test/plugins" EXCLUDE PATTERN "test/interop" EXCLUDE)

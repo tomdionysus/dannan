@@ -164,8 +164,10 @@ class TelemetryStore {
   // `persisted_path` empty: nothing persisted. A persisted file that cannot
   // be read is ignored: telemetry is observational, never a reason not to
   // start.
+  // `boot`: this start's boot id; none, a fresh random one.
   TelemetryStore(identity::NodeId self, std::filesystem::path persisted_path = {}, const contract::TimeSource* time = &contract::steady_time_source(),
-                 const contract::WallClock* wall = &contract::system_wall_clock(), std::vector<uint16_t> layout = {});
+                 const contract::WallClock* wall = &contract::system_wall_clock(), std::vector<uint16_t> layout = {},
+                 std::optional<identity::NodeId> boot = {});
   TelemetryStore(const TelemetryStore&) = delete;
   // Why the persisted records could not be read; empty if they could.
   const std::string& load_error() const noexcept { return _load_error; }

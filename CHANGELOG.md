@@ -1,5 +1,66 @@
 # Current release
 
+## 0.9.0: agreement, the simulation harness, one file system, the hybrid clock
+
+A new minor: the ABI and some of the API change (below). Move a pin from 0.8.x in one step.
+
+**Agreement** (`Context::agreement()`, `dannan/agree/`): leaderless per-key agreement,
+CASPaxos-shaped, over a caller-named replica set and slot (`max_slots` 8192): `change()`,
+`change_deltas()` (deltas, a declined change, summaries, repeatable), `read()` with no accept,
+`forget()`, `catch_up()`; reconfiguration between replica sets, the fast path checking ballot
+and summary, value-less prepare. Acceptor state lives behind the hosted system's
+`AcceptorStore` (`load`, `keep` answering `Kept{kept, need_whole}`, `value` answering
+`Fetched{bytes, past}`, ancestry optional). After the review against the paper: a change is
+never applied twice (ancestry, and `Outcome::unknown` when a retry cannot tell, failing
+closed); a change naming several names in one slot is refused until atomic commit lands
+(0.10.0); the round timeout is `agree::first_round`, doubling.
+
+**The simulation harness** (`dannan/test/fixtures/sim/`, installed; link
+`dannan::sim_checkers`, define `DANNAN_TEST_TEMP_ROOT` for `SimNodes`): a seeded world on one
+thread; whole nodes in it (`SimNodes`, `host`, `restart(i, Wipe)`, `NodeClock` skew and drift,
+`SimNetwork::partition` and `heal`) through `NodeConfig::schedule`, `NodeConfig::transport`
+and `NodeConfig::fresh_id`; the worker pool on the schedule; clients as actors; and the
+checkers: linearizability (Wing-Gong with Lowe's memo, models over groups of keys),
+transactions by isolation level (Adya's cycles over list-append histories, with session or
+real-time order), convergence for merge classes, durability per acknowledgement level.
+
+**One file system** (`dannan/storage/file_system.h`): `FileSystem` and `File` returning
+`Result` with the errno's class (`no_room`, `absent`, `io`, `exists`, `denied`, `busy`),
+`or_throw()`, `list` with type and size, `stat`, `link`, `sync_directory`, `sync_all`,
+`space`, an exclusive `lock`; POSIX by default, and `test::sim::Disk`, which crashes, lies,
+tears and fills as a seed says. `durable_replace_file`, `durable_create_file` and `StateLock`
+go through it.
+
+**The hybrid logical clock** (`Context::hlc()`, `dannan/contract/hlc.h`): one per node,
+48-bit milliseconds and 16-bit counter, big-endian on the wire, lock-free, never reissuing a
+stamp across a restart (a persisted ceiling: the sealed counter `dannan/hlc` with custody, a
+durable file without); `NodeConfig::hlc_max_ahead`, one minute; its counts and each peer's
+skew on `Diagnostics::hlc`.
+
+Also: `Nodes::advertise(key, value, deadline, executor, done)` telling who holds an advert
+(`membership::Pushed`), and `Channels::subscribe` with a deadline (Lir's SUBACK hold).
+
+Fixed: the 0.8 ledger's double free (Lir's TSan report); a durable write that made its
+directories synced only the file's own, so a crash could lose a new directory and the file
+in it (found by the simulated disk); a stopped node no longer runs what it had booked.
+
+**Changed, for a caller moving from 0.8.x:**
+- `CallOutcome::peer` is a `std::shared_ptr<const NodeRecord>`, null when no reply came: one
+  record per session, no longer copied into every call (Dagda's profile).
+- `net::InboundHandlers::request` takes that pointer; `RequestScheduler::submit`
+  takes it too, with an overload that copies a record.
+- `WorkerPoolConfig` has `schedule`; `NodeConfig` has `schedule`, `transport`, `fresh_id` and
+  `hlc_max_ahead`; `Context` has `hlc()`; `Diagnostics` has `hlc`. Each defaults to 0.8.5's
+  behaviour.
+- `durable_replace_file`, `durable_create_file` and `StateLock` take a `FileSystem&`,
+  defaulting to POSIX; `NodeIdentity` and `TelemetryStore` take an optional fresh id.
+- Unchanged in shape: `listen::Backoff`, `StreamListener` and `Stream::start_tls` and
+  `start_tls_unanswered`, `ClassGates`, `WorkerPool`'s interface.
+
+**Moved to 0.10.0** (no stack project needs them yet): DTLS and UDP for `dannan::listen`;
+the peer-witnessed high-water mark; atomic commit across replica sets (and several names in
+one slot); loader promotion at the peer; the fuzz harness exported.
+
 ## 0.8.5: a sign-in's back-off, and a node destroyed after its io stopped
 
 `listen::Backoff` (`dannan/listen/backoff.h`, header-only): failed sign-ins per key (a

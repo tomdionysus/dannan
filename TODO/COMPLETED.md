@@ -3,6 +3,530 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
+## 0.9.0's release preparation, 2026-11-17 evening
+
+- Scope from the sessions (the maintainer: "Find out what the other sessions actually need and that's your
+  scope"): Dagda, Mimir, Kvasir, Lir, Lugh and Macha Server need none of DTLS/UDP, the
+  peer-witnessed high-water mark, atomic commit, loader promotion or the fuzz export in 0.9.0;
+  all move to 0.10.0.
+- Mimir's gap closed: `dannan::sim_checkers` built and installed with the library, the package
+  consumer linking it; shipped in `libdannan-dev` (develop's CI at `df4b2d8` failed both deb
+  jobs on the uninstalled `.a`; fixed, branch CI run 44155212928 green).
+- `CHANGELOG.md`'s 0.9.0 entry.
+- Gates: node-b 940 tests, 939 passed, 1 skipped; the package step; macOS 939 tests, 937
+  passed, 2 skipped (Linux-only).
+
+## Step 5: the hybrid logical clock, 2026-11-17 (`feature/hlc`)
+
+- `contract::HybridClock` (`fc0627d`): the stamp (48 bits of milliseconds, 16 of counter), its
+  big-endian encoding, `now()` and `receive()` lock-free by one compare-and-swap, a stamp too far
+  ahead not merged with its offset given, overflow moving the physical part, and the persisted
+  ceiling: raised synchronously only past it, kept two seconds ahead by `keep_ahead()`, begun
+  past at a restart.
+- On the node: `Context::hlc()`, `NodeConfig::hlc_max_ahead`, the counts and per-peer offsets on
+  `Diagnostics`, `keep_ahead()` on the roster step. The ceiling is the sealed counter
+  `dannan/hlc` with custody, a durable file without (a gap in the design, filled; for the maintainer).
+- The design's ten tests, on a stepped wall and a ceiling in memory, and two on the node (a
+  restart with the wall set back; the counter with custody).
+- Gate: node-b, 940 tests, 939 passed, 1 skipped (as root). The branch's CI run 44142585838
+  green on every job.
+- With it, step 6's first item: a peer's record shared per session (`CallOutcome::peer`, the
+  inbound request callback and `RequestScheduler::Job` carry a `shared_ptr<const NodeRecord>`),
+  Dagda's profile. Node-b: 940 tests, 939 passed, 1 skipped.
+
+## Step 4: the file-system interface, 2026-11-17 (`feature/file-system`)
+
+- `dannan::storage` (`5d414a9`): `FileSystem` and `File` as Dagda reviewed them, a `Result` whose
+  error carries the errno's class, `or_throw()`, `list()` with type and size, `stat`,
+  `sync_all`, `space`, `lock`; the POSIX implementation. Added: `link()` (for
+  `durable_create_file`) and the class `busy` (a held lock).
+- `durable_replace_file`, `durable_create_file` and `StateLock` go through it, POSIX by default,
+  with their messages and exceptions as before.
+- `test::sim::Disk`: per file a current and a durable image, per directory current and durable
+  entries; a crash keeps what was synced and drops a name whose directory's entry was lost;
+  syncs that fail (dropping dirty pages half the time), lie, or tear a file's growth to a
+  prefix; a full disk; a power cut after any number of operations.
+- One contract suite of 11 tests runs on POSIX and the simulated disk alike; 8 tests of the
+  disk's crash behaviour; 4 of the durable writes on it, cut at every step.
+- **Found and fixed** (`ef3b212`): a durable write that made its directories synced only the
+  file's own, so a crash after it returned could lose a new directory and the file in it, as
+  on a node's first start. Each directory made is now synced into its parent. Macha's own
+  durable write may share the gap: for the Macha session to check.
+- Gates: node-b, 928 tests, 927 passed, 1 skipped (as root). The branch's CI run 44136146315
+  green on every job, ASan and TSan included. macOS: 927 tests, 925 passed, 2 skipped
+  (Linux-only).
+
+## The harness, step 3 part 5: the worker pool in the world, clients as actors, the transaction and convergence checkers, 2026-11-17 (`feature/sim-workers`)
+
+- **The worker pool on the schedule** (`d49a105`, `d3d16cd`): `WorkerPoolConfig::schedule` runs
+  each pick and each task as one event of an injected schedule, by class as the threads take
+  them, the next turn booked while work waits or when a background class's rest ends; the run
+  is shared with the threads, whose behaviour is unchanged. A node with
+  `NodeConfig::schedule` puts its pool on it with no CPU charged (a real reading would make
+  each run its own), and `SimNodes` fixes the gates' CPU likewise: a simulated node runs no
+  worker threads.
+- **Clients as actors** (`fixtures/sim/clients.h`): `Actors` steps each client in the world,
+  a statement a step, so the world interleaves at statement granularity (Kvasir's review);
+  `random_transaction` draws a workload from the seed.
+- **The transaction checker** (`fixtures/sim/serializable.h`, in `dannan_sim_checkers`):
+  Adya's dependency graph over list-append transactions, as Elle's are, so every edge is read
+  off the history (each element names its writer; the longest read gives a key's version
+  order). Read committed refuses G0 and G1 (a, b, c); snapshot also G-single; serializable any
+  cycle; session or real-time order may join the graph (real time through barrier nodes, so the
+  edges stay linear). Also refused: reads that disagree on a key's order, a transaction missing
+  its own append, an element appended twice, an element no one appended. An unanswered
+  transaction counts as committed only if something it appended was read.
+  - 14 tests on hand-made histories, one per anomaly.
+  - A store of each known level (serial, snapshot with first committer wins, read committed,
+    dirty) run by four client actors: each keeps its own level on 40 seeds and breaks the one
+    above on some. Every one of 356 histories (of 400) holding an observed write-skew pair is
+    refused as G2.
+  - Found on the way, in the test's own store: a read inserted its key into the transaction's
+    write set, so first committer wins covered reads and the "snapshot" store was serializable;
+    no write skew could occur. Caught because the level above never broke.
+- **The convergence checker** (`fixtures/sim/convergence.h`, in `dannan_sim_checkers`):
+  Mimir's ruling 4. Once quiet, every replica of a key holds the same value, holding every
+  write whose loss the faults do not excuse (`durability.h`'s rules); the owner says what a
+  value holds. 5 tests. The merge class run now ends with one quiet command: on 40 seeds every
+  replica then agrees and holds every merge write and committed command, and on some they
+  differed before it, so the check is not idle. Agreement converges replicas only through a
+  command's accept; repair without one is the store's anti-entropy (`trie_diff`, the plan's),
+  which this checker will judge when Dagda's store is in the world.
+- **Found by CI, fixed before this merged** (`e5478b4`, `9b8860f`): the two-rosters run
+  committed nothing on seed 5 in the release x86-64 job, and two runs in fifteen of one binary
+  on node-b differed. A whole node drew its durability epoch, which seeds agreement's backoff,
+  and telemetry's boot id from the operating system at each start. `NodeConfig::fresh_id` now
+  gives them (empty: random, as before); `SimNodes` draws them from the seed. The replay test
+  compared only the join time; `ASeedReplaysExactlyWithAgreementOverTheNodes` compares every
+  operation's answer and time, and failed on all four seeds before the fix. Every seed's run
+  changed with it, so the whole-node runs were rescanned: 40 seeds of each pass.
+- Found in my own process: a file copied to a Pi with tar keeps its Mac edit time, and one
+  shipped after a build can be older than objects built from it, so ninja kept a stale test
+  object with the old `NodeConfig` beside a library with the new one (a segfault, and fifteen
+  "clean" repeats that had each crashed). The copy now uses `tar -m`.
+- Gates: node-b, 894 tests, 893 passed, 1 skipped (as root). TSan on node-c (CI's flags), 894
+  tests, 893 passed, no reports. The branch's CI run 44116803795: every job green; tsan x86-64
+  hung once in `ChildProcess.ChildrenStartOnManyThreadsAtOnce` (open in `ACTIVE.md`) and passed
+  on re-run. macOS at `eb2342c`: 893 tests, 891 passed, 2 skipped (Linux-only).
+
+## The harness, step 3 part 4 completed: agreement over real membership, 2026-11-17 (`feature/sim-agreement-nodes`)
+
+- `SimNodes::restart(i, Wipe)`: nothing lost, the store lost (the same node, a new epoch: the
+  restart rule's case, Mimir's review), or a new identity; a `host` hook serves the hosted
+  system after every start.
+- Agreement over real membership: five nodes serve one space from their own stores, advertise its
+  capability through real gossip, and increment a counter under faults with a restart keeping its
+  store and one losing it (caught up before voting). Linearizable on 10 seeds.
+- Two rosters naming different sets, from real membership: a 3 and 2 split, each side naming
+  the genesis set and its own roster's set by turns. Linearizable on 10 seeds; neither a
+  roster's set nor the minority commits.
+- **Found and fixed** (`d8ec229`): a node's call deadline, booked on the schedule, ran after the
+  node was stopped and destroyed, completing into its membership pass (use after free in a
+  world that goes on). A stopped node now runs nothing it booked; `SimNodes` destroys a stopped
+  node only once the world's ready handlers have run.
+- **Found by develop's CI and the Mac, fixed before this merged:**
+  - ASan: after a restart, a reply to the old node's call reached it through the new node's
+    transport at the same index (`9f9aa84`: a reply goes to the transport that made the call).
+  - TSan: a node's worker pool threads read its clock while the world moved it (the world's
+    time is atomic until the worker pool is in the world, part 5).
+  - LeakSanitizer's case: the catch-up retry held itself (`0af59a7`).
+  - The split test failed on half of 60 seeds (one seed had hidden it; the Mac's libc++ ran
+    another): it split the cluster before nodes had reached each other, and a peer known only
+    through gossip was lost on its own side. The tests now settle first and run 10 seeds;
+    `SimTransport` pings its routes each heartbeat as the real client does (`09d1f6d`).
+- Gates: node-b, 871 tests, 870 passed, 1 skipped (as root); 40 seeds of each agreement run.
+  The branch's CI run 44102424795 green on every job, ASan and TSan included. macOS at
+  `45b46c7`: 870 tests, 868 passed, 2 skipped (Linux-only).
+- Part 4 is complete. Next: part 5 (the transaction checker, the convergence checker, client
+  actors, the worker pool in the world).
+
+## The harness, step 3 part 4, piece 2b: whole nodes in the world, 2026-11-17 (`feature/sim-transport`)
+
+- `net::Answer::to` (`81b5d6f`): an answer made outside the scheduler, for a transport that
+  delivers requests itself.
+- `net::Transport` (`817158e`): what the node asks of the network, from its own call sites (the
+  seam note's table); `RealTransport` forwards to the client and server, no change in
+  behaviour. The reach layer, probes, dial requests and the scheduler's wiring stay with the
+  real client.
+- `NodeConfig::transport` (`61e8e2c`): a node on the harness's transport builds no client,
+  server or level 0 paths; a call's deadline goes through the schedule.
+- `fixtures/sim/nodes.h` (`084c6d6`): `SimTransport`, `SimNetwork` (the faults, one-way blocks,
+  partitions and a heal), `NodeClock` (offset and drift per node), `SimNodes` (restart keeping or
+  wiping a node's state). Mimir's three asks are in it.
+- **Found on the way:** a run of whole nodes did not replay. A node draws its id from the
+  operating system, and ids order the rosters and every map keyed by them: the split test
+  failed 4 runs in 6. The harness now writes each node's id from the seed (8 runs in 8 clean).
+  The durability epoch is still the operating system's (it only breaks ties between ballots).
+- Tests: `SimNodes.*` (four) and `Answer.MadeOutsideASchedulerIsGivenOnceAndRefusesWhenDropped`.
+  Gate: node-c, 869 tests, 868 passed, 1 skipped (as root). Node-d rebooted twice and node-b
+  went unreachable during the session (noted on the board).
+- Next in part 4: agreement over real membership in the world, and the broken protocol "two
+  rosters naming different sets" from real rosters.
+
+## The harness, step 3 part 4, piece 2a: the node's loops on a schedule, 2026-11-17 (`feature/sim-schedule`)
+
+The transport seam (`2026-11-17-sim-transport-seam.md`, reviewed by Mimir and Kvasir), its first
+piece:
+- Each of the node's four loops is now one step. A step that calls a peer (the members exchange
+  and the revocations after it, the dial-back probe) goes on when the answer comes; on a thread,
+  its continuations run on the loop's own context (`_membership_io`, `_connectivity_io`), so the
+  order and the thread, Law 1's disk included, are as they were.
+- `NodeConfig::schedule`: set, the node starts no loop threads; the schedule runs each step on
+  the io context and books the next (membership a heartbeat after a pass ends, telemetry at its
+  interval, the roster each second, connectivity when due, at least each heartbeat).
+  `Time::after()` and the node's agreement waits go through it too (Kvasir's timers).
+- Test: `Node.WithAScheduleItsLoopsAndTimersRunWhenTheScheduleRunsThem`. The 73 other Node tests
+  pass unchanged on threads.
+- Gate: node-d, 864 tests, 863 passed, 1 skipped (as root). Node-b stopped answering ssh at
+  about 11:40Z (noted on the board).
+- Next, piece 2b: `net::Transport` and the world's `SimTransport`, a `SimNode`, and Mimir's three
+  asks (clock skew per node, restart keeping or wiping the store, partitions with a heal).
+
+## The harness, step 3 part 3: durability per acknowledgement level, and a majority killed together, 2026-11-17 (`feature/sim-durability`)
+
+- `fixtures/sim/durability.h`: `AckLevel` and `loss_excused`, each level's rule against the
+  faults in the history. A decided write may be lost only if a majority stopped together, the
+  killed nodes that had not synced since it numbering a majority. The window is conservative both
+  ways: a kill counts from the write's invocation, a sync only from its answer.
+- `Store::sync()`; `Invariants::excused_loss()`, which starts the invariants afresh after a loss
+  the faults excuse.
+- The simulation (`lasting`): five nodes under lost and duplicated messages and partitions, nodes
+  crashing alone (catching up before they vote) and a majority killed together (voting at once
+  on what each synced). The replicated run loses nothing; the decided run loses commits on some
+  seeds, every one excused; in-memory stores taken for replicated are refused (seed 8).
+- **Two faults found in `catch_up()`**, fixed (`1e33bc6`): it lowered a promise the restarted
+  store had kept (a store that syncs later keeps its promises, and the read's ballot is above a
+  majority of the others' only); and a catch-up whose read committed after its node had stopped
+  installed over the restarted state.
+- 4 new tests. Gate: node-b, 863 tests, 862 passed, 1 skipped (as root).
+
+## Agreement reviewed against the CASPaxos paper, and its faults fixed, 2026-11-17 (`feature/attempt-timeout`)
+
+the maintainer, after the stall: "watch that commit fail, it sounds more serious than you're giving it credit
+for", then "read it and have a good think about it ... check the rest of the quorum design". The
+review is `2026-11-17-agreement-review.md`; the paper is in `research/` (not committed).
+- **A change was applied twice** (develop's runtime, 96 of 600 seeds), and with a reduction the
+  guard was off. Each accepted state now carries its value's **ancestry** (at most 16 ballots,
+  wire and store), so a retry tells whether its change is in: committed unchanged with the
+  first result, applied, or `Outcome::unknown` unless the change is `repeatable`. Over 6000
+  contended changes "could not tell" fell from 3141 to 347; none applied twice. A store may
+  decline ancestry (Mimir).
+- **A change of several names could be half taken.** `change()`, `change_deltas()` and
+  `forget()` take one name until plan item 7's atomic commit (Mimir's ask); a read may name
+  several.
+- **One silent acceptor held a change to its deadline**: `agree::first_round`, 250 ms doubling.
+- **`forget()` never purged**: an accept already taken is answered as taken.
+- **A lost transfer left an acceptor refusing the set that won**: settle moves it; a pending
+  refusal counts as one.
+- **`catch_up` lost the floor**: it raises it to the read's ballot.
+- The counter simulations' check is now exact (`check_counter`), cross-checked by the search.
+- Reviewed by Kvasir and Mimir (both fit; both mark changes repeatable by their own marks);
+  Lugh treats `unknown` as a refused code.
+- Gate: node-b, 859 tests, 858 passed, 1 skipped (as root).
+
+## The harness, step 3 part 2: agreement's invariants and the broken protocols, 2026-11-17 (merged at `e26f0cb`)
+
+macOS gate at `e3230f9`: 846 tests, 844 passed, 2 skipped (Linux-only). Not pushed: hosted CI waits on the maintainer's word.
+
+
+- `fixtures/sim/invariants.h` (header-only) checks every acceptor's state after every world step (`World::observer`):
+  - one value per ballot for a name;
+  - a chosen value (a majority of the set the acceptors record) advanced into every value accepted above it, by the
+    owner's order;
+  - `changed_at` ordered as the chosen ballots are;
+  - no promise or accept below a promise held.
+  A wipe is reported through `Cluster::on_wipe` and starts that acceptor afresh; a loss nobody reports is caught.
+  `changed_at` is checked only between chosen ballots: one acceptor's token legitimately goes back when a strict read
+  overwrites an unchosen accept.
+- The counter simulations (faults, catch-up, one-node genesis grown to five) now run under the invariants, with no
+  breach on any fixed seed.
+- Every broken protocol in the design is refused, each with its seed printed (`[ refused  ]`):
+  - an acceptor voting after losing its state;
+  - a proposer skipping prepare;
+  - an acceptor accepting below its promise (invariant 4, on the step);
+  - a reducer rolling the base back;
+  - a trusted lying sync;
+  - two rosters naming different sets (no proof rule; the laggard rule lets the acceptors promise);
+  - a merge-class reducer dropping a `replicated` merge write.
+  The rogue proposers are built in the test on the real wire to the real acceptors. Agreement itself is unchanged.
+- Mimir's merge class, positive case: with the union of every promiser's state, every command sees every merge write
+  acknowledged before it began (Mimir's ruling 16), 300 seeds clean. The sim store needed a content digest as its
+  merge-class summary: with only the length as the summary, a fetch by ballot and summary took one merged state for
+  another of the same size. The fault was the fixture's, not agreement's.
+- Seen, not pinned: one `change()` under 1-in-10 loss can fail to commit within 5 s of simulated time (the merge
+  run's first write, seed 1, "not committed within the deadline"). `LargeValuesAndDeltasStayConsistentUnderFaults`
+  already retries its first write for the same reason. Suspected: an attempt waits out a lost answer to the end of
+  the call's deadline instead of retrying sooner. It is not a safety question; it is worth a look in step 3's later
+  parts.
+- 13 new tests (6 `Invariants.*`, 7 `Simulation.*`). Gate: node-b, 847 tests, 846 passed, 1 skipped (as root).
+
+## Agreement completed, and the harness's history and checker, 2026-11-16 (develop)
+
+The step-by-step notes, with every review and finding, are in `ACTIVE.md` as it stood at `2ed2653`; this is the
+record.
+
+**Value-less prepare and deltas** (`2026-11-15-agreement-design.md`), merged at `6686731`:
+- Part 1, `c71eb20`: the store's summary (at most 64 bytes, the owner's) and the has-value bit; prepare's values
+  flag; `load(..., values, ...)`; `keep()` leaves a state held but not carried as it is.
+- Part 2, `acaab48`: `agree_fetch` (type 26, reply 114), 1 MiB pieces resumed by offset, from this node's acceptor
+  first; the store's `value()`.
+- Part 3, `5a09792`, and `0275e67`: Mimir's reduction on summaries. `Reduced{value, need}`, needs fetched by
+  ballot and summary, past a `since` with the `past` flag.
+- Part 4, `3d771a1`: deltas inside `keep()`, all or nothing (`Kept{kept, need_whole}`). The separate `apply()` the
+  design first had could not be atomic; Mimir and Kvasir reviewed the change, and their contract points are in the
+  design document.
+- Part 5, `1c624d3`: a transfer value-less; the ballot-only form; every compact form carries its base's ballot and
+  summary.
+- Part 6, `c23086a`: `change_deltas()`, the value-less change (Mimir's and Kvasir's ask; the maintainer: "Include in 0.9.0").
+  It never sees a whole value, has a decline, names need_whole acceptors, and makes a read with no accept. Its fast
+  path keeps ballots and summaries.
+- The store interface is final, accepted by Mimir and Kvasir. Kvasir needs no whole resend in pieces.
+- Gate: node-d, 823 tests, 822 passed, 1 skipped (as root). Develop's CI run 43938400849 was green on every Linux
+  job, ASan and TSan included.
+
+**A node with another slot table is refused at join** (the maintainer: "Also refuse at join"), merged at `a521260`: the
+`agree.table` advert on each record, and `Credentials::admit` at the handshake both ways. Gate: node-c, 825 tests,
+824 passed, 1 skipped.
+
+**CI and the macOS gate.** There is no hosted macOS runner (the maintainer). The hosted job was removed (`9f1bce2`); macOS is
+built and tested on the maintainer's Mac at each merge to develop and before a release, against MacPorts `boost188`. First run at
+`9f1bce2`: 824 tests, 822 passed, 2 skipped (Linux-only). Develop's CI run 43965857206 at `6dbec1d` was green on every
+job.
+
+**The harness's history and linearizability checker** (step 3, part 1), merged at `f917920`:
+- `history.h`; and `dannan_sim_checkers`, a Wing-Gong search with Lowe's memo over groups of keys and owner models.
+- Unanswered operations alike in keys and input are taken in invocation order, which keeps the search linear in
+  them.
+- `models.h`: a register and a counter.
+- The agreement simulations' counter check runs on it, and still refuses the acceptor that votes after losing its
+  state.
+- Gate: node-b, 834 tests, 833 passed, 1 skipped.
+
+**Lir's NodeRecord TSan reports** (0.8.3, 0.8.5): attributed by mechanism to the 0.8 ledger double free Lir
+suppresses. `RetainedMemoryLedger::release` on a destroyed ledger is fixed on develop at `79dfa2e`. Lir's ASan run
+confirmed the defect fires (1 in 30); the NodeRecord report itself was not reproduced. Lir waits for 0.9.0 (the maintainer).
+
+## Releases and merges, 2026-11-16 (the maintainer: "cut 0.8.4 and tell everyone"; push word for all)
+
+**0.8.5 is released** (`main` and tag at `de631cc`; main's CI run 43800265662 green on all 15 jobs, ABI kept).
+- What it carries:
+  - `listen::Backoff`, Lugh's sign-in back-off on injected time with its five tests (Kvasir's ask, stack rule 3; the maintainer
+    chose a patch);
+  - the fix for Louhi's finding: a node stopped while its io ran, destroyed after the io had stopped, hung in its
+    client's and its server's second stop, each of which posted to the stopped io (`44109dd`, `36cd4a3`). Test:
+    `Node.ANodeStoppedThenDestroyedAfterItsIoStopsDoesNotHang`. Node's contract now says to stop it while its io runs.
+- Gate on node-c: release 755 ran, 754 passed, 1 skipped; TSan the same. The first run found the test still hanging
+  in `Server::stop`; gdb named it.
+- Kvasir, Lugh and Louhi move their pins to it.
+- The `.deb`s are staged in `../tomcully-apt/incoming/dannan/0.8.5/` and checked (shlibs `libdannan0.8 (>= 0.8.5)`),
+  from main's run 43800265662 re-run after the tag.
+
+**0.8.4 is released** (`main` and tag at `52fd53c`; main's CI run 43793449409 green on all 15 jobs, ABI kept).
+- What it carries:
+  - the scheduler fix `0ce0b82`;
+  - `NodeEvents::wait_for_change(..., std::stop_token)` (`fbcbb90`), for Macha;
+  - `Stream::start_tls_unanswered(done)` (`383b6f5`), for Kvasir's MySQL. Test:
+    `StreamListener.StartTlsUnansweredTakesAClientHelloRightBehindTheRequest`.
+- Gate on node-c: release 749 ran, 748 passed, 1 skipped; TSan the same. ASan cannot start on the 39-bit kernels;
+  hosted CI's ASan passed.
+- The `.deb`s are staged in `../tomcully-apt/incoming/dannan/0.8.4/` and checked (shlibs `libdannan0.8 (>= 0.8.4)`),
+  after re-running main's run once the tag existed.
+- Everyone was told. Macha pins 0.8.4.
+
+**Merged to develop:**
+- `feature/agreement-reconfiguration` at `208c581` (its CI run 43786450604 green; the temporary CI-trigger commit was
+  dropped first, and the remote branch deleted);
+- `feature/advert-push` at `e78b66c`;
+- `main` at 0.8.5 at `ed5111d`.
+
+## Handoff, 2026-11-16: reconfiguration built, with a safety gap found and closed
+
+- **A gap in the reviewed design, found in building it.**
+  - What it was: an acceptor with no record admitted a request naming any set. So a transfer whose accept reached
+    one node of the new set (and so did not commit) let a proposer that took the bitmap hint commit on unrecorded
+    nodes, while the old set went on committing. That is two histories, with no stale proposer needed. Records were
+    also per name, so a name never written in a moved slot had no record anywhere.
+  - the maintainer chose the recommended fix: per-slot records; a transfer as a change to the whole slot; pending until a
+    settle follows its commit; a plain change commits only with a settled record in its majority, or on the genesis
+    set for a slot recorded nowhere; a proposer that meets an unfinished move finishes it.
+  - Written into `2026-11-15-agreement-design.md` (`81dc063`). Mimir and Kvasir were told.
+- **Built** on `feature/agreement-reconfiguration` (`2329b9f`):
+  - The core: `on_settle`, `Attempt::transfer`, `Held` with the slot record and floor.
+  - `agree_settle` (25, reply 113).
+  - `Agreement::transfer()` and `found()`; the caller names the slot (Mimir's hash tags), and `slot_of` is the
+    default.
+  - The interface changes: `AcceptorStore::load(slot, names, every)` and `keep(slot, held)`; the table in
+    `NodeConfig`. The empty-name reserve for the floor is gone, so a prepare may now name no register; the wire
+    test's "no names is refused" check was changed to match, the only check changed.
+- **Found by the simulator** (`Simulation.AOneNodeGenesisGrowsToFiveUnderFaults`, seed 13): a member of both sets
+  that missed a transfer's accept and its settle refused the new set, and the attempt took that as proof its set was
+  stale, so the slot stalled. Now a record of an older configuration is a laggard's: the acceptor promises and shows
+  it, the proof rule decides, and the next accept brings it up to date
+  (`Reconfiguration.ALaggardOfTheOldSetNeitherBlocksTheNewSetNorStaysBehind`).
+- **New tests (9):**
+  - `Reconfiguration.*` (8), among them the gap's own case, a change racing a transfer, a one-node genesis grown to
+    five, settle reaching a node that missed the accept, and `slot_of`;
+  - the simulator growing a one-node genesis to five under faults while stale clients follow the refusal's set (60
+    seeds).
+  - The node test now founds on A alone and grows to A and B by `transfer()`.
+- **Gates:** suite on node-d 776 ran, 775 passed, 1 skipped (as root). Hosted CI not run: it was not running.
+- `NodeEvents::wait_for_change(seen, timeout, stop_token)` for Macha Server: `fbcbb90`, merged to develop at
+  `a5d12df` (767 ran, 766 passed, 1 skipped). For 0.8.4 if the maintainer wants one.
+- Asks recorded in the plan: Kvasir's (and Mimir's) fuzz-harness export (item 8); Mimir's need for multi-slot commit
+  (item 7).
+- **Later the same session** (branch `feature/agreement-reconfiguration`, still unmerged):
+  - `c524a28`: every agreement request carries the slot table's fingerprint, and an acceptor with another table
+    refuses it (`Simulation.ANodeWithAnotherSlotTableIsRefused`); the slot advert `agree.slots/<space>` and
+    `Agreement::hint()` (`Simulation.AMovedSlotIsFoundFromTheAdvertsAndTheRefusal`). 778 ran, 777 passed, 1 skipped.
+  - `6c90f50`: the fast path, with reservations, and a retry adopting its own newest accept. Simulator seeds 30 and
+    99 found the two flaws the design had. New tests: `FastPath.*` (4), `Agreement.ARetryAfterAPartialAccept...`,
+    `Simulation.TheFastPathIsTakenUncontendedAndLeftWhenContended`. 784 ran, 783 passed, 1 skipped.
+  - Lir's TSan report against 0.8.3 is recorded at the top of `ACTIVE.md`, read but not yet reproduced.
+  - Develop's hosted CI came back green (43769767060, 15 of 15; the scheduler fix passed ASan in 43765614152).
+
+## Handoff, 2026-11-15: agreement's lifecycle merged; reconfiguration ruled
+
+- `forget()` and `catch_up()` for agreement, on `feature/agreement-lifecycle`, merged at `6f17bea`. CI first failed
+  `ANodeThatLostItsStateCatchesUpBeforeItVotes` at seed 2 on every job: the fault schedule wiped three of five, and a
+  majority wiped has nothing to catch up from, so the run rightly never committed again. That is a limit on
+  availability, not on safety. The simulation now wipes only while those not yet caught up stay a minority
+  (`5a92172`). Branch CI run 43763528634 was green except ASan x86-64, which found the next item.
+- A scheduler race that shipped in 0.8: a deferred `Answer` sent its reply before giving back its `max_deferred`
+  place and bytes, so a caller retrying at once could be refused "overloaded" (`Scheduler.AnAnswerDroppedUnanswered
+  RefusesTheCall`, under ASan). Fixed on develop at `0ce0b82`, internal to `net/scheduler.cpp`. Develop's CI run
+  43765614152 was pending at the clear. Whether it ships as 0.8.4 waits on the maintainer.
+- Reconfiguration designed and ruled (`2026-11-15-agreement-design.md`):
+  - The first draft's operator-declared root was withdrawn after Mimir's and Kvasir's reviews and the maintainer's question,
+    "What went wrong?". The answer: Macha's writes merge, so differing rosters were harmless, while majority
+    agreement needs an agreed set, and the draft reached for a conventional metadata root.
+  - the maintainer ruled: "No root except at genesis. A root may start with only one node."
+  - The design is a fixed slot table, each slot touched at founding, `transfer()` as a joint change, and a bitmap
+    advert sized by the configured slot count (Mimir), the refusal's `serving` being the authority.
+  - Kvasir's needs are stated as contract: map first, then touch; large values caught up beforehand; the fast path
+    lost across a transfer; no forced transfer.
+- Lir asked whether 0.7.0 and 0.8.3 nodes interoperate: they do. Nothing changed on the wire in membership, channels,
+  the session, routes or the handshake, and the only net/ change is a test-only seam.
+
+## ACTIVE.md's "Resume here", as it stood before the 2026-11-15 rationalisation
+
+The release record for 0.7.0 to 0.8.3, the 0.8.0 batch (P3 to P7, node-local rollback) and the maintainer's rulings of
+2026-11-14 and 2026-11-15, moved here verbatim:
+
+
+**0.9 is open on `develop`** (CMake 0.9.0, `libdannan0.9`). In progress, first (the maintainer: half the stack waits on it):
+agreement, merged at `dc9ede1`: the pure core (`agree/caspaxos.h`), the wire with a fuzz target, the runtime
+(`agree/agreement.h`, an injectable Schedule), the node's wiring and `Context::agreement()`; Lir's lease
+use-after-free fix. The simulation harness's first phase (the maintainer: within 0.9.0), merged at `2785ab6`:
+`test/fixtures/sim/world.h` and `agreement.h`; five real nodes linearizable under lost, delayed, duplicated and one-way
+messages and crash-restarts over 150 seeds; the broken protocol (voting after losing state) refused.
+Next, in order: agreement's stores' catch-up and `forget()`; reconfiguration through a configuration register (until
+then a name's replica set must be fixed for its life: two proposers naming disjoint majorities for a name nobody has
+touched could both commit); the fast path, value-less prepare and deltas; the harness's membership, Routes, placement,
+correlated kills and the history with faults and resolutions, then the checkers (`2026-11-15-simulation-harness.md`);
+the file-system interface (`2026-11-15-file-system-interface.md`, with Dagda for review); the hybrid clock
+(`2026-11-15-hlc-design.md`, reviewed); the datagram listener; the per-call record copies.
+
+**0.8.3 is released** (`main` and tag at `00a3a12`, pushed at the maintainer's word, 2026-11-15; main's CI run 43757309649 green).
+The `.deb`s are staged in `../tomcully-apt/incoming/dannan/0.8.3/` and checked (shlibs `libdannan0.8 (>= 0.8.3)`). Lir
+runs on it with lir::client on the connector (351 passed on node-b); Mimir pins it.
+
+**0.8.2 is released** (`main` and tag at `20771a6`, pushed at the maintainer's word, 2026-11-15; main's CI run 43737550419
+green). The `.deb`s are staged in `../tomcully-apt/incoming/dannan/0.8.2/` and checked. Lir and Lugh run on it.
+
+**0.8.1 is released** (`main` and tag at `53cc933`, pushed at the maintainer's word, 2026-11-15; main's CI run 43734647887 green).
+The `.deb`s are staged in `../tomcully-apt/incoming/dannan/0.8.1/` and checked (shlibs `libdannan0.8 (>= 0.8.1)`).
+Lir runs on it (337 passed on node-c, no code change); Lugh is moving.
+
+**0.8.0 is released** (`main` at `6c240cc`, tag `0.8.0`, pushed at the maintainer's word, 2026-11-15). Main's CI run 43721335614
+green on every job. The `.deb`s are staged in `../tomcully-apt/incoming/dannan/0.8.0/` and checked (SONAME
+`libdannan.so.0.8`, shlibs `libdannan0.8 (>= 0.8.0)`, `dannan-custody` and its page in `dannan-tools`), for the maintainer to
+publish. Dagda, Lir, Lugh and Macha were told; Dagda gated on the tag (1106 ran, 1103 passed), Lir runs on it.
+
+the maintainer's rulings, 2026-11-15, directly:
+- **0.8.3 (a patch): the stream connector**, `dannan::listen`'s outbound side, for Lir's client library, Lugh's
+  publisher and `https.cpp`, and Mimir. Designed in `2026-11-15-p3-stream-connector.md`, reviewed by Lir and Lugh
+  (both reviews taken in it); keeps 0.8's layout.
+- **Anything that can use agreement waits for it** (the maintainer, 2026-11-15, directly: "consensus/agreement is a huge part
+  of higher order behaviour"): no stack project builds its own consensus, lease-for-consensus or workaround in the
+  meantime. So agreement leads 0.9.0's work. Told to Dagda, Lugh, Lir, Macha Server, Mimir, Kvasir and Louhi.
+- **0.9.0: leaderless per-key agreement in Dannan** (Mimir's ruling 6, confirmed to Dannan directly): CASPaxos-shaped,
+  a linearizable change to a named register over a caller-supplied replica set, majority commit, no leader, several
+  registers of one set in one round; acceptor state behind a hosted system's interface, so Dannan stores nothing; new
+  wire messages. Design first, reviewed by Mimir, Lugh and Dagda.
+- **0.9.0: a hybrid logical clock in Dannan**, since Dagda will adopt it (the maintainer: in Dannan if another project would).
+  Dagda's conditions are requirements: one clock per node shared by every hosted system; never backwards across a
+  restart (a persisted high-water mark); a stated bound on a received stamp ahead of local wall time, refused or
+  clamped and counted. Lir would adopt it too, if the maintainer reopens the 2026-11-04 retained-ordering decision (Lir's to ask).
+
+For 0.9.0, an ABI change so not a patch (Dagda's after-profile of 0.8.2): every call still copies its peer's whole
+record, adverts and all, in `Client::handlers_for`'s capture, `CallOutcome::peer` and `RequestScheduler::Job`;
+carry a `shared_ptr<const NodeRecord>` or the id instead. Then 0.9.0: DTLS and plain UDP for `dannan::listen`; the peer-witnessed
+high-water mark; and loader promotion at the peer (Dagda's ask, the maintainer: with the wire batch), a new message beside
+promote_read_ahead and promote_foreground. The wire additions are designed and reviewed first.
+
+**0.7.0 is released** (`main` at `6ce0349`, tag `0.7.0`, both pushed at the maintainer's word). Main's CI was green on every job. The
+`.deb`s are in `../tomcully-apt/incoming/dannan/0.7.0/`; both library packages were checked: SONAME `libdannan.so.0.7`
+and shlibs `libdannan0.7 (>= 0.7.0)`. the maintainer published them to the apt repository (2026-11-14). Dagda, Lir, Lugh and Macha Server were told. Lugh has 0.7.0 (P2 shows in its
+Status with its P8.1). Lir is repinned with P2 wired in (`--minority degrade|refuse`), waiting on a Pi for its gate.
+
+**0.8.0 is open**: the tree and the library's package say 0.8 (`e839322`). The approved batch, in order, each on its own
+`feature/` branch, tests first, hosted CI, reviewed by the session that asked. the maintainer, 2026-11-14, to every session: no
+test run is repeated without a flake or odd behaviour to justify it, and ASan and TSan are for releases (hosted CI's
+jobs on push are the gate, not extra runs).
+1. P6's remaining three, for Macha: **done** on `feature/owner-test-seam` and merged into `develop`. Macha reviewed
+   it and every follow-up; all passed. CI run 43548808618 was green on every job. See `COMPLETED.md`.
+2. P4, the class-aware worker pool with CPU pacing: **done**, merged into `develop` (see `COMPLETED.md`). Still to
+   come, Macha's: its maintenance moves onto the node's gate, proved by its pacing cases
+   (`test_repair_is_paced_not_stopped_while_higher_classes_stay_busy`, `maintenance_trace`), then the baseline run
+   on the nodes. Also merged: Lugh's `DANNAN_BUILD_TOOLS` (`feature/tools-option`, CI green on every job).
+3. P3, the shared public listener (`2026-11-14-p3-public-listener.md`): the stream side, `dannan::listen`, is
+   **done**, merged into `develop` (see `COMPLETED.md`). DTLS and plain UDP associations are 0.9.0.
+4. P5: small-message figures in `dannan-bench`, on the Pi cluster between two real machines. It covers notify fan-out,
+   batched calls of 1 to 64 envelopes at 64 B to 1 KiB, msgs/s and p50/p99/p99.9, and the io thread count. Its stress
+   case is the call path's ceiling, about 6,000 calls/s per peer pair, where calls are refused at
+   `max_pending_replies` = 512 (`net/outbound.h:27`). Measure, then raise the cap, make it per class, or cheapen the
+   per-call path. Dagda's bench reproduces it (`2026-11-13-stack-needs.md`, P5, has the build and the commands).
+   Lir's target: PUBACK p99 under 50 ms at QoS 1 with k = 2.
+   the maintainer, 2026-11-14: run it on the build cluster (node-a, node-b, node-c, node-d), claimed on the board; and
+   0.8.0 waits for P5. **Done**, merged (see `COMPLETED.md`, `2026-11-14-p5-figures.md`): measured, the ceiling is
+   CPU near 14,800 calls/s on one Pi, not the cap, which stays at 512. the maintainer: enough, cut 0.8.0.
+5. Node-local rollback (the maintainer, 2026-11-14, ruled in Dagda's session on Dannan's proposal), for Dagda's and Lugh's
+   node-local state:
+   - 0.8.0, **done** and merged (see `COMPLETED.md`): the sealed per-label counter beside custody, on the Context's
+     `Identity` (`counter`, `advance_counter`, `advance_counters`, `note_counter`), sealed under HKDF(seal root,
+     "dannan/counter/1"). It refuses one directory restored alone, not a whole state restored together.
+   - 0.9.0: the peer-witnessed high-water mark, the rollback defence. Each label's mark is gossiped, peers keep the
+     highest they have seen of each node, and at open a node refuses a label below its peers' witness. A lone node
+     has only its local counter, and the limit is stated. A wire addition, so its own design and review first.
+the maintainer, 2026-11-14, answering directly: P4 and P3 as built on the notes' recommendations stand (all four P4 pieces in
+0.8.0, the CPU rest by task CPU time; `dannan::listen`, TCP and TLS in 0.8.0, DTLS in 0.9.0); push the reviewed
+branches for hosted CI.
+P7, Alpine in CI: not now (the maintainer). The 0.6 and 0.7 work's detailed notes (each fix, each finding, each review) are in
+`COMPLETED.md`, under "ACTIVE.md's history to 2026-11-14".
+
+**Where things are built and tested** (the maintainer, 2026-11-14: "STOP all builds on the Mac now. Use the RPi cluster only."):
+- Never build or run tests on the Mac. Editing, git, gh and reading CI logs are fine, and so is clang-format.
+- Hosted CI (`.github/workflows/ci.yml`) is the gate: 15 jobs on Debian x86-64 and arm64 and macOS, with `abi`
+  against the minor's last tag.
+- To run CI on a feature branch, add a temporary commit putting the branch in `on.push.branches`. Drop it before the
+  merge, with `git rebase --onto X^ X`.
+- The shared Pi 5 cluster: node-a 192.0.2.11, node-b 192.0.2.12, node-c 192.0.2.13. Debian
+  13 arm64, 16 GB, NVMe, `ssh root@<ip>`.
+  - Nobody schedules them (the maintainer): claim a free one first, first come, first served, then release it the moment the
+    job ends.
+  - From the next session start, the maintainer's claim-board plugin gives `claims_list`, `claim_take` and `claim_release`, and
+    blocks heavy ssh commands without a claim. Before it: post `stack/pis/<host>/claims/Dannan` on
+    http://192.0.2.11:8183 (`../lir/deploy/pi-cluster/README.md`).
+  - One heavy job per Pi, a modest `-j`, nice 19: the Pis brown out under two.
+  - Lir's standing cluster uses ports 7537, 1983 and 8183 there.
+  - live-a and live-b, which run Macha, still need the maintainer's word.
+
+**Release rules unchanged:**
+- Tags need the maintainer's direct word.
+- The version commit changes CMake, README, CHANGELOG, COMPLETED and ACTIVE, and `debian/control`'s library package
+  when a minor starts.
+- Within a minor the ABI is kept, and `tools/ci.sh abi` enforces it. An interface change waits for the next minor.
+
 ## Handoff, 2026-11-15: 0.8.3 prepared
 
 - The stream connector (the maintainer: a 0.8 patch), designed in `2026-11-15-p3-stream-connector.md` with Lir's and Lugh's

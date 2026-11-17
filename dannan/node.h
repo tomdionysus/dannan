@@ -29,6 +29,7 @@
 #include "dannan/membership/membership.h"
 #include "dannan/net/client.h"
 #include "dannan/net/server.h"
+#include "dannan/net/transport.h"
 #include "dannan/reach/connectivity.h"
 #include "dannan/reach/dial_back.h"
 #include "dannan/reach/inbound.h"
@@ -86,6 +87,12 @@ struct NodeConfig {
   // inbound_capable=, for the capability it is told: " hosts_extents=true".
   std::function<std::string(bool)> inbound_journal_fields;
   std::string version;
+  // Agreement's slot table (agree/agreement.h), fixed for the cluster's life and the same
+  // on every node: the slot count, and the genesis members, which serve a slot no acceptor
+  // has recorded, as version 0. None: no slot can be founded, nor changed until a set
+  // recorded elsewhere serves it.
+  uint32_t agreement_slots = agree::default_slots;
+  std::vector<identity::NodeId> agreement_genesis;
 
   std::chrono::milliseconds heartbeat{5000};
   std::chrono::milliseconds dead_after{30000};
@@ -161,6 +168,24 @@ struct NodeConfig {
 
   const contract::TimeSource* time = &contract::steady_time_source();
   const contract::WallClock* wall = &contract::system_wall_clock();
+
+  // Runs `task` once `after` has passed on `time` (the simulation harness's schedule, step 3
+  // part 4, reviewed by Mimir and Kvasir). Set, the node starts no loop threads: each loop's
+  // step runs from it on the io context, the next booked when one ends, and Time::after() and
+  // agreement's waits go through it too, so a world run on one thread orders all of them. Empty:
+  // the loops are threads, as always.
+  std::function<void(std::chrono::milliseconds after, std::function<void()> task)> schedule;
+  // Draws the ids fresh on each start (the durability epoch, telemetry's boot id), which seed
+  // agreement's backoff among others: the simulation harness draws them from its seed so a run
+  // replays exactly. Empty: random.
+  std::function<identity::NodeId()> fresh_id;
+  // How far ahead of this node's wall time a received hybrid-clock stamp may be and still be
+  // merged (the HLC design: one minute).
+  std::chrono::milliseconds hlc_max_ahead = std::chrono::minutes(1);
+  // The network as the harness gives it (the transport seam, piece 2b): set, the node builds no
+  // client, server or level 0 paths, and calls, sends and serves through what this returns,
+  // given the node's hooks. Empty: sockets, as always.
+  std::function<std::shared_ptr<net::Transport>(net::TransportHooks)> transport;
 };
 
 // Dannan's node: the control plane assembled. The identity under a locked
@@ -260,6 +285,8 @@ class Node final : public Context {
   supervise::SupervisedThreads& threads() override { return _threads; }
   sched::ClassGates& gates() override { return _gates; }
   sched::WorkerPool& workers() override { return _workers; }
+  agree::Agreement& agreement() override { return *_agreement; }
+  contract::HlcClock& hlc() override { return *_hlc; }
   Diagnostics diagnostics() const override;
 
  private:
@@ -276,17 +303,51 @@ class Node final : public Context {
   net::Handled handle(const membership::NodeRecord& peer, sched::FrameType frame, net::Message request, net::Answer& answer);
   void observe_direct(const membership::NodeRecord& peer);
   void merge(std::span<const uint8_t> payload);
+  // Sets or clears an advert, then sends this node's record to every active peer over the
+  // members exchange; `done` on `executor` with who holds it (Nodes::advertise).
+  void push_advert(const std::string& key, std::optional<net::Bytes> value, std::chrono::milliseconds deadline, boost::asio::any_io_executor executor,
+                   std::function<void(membership::Pushed)> done);
   std::shared_ptr<net::CallHandle> place_call(std::optional<membership::NodeRecord> peer, const net::Endpoint& endpoint, net::MessageType type,
                                               net::Bytes payload, sched::FrameType frame, std::chrono::milliseconds deadline,
                                               boost::asio::any_io_executor executor, net::Client::Done done, net::CallWatch watch = {});
   // A call from a loop thread, waited on within the deadline.
   net::CallOutcome call_wait(std::optional<membership::NodeRecord> peer, const net::Endpoint& endpoint, net::MessageType type, net::Bytes payload,
                              std::chrono::milliseconds deadline, sched::FrameType frame = sched::FrameType::control, net::CallWatch watch = {});
-  void exchange(std::optional<membership::NodeRecord> peer, const net::Endpoint& endpoint);
   void membership_loop(std::stop_token stop);
   void telemetry_loop(std::stop_token stop);
   void connectivity_loop(std::stop_token stop);
   void roster_loop(std::stop_token stop);
+
+  // The loops' steps: what one wake of each does, the same whether a thread or the schedule
+  // (NodeConfig::schedule) runs it. A step that calls a peer goes on when the answer comes, its
+  // continuations run on `on` (a loop's own context in a thread, so the disk stays the loop's,
+  // Law 1), and `done` is called there once the step is over, or once `stopped` says so.
+  using Step = std::function<void(boost::asio::any_io_executor on, std::function<void()> done)>;
+  struct MembershipPass;
+  struct ConnectivityState;
+  // Forget the unseen, then exchange with each seed and known peer in turn.
+  void membership_step(std::function<bool()> stopped, boost::asio::any_io_executor on, std::function<void()> done);
+  void membership_next(const std::shared_ptr<MembershipPass>& pass);
+  // One exchange of rosters, then of revocations; `done` with why it failed, or empty.
+  void exchange(std::optional<membership::NodeRecord> peer, const net::Endpoint& endpoint, boost::asio::any_io_executor on,
+                std::function<void(std::string)> done);
+  void exchange_revocations(std::optional<membership::NodeRecord> peer, const net::Endpoint& endpoint, std::chrono::milliseconds deadline,
+                            boost::asio::any_io_executor on, std::function<void()> done);
+  void telemetry_step(contract::TimePoint& last_gossip);
+  void roster_step();
+  // Refreshes asked for, the path class when due, the circuits' sweep, and the dial-back probe
+  // when due.
+  void connectivity_step(const std::shared_ptr<ConnectivityState>& state, boost::asio::any_io_executor on, std::function<void()> done);
+  // A thread's way to run a step: on `context`, until it is done.
+  static void run_step(boost::asio::io_context& context, const Step& step);
+  // The schedule's way: each step, then the next after its interval, until the node stops.
+  void schedule_loops();
+  void scheduled_membership();
+  void scheduled_telemetry(contract::TimePoint last_gossip);
+  void scheduled_roster();
+  void scheduled_connectivity(std::shared_ptr<ConnectivityState> state);
+  // Runs `task` on the io context once `delay` has passed: through the schedule if there is one.
+  void after(std::chrono::milliseconds delay, std::function<void()> task);
   // Writes the counters' noted advances; a failure is said and tried again.
   void flush_counters();
   void serve_refreshes();
@@ -321,6 +382,10 @@ class Node final : public Context {
   std::optional<identity::KeyCustody> _custody;
   // Beside custody, under a key derived from its seal root; none without custody.
   std::optional<identity::SealedCounters> _counters;
+  // The hybrid clock's ceiling: in the counters, or a durable file without custody; then the
+  // clock, which the roster loop keeps ahead of it.
+  std::unique_ptr<contract::HlcCeiling> _hlc_ceiling;
+  std::unique_ptr<contract::HybridClock> _hlc;
   // What this node proves itself with, and the CA's revocations it holds.
   net::Credentials _credentials;
   // Scope: the source the directory installs; read under the lock.
@@ -369,10 +434,15 @@ class Node final : public Context {
 
   std::unique_ptr<net::Server> _server;
   std::unique_ptr<net::Client> _client;
+  // What the node asks of the network (the harness's seam): the client and the server above,
+  // or the harness's own. Declared after them, so it goes first.
+  std::shared_ptr<net::Transport> _net;
   // Destroyed before the client it uses.
   std::unique_ptr<reach::Paths> _paths;
   // Channels; shared, since its completions hold it weakly.
   std::shared_ptr<net::Fanout> _fanout;
+  // Agreement: its changes in flight hold its core, never the node.
+  std::unique_ptr<agree::Agreement> _agreement;
 
   struct Watcher {
     boost::asio::any_io_executor executor;
@@ -438,6 +508,12 @@ class Node final : public Context {
   std::atomic<uint64_t> _telemetry_demand{0};
   contract::Mutex _loops_mutex;
   std::vector<std::jthread> _loops DANNAN_GUARDED_BY(_loops_mutex);
+  // The membership and connectivity threads' own contexts, where their steps' calls answer. They
+  // live as long as the node: a late answer to a call that timed out may still be posted.
+  boost::asio::io_context _membership_io;
+  boost::asio::io_context _connectivity_io;
+  // With a schedule: false once the node stops, so a step booked earlier does nothing after.
+  std::shared_ptr<std::atomic<bool>> _scheduled = std::make_shared<std::atomic<bool>>(true);
 
   std::unique_ptr<NodesNoun> _nodes;
   std::unique_ptr<RoutesNoun> _routes_noun;

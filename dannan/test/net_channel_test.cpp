@@ -115,6 +115,30 @@ TEST(Channel, AnotherClustersKeyFailsBothWays) {
   EXPECT_THROW(theirs_client.finish(body(reply.response_blob)), HandshakeRefused);
 }
 
+// A peer that authenticates but whose record the node will not admit (a slot table that
+// differs, say) is refused at the handshake, naming why, both ways.
+TEST(Channel, APeerNotAdmittedByItsRecordIsRefusedBothWays) {
+  const auto k = key("cluster");
+  Credentials picky(k);
+  picky.admit = [](const membership::NodeRecord& peer) { return peer.advert("table") ? std::string() : std::string("no table here"); };
+  auto with = node("a");
+  with.adverts["table"] = {1};
+  const auto without = node("b");
+  ClientHandshake bare(k, without, 65536, Lane::control);
+  try {
+    (void)server_handshake(picky, node("s"), 65536, body(bare.hello_blob()), {"h", 1});
+    ADD_FAILURE() << "a peer not admitted was answered";
+  } catch (const HandshakeRefused& refused) {
+    EXPECT_NE(std::string(refused.what()).find("no table here"), std::string::npos) << refused.what();
+  }
+  ClientHandshake good(k, with, 65536, Lane::control);
+  EXPECT_NO_THROW((void)server_handshake(picky, node("s"), 65536, body(good.hello_blob()), {"h", 1}));
+  // The client asks it of the server's record too.
+  ClientHandshake picky_client(picky, with, 65536, Lane::control);
+  const auto reply = server_handshake(k, without, 65536, body(picky_client.hello_blob()), {"h", 1});
+  EXPECT_THROW(picky_client.finish(body(reply.response_blob)), HandshakeRefused);
+}
+
 TEST(Channel, AlteredHandshakeBytesAreRefused) {
   const auto k = key("cluster");
   ClientHandshake client(k, node("a"), 65536, Lane::control);

@@ -141,7 +141,8 @@ TEST(TwoProcess, ANodeProcessAndANodeHereFormOneCluster) {
     const auto outcome = node.context().routes().call_and_wait(*peer, type, net::Bytes{1, 2, 3}, frame, 5s);
     ASSERT_TRUE(outcome.reply) << outcome.failure;
     EXPECT_EQ(outcome.reply->payload, (net::Bytes{1, 2, 3}));
-    EXPECT_EQ(outcome.peer.id, *them);
+    ASSERT_TRUE(outcome.peer);
+    EXPECT_EQ(outcome.peer->id, *them);
   }
   node.stop();
 }

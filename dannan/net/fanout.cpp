@@ -105,6 +105,20 @@ uint64_t Fanout::subscribe(const std::string& channel, std::string prefix, asio:
   return id;
 }
 
+uint64_t Fanout::subscribe(const std::string& channel, std::string prefix, asio::any_io_executor executor, ChannelHandler handler,
+                           std::chrono::milliseconds deadline, asio::any_io_executor done_executor, std::function<void(membership::Pushed)> done) {
+  if (prefix.size() > max_topic) throw std::invalid_argument("a topic prefix is at most 4096 bytes");
+  uint64_t id;
+  {
+    contract::Lock lock(_mutex);
+    if (!_channels.contains(channel)) throw std::invalid_argument("channel " + channel + " is not open");
+    id = _next_subscription++;
+    _subscriptions.emplace(id, Subscription{channel, std::move(prefix), std::move(executor), std::move(handler)});
+  }
+  readvertise(channel, Push{deadline, std::move(done_executor), std::move(done)});
+  return id;
+}
+
 void Fanout::unsubscribe(uint64_t id) {
   std::string channel;
   {
@@ -117,7 +131,10 @@ void Fanout::unsubscribe(uint64_t id) {
   readvertise(channel);
 }
 
-void Fanout::readvertise(const std::string& channel) {
+void Fanout::readvertise(const std::string& channel, std::optional<Push> push) {
+  // Held from reading the subscriptions to setting the advert: a racing readvertise never
+  // sets an older list after a newer one.
+  contract::Lock advertising(_advertising);
   std::vector<std::string> prefixes;
   {
     contract::Lock lock(_mutex);
@@ -130,7 +147,14 @@ void Fanout::readvertise(const std::string& channel) {
   std::vector<std::string> minimal;
   for (const auto& prefix : prefixes)
     if (minimal.empty() || !under(prefix, minimal.back())) minimal.push_back(prefix);
-  _hooks.advertise(interest_advert(channel), minimal.empty() ? std::nullopt : std::optional<Bytes>(encode_interest(minimal)));
+  auto advert = minimal.empty() ? std::nullopt : std::optional<Bytes>(encode_interest(minimal));
+  if (!push) return _hooks.advertise(interest_advert(channel), std::move(advert));
+  if (!_hooks.push) {
+    _hooks.advertise(interest_advert(channel), std::move(advert));
+    return asio::post(push->executor, [done = std::move(push->done)] { done({}); });
+  }
+  // The push sets the advert at once and sends it on: done is told later, on its executor.
+  _hooks.push(interest_advert(channel), std::move(advert), push->deadline, std::move(push->executor), std::move(push->done));
 }
 
 std::vector<NodeRecord> Fanout::destinations(const std::string& channel, const std::string& topic) const {
