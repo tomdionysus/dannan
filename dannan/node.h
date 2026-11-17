@@ -29,6 +29,7 @@
 #include "dannan/membership/membership.h"
 #include "dannan/net/client.h"
 #include "dannan/net/server.h"
+#include "dannan/net/transport.h"
 #include "dannan/reach/connectivity.h"
 #include "dannan/reach/dial_back.h"
 #include "dannan/reach/inbound.h"
@@ -417,6 +418,9 @@ class Node final : public Context {
 
   std::unique_ptr<net::Server> _server;
   std::unique_ptr<net::Client> _client;
+  // What the node asks of the network (the harness's seam): the client and the server above,
+  // or the harness's own. Declared after them, so it goes first.
+  std::shared_ptr<net::Transport> _net;
   // Destroyed before the client it uses.
   std::unique_ptr<reach::Paths> _paths;
   // Channels; shared, since its completions hold it weakly.
