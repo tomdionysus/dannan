@@ -61,6 +61,7 @@ add_executable(dannan_tests
   sched_worker_pool_test.cpp
   sim_agreement_test.cpp
   sim_checkers_test.cpp
+  sim_nodes_test.cpp
   status_log_test.cpp
   status_observation_test.cpp
   status_process_test.cpp
