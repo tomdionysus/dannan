@@ -284,14 +284,21 @@ inline bool SimTransport::has_route(const identity::NodeId& peer, net::Lane) con
   return server && server->serving();
 }
 
+// How a node comes back from a restart (Mimir's review): with everything; as the same node (its
+// id kept, a new epoch) whose hosted store lost its state, the restart rule's case; or as a new
+// node, a new identity in a new directory, a membership change.
+enum class Wipe { nothing, store, identity };
+
 // A cluster of whole nodes in the world: each node's state in its own directory, its clock at
 // its own offset and drift, its loops on the world's schedule, its network the world's. A node
 // stops and comes back with its state kept or wiped, as the test chooses (Mimir's second ask).
 class SimNodes {
  public:
   // `size` nodes, each bootstrapping from node 0; clocks within `skew_ms` of the world's and
-  // drifting up to `drift_ppm`, from the seed.
-  SimNodes(World& world, size_t size, NetworkFaults faults = {}, int64_t skew_ms = 0, int64_t drift_ppm = 0) : _world(world), _network(world, faults) {
+  // drifting up to `drift_ppm`, from the seed. Started at once, or by start_all() once a test has
+  // set `configure` and `host` (which may read ids()).
+  SimNodes(World& world, size_t size, NetworkFaults faults = {}, int64_t skew_ms = 0, int64_t drift_ppm = 0, bool started = true)
+      : _world(world), _network(world, faults) {
     std::ofstream(_dir.path() / "cluster.key") << "sim cluster";
     _key = identity::load_cluster_key(_dir.path() / "cluster.key");
     for (size_t i = 0; i < size; ++i) {
@@ -299,8 +306,12 @@ class SimNodes {
       const int64_t drift = drift_ppm ? static_cast<int64_t>(world.random.below(static_cast<uint64_t>(2 * drift_ppm + 1))) - drift_ppm : 0;
       _clocks.push_back(std::make_unique<NodeClock>(world, offset, drift));
       _nodes.emplace_back();
+      _ids.push_back(draw_id());
     }
-    for (size_t i = 0; i < size; ++i) start(i);
+    if (started) start_all();
+  }
+  void start_all() {
+    for (size_t i = 0; i < _nodes.size(); ++i) start(i);
   }
   ~SimNodes() {
     for (size_t i = 0; i < _nodes.size(); ++i) stop(i);
@@ -311,7 +322,9 @@ class SimNodes {
   size_t size() const noexcept { return _nodes.size(); }
   bool up(size_t i) const { return _nodes.at(i) != nullptr; }
   Node& node(size_t i) { return *_nodes.at(i); }
-  identity::NodeId id(size_t i) const { return _nodes.at(i)->context().identity().id(); }
+  identity::NodeId id(size_t i) const { return _ids.at(i); }
+  // Every node's id, known before any starts (a genesis set names them).
+  const std::vector<identity::NodeId>& ids() const noexcept { return _ids; }
   SimNetwork& network() noexcept { return _network; }
 
   // What node `i` is configured with; a test may change it before a restart.
@@ -340,44 +353,63 @@ class SimNodes {
   }
   // A test's own settings for every node it starts.
   std::function<void(size_t, NodeConfig&)> configure;
+  // What the hosted system serves on node `i` once it has started, every start included:
+  // `lost` says its store lost its state (Wipe::store or Wipe::identity), and must not vote
+  // until caught up, unless it is new.
+  std::function<void(size_t i, Node& node, bool lost)> host;
   // Every node's log, kept for a test to look through rather than printed.
   std::shared_ptr<RecordingSink> log = std::make_shared<RecordingSink>();
 
-  void start(size_t i) {
+  void start(size_t i, bool lost = false) {
     _generation.resize(std::max(_generation.size(), i + 1), 0);
     auto settings = config(i);
     // The node's id from the seed, not the operating system's randomness: ids order the rosters
     // and every map keyed by them, so a run replays only if they do. Kept by a restart; a wiped
     // node's new directory draws a new one.
     if (!std::filesystem::exists(settings.state_path / "node-id")) {
-      identity::NodeId id;
-      for (auto& byte : id.bytes) byte = static_cast<uint8_t>(_world.random.next());
       std::filesystem::create_directories(settings.state_path);
-      std::ofstream(settings.state_path / "node-id") << identity::to_string(id) << "\n";
+      std::ofstream(settings.state_path / "node-id") << identity::to_string(_ids.at(i)) << "\n";
     }
     auto node = std::make_unique<Node>(_world.io, std::move(settings));
     node->start();
     _nodes.at(i) = std::move(node);
+    if (host) host(i, *_nodes.at(i), lost);
   }
+  // Stopped, then destroyed once the world's ready handlers have run while it still exists:
+  // after its stop nothing it booked on the schedule runs, and its transport, holding its hooks,
+  // goes with it. A call it had in flight is never answered.
   void stop(size_t i) {
     if (!_nodes.at(i)) return;
     _nodes.at(i)->stop();
+    _world.io.restart();
+    while (_world.io.poll_one() > 0) {
+    }
     _nodes.at(i).reset();
   }
-  // Back with its state as it was on disk, or with none (a new directory: a new identity).
-  void restart(size_t i, bool wiped = false) {
+  // Back as Wipe says.
+  void restart(size_t i, Wipe wipe = Wipe::nothing) {
     stop(i);
-    if (wiped) ++_generation.at(i);
-    start(i);
+    if (wipe == Wipe::identity) {
+      ++_generation.at(i);
+      _ids.at(i) = draw_id();
+    }
+    start(i, wipe != Wipe::nothing);
   }
 
  private:
+  identity::NodeId draw_id() {
+    identity::NodeId id;
+    for (auto& byte : id.bytes) byte = static_cast<uint8_t>(_world.random.next());
+    return id;
+  }
+
   World& _world;
   SimNetwork _network;
   TempDir _dir;
   identity::ClusterKey _key;
   std::vector<std::unique_ptr<NodeClock>> _clocks;
   std::vector<uint64_t> _generation;
+  std::vector<identity::NodeId> _ids;
   std::vector<std::unique_ptr<Node>> _nodes;
 };
 
