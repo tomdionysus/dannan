@@ -138,6 +138,11 @@ Mimir, who reviewed the design:
 - **`receive(stamp, peer)`** beside `receive(stamp)`: per-peer offsets on Status need the peer,
   which the reviewed `receive` does not carry. It takes a short lock for the per-peer table;
   `receive(stamp)` and `now()` stay lock-free.
+- **Ruled (the maintainer, 2026-11-17, Dagda, Lir and Mimir all choosing it): the durable file stays**, the
+  limit stated in `Context::hlc()`'s contract, and 0.10.0's peer-witnessed high-water mark closes
+  the restore case without custody (Mimir's mechanism: at start, issue no stamp until the clock
+  passes the highest stamp a majority of peers report receiving from this node; needed before
+  Mimir's stage 4 depends on the clock).
 - **A node without key custody** has no sealed counters, which the design names as the
   ceiling's home: it keeps the ceiling in `<state>/clock/hlc-ceiling`, a durable file. That is
   as safe across a crash; it is not sealed, so a state directory restored alone is not refused.
