@@ -48,7 +48,10 @@ current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluat
   multi-name change half taken, a stall, `forget()`, a lost transfer and the floor. Merged at
   `ea84a31`, not pushed (hosted CI waits on the maintainer's push word). macOS gate at `522b1d8`: 858
   tests, 856 passed, 2 skipped (Linux-only). Lugh wants word when it is in a tag.
-- **Next: step 3, part 3** (correlated kills, and durability per `ack_level` against the faults).
+- Step 3, part 3 (durability per `ack_level`, a majority killed together) is done
+  (`COMPLETED.md`, 2026-11-17), with two `catch_up()` faults it found.
+- **Next: step 3, part 4** (membership, Routes and placement in the world; a transport seam under
+  the node, its design note to Kvasir and Mimir first).
 - **New for plan item 7**: multi-name changes in a slot go through the atomic commit too
   (Mimir and Kvasir agreed, option 2 of the review); until then `change()` takes one name.
 - **Gates.**
@@ -113,7 +116,7 @@ gold-plating beyond what the design and its reviews ask.
    2. **Done** (merged at `e26f0cb`): agreement's own invariants on every step
       (`fixtures/sim/invariants.h`), and all seven broken protocols refused with their seeds, the merge class's
       included. See `COMPLETED.md`, 2026-11-17.
-   3. **Next: correlated kills** (a majority at one step), and the durability rules per `ack_level` judged against the
+   3. **Done** (2026-11-17): correlated kills (a majority at one step), and the durability rules per `ack_level` judged against the
       faults in the history.
    4. **Membership, Routes and placement in the world.** This needs a transport seam under the node. A design note
       goes to Kvasir and Mimir first.
