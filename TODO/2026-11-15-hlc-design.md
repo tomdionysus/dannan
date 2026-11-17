@@ -132,7 +132,8 @@ would measure skew without a hosted system's traffic, is a separate 0.9.0 wire q
 ## As built (2026-11-17, step 5)
 
 `dannan/contract/hlc.h` and `.cpp`; on the node, `Context::hlc()`. Three choices made in
-building it, to be confirmed:
+building it. the maintainer, 2026-11-17: the first two kept as built; the third put to Dagda, Lir and
+Mimir, who reviewed the design:
 - **The interface is `HlcClock`**, not `Clock`: `contract::Clock` is already the steady clock.
 - **`receive(stamp, peer)`** beside `receive(stamp)`: per-peer offsets on Status need the peer,
   which the reviewed `receive` does not carry. It takes a short lock for the per-peer table;
