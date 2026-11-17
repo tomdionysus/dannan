@@ -302,6 +302,8 @@ class Node final : public Context {
 
   net::Handled handle(const membership::NodeRecord& peer, sched::FrameType frame, net::Message request, net::Answer& answer);
   void observe_direct(const membership::NodeRecord& peer);
+  // Sends this node's current record to `peer` in the members push; the answer is not awaited.
+  void push_record_to(const membership::NodeRecord& peer);
   void merge(std::span<const uint8_t> payload);
   // Sets or clears an advert, then sends this node's record to every active peer over the
   // members exchange; `done` on `executor` with who holds it (Nodes::advertise).

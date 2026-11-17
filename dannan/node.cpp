@@ -1174,11 +1174,25 @@ std::optional<identity::Certificate> Node::peer_certificate(const identity::Node
 void Node::observe_direct(const NodeRecord& peer) {
   const auto before = _members.active();
   const auto previous = std::find_if(before.begin(), before.end(), [&](const NodeRecord& n) { return n.id == peer.id; });
-  const bool changed = previous == before.end() || shape_changed(*previous, peer);
+  const bool met = previous == before.end();
+  const bool changed = met || shape_changed(*previous, peer);
   _members.observe(peer, true);
   if (_net && peer.id != _identity.id) _net->note_peer(peer);
   if (changed) topology_changed();
   signal_telemetry();
+  // A peer met for the first time is given this node's record as it is now: the copy it holds
+  // came with the handshake or a third node's gossip, and may predate an advert set meanwhile,
+  // which a push made before the peer was known never reached (Lir's finding on 0.9.1).
+  if (met && peer.id != _identity.id) push_record_to(peer);
+}
+
+void Node::push_record_to(const NodeRecord& peer) {
+  if (!_net || _stopping || _calls_cancelled || peer.host.empty() || !peer.port) return;
+  net::Writer writer;
+  writer.u32(1);
+  membership::encode(writer, _members.self());
+  (void)place_call(peer, {peer.host, peer.port}, net::message::members, writer.take(), sched::FrameType::control, _config.exchange_budget, _io.get_executor(),
+                   [](net::CallOutcome) {});
 }
 
 void Node::push_advert(const std::string& key, std::optional<net::Bytes> value, std::chrono::milliseconds deadline, asio::any_io_executor executor,
