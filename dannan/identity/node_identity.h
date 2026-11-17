@@ -8,6 +8,7 @@
 #pragma once
 
 #include <filesystem>
+#include <optional>
 #include <string_view>
 
 #include "dannan/identity/cluster_key.h"
@@ -38,7 +39,8 @@ NodeId load_or_create_node_id(const std::filesystem::path& state);
 // durability epoch, fresh on every start, so peers can tell a restart from
 // a reconnect. Built while the state lock is held; read-only afterwards.
 struct NodeIdentity {
-  NodeIdentity(const std::filesystem::path& state, ClusterKey key);
+  // `epoch`: the durability epoch; none, a fresh random one.
+  NodeIdentity(const std::filesystem::path& state, ClusterKey key, std::optional<NodeId> epoch = {});
 
   ClusterKey key;
   NodeId id;
