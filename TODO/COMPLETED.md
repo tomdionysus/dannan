@@ -3,6 +3,19 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
+## 0.9.0's release preparation, 2026-11-17 evening
+
+- Scope from the sessions (the maintainer: "Find out what the other sessions actually need and that's your
+  scope"): Dagda, Mimir, Kvasir, Lir, Lugh and Macha Server need none of DTLS/UDP, the
+  peer-witnessed high-water mark, atomic commit, loader promotion or the fuzz export in 0.9.0;
+  all move to 0.10.0.
+- Mimir's gap closed: `dannan::sim_checkers` built and installed with the library, the package
+  consumer linking it; shipped in `libdannan-dev` (develop's CI at `df4b2d8` failed both deb
+  jobs on the uninstalled `.a`; fixed, branch CI run 44155212928 green).
+- `CHANGELOG.md`'s 0.9.0 entry.
+- Gates: node-b 940 tests, 939 passed, 1 skipped; the package step; macOS 939 tests, 937
+  passed, 2 skipped (Linux-only).
+
 ## Step 5: the hybrid logical clock, 2026-11-17 (`feature/hlc`)
 
 - `contract::HybridClock` (`fc0627d`): the stamp (48 bits of milliseconds, 16 of counter), its
