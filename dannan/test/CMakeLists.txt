@@ -13,12 +13,6 @@ target_link_libraries(dannan_test_fixtures INTERFACE GTest::gtest Threads::Threa
 # Tests write only inside the build tree.
 target_compile_definitions(dannan_test_fixtures INTERFACE DANNAN_TEST_TEMP_ROOT="${PROJECT_BINARY_DIR}/test-tmp")
 
-# The simulation harness's checkers' search, compiled once (the harness design's
-# "Packaging"): a hosted system's tests link it with the header-only fixtures.
-add_library(dannan_sim_checkers STATIC fixtures/sim/linearizable.cpp fixtures/sim/serializable.cpp fixtures/sim/convergence.cpp)
-target_include_directories(dannan_sim_checkers PUBLIC ${PROJECT_SOURCE_DIR})
-target_link_libraries(dannan_sim_checkers PRIVATE dannan_warnings)
-
 add_executable(dannan_tests
   contract_hlc_test.cpp
   agree_caspaxos_test.cpp

@@ -125,7 +125,12 @@ the test and the reaper have passed TSan in CI since 0.6.0. Reproduce before cha
   download that attempt's artifacts by id.
 - A release's local gate is release, ASan and TSan on a Pi, and the macOS gate on the maintainer's Mac.
 
-**0.9.0 is cut when the whole plan below is done** (the maintainer, 2026-11-16, asked: not before, and not after agreement
+**0.9.0's scope, the maintainer, 2026-11-17 evening: "We need 0.9.0 done tonight", and "Find out what the other sessions
+actually need and that's your scope."** Asked Dagda, Mimir, Kvasir, Lir, Lugh and Macha Server: none needs DTLS/UDP,
+the peer-witnessed high-water mark, atomic commit across replica sets, loader promotion at the peer or the fuzz
+harness export in 0.9.0; those move to 0.10.0. What they named was on develop, but for Mimir's: the simulation
+checkers installed and exported (done: `dannan::sim_checkers`). Release notes in `CHANGELOG.md`.
+Earlier: **0.9.0 was to be cut when the whole plan below is done** (the maintainer, 2026-11-16, asked: not before, and not after agreement
 alone). Asked again later that day, he kept it: "I'd rather do it right - but it is becoming a chokepoint, we've been
 at this some time. Complete it properly." Lir, Mimir and Kvasir wait on the tag, so keep each step moving: no
 gold-plating beyond what the design and its reviews ask.
