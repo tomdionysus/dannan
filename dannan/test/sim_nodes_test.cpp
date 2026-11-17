@@ -14,6 +14,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -188,6 +189,9 @@ std::optional<std::string> agreement_over_nodes(uint64_t seed, bool split = fals
     return true;
   };
   if (!world.run_until(ready, 2'000'000)) return "the nodes never all advertised the space";
+  // Settled first, as for a split of membership alone: every node has reached every other itself.
+  const auto calm = world.now_ms() + 1000;
+  world.run_until([&] { return world.now_ms() >= calm; }, 2'000'000);
   std::vector<Counting> ops(30);
   const auto start = world.now_ms();
   for (size_t n = 0; n < ops.size(); ++n)
@@ -264,15 +268,21 @@ std::optional<std::string> agreement_over_nodes(uint64_t seed, bool split = fals
 // Two rosters naming different sets, from real membership (the agreement design's test): split 3 and
 // 2, each side's changes name the set its own roster gives as well as the genesis set. Neither a
 // roster's set (not the slot's) nor the minority commits; the history is linearizable.
+// The fixed seeds, or DANNAN_SIM_SEEDS for a longer run by hand.
+uint64_t seeds(uint64_t fallback) {
+  const char* set = std::getenv("DANNAN_SIM_SEEDS");
+  return set && *set ? std::strtoull(set, nullptr, 10) : fallback;
+}
+
 TEST(SimNodes, TwoRostersNamingDifferentSetsNeverBothCommit) {
-  for (uint64_t seed = 1; seed <= 10; ++seed) {
+  for (uint64_t seed = 1; seed <= seeds(10); ++seed) {
     const auto failed = agreement_over_nodes(seed, true);
     ASSERT_FALSE(failed) << "seed " << seed << ": " << *failed;
   }
 }
 
 TEST(SimNodes, AgreementOverRealMembershipStaysLinearizableUnderFaults) {
-  for (uint64_t seed = 1; seed <= 10; ++seed) {
+  for (uint64_t seed = 1; seed <= seeds(10); ++seed) {
     const auto failed = agreement_over_nodes(seed);
     ASSERT_FALSE(failed) << "seed " << seed << ": " << *failed;
   }
