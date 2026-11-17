@@ -152,13 +152,15 @@ std::optional<std::string> agreement_over_nodes(uint64_t seed, bool split = fals
     node.context().nodes().advertise(space, {});
     if (!lost) return;
     // Caught up by a strict read at a majority of the others, then voting.
+    // Held weakly by itself and strongly by the attempt in flight, so it ends with the last one.
     auto again = std::make_shared<std::function<void()>>();
-    *again = [&, i, store = stores[i], again] {
-      if (!nodes.up(i) || stores[i] != store) return;
+    *again = [&, i, store = stores[i], weak = std::weak_ptr(again)] {
+      const auto self = weak.lock();
+      if (!self || !nodes.up(i) || stores[i] != store) return;
       nodes.node(i).context().agreement().catch_up(space, 0, {agree::Name{'c'}}, nodes.ids(), 0, 1000ms, world.io.get_executor(),
-                                                   [&, i, store, again](agree::Outcome outcome) {
+                                                   [&world, store, self](agree::Outcome outcome) {
                                                      if (outcome.committed) return store->set_ready(true);
-                                                     world.after(100, *again);
+                                                     world.after(100, [self] { (*self)(); });
                                                    });
     };
     (*again)();
