@@ -21,7 +21,9 @@ left green. `ACTIVE.md` is the plan and this is the record.
   file's own, so a crash after it returned could lose a new directory and the file in it, as
   on a node's first start. Each directory made is now synced into its parent. Macha's own
   durable write may share the gap: for the Macha session to check.
-- Gate: node-b, 928 tests, 927 passed, 1 skipped (as root).
+- Gates: node-b, 928 tests, 927 passed, 1 skipped (as root). The branch's CI run 44136146315
+  green on every job, ASan and TSan included. macOS: 927 tests, 925 passed, 2 skipped
+  (Linux-only).
 
 ## The harness, step 3 part 5: the worker pool in the world, clients as actors, the transaction and convergence checkers, 2026-11-17 (`feature/sim-workers`)
 

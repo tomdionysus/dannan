@@ -145,7 +145,7 @@ gold-plating beyond what the design and its reviews ask.
    4. **Done**: membership, Routes and placement in the world, on the transport seam.
    5. **Done**: the transaction checker, the convergence checker, client actors, the worker pool in the world.
    6. **`SimDisk`** on the durable-file contract, once Dagda says which one (asked; still open).
-4. **Done, on `feature/file-system`**: the file-system interface (`2026-11-15-file-system-interface.md`, its
+4. **Done, merged**: the file-system interface (`2026-11-15-file-system-interface.md`, its
    "As built"), the POSIX implementation, the simulated disk, and Dannan's durable writes and state lock
    through it. This is also part 6's `SimDisk`: Dagda asked for the interface so its own paths move onto it.
 5. **The hybrid clock** (`2026-11-15-hlc-design.md`, reviewed).
