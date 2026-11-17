@@ -14,11 +14,13 @@
 #include <boost/asio/post.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
+#include <fstream>
 #include <future>
 #include <set>
 #include <stdexcept>
 
 #include "dannan/agree/wire.h"
+#include "dannan/identity/durable_file.h"
 #include "dannan/reach/external_ip.h"
 
 namespace dannan {
@@ -81,6 +83,30 @@ std::vector<identity::NodeId> ids_of(const std::vector<NodeRecord>& nodes) {
 // --- The nouns: thin views of the node -------------------------------------
 
 namespace {
+
+// Where the hybrid clock's ceiling is kept (the HLC design): beside the sealed counters, under
+// the label "dannan/hlc", so a directory restored alone is refused; a node without key custody
+// has no counters, and keeps it in a durable file, as safe across a crash and not sealed.
+class NodeCeiling final : public contract::HlcCeiling {
+ public:
+  NodeCeiling(identity::SealedCounters* counters, std::filesystem::path file) : _counters(counters), _file(std::move(file)) {}
+  uint64_t load() override {
+    if (_counters) return _counters->read(label);
+    std::ifstream input(_file);
+    uint64_t value = 0;
+    if (input >> value) return value;
+    return 0;
+  }
+  void raise(uint64_t unix_ms) override {
+    if (_counters) return _counters->advance(label, unix_ms);
+    identity::durable_replace_file(_file, std::to_string(unix_ms) + "\n");
+  }
+
+ private:
+  static constexpr std::string_view label = "dannan/hlc";
+  identity::SealedCounters* const _counters;
+  const std::filesystem::path _file;
+};
 
 // The node's worker pool, on the node's schedule when it has one (the simulation harness's).
 sched::WorkerPoolConfig workers_of(const NodeConfig& config) {
@@ -458,6 +484,7 @@ Diagnostics Node::diagnostics() const {
   out.traffic = traffic();
   out.threads = _threads.statuses();
   if (_paths) out.paths = _paths->stats();
+  out.hlc = _hlc->stats();
   return out;
 }
 
@@ -510,6 +537,8 @@ Node::Node(asio::io_context& io, NodeConfig config)
       _identity(_config.state_path, _config.key, _config.fresh_id ? std::optional(_config.fresh_id()) : std::nullopt),
       _custody(_config.custody ? std::optional<identity::KeyCustody>(identity::KeyCustody::open(_config.state_path, *_config.custody)) : std::nullopt),
       _counters(_custody ? std::optional<identity::SealedCounters>(std::in_place, _config.state_path, _custody->derive("dannan/counter/1")) : std::nullopt),
+      _hlc_ceiling(std::make_unique<NodeCeiling>(_counters ? &*_counters : nullptr, _config.state_path / "clock" / "hlc-ceiling")),
+      _hlc(std::make_unique<contract::HybridClock>(*_config.wall, *_hlc_ceiling, _config.hlc_max_ahead)),
       _inbound(_config.inbound, _config.state_path, _config.wall, _config.reprobe_while_capable, _config.reprobe_while_incapable, _config.heartbeat),
       _members(initial_self(_config, _identity.id, _identity.durability_epoch, _inbound.capable()), _config.dead_after,
                _config.state_path / "membership" / "known-nodes.bin", _config.forget_after, _config.time, _config.wall),
@@ -1457,6 +1486,12 @@ void Node::roster_step() {
   _members.flush();
   _agreed.flush();
   flush_counters();
+  try {
+    _hlc->keep_ahead();
+  } catch (const std::exception& error) {
+    // The write path raises the ceiling itself when it must; the next pass tries again.
+    status::ScopedLogger(_config.log, "node").warn(std::string("the hybrid clock's ceiling not raised: ") + error.what());
+  }
 }
 
 void Node::membership_loop(std::stop_token stop) {

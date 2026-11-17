@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "dannan/agree/agreement.h"
+#include "dannan/contract/hlc.h"
 #include "dannan/contract/scope.h"
 #include "dannan/contract/time_source.h"
 #include "dannan/identity/key_custody.h"
@@ -303,6 +304,9 @@ struct Diagnostics {
   // Level 0: punches and relays tried and made, and the circuits through
   // this node with their bytes.
   reach::PathStats paths;
+  // The hybrid clock: stamps not merged, overflows, ceiling raises off the roster loop, and each
+  // peer's largest offsets.
+  contract::HlcStats hlc;
 };
 
 // Who this node is.
@@ -458,6 +462,9 @@ class Context {
   // and changes registers from any node. the maintainer, 2026-11-15: anything in the stack that
   // can use agreement uses this, and builds no consensus of its own.
   virtual agree::Agreement& agreement() = 0;
+  // The node's hybrid logical clock (0.9.0, TODO/2026-11-15-hlc-design.md): one per node, shared
+  // by every hosted system, its stamps never repeated across restarts.
+  virtual contract::HlcClock& hlc() = 0;
   virtual Diagnostics diagnostics() const = 0;
 };
 
