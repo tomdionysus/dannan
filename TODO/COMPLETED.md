@@ -18,7 +18,19 @@ left green. `ACTIVE.md` is the plan and this is the record.
   node was stopped and destroyed, completing into its membership pass (use after free in a
   world that goes on). A stopped node now runs nothing it booked; `SimNodes` destroys a stopped
   node only once the world's ready handlers have run.
-- Gate: node-c, 871 tests, 870 passed, 1 skipped (as root).
+- **Found by develop's CI and the Mac, fixed before this merged:**
+  - ASan: after a restart, a reply to the old node's call reached it through the new node's
+    transport at the same index (`9f9aa84`: a reply goes to the transport that made the call).
+  - TSan: a node's worker pool threads read its clock while the world moved it (the world's
+    time is atomic until the worker pool is in the world, part 5).
+  - LeakSanitizer's case: the catch-up retry held itself (`0af59a7`).
+  - The split test failed on half of 60 seeds (one seed had hidden it; the Mac's libc++ ran
+    another): it split the cluster before nodes had reached each other, and a peer known only
+    through gossip was lost on its own side. The tests now settle first and run 10 seeds;
+    `SimTransport` pings its routes each heartbeat as the real client does (`09d1f6d`).
+- Gates: node-b, 871 tests, 870 passed, 1 skipped (as root); 40 seeds of each agreement run.
+  The branch's CI run 44102424795 green on every job, ASan and TSan included. macOS at
+  `45b46c7`: 870 tests, 868 passed, 2 skipped (Linux-only).
 - Part 4 is complete. Next: part 5 (the transaction checker, the convergence checker, client
   actors, the worker pool in the world).
 

@@ -61,7 +61,8 @@ current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluat
   world, `fixtures/sim/nodes.h`) is merged (`COMPLETED.md`); macOS gate at `cf0c43d`: 868 tests,
   866 passed, 2 skipped (Linux-only).
   Part 4 is complete: agreement over real membership, and two rosters naming different sets
-  from real rosters, on `feature/sim-agreement-nodes` (`COMPLETED.md`). **Next: step 3, part 5**
+  from real rosters, merged (`COMPLETED.md`). Develop's CI at `d50bb67` failed ASan and TSan on
+  the harness; fixed on the branch, whose CI run 44102424795 was green. **Next: step 3, part 5**
   (the transaction checker, the convergence checker, client actors, the worker pool in the
   world).
 - **New for plan item 7**: multi-name changes in a slot go through the atomic commit too
