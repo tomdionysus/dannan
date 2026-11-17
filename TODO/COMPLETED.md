@@ -3,6 +3,24 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
+## The harness, step 3 part 3: durability per acknowledgement level, and a majority killed together, 2026-11-17 (`feature/sim-durability`)
+
+- `fixtures/sim/durability.h`: `AckLevel` and `loss_excused`, each level's rule against the
+  faults in the history. A decided write may be lost only if a majority stopped together, the
+  killed nodes that had not synced since it numbering a majority. The window is conservative both
+  ways: a kill counts from the write's invocation, a sync only from its answer.
+- `Store::sync()`; `Invariants::excused_loss()`, which starts the invariants afresh after a loss
+  the faults excuse.
+- The simulation (`lasting`): five nodes under lost and duplicated messages and partitions, nodes
+  crashing alone (catching up before they vote) and a majority killed together (voting at once
+  on what each synced). The replicated run loses nothing; the decided run loses commits on some
+  seeds, every one excused; in-memory stores taken for replicated are refused (seed 8).
+- **Two faults found in `catch_up()`**, fixed (`1e33bc6`): it lowered a promise the restarted
+  store had kept (a store that syncs later keeps its promises, and the read's ballot is above a
+  majority of the others' only); and a catch-up whose read committed after its node had stopped
+  installed over the restarted state.
+- 4 new tests. Gate: node-b, 863 tests, 862 passed, 1 skipped (as root).
+
 ## Agreement reviewed against the CASPaxos paper, and its faults fixed, 2026-11-17 (`feature/attempt-timeout`)
 
 the maintainer, after the stall: "watch that commit fail, it sounds more serious than you're giving it credit
