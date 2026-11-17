@@ -126,6 +126,10 @@ class Answer {
   explicit operator bool() const noexcept { return static_cast<bool>(_state); }
   void operator()(Message reply);
   void fail(uint16_t status, std::string_view code, std::string_view why);
+  // An answer that sends `reply` and holds no place and no bytes in a scheduler: for a
+  // transport that delivers requests to the handler itself (the simulation harness's). Given
+  // once; dropped ungiven, it refuses (500 "abandoned"), as any Answer does.
+  static Answer to(Reply reply);
 
  private:
   friend class RequestScheduler;

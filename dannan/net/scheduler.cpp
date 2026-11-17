@@ -48,6 +48,12 @@ struct Answer::State {
 Answer::Answer() noexcept = default;
 Answer::Answer(std::unique_ptr<State> state) noexcept : _state(std::move(state)) {}
 Answer::Answer(Answer&& other) noexcept = default;
+
+Answer Answer::to(Reply reply) {
+  auto state = std::make_unique<State>();
+  state->reply = std::move(reply);
+  return Answer(std::move(state));
+}
 Answer& Answer::operator=(Answer&& other) noexcept {
   if (this != &other) {
     abandon();
