@@ -55,8 +55,10 @@ current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluat
   pushed. macOS gate at `832bab2`: 862 tests, 860 passed, 2 skipped (Linux-only).
 - The transport seam for part 4 is reviewed by Mimir and Kvasir (option 2, pieces 2a and 2b):
   `2026-11-17-sim-transport-seam.md`.
-- **Next: step 3, part 4** (membership, Routes and placement in the world; a transport seam under
-  the node, its design note to Kvasir and Mimir first).
+- **Step 3, part 4, in progress.** Piece 2a (the loops on a schedule) is on
+  `feature/sim-schedule` (`0352286`), suite green, not merged: it changes the node's threads, so
+  it waits for the macOS gate and hosted CI's TSan (the maintainer's push word). **Next: piece 2b**
+  (`net::Transport`, `SimTransport`, `SimNode`; Mimir's three asks).
 - **New for plan item 7**: multi-name changes in a slot go through the atomic commit too
   (Mimir and Kvasir agreed, option 2 of the review); until then `change()` takes one name.
 - **Gates.**

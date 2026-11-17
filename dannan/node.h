@@ -167,6 +167,13 @@ struct NodeConfig {
 
   const contract::TimeSource* time = &contract::steady_time_source();
   const contract::WallClock* wall = &contract::system_wall_clock();
+
+  // Runs `task` once `after` has passed on `time` (the simulation harness's schedule, step 3
+  // part 4, reviewed by Mimir and Kvasir). Set, the node starts no loop threads: each loop's
+  // step runs from it on the io context, the next booked when one ends, and Time::after() and
+  // agreement's waits go through it too, so a world run on one thread orders all of them. Empty:
+  // the loops are threads, as always.
+  std::function<void(std::chrono::milliseconds after, std::function<void()> task)> schedule;
 };
 
 // Dannan's node: the control plane assembled. The identity under a locked
@@ -293,11 +300,41 @@ class Node final : public Context {
   // A call from a loop thread, waited on within the deadline.
   net::CallOutcome call_wait(std::optional<membership::NodeRecord> peer, const net::Endpoint& endpoint, net::MessageType type, net::Bytes payload,
                              std::chrono::milliseconds deadline, sched::FrameType frame = sched::FrameType::control, net::CallWatch watch = {});
-  void exchange(std::optional<membership::NodeRecord> peer, const net::Endpoint& endpoint);
   void membership_loop(std::stop_token stop);
   void telemetry_loop(std::stop_token stop);
   void connectivity_loop(std::stop_token stop);
   void roster_loop(std::stop_token stop);
+
+  // The loops' steps: what one wake of each does, the same whether a thread or the schedule
+  // (NodeConfig::schedule) runs it. A step that calls a peer goes on when the answer comes, its
+  // continuations run on `on` (a loop's own context in a thread, so the disk stays the loop's,
+  // Law 1), and `done` is called there once the step is over, or once `stopped` says so.
+  using Step = std::function<void(boost::asio::any_io_executor on, std::function<void()> done)>;
+  struct MembershipPass;
+  struct ConnectivityState;
+  // Forget the unseen, then exchange with each seed and known peer in turn.
+  void membership_step(std::function<bool()> stopped, boost::asio::any_io_executor on, std::function<void()> done);
+  void membership_next(const std::shared_ptr<MembershipPass>& pass);
+  // One exchange of rosters, then of revocations; `done` with why it failed, or empty.
+  void exchange(std::optional<membership::NodeRecord> peer, const net::Endpoint& endpoint, boost::asio::any_io_executor on,
+                std::function<void(std::string)> done);
+  void exchange_revocations(std::optional<membership::NodeRecord> peer, const net::Endpoint& endpoint, std::chrono::milliseconds deadline,
+                            boost::asio::any_io_executor on, std::function<void()> done);
+  void telemetry_step(contract::TimePoint& last_gossip);
+  void roster_step();
+  // Refreshes asked for, the path class when due, the circuits' sweep, and the dial-back probe
+  // when due.
+  void connectivity_step(const std::shared_ptr<ConnectivityState>& state, boost::asio::any_io_executor on, std::function<void()> done);
+  // A thread's way to run a step: on `context`, until it is done.
+  static void run_step(boost::asio::io_context& context, const Step& step);
+  // The schedule's way: each step, then the next after its interval, until the node stops.
+  void schedule_loops();
+  void scheduled_membership();
+  void scheduled_telemetry(contract::TimePoint last_gossip);
+  void scheduled_roster();
+  void scheduled_connectivity(std::shared_ptr<ConnectivityState> state);
+  // Runs `task` on the io context once `delay` has passed: through the schedule if there is one.
+  void after(std::chrono::milliseconds delay, std::function<void()> task);
   // Writes the counters' noted advances; a failure is said and tried again.
   void flush_counters();
   void serve_refreshes();
@@ -451,6 +488,12 @@ class Node final : public Context {
   std::atomic<uint64_t> _telemetry_demand{0};
   contract::Mutex _loops_mutex;
   std::vector<std::jthread> _loops DANNAN_GUARDED_BY(_loops_mutex);
+  // The membership and connectivity threads' own contexts, where their steps' calls answer. They
+  // live as long as the node: a late answer to a call that timed out may still be posted.
+  boost::asio::io_context _membership_io;
+  boost::asio::io_context _connectivity_io;
+  // With a schedule: false once the node stops, so a step booked earlier does nothing after.
+  std::shared_ptr<std::atomic<bool>> _scheduled = std::make_shared<std::atomic<bool>>(true);
 
   std::unique_ptr<NodesNoun> _nodes;
   std::unique_ptr<RoutesNoun> _routes_noun;
