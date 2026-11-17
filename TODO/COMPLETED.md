@@ -7,6 +7,11 @@ left green. `ACTIVE.md` is the plan and this is the record.
 are staged in `../tomcully-apt/incoming/dannan/0.9.1/` and checked on node-a (shlibs `libdannan0.9 (>= 0.9.1)`).
 Lir's SUBACK probe on 0.9.1: 20/20 at every delay, no misses.
 
+**0.9.2 is released** (`main` and tag at `36d6ded`, at the maintainer's word, 2026-11-17, with a macOS gate as his exception:
+941 tests, 939 passed, 2 skipped; main's CI run 44198359185 green). The `.deb`s are staged in
+`../tomcully-apt/incoming/dannan/0.9.2/` and checked on node-b (shlibs `libdannan0.9 (>= 0.9.2)`). Lir on 0.9.2:
+361 of 361, SlowGossipClusterTest 20 of 20 (6 of 30 failed on 0.9.1).
+
 **For 0.9.2: an advert set before a peer was met** (Lir's finding on 0.9.1). A push reaches only the peers known
 when made; the bootstrap peer kept the handshake's older record until its own next exchange. A node now pushes its
 current record to each peer met directly for the first time. The simulated transport sent the current record with

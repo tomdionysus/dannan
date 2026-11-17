@@ -39,7 +39,10 @@ current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluat
   reconfiguration, the fast path, value-less prepare and deltas in six parts, refusal at join), and step 3's part 1
   (the simulation history and the linearizability checker) is merged at `f917920`. The record is `COMPLETED.md`'s
   2026-11-16 entry.
-- **0.9.0 is the last release** (`main` and tag at `59b7abc`, pushed at the maintainer's word, 2026-11-17; main's CI run
+- **0.9.2 is the last release** (`main` and tag at `36d6ded`): 0.9.1, an advert change stamped above every copy
+  handed out; 0.9.2, a node's record pushed to each peer met for the first time. Both Lir's findings. The `.deb`s
+  of 0.9.0, 0.9.1 and 0.9.2 are staged in `../tomcully-apt/incoming/dannan/` for the maintainer to publish.
+- Before them, **0.9.0** (`main` and tag at `59b7abc`, pushed at the maintainer's word, 2026-11-17; main's CI run
   44158672535 green). The `.deb`s are staged in `../tomcully-apt/incoming/dannan/0.9.0/` and checked (SONAME
   `libdannan.so.0.9`, shlibs `libdannan0.9 (>= 0.9.0)`, `libdannan_sim_checkers.a` in `libdannan-dev`). Next is
   0.10.0: DTLS/UDP, the peer-witnessed high-water mark (covering the hybrid clock's restore without custody,
