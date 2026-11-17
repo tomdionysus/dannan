@@ -1,5 +1,16 @@
 # Current release
 
+## 0.9.2: an advert reaches a peer met after it was set
+
+Fixed: an advert set before a node had met a peer, as when a hosted system advertises at
+start while its bootstrap connection is still being made, was pushed to no one, and the peer
+kept the older record the session's handshake carried until its own next exchange, a whole
+heartbeat later (Lir, on 0.9.1). A node now sends its current record to each peer it meets
+directly for the first time. `Nodes::advertise` with a deadline still answers only for the
+peers known when it is called.
+
+The ABI is 0.9.0's.
+
 ## 0.9.1: an advert change never ties a copy of the record already sent
 
 Fixed: an advert set or cleared in the same millisecond as a gossip reply or handshake that

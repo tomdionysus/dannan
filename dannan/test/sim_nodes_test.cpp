@@ -271,6 +271,34 @@ std::optional<std::string> agreement_over_nodes(uint64_t seed, bool split = fals
   return std::nullopt;
 }
 
+// An advert set as a node starts, before it has met any peer, reaches a peer it meets after: on
+// a heartbeat of 30 s, not at the next exchange but at the first contact (Lir's finding on 0.9.1:
+// the push found no peers, and the bootstrap peer kept the handshake's older record).
+TEST(SimNodes, AnAdvertSetBeforeAPeerIsMetReachesItAtFirstContact) {
+  for (uint64_t seed = 1; seed <= 4; ++seed) {
+    SCOPED_TRACE("seed " + std::to_string(seed));
+    World world(seed);
+    SimNodes nodes(world, 2, {}, 0, 0, false);
+    nodes.configure = [](size_t, NodeConfig& config) {
+      config.heartbeat = std::chrono::seconds(30);
+      config.dead_after = std::chrono::seconds(90);
+    };
+    nodes.host = [&](size_t i, Node& node, bool) {
+      if (i != 1) return;
+      node.context().nodes().advertise("lir", net::Bytes{1}, std::chrono::seconds(1), world.io.get_executor(), [](membership::Pushed) {});
+    };
+    nodes.start_all();
+    const auto held = [&] {
+      for (const auto& record : nodes.node(0).context().nodes().roster())
+        if (record.id == nodes.id(1) && record.advert("lir")) return true;
+      return false;
+    };
+    const auto until = world.now_ms() + 2000;
+    world.run_until([&] { return held() || world.now_ms() >= until; }, 2'000'000);
+    EXPECT_TRUE(held());
+  }
+}
+
 // The fixed seeds, or DANNAN_SIM_SEEDS for a longer run by hand.
 uint64_t seeds(uint64_t fallback) {
   const char* set = std::getenv("DANNAN_SIM_SEEDS");

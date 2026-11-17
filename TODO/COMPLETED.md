@@ -3,6 +3,17 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
+**0.9.1 is released** (`main` and tag at `7206e53`, at the maintainer's word; main's CI run 44184976022 green). The `.deb`s
+are staged in `../tomcully-apt/incoming/dannan/0.9.1/` and checked on node-a (shlibs `libdannan0.9 (>= 0.9.1)`).
+Lir's SUBACK probe on 0.9.1: 20/20 at every delay, no misses.
+
+**For 0.9.2: an advert set before a peer was met** (Lir's finding on 0.9.1). A push reaches only the peers known
+when made; the bootstrap peer kept the handshake's older record until its own next exchange. A node now pushes its
+current record to each peer met directly for the first time. The simulated transport sent the current record with
+every call and could not show it; each route now keeps its first record, as a session does.
+`SimNodes.AnAdvertSetBeforeAPeerIsMetReachesItAtFirstContact` failed on all four seeds before the fix. Node-a:
+942 tests, 941 passed, 1 skipped.
+
 **For 0.9.1: an advert change tied a snapshot's stamp** (Lir's finding on 0.9.0, 2026-11-17). Gossip replies and
 handshakes stamp the record with the wall's millisecond, unrecorded; `set_advert`/`clear_advert` took
 max(wall, last + 1), so a change in the millisecond of an earlier snapshot tied its stamp with new content and
