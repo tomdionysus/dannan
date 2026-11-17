@@ -1133,10 +1133,25 @@ void Agreement::catch_up(std::string space, Slot slot, std::vector<Name> names, 
   read(space, slot, names, replicas, version, {}, deadline, executor, [core, space, slot, names, set, done = std::move(done)](Outcome outcome) mutable {
     const auto served = core->find(space);
     if (!outcome.committed || !served) return done(std::move(outcome));
+    // The owner gone (a node stopped, its store kept for the next start): nothing is installed,
+    // so a catch-up begun before a restart never writes over the state after it (the simulator,
+    // 2026-11-17).
+    {
+      contract::ReadLock lock(core->lifetime);
+      if (core->closed) {
+        outcome.committed = false;
+        outcome.why = "the node stopped before what was caught up could be installed";
+        return done(std::move(outcome));
+      }
+    }
     // Every state is replaced whole, so none is loaded with its value.
     served->store->load(slot, names, false, false, [core, space, served, slot, set, outcome = std::move(outcome), done = std::move(done)](Held held) mutable {
+      // The read's ballot is above every promise at a majority of the others, not this node's
+      // own: a store that kept its promises across the restart (one that syncs later) may hold a
+      // higher one, which is kept, never lowered (the simulator, 2026-11-17).
       for (size_t i = 0; i < held.states.size() && i < outcome.values.size(); ++i)
-        held.states[i] = AcceptorState{outcome.ballot, outcome.ballot, outcome.values[i], outcome.changed_at[i], {}, outcome.values[i].has_value()};
+        held.states[i] = AcceptorState{
+            std::max(held.states[i].promised, outcome.ballot), outcome.ballot, outcome.values[i], outcome.changed_at[i], {}, outcome.values[i].has_value()};
       held.slot.served = set;
       held.slot.pending_from.reset();
       // The floor a purge leaves went with the lost state, and a purged name leaves nothing to
