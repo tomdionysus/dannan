@@ -57,9 +57,10 @@ current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluat
   `2026-11-17-sim-transport-seam.md`.
 - **Step 3, part 4, in progress.** Piece 2a (the loops on a schedule) is merged at `ae66bf7`:
   its branch's CI run 44081889012 was green on every job, TSan and abi included; macOS gate
-  at `8118100`, 863 tests, 861 passed, 2 skipped (Linux-only). **Next: piece 2b**
-  (`net::Transport`, `SimTransport`, `SimNode`; Mimir's three asks), on `feature/sim-transport`,
-  where the surface is set out in the seam note.
+  at `8118100`, 863 tests, 861 passed, 2 skipped (Linux-only). Piece 2b (whole nodes in the
+  world, `fixtures/sim/nodes.h`) is done on `feature/sim-transport` (`COMPLETED.md`).
+  **Next in part 4**: agreement over real membership in the world, and "two rosters naming
+  different sets" from real rosters.
 - **New for plan item 7**: multi-name changes in a slot go through the atomic commit too
   (Mimir and Kvasir agreed, option 2 of the review); until then `change()` takes one name.
 - **Gates.**
