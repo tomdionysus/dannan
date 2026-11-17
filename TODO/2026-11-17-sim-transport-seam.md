@@ -83,6 +83,24 @@ batching window, catch-up retries) on the world's time. `Context::time()` alread
 order. Taken into 2a: with `NodeConfig::schedule` set, `Time::after()` runs through it, so a
 hosted system's timers are the world's events with nothing more on its side.
 
+## Piece 2b: the surface, from the node as it is (2026-11-17)
+
+What `Node` asks of `_client` and `_server` today (by call sites in `node.cpp`), and what the
+world's transport gives for each:
+
+| The node's use | Real transport | World's transport |
+|---|---|---|
+| `call` (a record or an endpoint), `send`, `broadcast`, `broadcast_best_effort`, `broadcast_notify` | the client, as now | events through the world: delay, loss, duplication, reorder, one-way blocks, the node matrix |
+| `has_route`, `close_route`, `note_peer`, `set_maintained_peers` | the client | a route is the matrix's reachability; notes kept for `has_route` |
+| `start`, `stop`, `bound_port` | client and server | a port per simulated node; stop fails calls in flight |
+| the server's handler (`handle`), its `scheduler` and `work_stats` | the server, as now | requests delivered to the node's `handle()` on its executor; a scheduler for admission as configured, no lanes |
+| `stats`, `peer_latency`, `peer_latencies`, `path_of`, `stalled`, `release_stalled` | the client | figures of the world (zero, or the world's delays) |
+| `probe`, `handle_dial_request`, `admit`, `invalidate_identity_association`, and `reach::Paths` (relay, punching) | the client and reach | outside the world: a simulated node is reachable or not by the matrix, and its path class is set |
+
+So `net::Transport` is the first block and the route notes; a `Transport::Figures` for the
+figures; the reach layer stays with the real transport only. `CallHandle` is made by either
+(today only `Client` makes one: its placement hooks become the transport's).
+
 ## Questions
 
 1. Kvasir, Mimir: is the call seam enough for your simulations, or does either need the
