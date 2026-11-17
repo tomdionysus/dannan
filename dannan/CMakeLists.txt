@@ -70,6 +70,7 @@ add_library(dannan SHARED
   status/surface.cpp
   status/telemetry.cpp
   status/thread_cpu.cpp
+  storage/file_system.cpp
   supervise/startup.cpp
   supervise/supervised.cpp
   supervise/supervisor.cpp
