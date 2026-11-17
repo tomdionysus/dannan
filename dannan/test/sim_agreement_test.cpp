@@ -8,25 +8,29 @@
 // Agreement under the simulation harness (TODO/2026-11-15-simulation-harness.md): five
 // nodes running Dannan's real Agreement increment one counter from every side while the
 // world loses, delays, duplicates and one-way-blocks messages and crashes and restarts
-// nodes. The history is checked for linearizability; and the same checker must refuse a
-// protocol broken on purpose (an acceptor that votes after losing its state), or it has
-// never been shown to refuse anything.
+// nodes. Agreement's own invariants are checked on every step and the history for
+// linearizability; and the checkers must refuse each protocol broken on purpose, naming the
+// seed, or they have never been shown to refuse anything (Miach).
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
 #include <deque>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "dannan/agree/wire.h"
 #include "dannan/net/routes.h"
 #include "dannan/test/fixtures/sim/agreement.h"
 #include "dannan/test/fixtures/sim/history.h"
+#include "dannan/test/fixtures/sim/invariants.h"
 #include "dannan/test/fixtures/sim/linearizable.h"
 #include "dannan/test/fixtures/sim/models.h"
 
@@ -56,6 +60,138 @@ agree::Change increment() {
     const auto next = decode(current[0]) + 1;
     return agree::Changed{{encode(next)}, encode(next)};
   };
+}
+
+// The counter's order for invariant 2: increments and strict reads only ever leave it where it
+// was or higher.
+Invariants::Options counter_order() {
+  return {[](const std::optional<agree::Bytes>& earlier, const std::optional<agree::Bytes>& later) { return decode(later) >= decode(earlier); }};
+}
+
+// The broken reduction: the oldest answer's value rather than the base's, rolling the base back
+// (the Reduce contract forbids it).
+agree::Reduce rolling_back() {
+  return [](const agree::NameState& base, std::span<const agree::NameState> answers) {
+    size_t oldest = 0;
+    for (size_t i = 1; i < answers.size(); ++i)
+      if (answers[i].accepted < answers[oldest].accepted) oldest = i;
+    if (answers.empty() || answers[oldest].accepted == base.accepted) return agree::Reduced{base.value, {}};
+    if (!answers[oldest].value && answers[oldest].has_value) return agree::Reduced{std::nullopt, {{oldest, std::nullopt}}};
+    return agree::Reduced{answers[oldest].value, {}};
+  };
+}
+
+// The checker of agreement's own invariants, unit by unit, on states put straight into the
+// stores: it must refuse each breach it names and pass a restart it is told of.
+void hold(Store& store, agree::Ballot promised, agree::Ballot accepted, std::optional<agree::Bytes> value, std::optional<agree::ReplicaSet> served = {}) {
+  agree::Held held;
+  held.slot.served = std::move(served);
+  held.names = {agree::Name{'k'}};
+  agree::AcceptorState state;
+  state.promised = promised;
+  state.accepted = accepted;
+  state.value = std::move(value);
+  state.changed_at = accepted;
+  held.states = {state};
+  store.keep(counter_slot, held, [](Store::Kept kept) { ASSERT_TRUE(kept.kept); });
+}
+
+agree::Ballot ballot(uint64_t counter) { return agree::Ballot{counter, {}, {}}; }
+
+TEST(Invariants, RefuseAPromiseThatFalls) {
+  World world(1);
+  Cluster cluster(world, 3, NetworkFaults{});
+  Invariants invariants(world, cluster, {});
+  hold(cluster.store(0), ballot(5), {}, std::nullopt);
+  invariants.check();
+  ASSERT_FALSE(invariants.violation());
+  hold(cluster.store(0), ballot(3), {}, std::nullopt);
+  invariants.check();
+  ASSERT_TRUE(invariants.violation());
+  EXPECT_NE(invariants.violation()->find("below the promise 5"), std::string::npos) << *invariants.violation();
+}
+
+TEST(Invariants, RefuseAnAcceptBelowAPromiseHeld) {
+  World world(1);
+  Cluster cluster(world, 3, NetworkFaults{});
+  Invariants invariants(world, cluster, {});
+  hold(cluster.store(1), ballot(5), {}, std::nullopt);
+  invariants.check();
+  hold(cluster.store(1), ballot(5), ballot(4), encode(1));
+  invariants.check();
+  ASSERT_TRUE(invariants.violation());
+  EXPECT_NE(invariants.violation()->find("accepted 4/0, below the promise 5"), std::string::npos) << *invariants.violation();
+}
+
+TEST(Invariants, RefuseTwoValuesAtOneBallot) {
+  World world(1);
+  Cluster cluster(world, 3, NetworkFaults{});
+  Invariants invariants(world, cluster, {});
+  hold(cluster.store(0), ballot(2), ballot(2), encode(1));
+  hold(cluster.store(1), ballot(2), ballot(2), encode(2));
+  invariants.check();
+  ASSERT_TRUE(invariants.violation());
+  EXPECT_NE(invariants.violation()->find("accepted differently at the same ballot"), std::string::npos) << *invariants.violation();
+}
+
+TEST(Invariants, RefuseAValueThatDoesNotAdvanceTheOneChosen) {
+  World world(1);
+  Cluster cluster(world, 3, NetworkFaults{});
+  Invariants invariants(world, cluster, counter_order());
+  const auto set = agree::ReplicaSet::of(cluster.ids(), 0);
+  hold(cluster.store(0), ballot(2), ballot(2), encode(5), set);
+  hold(cluster.store(1), ballot(2), ballot(2), encode(5), set);
+  invariants.check();
+  ASSERT_FALSE(invariants.violation());
+  EXPECT_EQ(invariants.chosen(), 1u);
+  // A higher ballot that advances it is fine; one that rolls it back is not.
+  hold(cluster.store(2), ballot(3), ballot(3), encode(6), set);
+  invariants.check();
+  ASSERT_FALSE(invariants.violation());
+  hold(cluster.store(2), ballot(4), ballot(4), encode(4), set);
+  invariants.check();
+  ASSERT_TRUE(invariants.violation());
+  EXPECT_NE(invariants.violation()->find("does not advance the value chosen at 2/0"), std::string::npos) << *invariants.violation();
+}
+
+// The same breach found the other way round: the higher value was seen first, and the lower
+// ballot is chosen after it.
+TEST(Invariants, RefuseAChosenValueThatAnEarlierHigherAcceptDoesNotAdvance) {
+  World world(1);
+  Cluster cluster(world, 3, NetworkFaults{});
+  Invariants invariants(world, cluster, counter_order());
+  const auto set = agree::ReplicaSet::of(cluster.ids(), 0);
+  hold(cluster.store(2), ballot(4), ballot(4), encode(1), set);
+  hold(cluster.store(0), ballot(2), ballot(2), encode(5), set);
+  invariants.check();
+  ASSERT_FALSE(invariants.violation());
+  hold(cluster.store(1), ballot(2), ballot(2), encode(5), set);
+  invariants.check();
+  ASSERT_TRUE(invariants.violation());
+  EXPECT_NE(invariants.violation()->find("the value accepted at 4/0 does not advance"), std::string::npos) << *invariants.violation();
+}
+
+// A restart without state, told of, starts the acceptor afresh; the same loss untold is caught.
+TEST(Invariants, PassARestartWithoutStateTheyAreToldOfAndCatchOneUntold) {
+  World world(1);
+  Cluster cluster(world, 3, NetworkFaults{});
+  Invariants invariants(world, cluster, {});
+  hold(cluster.store(0), ballot(5), {}, std::nullopt);
+  invariants.check();
+  cluster.crash(0);
+  cluster.restart(0, true);
+  hold(cluster.store(0), ballot(3), {}, std::nullopt);
+  invariants.check();
+  EXPECT_FALSE(invariants.violation());
+
+  cluster.store(1).lying_sync = true;
+  hold(cluster.store(1), ballot(5), {}, std::nullopt);
+  invariants.check();
+  cluster.crash(1);
+  cluster.restart(1);
+  invariants.check();
+  ASSERT_TRUE(invariants.violation());
+  EXPECT_NE(invariants.violation()->find("forgot the promise 5"), std::string::npos) << *invariants.violation();
 }
 
 // The store contract a value-less prepare relies on: a load without values leaves them
@@ -123,7 +259,17 @@ struct Run {
   size_t committed = 0;
 };
 
-// One seeded run; `mode` says how a crashed node comes back.
+// A run ends: a breach of agreement's invariants, if any, is the refusal, whether or not the
+// run went on to settle.
+Run finished(Run run, const Invariants& invariants) {
+  if (!invariants.violation()) return run;
+  run.violation = "invariant: " + *invariants.violation();
+  run.unsettled = false;
+  return run;
+}
+
+// One seeded run; `mode` says how a crashed node comes back, or which part of the protocol is
+// broken on purpose.
 enum class Mode {
   // A crashed node restarts with its durable state.
   keep,
@@ -131,6 +277,16 @@ enum class Mode {
   broken,
   // It restarts with its state lost and refuses to vote until caught up (the design's rule).
   catch_up,
+  // Broken, each with nodes restarting as in `keep`: every store's sync lies, and the node
+  // trusts it; every acceptor loads its promises as no more than it accepted; every client's
+  // reduction rolls the base back; a proposer skips prepare, sending an accept built on its own
+  // acceptor's value; a proposer whose roster names nodes 2, 3 and 4 changes the counter on
+  // them without the proof that they serve its slot.
+  lying_sync,
+  forget_promises,
+  rollback,
+  skip_prepare,
+  other_roster,
 };
 
 Run simulate(uint64_t seed, Mode mode) {
@@ -140,6 +296,12 @@ Run simulate(uint64_t seed, Mode mode) {
   faults.duplicate_one_in = 10;
   faults.max_delay_ms = 30;
   Cluster cluster(world, 5, faults);
+  Invariants invariants(world, cluster, counter_order());
+  for (size_t i = 0; i < cluster.size(); ++i) {
+    cluster.store(i).lying_sync = mode == Mode::lying_sync;
+    cluster.store(i).forget_promises = mode == Mode::forget_promises;
+  }
+  const auto table = agree::table_fingerprint(Cluster::slots, cluster.genesis());
   std::vector<Op> history(40);
   // How a crashed node comes back, by the mode.
   std::vector<uint64_t> incarnation(cluster.size(), 0);
@@ -156,6 +318,11 @@ Run simulate(uint64_t seed, Mode mode) {
     ++incarnation[a];
     switch (mode) {
       case Mode::keep:
+      case Mode::lying_sync:
+      case Mode::forget_promises:
+      case Mode::rollback:
+      case Mode::skip_prepare:
+      case Mode::other_roster:
         return cluster.restart(a);
       case Mode::broken:
         // Its state lost, it votes at once: what the design forbids.
@@ -181,8 +348,8 @@ Run simulate(uint64_t seed, Mode mode) {
       for (size_t tries = 0; tries < cluster.size() && !cluster.up(at); ++tries) at = (at + 1) % cluster.size();
       if (!cluster.up(at)) return;
       history[n].invoked = world.now_ms();
-      cluster.agreement(at).change(Cluster::space, counter_slot, {agree::Name{'c'}}, cluster.ids(), Cluster::genesis_version, increment(), {}, 3000ms,
-                                   world.io.get_executor(), [&, n](agree::Outcome outcome) {
+      cluster.agreement(at).change(Cluster::space, counter_slot, {agree::Name{'c'}}, cluster.ids(), Cluster::genesis_version, increment(),
+                                   mode == Mode::rollback ? rolling_back() : agree::Reduce{}, 3000ms, world.io.get_executor(), [&, n](agree::Outcome outcome) {
                                      auto& op = history[n];
                                      op.completed = world.now_ms();
                                      op.answered = true;
@@ -191,6 +358,59 @@ Run simulate(uint64_t seed, Mode mode) {
                                    });
     });
   }
+  // The broken proposers, built here on the real wire to the real acceptors, each at a ballot
+  // above anything the clients reach.
+  const auto skip_prepare = [&](uint64_t k) {
+    const auto r = world.random.below(cluster.size());
+    if (!cluster.up(r)) return;
+    // What it takes as current: its own acceptor's value, however far behind.
+    const auto held = cluster.store(r).state(counter_slot, agree::Name{'c'});
+    agree::Accept accept;
+    accept.set = cluster.genesis();
+    accept.slot = counter_slot;
+    accept.ballot = agree::Ballot{1'000'000 + k, cluster.id(r), {}};
+    accept.names = {agree::Name{'c'}};
+    accept.values = {encode(decode(held ? held->value : std::nullopt) + 1)};
+    accept.changed_at = {accept.ballot};
+    const auto payload = agree::encode(agree::AcceptMessage{Cluster::space, accept, table});
+    for (size_t to = 0; to < cluster.size(); ++to) cluster.call(r, to, net::message::agree_accept, payload, 500ms, [](auto, auto) {});
+  };
+  const auto other_roster = [&](uint64_t k) {
+    // Its roster puts the slot on nodes 2, 3 and 4, at a version above the genesis set's: the
+    // acceptors there promise, as they do for a newer set (the laggard rule), and only the
+    // proposer's proof rule would stop it. It has none.
+    const auto set = agree::ReplicaSet::of(cluster.ids({2, 3, 4}), Cluster::genesis_version + 1);
+    const size_t r = 2 + world.random.below(3);
+    if (!cluster.up(r)) return;
+    agree::Prepare prepare;
+    prepare.set = set;
+    prepare.slot = counter_slot;
+    prepare.ballot = agree::Ballot{1'000'000 + k, cluster.id(r), {}};
+    prepare.names = {agree::Name{'c'}};
+    const auto payload = agree::encode(agree::PrepareMessage{Cluster::space, prepare, table});
+    auto promised = std::make_shared<std::vector<agree::NameState>>();
+    for (const size_t to : {2, 3, 4})
+      cluster.call(r, to, net::message::agree_prepare, payload, 500ms, [&, promised, set, prepare, r](std::optional<net::Bytes> reply, std::string) {
+        if (!reply || promised->size() >= set.majority()) return;
+        const auto answer = agree::decode_prepare_answer(*reply);
+        if (answer.refused || answer.states.size() != 1) return;
+        promised->push_back(answer.states[0]);
+        if (promised->size() < set.majority()) return;
+        // The highest of its own majority's answers, changed.
+        const auto base = std::max_element(promised->begin(), promised->end(), [](const auto& a, const auto& b) { return a.accepted < b.accepted; });
+        agree::Accept accept;
+        accept.set = set;
+        accept.slot = counter_slot;
+        accept.ballot = prepare.ballot;
+        accept.names = prepare.names;
+        accept.values = {encode(decode(base->value) + 1)};
+        accept.changed_at = {prepare.ballot};
+        const auto bytes = agree::encode(agree::AcceptMessage{Cluster::space, accept, table});
+        for (const size_t at : {2, 3, 4}) cluster.call(r, at, net::message::agree_accept, bytes, 500ms, [](auto, auto) {});
+      });
+  };
+  if (mode == Mode::skip_prepare || mode == Mode::other_roster)
+    for (uint64_t k = 0; k < 4; ++k) world.after(world.random.below(2000), [&, k] { mode == Mode::skip_prepare ? skip_prepare(k) : other_roster(k); });
   // Faults over the same time: one-way partitions, crashes and restarts.
   for (int f = 0; f < 12; ++f) {
     world.after(world.random.below(2000), [&] {
@@ -226,7 +446,7 @@ Run simulate(uint64_t seed, Mode mode) {
   if (!world.run_until([&] { return world.now_ms() >= 1'002'500 && all_answered(); }, 2'000'000)) {
     run.unsettled = true;
     run.violation = "the run did not settle";
-    return run;
+    return finished(run, invariants);
   }
   // The final value, by a strict read once healed.
   std::optional<agree::Outcome> read;
@@ -236,14 +456,14 @@ Run simulate(uint64_t seed, Mode mode) {
   if (!read || !read->committed) {
     run.unsettled = true;
     run.violation = "the final read did not commit";
-    return run;
+    return finished(run, invariants);
   }
   std::vector<Op> invoked;
   for (const auto& op : history)
     if (op.invoked) invoked.push_back(op);
   run.committed = static_cast<size_t>(std::count_if(invoked.begin(), invoked.end(), [](const Op& op) { return op.committed; }));
-  run.violation = check(invoked, decode(read->values[0]));
-  return run;
+  if (const auto refused = check(invoked, decode(read->values[0]))) run.violation = "linearizability: " + *refused;
+  return finished(run, invariants);
 }
 
 // the maintainer's ruling (2026-11-15: "No root except at genesis. A root may start with only one
@@ -259,6 +479,7 @@ Run grow(uint64_t seed) {
   faults.duplicate_one_in = 10;
   faults.max_delay_ms = 30;
   Cluster cluster(world, 5, faults, true, 1);
+  Invariants invariants(world, cluster, counter_order());
   const auto first = [&](size_t size) {
     std::vector<identity::NodeId> out;
     for (size_t i = 0; i < size; ++i) out.push_back(cluster.id(i));
@@ -350,7 +571,7 @@ Run grow(uint64_t seed) {
   if (!world.run_until(settled, 2'000'000)) {
     run.unsettled = true;
     run.violation = "the run did not settle";
-    return run;
+    return finished(run, invariants);
   }
   // Every slot is on the five at a majority of them.
   const auto five = agree::ReplicaSet::of(cluster.ids(), cluster.size() - 1);
@@ -362,7 +583,7 @@ Run grow(uint64_t seed) {
     }
     if (holding < five.majority()) {
       run.violation = "slot " + std::to_string(slot) + " is on the five at only " + std::to_string(holding) + " nodes";
-      return run;
+      return finished(run, invariants);
     }
   }
   std::optional<agree::Outcome> read;
@@ -372,17 +593,171 @@ Run grow(uint64_t seed) {
   if (!read || !read->committed) {
     run.unsettled = true;
     run.violation = "the final read did not commit" + (read ? ": " + read->why : std::string());
-    return run;
+    return finished(run, invariants);
   }
   const std::vector<Op> invoked(history.begin(), history.end());
   run.committed = static_cast<size_t>(std::count_if(invoked.begin(), invoked.end(), [](const Op& op) { return op.committed; }));
-  run.violation = check(invoked, decode(read->values[0]));
-  return run;
+  if (const auto refused = check(invoked, decode(read->values[0]))) run.violation = "linearizability: " + *refused;
+  return finished(run, invariants);
+}
+
+// The merge class's correct reduction (Mimir's ruling 16): every promiser's merged state, each
+// value it lacks asked for, the union of them all.
+agree::Reduce uniting() {
+  return [](const agree::NameState& base, std::span<const agree::NameState> answers) {
+    agree::Reduced out;
+    auto merged = base.value.value_or(agree::Bytes{});
+    for (size_t i = 0; i < answers.size(); ++i) {
+      if (answers[i].value)
+        merged = Store::united(std::move(merged), *answers[i].value);
+      else if (answers[i].has_value)
+        out.need.push_back({i, std::nullopt});
+    }
+    if (out.need.empty()) out.value = std::move(merged);
+    return out;
+  };
+}
+
+// Mimir's merge class under faults. The register is a set of bytes: merge writes add to it
+// outside agreement, each synced on a majority of the nodes up and only then acknowledged at
+// `replicated`, while agreement commands add their own and return the set they saw. Ruling 16:
+// every command sees every merge write acknowledged before it began. `dropping`: commands use
+// the default reduction, the base's value alone, the broken protocol that drops them.
+Run merge_class(uint64_t seed, bool dropping) {
+  World world(seed);
+  NetworkFaults faults;
+  faults.drop_one_in = 10;
+  faults.duplicate_one_in = 10;
+  faults.max_delay_ms = 30;
+  // The register is made on a clean network; the faults start with the workload.
+  Cluster cluster(world, 5, NetworkFaults{});
+  for (size_t i = 0; i < cluster.size(); ++i) cluster.store(i).merging = true;
+  Invariants invariants(world, cluster,
+                        {[](const std::optional<agree::Bytes>& earlier, const std::optional<agree::Bytes>& later) {
+                           if (!earlier) return true;
+                           return later && std::includes(later->begin(), later->end(), earlier->begin(), earlier->end());
+                         },
+                         true});
+  const agree::Name name{'m'};
+  Run run;
+  // The register made by agreement first: the empty set.
+  std::optional<agree::Outcome> made;
+  cluster.agreement(0).change(
+      Cluster::space, counter_slot, {name}, cluster.ids(), Cluster::genesis_version,
+      [](std::span<const std::optional<agree::Bytes>>) { return agree::Changed{{agree::Bytes{}}, {}}; }, {}, 5000ms, world.io.get_executor(),
+      [&](agree::Outcome outcome) { made = std::move(outcome); });
+  world.run_until([&] { return made.has_value(); }, 2'000'000);
+  if (!made || !made->committed) {
+    run.unsettled = true;
+    run.violation = "the register was not made" + (made ? ": " + made->why : std::string());
+    return finished(run, invariants);
+  }
+  cluster.faults() = faults;
+  const auto start = world.now_ms();
+  struct Command {
+    uint64_t invoked = 0;
+    bool answered = false;
+    bool committed = false;
+    agree::Bytes seen;
+  };
+  std::vector<Command> commands(20);
+  for (size_t n = 0; n < commands.size(); ++n)
+    world.after(world.random.below(2000), [&, n] {
+      size_t at = world.random.below(cluster.size());
+      for (size_t tries = 0; tries < cluster.size() && !cluster.up(at); ++tries) at = (at + 1) % cluster.size();
+      if (!cluster.up(at)) return;
+      commands[n].invoked = world.now_ms();
+      const auto element = static_cast<uint8_t>('a' + n);
+      cluster.agreement(at).change(
+          Cluster::space, counter_slot, {name}, cluster.ids(), Cluster::genesis_version,
+          [element](std::span<const std::optional<agree::Bytes>> current) {
+            auto seen = current[0].value_or(agree::Bytes{});
+            return agree::Changed{{Store::united(seen, agree::Bytes{element})}, seen};
+          },
+          dropping ? agree::Reduce{} : uniting(), 3000ms, world.io.get_executor(),
+          [&, n](agree::Outcome outcome) {
+            commands[n].answered = true;
+            commands[n].committed = outcome.committed;
+            if (outcome.committed) commands[n].seen = outcome.result;
+          });
+    });
+  std::vector<std::pair<uint8_t, uint64_t>> acknowledged;
+  for (uint8_t k = 0; k < 16; ++k)
+    world.after(world.random.below(2000), [&, k] {
+      std::vector<size_t> up;
+      for (size_t i = 0; i < cluster.size(); ++i)
+        if (cluster.up(i)) up.push_back(i);
+      for (size_t i = up.size(); i > 1; --i) std::swap(up[i - 1], up[world.random.below(i)]);
+      const auto majority = cluster.size() / 2 + 1;
+      const auto element = static_cast<uint8_t>('A' + k);
+      for (size_t i = 0; i < up.size() && i < majority; ++i) cluster.store(up[i]).merge(counter_slot, name, element);
+      if (up.size() >= majority) acknowledged.emplace_back(element, world.now_ms());
+    });
+  for (int f = 0; f < 8; ++f)
+    world.after(world.random.below(2000), [&] {
+      const auto a = world.random.below(cluster.size());
+      const auto b = world.random.below(cluster.size());
+      switch (world.random.below(4)) {
+        case 0:
+          if (a != b) cluster.block(a, b);
+          break;
+        case 1:
+          cluster.unblock_all();
+          break;
+        case 2:
+          if (cluster.up(a)) cluster.crash(a);
+          break;
+        default:
+          if (!cluster.up(a)) cluster.restart(a);
+          break;
+      }
+    });
+  world.after(2500, [&] {
+    cluster.unblock_all();
+    cluster.faults().drop_one_in = 0;
+    cluster.faults().duplicate_one_in = 0;
+    for (size_t i = 0; i < cluster.size(); ++i)
+      if (!cluster.up(i)) cluster.restart(i);
+  });
+  const auto settled = [&] {
+    return world.now_ms() >= start + 2500 &&
+           std::all_of(commands.begin(), commands.end(), [](const Command& command) { return command.answered || command.invoked == 0; });
+  };
+  if (!world.run_until(settled, 2'000'000)) {
+    run.unsettled = true;
+    run.violation = "the run did not settle";
+    return finished(run, invariants);
+  }
+  for (size_t n = 0; n < commands.size(); ++n) {
+    const auto& command = commands[n];
+    if (!command.committed) continue;
+    ++run.committed;
+    for (const auto& [element, at] : acknowledged)
+      if (at < command.invoked && !std::binary_search(command.seen.begin(), command.seen.end(), element)) {
+        run.violation = "merge: command " + std::to_string(n) + ", begun at " + std::to_string(command.invoked) + " ms, did not see the merge write '" +
+                        static_cast<char>(element) + "' acknowledged at " + std::to_string(at) + " ms";
+        return finished(run, invariants);
+      }
+  }
+  return finished(run, invariants);
 }
 
 uint64_t seeds(uint64_t fallback) {
   const char* set = std::getenv("DANNAN_SIM_SEEDS");
   return set && *set ? std::strtoull(set, nullptr, 10) : fallback;
+}
+
+// The first of `limit` seeds whose run a checker refuses: a refusal, never a run that merely
+// failed to finish. Printed, so the record names the seed and what was found.
+template <class Simulate>
+std::optional<std::pair<uint64_t, std::string>> first_refused(Simulate simulate, uint64_t limit) {
+  for (uint64_t seed = 1; seed <= limit; ++seed) {
+    const auto run = simulate(seed);
+    if (!run.violation || run.unsettled) continue;
+    std::printf("[ refused  ] seed %llu: %s\n", static_cast<unsigned long long>(seed), run.violation->c_str());
+    return std::pair{seed, *run.violation};
+  }
+  return std::nullopt;
 }
 
 // The protocol as designed: whatever the network and crashes do, every seed's history is
@@ -397,22 +772,69 @@ TEST(Simulation, AgreementStaysLinearizableUnderFaults) {
   EXPECT_GT(committed, 0u);
 }
 
-// The checker refuses a protocol broken on purpose (Miach's point: a verifier that has
-// never refused anything is unverified). An acceptor that votes after losing its state can
-// let a value already chosen be forgotten; some seed must show it.
+// The checkers refuse each protocol broken on purpose (Miach's point: a verifier that has never
+// refused anything is unverified), each with the seed that shows it.
+
+// An acceptor that votes after losing its state can let a value already chosen be forgotten.
 TEST(Simulation, TheCheckerCatchesAnAcceptorThatVotesAfterLosingItsState) {
-  std::optional<std::string> caught;
-  uint64_t at = 0;
-  for (uint64_t seed = 1; seed <= 400 && !caught; ++seed) {
-    const auto run = simulate(seed, Mode::broken);
-    // A refusal by the checker, not a run that merely failed to finish.
-    if (run.violation && !run.unsettled) {
-      caught = run.violation;
-      at = seed;
-    }
+  const auto caught = first_refused([](uint64_t seed) { return simulate(seed, Mode::broken); }, 400);
+  ASSERT_TRUE(caught) << "no seed showed the broken protocol: the checkers are unproven";
+}
+
+// A proposer that skips prepare writes over a value chosen without having seen it.
+TEST(Simulation, TheCheckersCatchAProposerThatSkipsPrepare) {
+  const auto caught = first_refused([](uint64_t seed) { return simulate(seed, Mode::skip_prepare); }, 400);
+  ASSERT_TRUE(caught) << "no seed showed the broken protocol: the checkers are unproven";
+}
+
+// An acceptor that loses track of its promises accepts, and promises, below one it gave: caught
+// on the step it happens.
+TEST(Simulation, TheCheckersCatchAnAcceptorThatAcceptsBelowItsPromise) {
+  const auto caught = first_refused([](uint64_t seed) { return simulate(seed, Mode::forget_promises); }, 400);
+  ASSERT_TRUE(caught) << "no seed showed the broken protocol: the checkers are unproven";
+  EXPECT_NE(caught->second.find("invariant:"), std::string::npos) << caught->second;
+  EXPECT_NE(caught->second.find("below the promise"), std::string::npos) << caught->second;
+}
+
+// A reduction that rolls the base back to an older answer's value loses what was chosen.
+TEST(Simulation, TheCheckersCatchAReducerThatRollsTheBaseBack) {
+  const auto caught = first_refused([](uint64_t seed) { return simulate(seed, Mode::rollback); }, 400);
+  ASSERT_TRUE(caught) << "no seed showed the broken protocol: the checkers are unproven";
+}
+
+// A store whose sync reports success and keeps nothing, trusted by a node that restarts on it,
+// comes back having forgotten what it promised.
+TEST(Simulation, TheCheckersCatchALyingSyncThatIsTrusted) {
+  const auto caught = first_refused([](uint64_t seed) { return simulate(seed, Mode::lying_sync); }, 400);
+  ASSERT_TRUE(caught) << "no seed showed the broken protocol: the checkers are unproven";
+}
+
+// Two proposers whose rosters put the slot on different sets, one of them without the proof
+// that its set serves the slot (the reconfiguration rule), choose on two majorities that need not
+// meet.
+TEST(Simulation, TheCheckersCatchProposersWhoseRostersNameDifferentSets) {
+  const auto caught = first_refused([](uint64_t seed) { return simulate(seed, Mode::other_roster); }, 400);
+  ASSERT_TRUE(caught) << "no seed showed the broken protocol: the checkers are unproven";
+}
+
+// Ruling 16 kept: with the union of every promiser's merged state, every command sees every merge
+// write acknowledged at `replicated` before it began, and the invariants hold for the merge class.
+TEST(Simulation, EveryCommandSeesTheMergeWritesAcknowledgedBeforeIt) {
+  size_t committed = 0;
+  for (uint64_t seed = 1; seed <= seeds(40); ++seed) {
+    const auto run = merge_class(seed, false);
+    ASSERT_FALSE(run.violation) << "seed " << seed << ": " << *run.violation;
+    committed += run.committed;
   }
-  ASSERT_TRUE(caught) << "no seed showed the broken protocol: the checker is unproven";
-  SUCCEED() << "seed " << at << ": " << *caught;
+  EXPECT_GT(committed, 0u);
+}
+
+// The default reduction, the base's value alone, drops a merge write a majority holds but the
+// base's holder does not.
+TEST(Simulation, TheCheckersCatchAReducerThatDropsAReplicatedMergeWrite) {
+  const auto caught = first_refused([](uint64_t seed) { return merge_class(seed, true); }, 400);
+  ASSERT_TRUE(caught) << "no seed showed the broken protocol: the checkers are unproven";
+  EXPECT_NE(caught->second.find("merge:"), std::string::npos) << caught->second;
 }
 
 // The design's restart rule: a node that lost its state refuses to vote, catches up by a
