@@ -15,6 +15,7 @@
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <vector>
 
 namespace dannan::identity {
 namespace {
@@ -56,23 +57,41 @@ void sync_directory(storage::FileSystem& fs, const storage::Path& directory) {
        synced.error());
 }
 
+// The file's directory, and those this call made for it, deepest first.
+struct Directories {
+  storage::Path directory;
+  std::vector<storage::Path> made;
+};
+
 // Makes each missing directory owner-only (0700), as the file inside will be; existing ones are
 // left as they are.
-storage::Path directory_of(storage::FileSystem& fs, const storage::Path& path) {
-  const auto directory = path.parent_path().empty() ? storage::Path(".") : path.parent_path();
-  const auto made = fs.make_directories(directory, 0700);
+Directories directory_of(storage::FileSystem& fs, const storage::Path& path) {
+  Directories out{path.parent_path().empty() ? storage::Path(".") : path.parent_path(), {}};
+  for (auto at = out.directory; !at.empty() && at != at.root_path(); at = at.parent_path()) {
+    if (fs.stat(at)) break;
+    out.made.push_back(at);
+  }
+  const auto made = fs.make_directories(out.directory, 0700);
   if (!made) fail("cannot create durable state directory " + made.error().path.string(), made.error());
-  return directory;
+  return out;
+}
+
+// The file's directory synced, then each directory made for it into its parent, deepest first:
+// a directory's entry is durable only once its parent is synced, so a crash could otherwise lose
+// a new directory and the file in it.
+void sync_directories(storage::FileSystem& fs, const Directories& directories) {
+  sync_directory(fs, directories.directory);
+  for (const auto& made : directories.made) sync_directory(fs, made.parent_path().empty() ? storage::Path(".") : made.parent_path());
 }
 
 }  // namespace
 
 void durable_replace_file(const std::filesystem::path& path, std::string_view contents, storage::FileSystem& fs) {
-  const auto directory = directory_of(fs, path);
+  const auto directories = directory_of(fs, path);
   const auto temp = written_temporary(fs, path, contents);
   try {
     must(fs.rename(temp, path), "cannot replace durable state " + path.string());
-    sync_directory(fs, directory);
+    sync_directories(fs, directories);
   } catch (...) {
     (void)fs.remove(temp);
     throw;
@@ -80,7 +99,7 @@ void durable_replace_file(const std::filesystem::path& path, std::string_view co
 }
 
 void durable_create_file(const std::filesystem::path& path, std::string_view contents, storage::FileSystem& fs) {
-  const auto directory = directory_of(fs, path);
+  const auto directories = directory_of(fs, path);
   const auto temp = written_temporary(fs, path, contents);
   // link() refuses an existing name atomically, where a check followed by a rename could not:
   // of two creators, exactly one wins.
@@ -91,7 +110,7 @@ void durable_create_file(const std::filesystem::path& path, std::string_view con
     fail("cannot create durable state " + path.string(), linked.error());
   }
   (void)fs.remove(temp);
-  sync_directory(fs, directory);
+  sync_directories(fs, directories);
 }
 
 }  // namespace dannan::identity

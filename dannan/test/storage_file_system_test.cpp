@@ -370,6 +370,31 @@ TEST(DurableFileOnTheDisk, AReplaceCrashedAtAnyStepLeavesTheOldOrTheNew) {
     }
 }
 
+// The same for a file whose directories the replace makes: cut at each step, the file is absent or
+// whole; once the replace returned, a crash keeps it (each directory it made synced into its parent).
+TEST(DurableFileOnTheDisk, AReplaceThatMadeItsDirectoriesSurvivesACrashOnceReturned) {
+  for (uint64_t at = 0;; ++at) {
+    Random random(at + 1);
+    Disk disk(random);
+    disk.cut_after(at);
+    bool returned = true;
+    try {
+      identity::durable_replace_file("/state/deep/file", "contents", disk);
+    } catch (const std::runtime_error&) {
+      returned = false;
+    }
+    const bool reached_the_end = disk.operations() < at;
+    disk.crash();
+    const auto left = contents(disk, "/state/deep/file");
+    SCOPED_TRACE("cut after " + std::to_string(at));
+    EXPECT_TRUE(!left || *left == "contents") << *left;
+    if (returned) {
+      EXPECT_EQ(left, "contents");
+    }
+    if (reached_the_end) break;
+  }
+}
+
 // The contract's word on a lying sync: a replace that returned can be undone by a crash, and only
 // the caller's own checks (seals, checksums) can tell.
 TEST(DurableFileOnTheDisk, ALyingSyncCanUndoAReplaceThatReturned) {
