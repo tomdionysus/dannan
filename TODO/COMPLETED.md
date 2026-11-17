@@ -3,6 +3,44 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
+## The harness, step 3 part 5: the worker pool in the world, clients as actors, the transaction and convergence checkers, 2026-11-17 (`feature/sim-workers`)
+
+- **The worker pool on the schedule** (`d49a105`, `d3d16cd`): `WorkerPoolConfig::schedule` runs
+  each pick and each task as one event of an injected schedule, by class as the threads take
+  them, the next turn booked while work waits or when a background class's rest ends; the run
+  is shared with the threads, whose behaviour is unchanged. A node with
+  `NodeConfig::schedule` puts its pool on it with no CPU charged (a real reading would make
+  each run its own), and `SimNodes` fixes the gates' CPU likewise: a simulated node runs no
+  worker threads.
+- **Clients as actors** (`fixtures/sim/clients.h`): `Actors` steps each client in the world,
+  a statement a step, so the world interleaves at statement granularity (Kvasir's review);
+  `random_transaction` draws a workload from the seed.
+- **The transaction checker** (`fixtures/sim/serializable.h`, in `dannan_sim_checkers`):
+  Adya's dependency graph over list-append transactions, as Elle's are, so every edge is read
+  off the history (each element names its writer; the longest read gives a key's version
+  order). Read committed refuses G0 and G1 (a, b, c); snapshot also G-single; serializable any
+  cycle; session or real-time order may join the graph (real time through barrier nodes, so the
+  edges stay linear). Also refused: reads that disagree on a key's order, a transaction missing
+  its own append, an element appended twice, an element no one appended. An unanswered
+  transaction counts as committed only if something it appended was read.
+  - 14 tests on hand-made histories, one per anomaly.
+  - A store of each known level (serial, snapshot with first committer wins, read committed,
+    dirty) run by four client actors: each keeps its own level on 40 seeds and breaks the one
+    above on some. Every one of 356 histories (of 400) holding an observed write-skew pair is
+    refused as G2.
+  - Found on the way, in the test's own store: a read inserted its key into the transaction's
+    write set, so first committer wins covered reads and the "snapshot" store was serializable;
+    no write skew could occur. Caught because the level above never broke.
+- **The convergence checker** (`fixtures/sim/convergence.h`, in `dannan_sim_checkers`):
+  Mimir's ruling 4. Once quiet, every replica of a key holds the same value, holding every
+  write whose loss the faults do not excuse (`durability.h`'s rules); the owner says what a
+  value holds. 5 tests. The merge class run now ends with one quiet command: on 40 seeds every
+  replica then agrees and holds every merge write and committed command, and on some they
+  differed before it, so the check is not idle. Agreement converges replicas only through a
+  command's accept; repair without one is the store's anti-entropy (`trie_diff`, the plan's),
+  which this checker will judge when Dagda's store is in the world.
+- Gate: node-b, 893 tests, 892 passed, 1 skipped (as root).
+
 ## The harness, step 3 part 4 completed: agreement over real membership, 2026-11-17 (`feature/sim-agreement-nodes`)
 
 - `SimNodes::restart(i, Wipe)`: nothing lost, the store lost (the same node, a new epoch: the

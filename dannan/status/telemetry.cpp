@@ -297,9 +297,9 @@ std::vector<Telemetry> decode_telemetry_set(std::span<const uint8_t> bytes) {
 }
 
 TelemetryStore::TelemetryStore(identity::NodeId self, std::filesystem::path persisted_path, const contract::TimeSource* time, const contract::WallClock* wall,
-                               std::vector<uint16_t> layout)
+                               std::vector<uint16_t> layout, std::optional<identity::NodeId> boot)
     : _self(self),
-      _boot(identity::NodeId::random()),
+      _boot(boot ? *boot : identity::NodeId::random()),
       _path(std::move(persisted_path)),
       _time(time),
       _wall(wall),

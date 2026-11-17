@@ -8,6 +8,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <boost/asio/any_io_executor.hpp>
 #include <chrono>
 #include <condition_variable>
@@ -52,6 +53,11 @@ struct WorkerPoolConfig {
   // Workers held back for each class, so work below it, however much is blocked,
   // never takes the last of them. Fewer in all than the threads.
   PerClass<size_t> reserve{1, 1, 0, 0};
+  // Runs `task` once `after` has passed (the simulation harness's schedule, the node's
+  // NodeConfig::schedule). Set, the pool starts no threads: each pick and each task is one
+  // event of the schedule, one at a time, as `threads` workers would take them, the next booked
+  // at once while work waits or when a background class's rest ends. Empty: threads.
+  std::function<void(std::chrono::milliseconds after, std::function<void()> task)> schedule;
 };
 
 // Supervised threads running tasks by work class (P4): control, foreground,
@@ -148,6 +154,11 @@ class WorkerPool {
   };
 
   void work(std::stop_token stop);
+  // The schedule's turn: one pick and one run, then the next turn booked.
+  void step();
+  void book(std::chrono::milliseconds after) DANNAN_REQUIRES(_mutex);
+  // Runs a picked task to its end, told and counted: the same for a thread and the schedule.
+  void run(Pending& job, size_t index);
   // The class to run next, or none; `wake` is when a rest ends, if one holds a class back.
   Picked pick(contract::TimePoint now, contract::TimePoint& wake) DANNAN_REQUIRES(_mutex);
   // Takes the tasks whose deadline has passed or which were cancelled out of the queues.
@@ -169,6 +180,10 @@ class WorkerPool {
   size_t _running DANNAN_GUARDED_BY(_mutex) = 0;
   bool _started DANNAN_GUARDED_BY(_mutex) = false;
   bool _stopping DANNAN_GUARDED_BY(_mutex) = false;
+  // With a schedule: a turn is booked and not yet run.
+  bool _booked DANNAN_GUARDED_BY(_mutex) = false;
+  // With a schedule: false once the pool is gone, so a turn booked before does nothing.
+  std::shared_ptr<std::atomic<bool>> _alive = std::make_shared<std::atomic<bool>>(true);
   std::vector<std::jthread> _workers;
 };
 

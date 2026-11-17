@@ -285,6 +285,39 @@ TEST(WorkerPool, RunsByClassControlFirst) {
   EXPECT_EQ(order, (std::vector<std::string>{"control", "foreground 1", "foreground 2", "loader", "speculative"}));
 }
 
+// On a schedule (the simulation harness's, WorkerPoolConfig::schedule): no threads; nothing runs
+// until the schedule runs a turn, each turn runs one task, by class as the threads would, and the
+// next turn is booked while work waits. Stopped, a booked turn does nothing.
+TEST(WorkerPool, OnAScheduleRunsOneTaskATurnByClassWithNoThreads) {
+  std::vector<std::function<void()>> turns;
+  auto config = one_thread();
+  config.schedule = [&](std::chrono::milliseconds, std::function<void()> turn) { turns.push_back(std::move(turn)); };
+  ClassGates gates;
+  WorkerPool pool(config, gates);
+  std::vector<std::string> order;
+  const auto record = [&](std::string name) { return [&, name](WorkerPool::Turn&) { order.push_back(name); }; };
+  for (const auto& [type, name] : std::vector<std::pair<FrameType, std::string>>{
+           {FrameType::speculative, "speculative"}, {FrameType::foreground, "foreground"}, {FrameType::control, "control"}})
+    ASSERT_TRUE(pool.submit(of(type), record(name)).accepted);
+  EXPECT_TRUE(turns.empty());
+  pool.start();
+  ASSERT_EQ(turns.size(), 1u);
+  EXPECT_TRUE(order.empty());
+  // Each turn runs one task and books the next while any waits.
+  while (!turns.empty()) {
+    auto turn = std::move(turns.front());
+    turns.erase(turns.begin());
+    turn();
+  }
+  EXPECT_EQ(order, (std::vector<std::string>{"control", "foreground", "speculative"}));
+  // A task submitted later books a turn of its own.
+  ASSERT_TRUE(pool.submit(of(FrameType::control), record("later")).accepted);
+  ASSERT_EQ(turns.size(), 1u);
+  pool.stop();
+  turns.front()();
+  EXPECT_EQ(order.back(), "speculative");
+}
+
 // A full queue refuses at once and says so; a stopped pool refuses as stopped.
 TEST(WorkerPool, RefusesAtOnceWhenItsQueueIsFull) {
   ClassGates gates;

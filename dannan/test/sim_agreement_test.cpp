@@ -30,6 +30,7 @@
 #include "dannan/agree/wire.h"
 #include "dannan/net/routes.h"
 #include "dannan/test/fixtures/sim/agreement.h"
+#include "dannan/test/fixtures/sim/convergence.h"
 #include "dannan/test/fixtures/sim/durability.h"
 #include "dannan/test/fixtures/sim/history.h"
 #include "dannan/test/fixtures/sim/invariants.h"
@@ -319,6 +320,9 @@ struct Run {
   // The run itself did not finish: the harness's failure, not a history the checker refused.
   bool unsettled = false;
   size_t committed = 0;
+  // The merge class: the replicas differed before the quiet command, so its convergence was
+  // the command's doing and the check was not idle.
+  bool diverged = false;
 };
 
 // A run ends: a breach of agreement's invariants, if any, is the refusal, whether or not the
@@ -801,6 +805,46 @@ Run merge_class(uint64_t seed, bool dropping) {
         return finished(run, invariants);
       }
   }
+  // Ruling 4: healed and quiet, one more command's accept reaches every replica, and then every
+  // replica holds the same set, with every merge write and every committed command's element in
+  // it. No disk was wiped, so no loss is excused.
+  const auto values = [&] {
+    std::vector<Replica> out;
+    for (size_t i = 0; i < cluster.size(); ++i) {
+      const auto state = cluster.store(i).state(counter_slot, name);
+      out.push_back(Replica{i, state ? state->value : std::nullopt});
+    }
+    return out;
+  };
+  const auto before = values();
+  for (const auto& replica : before)
+    if (replica.value != before.front().value) run.diverged = true;
+  std::optional<agree::Outcome> quiet;
+  cluster.agreement(0).change(
+      Cluster::space, counter_slot, {name}, cluster.ids(), Cluster::genesis_version,
+      [](std::span<const std::optional<agree::Bytes>> current) {
+        const auto seen = current[0].value_or(agree::Bytes{});
+        return agree::Changed{{seen}, seen};
+      },
+      dropping ? agree::Reduce{} : uniting(), 3000ms, world.io.get_executor(), [&](agree::Outcome outcome) { quiet = std::move(outcome); });
+  if (!world.run_until([&] { return quiet.has_value(); }, 2'000'000) || !quiet->committed) {
+    run.unsettled = true;
+    run.violation = "converge: the quiet command did not commit" + (quiet ? ": " + quiet->why : std::string());
+    return finished(run, invariants);
+  }
+  // Let every accept arrive.
+  const auto drained = world.now_ms() + 200;
+  world.run_until([&] { return world.now_ms() >= drained; }, 2'000'000);
+  const auto replicas = values();
+  std::vector<MergeWrite> writes;
+  for (const auto& [element, at] : acknowledged) writes.push_back(MergeWrite{Bytes{element}, AckLevel::replicated, 0, at, at});
+  for (size_t n = 0; n < commands.size(); ++n)
+    if (commands[n].committed)
+      writes.push_back(MergeWrite{Bytes{static_cast<uint8_t>('a' + n)}, AckLevel::replicated, 0, commands[n].invoked, commands[n].invoked});
+  const auto converged = check_convergence(replicas, writes, {}, cluster.size(), [](const Bytes& value, const Bytes& write) {
+    return std::includes(value.begin(), value.end(), write.begin(), write.end());
+  });
+  if (!converged.ok) run.violation = "converge: " + converged.why;
   return finished(run, invariants);
 }
 
@@ -1124,13 +1168,16 @@ TEST(Simulation, TheCheckersCatchADecidedStoreTakenForReplicated) {
 // Ruling 16 kept: with the union of every promiser's merged state, every command sees every merge
 // write acknowledged at `replicated` before it began, and the invariants hold for the merge class.
 TEST(Simulation, EveryCommandSeesTheMergeWritesAcknowledgedBeforeIt) {
-  size_t committed = 0;
+  size_t committed = 0, diverged = 0;
   for (uint64_t seed = 1; seed <= seeds(40); ++seed) {
     const auto run = merge_class(seed, false);
     ASSERT_FALSE(run.violation) << "seed " << seed << ": " << *run.violation;
     committed += run.committed;
+    diverged += run.diverged;
   }
   EXPECT_GT(committed, 0u);
+  // Ruling 4 was tested, not idle: some runs' replicas differed until the quiet command.
+  EXPECT_GT(diverged, 0u);
 }
 
 // The default reduction, the base's value alone, drops a merge write a majority holds but the

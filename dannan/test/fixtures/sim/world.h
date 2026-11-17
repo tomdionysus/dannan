@@ -56,8 +56,8 @@ class World {
 
   // Milliseconds of simulated time; starts away from zero so a deadline in the past is
   // still a real time point.
-  // Atomic: a node's own threads (its worker pool, not yet in the world) read its clock while the
-  // world moves it.
+  // Atomic: anything of a node's still on a thread of its own may read its clock while the world
+  // moves it. Its loops and its worker pool run on the world's schedule.
   uint64_t now_ms() const noexcept { return _now.load(std::memory_order_relaxed); }
 
   // Runs `task` once `ms` of simulated time have passed; events at one time run in the

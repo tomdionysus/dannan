@@ -139,8 +139,9 @@ uint64_t number(const std::optional<agree::Bytes>& bytes) {
 
 // `split`: the cluster is split 3 and 2 while the increments run, and each change names, by turns,
 // the genesis set and the set its own node's roster gives (the nodes it still sees, at a
-// version above genesis): two rosters naming different sets, from real membership.
-std::optional<std::string> agreement_over_nodes(uint64_t seed, bool split = false) {
+// version above genesis): two rosters naming different sets, from real membership. `trace`, if
+// given, records what each operation was told and when, and the final read.
+std::optional<std::string> agreement_over_nodes(uint64_t seed, bool split = false, std::string* trace = nullptr) {
   World world(seed);
   NetworkFaults faults;
   faults.drop_one_in = 12;
@@ -245,6 +246,11 @@ std::optional<std::string> agreement_over_nodes(uint64_t seed, bool split = fals
                                            [&](agree::Outcome outcome) { read = std::move(outcome); });
   world.run_until([&] { return read.has_value(); }, 2'000'000);
   if (!read || !read->committed) return "the final read did not commit";
+  if (trace) {
+    for (const auto& op : ops)
+      *trace += std::to_string(op.invoked) + ":" + std::to_string(op.answered) + ":" + std::to_string(op.committed) + ":" + std::to_string(op.result) + " ";
+    *trace += "read " + std::to_string(number(read->values[0])) + " at " + std::to_string(world.now_ms());
+  }
   History history;
   uint64_t last = 0;
   size_t committed = 0;
@@ -265,15 +271,27 @@ std::optional<std::string> agreement_over_nodes(uint64_t seed, bool split = fals
   return std::nullopt;
 }
 
-// Two rosters naming different sets, from real membership (the agreement design's test): split 3 and
-// 2, each side's changes name the set its own roster gives as well as the genesis set. Neither a
-// roster's set (not the slot's) nor the minority commits; the history is linearizable.
 // The fixed seeds, or DANNAN_SIM_SEEDS for a longer run by hand.
 uint64_t seeds(uint64_t fallback) {
   const char* set = std::getenv("DANNAN_SIM_SEEDS");
   return set && *set ? std::strtoull(set, nullptr, 10) : fallback;
 }
 
+// A seed replays exactly with agreement running over the nodes too: every operation told the
+// same at the same time. What a start draws fresh (the durability epoch, which seeds agreement's
+// backoff) comes from the seed, not the operating system.
+TEST(SimNodes, ASeedReplaysExactlyWithAgreementOverTheNodes) {
+  for (uint64_t seed = 1; seed <= 4; ++seed) {
+    std::string first, second;
+    ASSERT_FALSE(agreement_over_nodes(seed, true, &first)) << "seed " << seed;
+    ASSERT_FALSE(agreement_over_nodes(seed, true, &second)) << "seed " << seed;
+    EXPECT_EQ(first, second) << "seed " << seed;
+  }
+}
+
+// Two rosters naming different sets, from real membership (the agreement design's test): split 3 and
+// 2, each side's changes name the set its own roster gives as well as the genesis set. Neither a
+// roster's set (not the slot's) nor the minority commits; the history is linearizable.
 TEST(SimNodes, TwoRostersNamingDifferentSetsNeverBothCommit) {
   for (uint64_t seed = 1; seed <= seeds(10); ++seed) {
     const auto failed = agreement_over_nodes(seed, true);

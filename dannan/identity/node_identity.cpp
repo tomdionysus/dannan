@@ -56,7 +56,7 @@ NodeId load_or_create_node_id(const std::filesystem::path& state) {
   return id;
 }
 
-NodeIdentity::NodeIdentity(const std::filesystem::path& state, ClusterKey cluster_key)
-    : key(std::move(cluster_key)), id(load_or_create_node_id(state)), durability_epoch(NodeId::random()) {}
+NodeIdentity::NodeIdentity(const std::filesystem::path& state, ClusterKey cluster_key, std::optional<NodeId> epoch)
+    : key(std::move(cluster_key)), id(load_or_create_node_id(state)), durability_epoch(epoch ? *epoch : NodeId::random()) {}
 
 }  // namespace dannan::identity
