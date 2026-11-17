@@ -95,8 +95,8 @@ current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluat
 
 **Waiting on the maintainer:** nothing.
 
-**Waiting on others:** Dagda, on which durable-file contract `SimDisk` implements: Dannan's
-`identity/durable_file.h`, or Dagda's own (step 3, part 6).
+**Waiting on others:** Dagda routes its own disk paths through `storage::FileSystem` (its work,
+after its small-file and ack-level work); real Dagda then runs above `test::sim::Disk`.
 
 **Lir's NodeRecord TSan reports** (0.8.3 and 0.8.5): attributed by mechanism to the 0.8 ledger double free that Lir
 suppresses, fixed on develop at `79dfa2e`. Lir waits for 0.9.0 and will say at once if the report appears on a build
@@ -145,7 +145,9 @@ gold-plating beyond what the design and its reviews ask.
    4. **Done**: membership, Routes and placement in the world, on the transport seam.
    5. **Done**: the transaction checker, the convergence checker, client actors, the worker pool in the world.
    6. **`SimDisk`** on the durable-file contract, once Dagda says which one (asked; still open).
-4. **The file-system interface** (`2026-11-15-file-system-interface.md`, Dagda's review taken).
+4. **Done, on `feature/file-system`**: the file-system interface (`2026-11-15-file-system-interface.md`, its
+   "As built"), the POSIX implementation, the simulated disk, and Dannan's durable writes and state lock
+   through it. This is also part 6's `SimDisk`: Dagda asked for the interface so its own paths move onto it.
 5. **The hybrid clock** (`2026-11-15-hlc-design.md`, reviewed).
 6. **The rest of 0.9.0:**
    - the per-call record copies (carry `shared_ptr<const NodeRecord>`; Dagda's profile);

@@ -10,15 +10,18 @@
 #include <filesystem>
 #include <string_view>
 
+#include "dannan/storage/file_system.h"
+
 namespace dannan::identity {
 
 // Replaces `path` with `contents` so that a reader, or a node starting after
 // a crash at any instant, sees the old contents or the new and never a
 // mixture: written to a temporary beside it, synced, renamed over it, and the
-// directory synced. Creates missing directories owner-only (0700); the file
+// directory synced, with each directory it made synced into its parent. Creates missing directories owner-only (0700); the file
 // is readable by its owner alone. On failure throws std::runtime_error, leaving the old file as
-// it was and no temporary behind. Waits on the state device.
-void durable_replace_file(const std::filesystem::path& path, std::string_view contents);
+// it was and no temporary behind. Waits on the state device. Written through `fs` (the simulated
+// disk in the harness).
+void durable_replace_file(const std::filesystem::path& path, std::string_view contents, storage::FileSystem& fs = storage::posix_file_system());
 
 // Creates `path` with `contents`, never replacing a file already there:
 // what durable_replace_file guarantees, but the last step refuses an
@@ -28,6 +31,6 @@ void durable_replace_file(const std::filesystem::path& path, std::string_view co
 // std::runtime_error. No temporary is left behind either way. For what is
 // made once and never replaced: key custody, a keyring, a table's first
 // header.
-void durable_create_file(const std::filesystem::path& path, std::string_view contents);
+void durable_create_file(const std::filesystem::path& path, std::string_view contents, storage::FileSystem& fs = storage::posix_file_system());
 
 }  // namespace dannan::identity

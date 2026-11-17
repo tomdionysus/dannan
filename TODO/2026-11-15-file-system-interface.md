@@ -107,3 +107,20 @@ directory entries follow the same rule (an unsynced rename may be lost).
   the sealed journal, the durability domain and storage pool, `heads/replica.cpp`,
   `heads/node_pack.cpp`, `store/local_store.cpp`, `migrate/migrate.cpp` and
   `migrate/manifest.cpp`.
+
+## As built (2026-11-17, step 4)
+
+`dannan/storage/file_system.h` and `.cpp`; the simulated disk is
+`dannan/test/fixtures/sim/disk.h`. Two additions to the reviewed surface, both to keep what
+the stack does today:
+- **`link(from, to)`**: a second name, refused (`exists`) if taken. `durable_create_file`
+  refuses an existing name atomically with `link()`; `rename` would replace it.
+- **The class `busy`** (EWOULDBLOCK, EAGAIN, EBUSY): a lock another holds, which `StateLock`
+  reports as "already in use" and a caller tells apart from `other`.
+
+`File::close()` reports a close's failure. `durable_replace_file`, `durable_create_file` and
+`StateLock` take a `FileSystem&`, POSIX by default. Found by the simulated disk: both durable
+writes made missing directories and synced only the file's own, so a crash after either returned
+could lose a new directory and the file in it; each directory made is now synced into its
+parent.
+

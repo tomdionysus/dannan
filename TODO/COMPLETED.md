@@ -3,6 +3,26 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
+## Step 4: the file-system interface, 2026-11-17 (`feature/file-system`)
+
+- `dannan::storage` (`5d414a9`): `FileSystem` and `File` as Dagda reviewed them, a `Result` whose
+  error carries the errno's class, `or_throw()`, `list()` with type and size, `stat`,
+  `sync_all`, `space`, `lock`; the POSIX implementation. Added: `link()` (for
+  `durable_create_file`) and the class `busy` (a held lock).
+- `durable_replace_file`, `durable_create_file` and `StateLock` go through it, POSIX by default,
+  with their messages and exceptions as before.
+- `test::sim::Disk`: per file a current and a durable image, per directory current and durable
+  entries; a crash keeps what was synced and drops a name whose directory's entry was lost;
+  syncs that fail (dropping dirty pages half the time), lie, or tear a file's growth to a
+  prefix; a full disk; a power cut after any number of operations.
+- One contract suite of 11 tests runs on POSIX and the simulated disk alike; 8 tests of the
+  disk's crash behaviour; 4 of the durable writes on it, cut at every step.
+- **Found and fixed** (`ef3b212`): a durable write that made its directories synced only the
+  file's own, so a crash after it returned could lose a new directory and the file in it, as
+  on a node's first start. Each directory made is now synced into its parent. Macha's own
+  durable write may share the gap: for the Macha session to check.
+- Gate: node-b, 928 tests, 927 passed, 1 skipped (as root).
+
 ## The harness, step 3 part 5: the worker pool in the world, clients as actors, the transaction and convergence checkers, 2026-11-17 (`feature/sim-workers`)
 
 - **The worker pool on the schedule** (`d49a105`, `d3d16cd`): `WorkerPoolConfig::schedule` runs
