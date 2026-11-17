@@ -1158,7 +1158,10 @@ std::shared_ptr<Session> Client::route_locked(const identity::NodeId& peer, Lane
 SessionHandlers Client::handlers_for(const membership::NodeRecord& peer) const {
   SessionHandlers handlers;
   const auto& inbound = _options.inbound;
-  if (inbound.request) handlers.request = [request = inbound.request, peer](Frame frame, Reply reply) { request(peer, std::move(frame), std::move(reply)); };
+  if (inbound.request)
+    handlers.request = [request = inbound.request, peer = std::make_shared<const membership::NodeRecord>(peer)](Frame frame, Reply reply) {
+      request(peer, std::move(frame), std::move(reply));
+    };
   if (inbound.promoted)
     handlers.promoted = [promoted = inbound.promoted, id = peer.id](uint64_t request_id, sched::FrameType frame) { promoted(id, request_id, frame); };
   if (inbound.cancelled) handlers.cancelled = [cancelled = inbound.cancelled, id = peer.id](uint64_t request_id) { cancelled(id, request_id); };

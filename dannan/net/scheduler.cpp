@@ -168,7 +168,7 @@ size_t* RequestScheduler::bytes_for(Queue which) {
   }
 }
 
-void RequestScheduler::submit(membership::NodeRecord peer, Frame frame, Reply reply) {
+void RequestScheduler::submit(std::shared_ptr<const membership::NodeRecord> peer, Frame frame, Reply reply) {
   if (_routes->is_on_session(frame.message.type)) {
     {
       contract::Lock lock(_mutex);
@@ -232,7 +232,7 @@ void RequestScheduler::promote(const identity::NodeId& peer, uint64_t request_id
     contract::Lock lock(_mutex);
     for (const auto from : {Queue::speculative, Queue::loader, Queue::read_ahead, Queue::foreground}) {
       auto& jobs = queue(from);
-      const auto found = std::find_if(jobs.begin(), jobs.end(), [&](const Job& job) { return job.peer.id == peer && job.frame.request_id == request_id; });
+      const auto found = std::find_if(jobs.begin(), jobs.end(), [&](const Job& job) { return job.peer->id == peer && job.frame.request_id == request_id; });
       if (found == jobs.end()) continue;
       found->frame.frame = more_urgent(frame, found->frame.frame);
       const auto to = queue_for(found->frame.frame);
@@ -251,7 +251,7 @@ void RequestScheduler::cancel(const identity::NodeId& peer, uint64_t request_id)
   contract::Lock lock(_mutex);
   for (const auto which : {Queue::fast, Queue::control, Queue::ordered, Queue::foreground, Queue::read_ahead, Queue::loader, Queue::speculative}) {
     auto& jobs = queue(which);
-    const auto found = std::find_if(jobs.begin(), jobs.end(), [&](const Job& job) { return job.peer.id == peer && job.frame.request_id == request_id; });
+    const auto found = std::find_if(jobs.begin(), jobs.end(), [&](const Job& job) { return job.peer->id == peer && job.frame.request_id == request_id; });
     if (found == jobs.end()) continue;
     *bytes_for(which) -= found->frame.message.payload.size();
     jobs.erase(found);
@@ -272,7 +272,7 @@ void RequestScheduler::run(Job job) {
   const auto type = job.frame.message.type;
   auto handled = Handled::failed(500, "internal_error", "request handler failed");
   try {
-    handled = _handler(job.peer, job.frame.frame, std::move(job.frame.message), answer);
+    handled = _handler(*job.peer, job.frame.frame, std::move(job.frame.message), answer);
   } catch (const std::exception& failure) {
     handled = Handled::failed(500, "internal_error", failure.what());
   } catch (...) {
@@ -342,7 +342,7 @@ void RequestScheduler::ordered_loop(std::stop_token) {
     Job job;
     {
       contract::Lock lock(_mutex);
-      const auto eligible = [&](const Job& candidate) DANNAN_REQUIRES(_mutex) { return !_ordered_active.contains(candidate.peer.id); };
+      const auto eligible = [&](const Job& candidate) DANNAN_REQUIRES(_mutex) { return !_ordered_active.contains(candidate.peer->id); };
       _changed.wait(lock.native(), [&]() DANNAN_REQUIRES(_mutex) { return _stopping || std::any_of(_ordered.begin(), _ordered.end(), eligible); });
       if (_stopping) return;
       // The oldest control-class job first (a commit's accept), then the
@@ -355,9 +355,9 @@ void RequestScheduler::ordered_loop(std::stop_token) {
       job = std::move(*ready);
       _ordered.erase(ready);
       _ordered_bytes -= job.frame.message.payload.size();
-      _ordered_active.insert(job.peer.id);
+      _ordered_active.insert(job.peer->id);
     }
-    const auto peer = job.peer.id;
+    const auto peer = job.peer->id;
     run(std::move(job));
     cpu.tick();
     {

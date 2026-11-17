@@ -742,7 +742,7 @@ void Node::start() {
       note_certificate(session);
       observe_direct(session.peer);
     };
-    client_options.inbound.request = [this](const NodeRecord& peer, net::Frame frame, net::Reply reply) {
+    client_options.inbound.request = [this](std::shared_ptr<const NodeRecord> peer, net::Frame frame, net::Reply reply) {
       _server->scheduler().submit(peer, std::move(frame), std::move(reply));
     };
     client_options.inbound.promoted = [this](const identity::NodeId& peer, uint64_t id, sched::FrameType frame) {

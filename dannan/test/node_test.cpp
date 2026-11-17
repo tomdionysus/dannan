@@ -1523,7 +1523,8 @@ TEST(Node, RoutesBindAndUnbindWhileRunning) {
   EXPECT_EQ(done->get_future().get().reply->payload, net::Bytes{2});
   outcome = pair.b->context().routes().call_and_wait(a, echo_type, {3}, FrameType::control, 5s);
   EXPECT_EQ(net::refusal_of(*outcome.reply)->status, 501);
-  EXPECT_EQ(outcome.peer.id, a.id);
+  ASSERT_TRUE(outcome.peer);
+  EXPECT_EQ(outcome.peer->id, a.id);
 }
 
 // A hosted system's adverts ride in its record: set through the Context,

@@ -54,8 +54,9 @@ enum class Role : uint8_t { dialler, acceptor };
 struct CallOutcome {
   std::optional<Message> reply;
   std::string failure;
-  // Who answered: the peer's record as its handshake carried it.
-  membership::NodeRecord peer;
+  // Who answered: the peer's record as its handshake carried it, shared by every call on the
+  // session rather than copied into each (Dagda's profile). Null when no reply came.
+  std::shared_ptr<const membership::NodeRecord> peer;
 };
 
 // Whether a call was admitted: its request id, or why not ("peer pending
@@ -171,6 +172,8 @@ class Session : public std::enable_shared_from_this<Session> {
   std::optional<contract::Clock::duration> idle_for(uint64_t request_id) const;
   const Established& established() const noexcept { return _established; }
   const membership::NodeRecord& peer() const noexcept { return _established.peer; }
+  // The same record, shared: what each call and request on the session carries.
+  const std::shared_ptr<const membership::NodeRecord>& peer_record() const noexcept { return _peer_record; }
   Lane lane() const noexcept { return _established.lane; }
 
  private:
@@ -204,6 +207,7 @@ class Session : public std::enable_shared_from_this<Session> {
   Socket _socket;
   boost::asio::strand<boost::asio::any_io_executor> _strand;
   const Established _established;
+  const std::shared_ptr<const membership::NodeRecord> _peer_record;
   const Role _role;
   const std::shared_ptr<const RouteTable> _routes;
   SessionHandlers _handlers;

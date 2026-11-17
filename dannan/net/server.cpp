@@ -223,11 +223,12 @@ void Server::established(const std::shared_ptr<Handshaking>& connection, std::ex
     connection->close();
     return end_operation();
   }
-  const auto peer = session.peer;
+  // One copy of the peer's record for the session, shared by its requests.
+  const auto peer = std::make_shared<const membership::NodeRecord>(session.peer);
   SessionHandlers handlers;
   handlers.request = [this, peer](Frame frame, Reply reply) { _scheduler.submit(peer, std::move(frame), std::move(reply)); };
-  handlers.promoted = [this, id = peer.id](uint64_t request_id, sched::FrameType frame) { _scheduler.promote(id, request_id, frame); };
-  handlers.cancelled = [this, id = peer.id](uint64_t request_id) { _scheduler.cancel(id, request_id); };
+  handlers.promoted = [this, id = peer->id](uint64_t request_id, sched::FrameType frame) { _scheduler.promote(id, request_id, frame); };
+  handlers.cancelled = [this, id = peer->id](uint64_t request_id) { _scheduler.cancel(id, request_id); };
   auto key = std::make_shared<const Session*>(nullptr);
   handlers.closed = [this, key](std::string) {
     {
@@ -251,8 +252,8 @@ void Server::established(const std::shared_ptr<Handshaking>& connection, std::ex
   // Known before its first request can be read: a peer that has authenticated is
   // never refused for not being on the roster yet.
   if (!stopped) {
-    _log.info("node connection inbound peer=" + to_string(peer.id).substr(0, 12) + " lane=" + lane_name(established->lane()) +
-              " remote=" + connection->remote.host + " advertised=" + peer.host + ":" + std::to_string(peer.port));
+    _log.info("node connection inbound peer=" + to_string(peer->id).substr(0, 12) + " lane=" + lane_name(established->lane()) +
+              " remote=" + connection->remote.host + " advertised=" + peer->host + ":" + std::to_string(peer->port));
     if (_admitted) _admitted(established);
   }
   // The handshake's count passes to the session; its close handler ends it.

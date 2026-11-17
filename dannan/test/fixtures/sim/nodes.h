@@ -241,7 +241,9 @@ inline std::shared_ptr<net::CallHandle> SimTransport::place(std::optional<size_t
           *once = true;
           const auto record = answerer ? answerer->local() : membership::NodeRecord{};
           if (answerer) caller->heard(record);
-          boost::asio::post(executor, [done, reply = std::move(reply), record]() mutable { done({std::move(reply), {}, record}); });
+          boost::asio::post(executor, [done, reply = std::move(reply), record = std::make_shared<const membership::NodeRecord>(record)]() mutable {
+            done({std::move(reply), {}, record});
+          });
         });
       });
     });
