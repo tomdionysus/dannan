@@ -20,6 +20,7 @@ target_include_directories(dannan_sim_checkers PUBLIC ${PROJECT_SOURCE_DIR})
 target_link_libraries(dannan_sim_checkers PRIVATE dannan_warnings)
 
 add_executable(dannan_tests
+  contract_hlc_test.cpp
   agree_caspaxos_test.cpp
   contract_test.cpp
   custody_tool_test.cpp

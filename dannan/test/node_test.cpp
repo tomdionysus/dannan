@@ -1523,7 +1523,8 @@ TEST(Node, RoutesBindAndUnbindWhileRunning) {
   EXPECT_EQ(done->get_future().get().reply->payload, net::Bytes{2});
   outcome = pair.b->context().routes().call_and_wait(a, echo_type, {3}, FrameType::control, 5s);
   EXPECT_EQ(net::refusal_of(*outcome.reply)->status, 501);
-  EXPECT_EQ(outcome.peer.id, a.id);
+  ASSERT_TRUE(outcome.peer);
+  EXPECT_EQ(outcome.peer->id, a.id);
 }
 
 // A hosted system's adverts ride in its record: set through the Context,
@@ -2048,6 +2049,54 @@ TEST(Node, TheOthersCarryOnWithoutTheSeed) {
   EXPECT_TRUE(b.context().routes().call_and_wait(*peer, net::message::members, {}, sched::FrameType::control, 5s).reply);
   c.stop();
   b.stop();
+}
+
+// The node's hybrid clock (the HLC design): on the Context, its ceiling in a durable file when the
+// node has no key custody, its counts on Diagnostics, and every stamp after a restart later than
+// every stamp before, the wall set back between.
+TEST(Node, ItsHybridClockIssuesLaterStampsAfterARestartWithTheWallSetBack) {
+  test::TempDir dir;
+  const auto key = cluster_key(dir.path());
+  test::SteppedWall wall(1'790'000'000'000);
+  contract::HlcStamp before;
+  {
+    Io io;
+    auto settings = config(dir.path() / "a", key);
+    settings.wall = &wall;
+    Node node(io.context, settings);
+    for (int i = 0; i < 100; ++i) before = node.context().hlc().now();
+    const auto far = node.context().hlc().receive(contract::HlcStamp::of(wall.unix_ms() + 120'000, 0), "far peer");
+    EXPECT_FALSE(far.merged);
+    EXPECT_EQ(node.context().diagnostics().hlc.not_merged, 1u);
+    EXPECT_EQ(node.context().diagnostics().hlc.peers.count("far peer"), 1u);
+    EXPECT_TRUE(std::filesystem::exists(dir.path() / "a" / "clock" / "hlc-ceiling"));
+  }
+  wall.advance(-60s);
+  Io io;
+  auto settings = config(dir.path() / "a", key);
+  settings.wall = &wall;
+  Node node(io.context, settings);
+  EXPECT_GT(node.context().hlc().now(), before);
+}
+
+// With key custody the ceiling is a sealed counter, "dannan/hlc", and no plain file is written.
+TEST(Node, ItsHybridClocksCeilingIsASealedCounterWithCustody) {
+  Io io;
+  test::TempDir dir;
+  const auto key = cluster_key(dir.path());
+  const auto source = identity::KeySource::typed_passphrase(
+      [] {
+        const std::string p = "node passphrase";
+        return identity::Secret(std::span(reinterpret_cast<const uint8_t*>(p.data()), p.size()));
+      },
+      identity::Argon2Costs{1024, 1, 1});
+  (void)identity::KeyCustody::create(dir.path() / "a", source);
+  auto with = config(dir.path() / "a", key);
+  with.custody = source;
+  Node node(io.context, with);
+  const auto stamp = node.context().hlc().now();
+  EXPECT_GT(node.context().identity().counter("dannan/hlc"), stamp.unix_ms());
+  EXPECT_FALSE(std::filesystem::exists(dir.path() / "a" / "clock" / "hlc-ceiling"));
 }
 
 // The loop re-probes on its cadence, and a capability it resolves reaches a

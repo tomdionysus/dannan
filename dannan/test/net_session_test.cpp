@@ -516,8 +516,11 @@ TEST(Session, AReplyNamesThePeer) {
   Pair pair(io, echo(), echo());
   const auto outcome = call_and_wait(*pair.dialler, message::members, {}, FrameType::control, io.context.get_executor());
   ASSERT_TRUE(outcome.reply);
-  EXPECT_EQ(outcome.peer.id, pair.dialler->peer().id);
-  EXPECT_EQ(outcome.peer.host, "10.0.0.2");
+  ASSERT_TRUE(outcome.peer);
+  EXPECT_EQ(outcome.peer->id, pair.dialler->peer().id);
+  EXPECT_EQ(outcome.peer->host, "10.0.0.2");
+  // Shared by the session's calls, not copied into each.
+  EXPECT_EQ(outcome.peer, pair.dialler->peer_record());
 }
 
 // A peer whose table differs sends a frame off its lane: the session ends, and the

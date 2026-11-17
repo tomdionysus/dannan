@@ -56,6 +56,7 @@ Session::Session(Socket socket, Established established, Role role, std::shared_
     : _socket(std::move(socket)),
       _strand(asio::make_strand(_socket.get_executor())),
       _established(std::move(established)),
+      _peer_record(std::make_shared<const membership::NodeRecord>(_established.peer)),
       _role(role),
       _routes(std::move(routes)),
       _handlers(std::move(handlers)),
@@ -173,7 +174,7 @@ void Session::deliver(Frame frame) {
       pending = std::move(found->second);
       _pending.erase(found);
     }
-    asio::post(pending.executor, [done = std::move(pending.done), message = std::move(frame.message), peer = _established.peer]() mutable {
+    asio::post(pending.executor, [done = std::move(pending.done), message = std::move(frame.message), peer = _peer_record]() mutable {
       done(CallOutcome{std::move(message), {}, std::move(peer)});
     });
     settle();

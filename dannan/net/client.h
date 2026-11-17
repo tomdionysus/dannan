@@ -36,7 +36,8 @@ namespace dannan::net {
 // node's server scheduler, so every request is served by the same workers
 // whichever end dialled.
 struct InboundHandlers {
-  std::function<void(const membership::NodeRecord& peer, Frame, Reply)> request;
+  // The peer's record is shared by every request on its session, never copied per request.
+  std::function<void(std::shared_ptr<const membership::NodeRecord> peer, Frame, Reply)> request;
   std::function<void(const identity::NodeId& peer, uint64_t request_id, sched::FrameType)> promoted;
   std::function<void(const identity::NodeId& peer, uint64_t request_id)> cancelled;
 };

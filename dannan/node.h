@@ -179,6 +179,9 @@ struct NodeConfig {
   // agreement's backoff among others: the simulation harness draws them from its seed so a run
   // replays exactly. Empty: random.
   std::function<identity::NodeId()> fresh_id;
+  // How far ahead of this node's wall time a received hybrid-clock stamp may be and still be
+  // merged (the HLC design: one minute).
+  std::chrono::milliseconds hlc_max_ahead = std::chrono::minutes(1);
   // The network as the harness gives it (the transport seam, piece 2b): set, the node builds no
   // client, server or level 0 paths, and calls, sends and serves through what this returns,
   // given the node's hooks. Empty: sockets, as always.
@@ -283,6 +286,7 @@ class Node final : public Context {
   sched::ClassGates& gates() override { return _gates; }
   sched::WorkerPool& workers() override { return _workers; }
   agree::Agreement& agreement() override { return *_agreement; }
+  contract::HlcClock& hlc() override { return *_hlc; }
   Diagnostics diagnostics() const override;
 
  private:
@@ -378,6 +382,10 @@ class Node final : public Context {
   std::optional<identity::KeyCustody> _custody;
   // Beside custody, under a key derived from its seal root; none without custody.
   std::optional<identity::SealedCounters> _counters;
+  // The hybrid clock's ceiling: in the counters, or a durable file without custody; then the
+  // clock, which the roster loop keeps ahead of it.
+  std::unique_ptr<contract::HlcCeiling> _hlc_ceiling;
+  std::unique_ptr<contract::HybridClock> _hlc;
   // What this node proves itself with, and the CA's revocations it holds.
   net::Credentials _credentials;
   // Scope: the source the directory installs; read under the lock.

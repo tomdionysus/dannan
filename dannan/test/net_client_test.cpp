@@ -157,7 +157,7 @@ struct Node {
     options.local = [this] { return self; };
     options.routes = table();
     options.traffic = traffic;
-    options.inbound.request = [this](const membership::NodeRecord& peer, Frame frame, Reply reply) {
+    options.inbound.request = [this](std::shared_ptr<const membership::NodeRecord> peer, Frame frame, Reply reply) {
       server->scheduler().submit(peer, std::move(frame), std::move(reply));
     };
     client = std::make_unique<Client>(io.context, std::move(options));
