@@ -126,7 +126,10 @@ uint64_t number(const std::optional<agree::Bytes>& bytes) {
   return out;
 }
 
-std::optional<std::string> agreement_over_nodes(uint64_t seed) {
+// `split`: the cluster is split 3 and 2 while the increments run, and each change names, by turns,
+// the genesis set and the set its own node's roster gives (the nodes it still sees, at a
+// version above genesis): two rosters naming different sets, from real membership.
+std::optional<std::string> agreement_over_nodes(uint64_t seed, bool split = false) {
   World world(seed);
   NetworkFaults faults;
   faults.drop_one_in = 12;
@@ -181,8 +184,16 @@ std::optional<std::string> agreement_over_nodes(uint64_t seed) {
       for (size_t tries = 0; tries < nodes.size() && !nodes.up(at); ++tries) at = (at + 1) % nodes.size();
       if (!nodes.up(at)) return;
       ops[n].invoked = world.now_ms();
+      // By turns, under a split: the set this node's own roster gives.
+      std::vector<identity::NodeId> replicas = nodes.ids();
+      uint64_t version = 0;
+      if (split && n % 2) {
+        replicas.clear();
+        for (const auto& record : nodes.node(at).context().nodes().active()) replicas.push_back(record.id);
+        version = 1;
+      }
       nodes.node(at).context().agreement().change(
-          space, 0, {agree::Name{'c'}}, nodes.ids(), 0,
+          space, 0, {agree::Name{'c'}}, replicas, version,
           [](std::span<const std::optional<agree::Bytes>> current) {
             const auto next = number(current[0]) + 1;
             const auto bytes = CounterModel::number(next);
@@ -195,9 +206,14 @@ std::optional<std::string> agreement_over_nodes(uint64_t seed) {
             if (outcome.committed) ops[n].result = number(outcome.result);
           });
     });
-  // Restarts: node 1 keeping its store, node 3 as itself with its store lost.
-  world.after(400, [&] { nodes.restart(1); });
-  world.after(900, [&] { nodes.restart(3, Wipe::store); });
+  if (split) {
+    nodes.network().partition({{0, 1, 2}, {3, 4}});
+    world.after(1200, [&] { nodes.network().heal(); });
+  } else {
+    // Restarts: node 1 keeping its store, node 3 as itself with its store lost.
+    world.after(400, [&] { nodes.restart(1); });
+    world.after(900, [&] { nodes.restart(3, Wipe::store); });
+  }
   world.after(1600, [&] { nodes.network().faults() = NetworkFaults{}; });
   const auto settled = [&] {
     if (world.now_ms() < start + 1600) return false;
@@ -231,6 +247,16 @@ std::optional<std::string> agreement_over_nodes(uint64_t seed) {
   if (!verdict.linearizable) return "linearizability: " + verdict.why;
   if (committed == 0) return "nothing committed";
   return std::nullopt;
+}
+
+// Two rosters naming different sets, from real membership (the agreement design's test): split 3 and
+// 2, each side's changes name the set its own roster gives as well as the genesis set. Neither a
+// roster's set (not the slot's) nor the minority commits; the history is linearizable.
+TEST(SimNodes, TwoRostersNamingDifferentSetsNeverBothCommit) {
+  for (uint64_t seed = 1; seed <= 10; ++seed) {
+    const auto failed = agreement_over_nodes(seed, true);
+    ASSERT_FALSE(failed) << "seed " << seed << ": " << *failed;
+  }
 }
 
 TEST(SimNodes, AgreementOverRealMembershipStaysLinearizableUnderFaults) {
