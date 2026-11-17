@@ -45,8 +45,9 @@ current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluat
   is in flight; the worktree in use is `build/wt-feature`, on `develop`. Its record is `COMPLETED.md`'s 2026-11-17
   entry.
 - **Agreement reviewed and fixed** (2026-11-17, `COMPLETED.md`): a change applied twice, a
-  multi-name change half taken, a stall, `forget()`, a lost transfer and the floor. Merged
-  after the macOS gate; Lugh wants word when it is in a tag.
+  multi-name change half taken, a stall, `forget()`, a lost transfer and the floor. Merged at
+  `ea84a31`, not pushed (hosted CI waits on the maintainer's push word). macOS gate at `522b1d8`: 858
+  tests, 856 passed, 2 skipped (Linux-only). Lugh wants word when it is in a tag.
 - **Next: step 3, part 3** (correlated kills, and durability per `ack_level` against the faults).
 - **New for plan item 7**: multi-name changes in a slot go through the atomic commit too
   (Mimir and Kvasir agreed, option 2 of the review); until then `change()` takes one name.
