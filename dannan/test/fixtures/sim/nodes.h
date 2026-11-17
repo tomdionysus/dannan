@@ -56,7 +56,7 @@ class SimNetwork;
 
 // One node's transport through the world: every message an event, delayed, lost, duplicated or
 // blocked as the network's faults say.
-class SimTransport final : public net::Transport {
+class SimTransport final : public net::Transport, public std::enable_shared_from_this<SimTransport> {
  public:
   SimTransport(SimNetwork& network, size_t index, net::TransportHooks hooks) : _network(network), _index(index), _hooks(std::move(hooks)) {}
 
@@ -218,16 +218,19 @@ inline std::shared_ptr<net::CallHandle> SimTransport::place(std::optional<size_t
   const auto from = _index;
   auto& network = _network;
   const auto sender = local();
+  // The reply goes to this transport, not to whoever holds its index by then: a node restarted
+  // there is another node, and this one, and what its calls complete into, may be gone.
+  const std::weak_ptr<SimTransport> self = weak_from_this();
   const int copies = network.copies();
   for (int copy = 0; copy < copies; ++copy) {
     if (network.lost(from, *to)) continue;
-    network.world().after(network.delay(), [&network, from, to = *to, sender, type, payload, frame, executor, done, once] {
+    network.world().after(network.delay(), [&network, from, to = *to, sender, type, payload, frame, executor, done, once, self] {
       const auto server = network.at(to);
       if (!server || !server->serving()) return;
-      server->serve(sender, frame, net::Message{type, payload, {}}, [&network, from, to, executor, done, once](net::Message reply) {
+      server->serve(sender, frame, net::Message{type, payload, {}}, [&network, from, to, executor, done, once, self](net::Message reply) {
         if (network.lost(to, from)) return;
-        network.world().after(network.delay(), [&network, from, to, executor, done, once, reply = std::move(reply)]() mutable {
-          const auto caller = network.at(from);
+        network.world().after(network.delay(), [&network, to, executor, done, once, self, reply = std::move(reply)]() mutable {
+          const auto caller = self.lock();
           const auto answerer = network.at(to);
           if (!caller || !caller->calling() || *once) return;
           *once = true;

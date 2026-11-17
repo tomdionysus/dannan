@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <boost/asio/io_context.hpp>
 #include <chrono>
 #include <cstdint>
@@ -55,11 +56,13 @@ class World {
 
   // Milliseconds of simulated time; starts away from zero so a deadline in the past is
   // still a real time point.
-  uint64_t now_ms() const noexcept { return _now; }
+  // Atomic: a node's own threads (its worker pool, not yet in the world) read its clock while the
+  // world moves it.
+  uint64_t now_ms() const noexcept { return _now.load(std::memory_order_relaxed); }
 
   // Runs `task` once `ms` of simulated time have passed; events at one time run in the
   // order they were scheduled.
-  void after(uint64_t ms, std::function<void()> task) { _events.emplace(std::make_pair(_now + ms, _sequence++), std::move(task)); }
+  void after(uint64_t ms, std::function<void()> task) { _events.emplace(std::make_pair(now_ms() + ms, _sequence++), std::move(task)); }
 
   // Called after every step: a checker that looks at the whole world each time (agreement's
   // invariants). Empty: none.
@@ -72,7 +75,7 @@ class World {
     if (io.poll_one() > 0) return observed();
     if (_events.empty()) return false;
     auto next = _events.begin();
-    _now = next->first.first;
+    _now.store(next->first.first, std::memory_order_relaxed);
     auto task = std::move(next->second);
     _events.erase(next);
     task();
@@ -96,7 +99,7 @@ class World {
     return true;
   }
 
-  uint64_t _now = 1'000'000;
+  std::atomic<uint64_t> _now{1'000'000};
   uint64_t _sequence = 0;
   std::multimap<std::pair<uint64_t, uint64_t>, std::function<void()>> _events;
 };
