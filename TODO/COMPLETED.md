@@ -15,7 +15,11 @@ left green. `ACTIVE.md` is the plan and this is the record.
   `dannan/hlc` with custody, a durable file without (a gap in the design, filled; for the maintainer).
 - The design's ten tests, on a stepped wall and a ceiling in memory, and two on the node (a
   restart with the wall set back; the counter with custody).
-- Gate: node-b, 940 tests, 939 passed, 1 skipped (as root).
+- Gate: node-b, 940 tests, 939 passed, 1 skipped (as root). The branch's CI run 44142585838
+  green on every job.
+- With it, step 6's first item: a peer's record shared per session (`CallOutcome::peer`, the
+  inbound request callback and `RequestScheduler::Job` carry a `shared_ptr<const NodeRecord>`),
+  Dagda's profile. Node-b: 940 tests, 939 passed, 1 skipped.
 
 ## Step 4: the file-system interface, 2026-11-17 (`feature/file-system`)
 

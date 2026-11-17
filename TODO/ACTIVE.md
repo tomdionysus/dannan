@@ -148,10 +148,10 @@ gold-plating beyond what the design and its reviews ask.
 4. **Done, merged**: the file-system interface (`2026-11-15-file-system-interface.md`, its
    "As built"), the POSIX implementation, the simulated disk, and Dannan's durable writes and state lock
    through it. This is also part 6's `SimDisk`: Dagda asked for the interface so its own paths move onto it.
-5. **Done, on `feature/hlc`**: the hybrid clock (`2026-11-15-hlc-design.md`, its "As built", three
+5. **Done, merged**: the hybrid clock (`2026-11-15-hlc-design.md`, its "As built", three
    choices for the maintainer to confirm), on the Context.
 6. **The rest of 0.9.0:**
-   - the per-call record copies (carry `shared_ptr<const NodeRecord>`; Dagda's profile);
+   - **done**: the per-call record copies (a `shared_ptr<const NodeRecord>` per session);
    - DTLS and UDP for `dannan::listen`;
    - the peer-witnessed high-water mark;
    - loader promotion at the peer.
