@@ -22,6 +22,17 @@ ReplicaSet ReplicaSet::of(std::vector<identity::NodeId> nodes, uint64_t version)
 
 bool ReplicaSet::contains(const identity::NodeId& node) const noexcept { return std::binary_search(nodes.begin(), nodes.end(), node); }
 
+std::vector<Ballot> descend(const Ballot& ballot, const std::vector<Ballot>& of) {
+  std::vector<Ballot> out{ballot};
+  if (ballot.zero()) return out;
+  for (const auto& each : of) {
+    if (out.size() == max_ancestry) break;
+    out.push_back(each);
+    if (each.zero()) break;
+  }
+  return out;
+}
+
 Slot slot_of(std::span<const uint8_t> name, uint32_t count) {
   if (count == 0 || count > max_slots) throw std::invalid_argument("a slot table holds 1 to 8192 slots");
   uint64_t hash = 0xcbf29ce484222325ull;
@@ -108,7 +119,7 @@ PrepareStep on_prepare(const identity::NodeId& self, const identity::NodeId& fro
       return out;
     }
   const auto answer_of = [&request](const AcceptorState& state) {
-    return NameState{state.accepted, request.values ? state.value : std::nullopt, state.changed_at, state.summary, holds_value(state)};
+    return NameState{state.accepted, request.values ? state.value : std::nullopt, state.changed_at, state.summary, holds_value(state), false, state.ancestry};
   };
   Held keep = held;
   out.answer.served = held.slot.served;
@@ -137,10 +148,19 @@ AcceptStep on_accept(const identity::NodeId& self, const identity::NodeId& from,
   const bool compact = !request.deltas.empty() || !request.held.empty();
   if (request.values.size() != names || request.changed_at.size() != names || (!request.deltas.empty() && request.deltas.size() != names) ||
       (!request.held.empty() && request.held.size() != names) || (compact && request.bases.size() != names) ||
-      (!request.summaries.empty() && request.summaries.size() != names)) {
+      (!request.summaries.empty() && request.summaries.size() != names) || (!request.ancestry.empty() && request.ancestry.size() != names)) {
     out.answer.refused = refusal("the accept names, values and changes differ in count");
     return out;
   }
+  // This accept again (resent, duplicated, or forget()'s check that every replica holds its
+  // tombstone): every name it carries already accepted at its ballot, the slot recorded as it
+  // leaves it. Answered as taken, nothing kept. A promise given since, the reservation the
+  // accept itself made included, refuses no accept already taken (the review of 2026-11-17).
+  const bool recorded = request.to ? held.slot.served == request.to : held.slot.served == request.set;
+  if (names > 0 && recorded &&
+      std::all_of(held.states.begin(), held.states.begin() + static_cast<std::ptrdiff_t>(names),
+                  [&request](const AcceptorState& state) { return state.accepted == request.ballot; }))
+    return out;
   const auto delta_at = [&request](size_t i) { return !request.deltas.empty() && request.deltas[i].has_value(); };
   const auto held_at = [&request](size_t i) { return !request.held.empty() && request.held[i] != 0; };
   for (size_t i = 0; i < names; ++i)
@@ -191,6 +211,7 @@ AcceptStep on_accept(const identity::NodeId& self, const identity::NodeId& from,
     auto& state = keep.states[i];
     state.promised = request.reserve.value_or(request.ballot);
     state.changed_at = request.changed_at[i];
+    state.ancestry = request.ancestry.empty() ? std::vector<Ballot>{} : request.ancestry[i];
     if (held_at(i)) {
       // The value held stays as it is, at the new ballot.
       state.accepted = request.ballot;
@@ -247,6 +268,12 @@ AcceptStep on_settle(const identity::NodeId& self, const identity::NodeId& from,
   } else if (slot.served == request.from && !slot.pending_from) {
     // Missed the transfer's accept: the move is committed, so it now refuses the old set.
     keep.slot.served = request.to;
+  } else if (slot.pending_from == request.from && slot.served != request.to) {
+    // A transfer out of the same set to another, which lost: at most one transfer out of a set
+    // commits (their majorities of it share an acceptor, which takes only one), and a settle is
+    // sent only after a commit. The record pending to the other set is dead.
+    keep.slot.served = request.to;
+    keep.slot.pending_from.reset();
   } else if (!slot.served && request.to.contains(self)) {
     keep.slot.served = request.to;
   } else {
@@ -299,7 +326,8 @@ Attempt Attempt::transfer(ReplicaSet from, ReplicaSet to, Slot slot, Ballot ball
 }
 
 Attempt Attempt::fast(ReplicaSet set, Slot slot, Ballot ballot, std::vector<Name> names, Change change, Ballot last,
-                      const std::vector<std::optional<Bytes>>& values, const std::vector<Ballot>& changed_at) {
+                      const std::vector<std::optional<Bytes>>& values, const std::vector<Ballot>& changed_at,
+                      const std::vector<std::vector<Ballot>>& ancestry) {
   if (!(ballot > last)) throw std::invalid_argument("the fast path's ballot is above its last");
   if (values.size() != names.size() || changed_at.size() != names.size()) throw std::invalid_argument("the fast path's last values name a different count");
   Attempt out(std::move(set), slot, ballot, std::move(names), std::move(change), {}, ReplicaSet{});
@@ -307,6 +335,7 @@ Attempt Attempt::fast(ReplicaSet set, Slot slot, Ballot ballot, std::vector<Name
   if (changed.values.size() != values.size()) throw std::logic_error("a change returned a different count of values");
   Accept accept{out._prepare.set, std::nullopt, slot, ballot, out._prepare.names, std::move(changed.values), {}, last, std::nullopt};
   for (size_t i = 0; i < values.size(); ++i) accept.changed_at.push_back(accept.values[i] == values[i] ? changed_at[i] : ballot);
+  for (size_t i = 0; i < values.size(); ++i) accept.ancestry.push_back(descend(last, i < ancestry.size() ? ancestry[i] : std::vector<Ballot>{}));
   out._result = std::move(changed.result);
   out._accept = std::move(accept);
   out._phase = Phase::accepting;
@@ -326,7 +355,8 @@ Attempt Attempt::deltas(ReplicaSet set, Slot slot, Ballot ballot, std::vector<Na
 }
 
 Attempt Attempt::fast_deltas(ReplicaSet set, Slot slot, Ballot ballot, std::vector<Name> names, DeltaChange change, Ballot last,
-                             const std::vector<Bytes>& summaries, const std::vector<Ballot>& changed_at, bool local, identity::NodeId self) {
+                             const std::vector<Bytes>& summaries, const std::vector<Ballot>& changed_at, bool local, identity::NodeId self,
+                             const std::vector<std::vector<Ballot>>& ancestry) {
   if (!(ballot > last)) throw std::invalid_argument("the fast path's ballot is above its last");
   if (summaries.size() != names.size() || changed_at.size() != names.size()) throw std::invalid_argument("the fast path's last state names a different count");
   auto out = deltas(std::move(set), slot, ballot, std::move(names), std::move(change), ReplicaSet{}, self);
@@ -351,6 +381,8 @@ Attempt Attempt::fast_deltas(ReplicaSet set, Slot slot, Ballot ballot, std::vect
   for (size_t i = 0; i < count; ++i) moved.push_back(made.deltas[i] ? ballot : changed_at[i]);
   auto accept = out.compact(std::move(made.deltas), at, summaries, has_value, moved);
   accept.fast_from = last;
+  accept.ancestry.clear();
+  for (size_t i = 0; i < count; ++i) accept.ancestry.push_back(descend(last, i < ancestry.size() ? ancestry[i] : std::vector<Ballot>{}));
   for (size_t i = 0; i < count; ++i)
     if (!made.summaries[i]) made.summaries[i] = summaries[i];
   out._new_summaries = std::move(made.summaries);
@@ -371,7 +403,40 @@ Accept Attempt::compact(std::vector<std::optional<Bytes>> deltas, const std::vec
   accept.deltas = std::move(deltas);
   accept.bases = bases;
   accept.summaries = summaries;
+  if (_bases.size() == count) accept.ancestry = descended();
   return accept;
+}
+
+std::vector<std::vector<Ballot>> Attempt::descended() const {
+  std::vector<std::vector<Ballot>> out;
+  for (const auto& base : _bases) out.push_back(descend(base.accepted, base.ancestry));
+  return out;
+}
+
+std::pair<Attempt::Earlier, const std::pair<Ballot, Bytes>*> Attempt::earlier() const {
+  if (_own.empty() || _bases.empty()) return {Earlier::none, nullptr};
+  const auto lowest = std::min_element(_own.begin(), _own.end(), [](const auto& a, const auto& b) { return a.first < b.first; })->first;
+  const std::pair<Ballot, Bytes>* found = nullptr;
+  bool every_in = true;
+  bool every_out = true;
+  for (const auto& base : _bases) {
+    const auto chain = descend(base.accepted, base.ancestry);
+    const std::pair<Ballot, Bytes>* hit = nullptr;
+    for (const auto& each : _own)
+      if (std::find(chain.begin(), chain.end(), each.first) != chain.end()) hit = &each;
+    if (hit) {
+      every_out = false;
+      if (found && found->first != hit->first) every_in = false;
+      if (!found) found = hit;
+      continue;
+    }
+    every_in = false;
+    // Not in it: known only where the ancestry reaches below every earlier accept.
+    if (std::none_of(chain.begin(), chain.end(), [&lowest](const Ballot& each) { return each < lowest; })) every_out = false;
+  }
+  if (every_in && found) return {Earlier::in, found};
+  if (every_out) return {Earlier::none, nullptr};
+  return {Earlier::unknown, nullptr};
 }
 
 std::optional<Accept> Attempt::delta_bases() {
@@ -386,12 +451,10 @@ std::optional<Accept> Attempt::delta_bases() {
     has_value.push_back(base.has_value ? 1 : 0);
     changed_at.push_back(base.changed_at);
   }
-  // This proposer's own earlier accept is the newest for every name: its deltas are already in
-  // it. It is committed as it stands, the ballot only, never applied twice.
-  const auto own = std::find_if(_own.begin(), _own.end(), [this](const std::pair<Ballot, Bytes>& earlier) {
-    return !_bases.empty() && std::all_of(_bases.begin(), _bases.end(), [&earlier](const NameState& base) { return base.accepted == earlier.first; });
-  });
-  if (own != _own.end()) {
+  // An earlier accept of this change is in every base (its ancestry says so): its deltas are
+  // already in. It is committed as it stands, the ballot only, never applied twice.
+  const auto [found, own] = earlier();
+  if (found == Earlier::in) {
     _result = own->second;
     _new_summaries.assign(summaries.begin(), summaries.end());
     return compact(std::vector<std::optional<Bytes>>(count), at, summaries, has_value, changed_at);
@@ -419,9 +482,16 @@ std::optional<Accept> Attempt::delta_bases() {
   made.summaries.resize(count);
   for (size_t i = 0; i < count; ++i)
     if (!made.summaries[i] && !made.deltas[i]) made.summaries[i] = summaries[i];
+  const bool any = std::any_of(made.deltas.begin(), made.deltas.end(), [](const std::optional<Bytes>& delta) { return delta.has_value(); });
+  // As change_bases: a delta is never applied where an earlier one of this change may be.
+  if (any && !made.repeatable && found == Earlier::unknown) {
+    _unknown = true;
+    _why = "an earlier accept of this change may be in the value found, so it is not applied again: its outcome is unknown";
+    _phase = Phase::refused;
+    return std::nullopt;
+  }
   _new_summaries = std::move(made.summaries);
   _result = std::move(made.result);
-  const bool any = std::any_of(made.deltas.begin(), made.deltas.end(), [](const std::optional<Bytes>& delta) { return delta.has_value(); });
   // A read whose promisers all answered every name with its base: chosen already, by them.
   bool agreed = true;
   for (size_t i = 0; i < count && agreed; ++i)
@@ -463,19 +533,32 @@ void Attempt::refuse(const identity::NodeId& from, const Refusal& refusal) {
   // Served by a configuration as new as this attempt's or newer: this attempt's set is wrong.
   // An older one is a laggard's record, refused like any other.
   if (refusal.serving && !(refusal.serving->version < _prepare.set.version)) {
-    _serving = refusal.serving;
-    // The set this attempt starts from is the target of an unfinished transfer: the
-    // runtime finishes it, then tries again.
-    if (refusal.pending_from && *refusal.serving == _prepare.set) _unfinished = refusal.pending_from;
-    _phase = Phase::refused;
-    return;
+    // A record of another set held only pending may be a transfer that lost and never
+    // committed (the review of 2026-11-17): one acceptor's word, counted as one refusal. Only
+    // when every refusal that ends the attempt names that one set is it taken as the set.
+    if (refusal.pending_from && *refusal.serving != _prepare.set) {
+      if (!_pending_elsewhere || *_pending_elsewhere == *refusal.serving) {
+        _pending_elsewhere = refusal.serving;
+        ++_pending_count;
+      }
+    } else {
+      _serving = refusal.serving;
+      // The set this attempt starts from is the target of an unfinished transfer: the
+      // runtime finishes it, then tries again.
+      if (refusal.pending_from && *refusal.serving == _prepare.set) _unfinished = refusal.pending_from;
+      _phase = Phase::refused;
+      return;
+    }
   }
   // Too many refusals for a majority of either set.
   const auto refusers = [this](const ReplicaSet& set) {
     return static_cast<size_t>(std::count_if(_refusers.begin(), _refusers.end(), [&set](const identity::NodeId& node) { return set.contains(node); }));
   };
   const auto lost = [&refusers](const ReplicaSet& set) { return refusers(set) > set.nodes.size() - set.majority(); };
-  if (lost(_prepare.set) || (_prepare.to && lost(*_prepare.to))) _phase = Phase::refused;
+  if (lost(_prepare.set) || (_prepare.to && lost(*_prepare.to))) {
+    if (_pending_elsewhere && _pending_count == _refusers.size()) _serving = _pending_elsewhere;
+    _phase = Phase::refused;
+  }
 }
 
 std::optional<Accept> Attempt::on_prepare(const identity::NodeId& from, const PrepareAnswer& answer) {
@@ -502,6 +585,8 @@ Accept Attempt::accepting(Accept accept) {
   _phase = Phase::accepting;
   _heard.clear();
   _refusers.clear();
+  _pending_elsewhere.reset();
+  _pending_count = 0;
   _why.clear();
   return accept;
 }
@@ -609,7 +694,8 @@ std::optional<Accept> Attempt::reduce_names() {
   if (!_reduce) {
     std::vector<std::optional<Bytes>> current;
     for (const auto& base : _bases) current.push_back(base.value);
-    return _prepare.to ? transfer_bases(std::move(current)) : change_bases(std::move(current));
+    if (_prepare.to) return transfer_bases(std::move(current));
+    return change_bases(std::move(current));
   }
   // Each name not yet reduced; a reduction that needs more asks, and is called again once it
   // is in. Every answer is asked for at most once per name, so this ends.
@@ -649,34 +735,42 @@ std::optional<Accept> Attempt::reduce_names() {
   }
   std::vector<std::optional<Bytes>> current;
   for (auto& value : _current) current.push_back(std::move(*value));
-  return _prepare.to ? transfer_bases(std::move(current)) : change_bases(std::move(current));
+  if (_prepare.to) return transfer_bases(std::move(current));
+  return change_bases(std::move(current));
 }
 
-Accept Attempt::change_bases(std::vector<std::optional<Bytes>> current) {
+std::optional<Accept> Attempt::change_bases(std::vector<std::optional<Bytes>> current) {
   const auto& set = _prepare.set;
   const size_t count = _prepare.names.size();
   const auto& bases = _bases;
-  // This proposer's own earlier accept is the newest for every name: its change is already in
-  // the values, which are committed as they are, with that attempt's result.
-  if (count > 0 && !_reduce) {
-    const auto own = std::find_if(_own.begin(), _own.end(), [&bases](const std::pair<Ballot, Bytes>& earlier) {
-      return std::all_of(bases.begin(), bases.end(), [&earlier](const NameState& base) { return base.accepted == earlier.first; });
-    });
-    if (own != _own.end()) {
-      Accept accept{set, std::nullopt, _prepare.slot, _prepare.ballot, _prepare.names, current, {}, std::nullopt, std::nullopt};
-      for (const auto& base : bases) accept.changed_at.push_back(base.changed_at);
-      note_unchanged(accept);
-      _result = own->second;
-      return accept;
-    }
+  // An earlier accept of this change is in every base (its ancestry says so, whoever built on
+  // it since): the change is already in the values, which are committed as they are (reduced,
+  // with an owner's reduction), with that attempt's result.
+  const auto [found, own] = count > 0 ? earlier() : std::pair<Earlier, const std::pair<Ballot, Bytes>*>{Earlier::none, nullptr};
+  if (found == Earlier::in) {
+    Accept accept{set, std::nullopt, _prepare.slot, _prepare.ballot, _prepare.names, current, {}, std::nullopt, std::nullopt};
+    for (const auto& base : bases) accept.changed_at.push_back(base.changed_at);
+    accept.ancestry = descended();
+    note_unchanged(accept);
+    _result = own->second;
+    return accept;
   }
   auto changed = _change(current);
   if (changed.values.size() != count) throw std::logic_error("a change returned a different count of values");
   if (!changed.deltas.empty() && changed.deltas.size() != count) throw std::logic_error("a change returned a different count of deltas");
+  // Another proposer may have built on an earlier accept of this change: applied again, it
+  // could be in the value twice. Only a repeatable change goes on.
+  if (!changed.repeatable && found == Earlier::unknown) {
+    _unknown = true;
+    _why = "an earlier accept of this change may be in the value found, so it is not applied again: its outcome is unknown";
+    _phase = Phase::refused;
+    return std::nullopt;
+  }
   Accept accept{set, std::nullopt, _prepare.slot, _prepare.ballot, _prepare.names, std::move(changed.values), {}, std::nullopt, std::nullopt};
   for (size_t i = 0; i < count; ++i)
     // Unaltered, a value keeps the ballot that last changed it: a stable fencing token.
     accept.changed_at.push_back(accept.values[i] == bases[i].value ? bases[i].changed_at : _prepare.ballot);
+  accept.ancestry = descended();
   // Each delta is against the base the change was given.
   if (std::any_of(changed.deltas.begin(), changed.deltas.end(), [](const std::optional<Bytes>& delta) { return delta.has_value(); })) {
     accept.deltas = std::move(changed.deltas);
@@ -721,6 +815,7 @@ std::optional<Accept> Attempt::transfer_accept() {
 Accept Attempt::transfer_bases(std::vector<std::optional<Bytes>> current) {
   Accept accept{_prepare.set, _prepare.to, _prepare.slot, _prepare.ballot, _names, std::move(current), {}, std::nullopt, std::nullopt};
   for (const auto& base : _bases) accept.changed_at.push_back(base.changed_at);
+  accept.ancestry = descended();
   note_unchanged(accept);
   return accept;
 }

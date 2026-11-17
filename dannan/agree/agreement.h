@@ -29,6 +29,12 @@
 // a store of its own, and changes registers from any node; Dannan stores nothing.
 namespace dannan::agree {
 
+// How long an attempt's first round waits for each prepare, accept and fetch answer before a
+// silent acceptor counts as not answering and the attempt retries, or a fetch moves to the next
+// holder; doubled with each attempt of a change, and never past its deadline (the maintainer, 2026-11-17:
+// one silent acceptor must not hold a change until its deadline). Changed here, in code.
+inline constexpr std::chrono::milliseconds first_round{250};
+
 // One space's acceptor state, the hosted system's to keep: in memory, or durably before
 // keep() says it is done. Called one request at a time per space; done may be called from
 // any thread. Names are kept per slot, and each slot has its record.
@@ -101,6 +107,10 @@ struct Outcome {
   std::vector<identity::NodeId> accepted, refused, silent;
   // Not committed: why. A set refusal names the set the slot is served by.
   std::string why;
+  // Not committed, and an accept of this change may have been taken and built on: it may have
+  // taken effect, once (never twice). Settle it by reading back, or by the owner's own mark in
+  // the value. Never set when committed (the maintainer, 2026-11-17).
+  bool unknown = false;
   std::optional<ReplicaSet> serving;
   // A transfer: the names it carried to the new set.
   std::vector<Name> names;
@@ -179,8 +189,18 @@ class Agreement {
   // and a result. The caller names the slot (slot_of, or the hosted system's own scheme).
   // Retries above any higher ballot it hears of, with backoff, finishing a transfer to its
   // set that it finds unfinished, until committed, refused for its set (`Outcome::serving`
-  // says which serves the slot), or `deadline` passes on the injected time. `done` is
-  // posted to `executor` once. From any thread.
+  // says which serves the slot), or `deadline` passes on the injected time. A change is
+  // never applied twice: a retry that cannot tell whether another proposer built on an
+  // earlier accept of it ends `Outcome::unknown`, unless the change says it is repeatable
+  // (`Changed::repeatable`). `done` is posted to `executor` once. From any thread.
+  //
+  // One name only, until plan item 7's atomic commit (the review of 2026-11-17, finding 7, and
+  // Mimir's ask): a change of several names can be half taken, so it throws
+  // std::invalid_argument. A read may name several.
+  //
+  // A store may decline to keep `AcceptorState::ancestry` (Mimir's review: its cost per key):
+  // loaded empty, it reads as cut short, so a retry that cannot tell ends unknown unless the
+  // change is repeatable.
   void change(std::string space, Slot slot, std::vector<Name> names, std::vector<identity::NodeId> replicas, uint64_t version, Change change, Reduce reduce,
               std::chrono::milliseconds deadline, boost::asio::any_io_executor executor, std::function<void(Outcome)> done);
   // A value-less change (the design's part 6, Mimir's and Kvasir's ask): `change` is given each
@@ -237,6 +257,10 @@ class Agreement {
  private:
   struct Core;
   struct Run;
+
+  // change() without its one-name rule: a read's identity change may name several.
+  void any_change(std::string space, Slot slot, std::vector<Name> names, std::vector<identity::NodeId> replicas, uint64_t version, Change change, Reduce reduce,
+                  std::chrono::milliseconds deadline, boost::asio::any_io_executor executor, std::function<void(Outcome)> done);
 
   // Shared with every change in flight, so none outlives what it uses.
   std::shared_ptr<Core> _core;

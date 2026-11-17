@@ -33,6 +33,21 @@ Ballot get_ballot(Reader& in) {
   return out;
 }
 
+// A value's ancestry: a count, then the ballots.
+void put_ancestry(Writer& out, const std::vector<Ballot>& ancestry) {
+  if (ancestry.size() > max_ancestry) throw std::invalid_argument("an ancestry holds at most 16 ballots");
+  out.u8(static_cast<uint8_t>(ancestry.size()));
+  for (const auto& ballot : ancestry) put(out, ballot);
+}
+
+std::vector<Ballot> get_ancestry(Reader& in) {
+  const auto count = in.u8();
+  if (count > max_ancestry) throw DecodeError("an ancestry of " + std::to_string(count) + " ballots");
+  std::vector<Ballot> out;
+  for (uint8_t i = 0; i < count; ++i) out.push_back(get_ballot(in));
+  return out;
+}
+
 void put(Writer& out, const ReplicaSet& set) {
   out.u64(set.version);
   out.u16(static_cast<uint16_t>(set.nodes.size()));
@@ -181,6 +196,10 @@ net::Bytes encode(const AcceptMessage& message) {
       out.bytes(summary);
       if (delta && !held) out.bytes(*accept.deltas[i]);
     }
+  // Each new value's ancestry: none, or one per name.
+  if (!accept.ancestry.empty() && accept.ancestry.size() != count) throw std::invalid_argument("an accept's ancestry names a different count");
+  out.u8(accept.ancestry.empty() ? 0 : 1);
+  for (const auto& each : accept.ancestry) put_ancestry(out, each);
   return out.take();
 }
 
@@ -251,6 +270,7 @@ net::Bytes encode(const PrepareAnswer& answer) {
     if (state.summary.size() > max_summary) throw std::invalid_argument("a summary is at most 64 bytes");
     out.bytes(state.summary);
     out.u8(state.has_value || state.value ? 1 : 0);
+    put_ancestry(out, state.ancestry);
   }
   return out.take();
 }
@@ -326,6 +346,10 @@ AcceptMessage decode_accept(std::span<const uint8_t> bytes) {
       if (out.accept.values[i]) throw DecodeError("a name carried in two forms");
     }
   }
+  const auto ancestry = in.u8();
+  if (ancestry > 1) throw DecodeError("an accept's ancestry's presence is 0 or 1");
+  if (ancestry)
+    for (size_t i = 0; i < out.accept.names.size(); ++i) out.accept.ancestry.push_back(get_ancestry(in));
   in.finish();
   return out;
 }
@@ -350,6 +374,7 @@ PrepareAnswer decode_prepare_answer(std::span<const uint8_t> bytes) {
     if (held > 1) throw DecodeError("a name's has-value is 0 or 1");
     state.has_value = held == 1;
     if (state.value && !state.has_value) throw DecodeError("a value carried for a name that holds none");
+    state.ancestry = get_ancestry(in);
     out.states.push_back(std::move(state));
   }
   in.finish();

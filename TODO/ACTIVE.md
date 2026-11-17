@@ -44,7 +44,12 @@ current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluat
   not pushed: develop is 4 commits ahead of `origin/develop`, and its hosted CI waits on the maintainer's push word. No branch
   is in flight; the worktree in use is `build/wt-feature`, on `develop`. Its record is `COMPLETED.md`'s 2026-11-17
   entry.
+- **Agreement reviewed and fixed** (2026-11-17, `COMPLETED.md`): a change applied twice, a
+  multi-name change half taken, a stall, `forget()`, a lost transfer and the floor. Merged
+  after the macOS gate; Lugh wants word when it is in a tag.
 - **Next: step 3, part 3** (correlated kills, and durability per `ack_level` against the faults).
+- **New for plan item 7**: multi-name changes in a slot go through the atomic commit too
+  (Mimir and Kvasir agreed, option 2 of the review); until then `change()` takes one name.
 - **Gates.**
   - The last full suite, on node-b at step 3 part 2, ran 847 tests: 846 passed and 1 skipped (it is skipped when
     run as root).
