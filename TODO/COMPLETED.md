@@ -3,6 +3,25 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
+## The harness, step 3 part 4, piece 2a: the node's loops on a schedule, 2026-11-17 (`feature/sim-schedule`)
+
+The transport seam (`2026-11-17-sim-transport-seam.md`, reviewed by Mimir and Kvasir), its first
+piece:
+- Each of the node's four loops is now one step. A step that calls a peer (the members exchange
+  and the revocations after it, the dial-back probe) goes on when the answer comes; on a thread,
+  its continuations run on the loop's own context (`_membership_io`, `_connectivity_io`), so the
+  order and the thread, Law 1's disk included, are as they were.
+- `NodeConfig::schedule`: set, the node starts no loop threads; the schedule runs each step on
+  the io context and books the next (membership a heartbeat after a pass ends, telemetry at its
+  interval, the roster each second, connectivity when due, at least each heartbeat).
+  `Time::after()` and the node's agreement waits go through it too (Kvasir's timers).
+- Test: `Node.WithAScheduleItsLoopsAndTimersRunWhenTheScheduleRunsThem`. The 73 other Node tests
+  pass unchanged on threads.
+- Gate: node-d, 864 tests, 863 passed, 1 skipped (as root). Node-b stopped answering ssh at
+  about 11:40Z (noted on the board).
+- Next, piece 2b: `net::Transport` and the world's `SimTransport`, a `SimNode`, and Mimir's three
+  asks (clock skew per node, restart keeping or wiping the store, partitions with a heal).
+
 ## The harness, step 3 part 3: durability per acknowledgement level, and a majority killed together, 2026-11-17 (`feature/sim-durability`)
 
 - `fixtures/sim/durability.h`: `AckLevel` and `loss_excused`, each level's rule against the
