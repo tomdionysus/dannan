@@ -84,6 +84,12 @@ class Store final : public agree::AcceptorStore {
     done(std::vector<std::pair<agree::Slot, agree::SlotState>>(_current.slots.begin(), _current.slots.end()));
   }
 
+  // A sync: what is held is now durable (a store that does not persist each keep, `decided`).
+  // One whose sync lies keeps nothing.
+  void sync() {
+    if (lying_sync) return;
+    _durable = _current;
+  }
   // A crash: what was not durable is gone.
   void crash() {
     _current = _durable;

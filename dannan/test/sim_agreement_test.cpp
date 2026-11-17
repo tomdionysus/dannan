@@ -30,6 +30,7 @@
 #include "dannan/agree/wire.h"
 #include "dannan/net/routes.h"
 #include "dannan/test/fixtures/sim/agreement.h"
+#include "dannan/test/fixtures/sim/durability.h"
 #include "dannan/test/fixtures/sim/history.h"
 #include "dannan/test/fixtures/sim/invariants.h"
 #include "dannan/test/fixtures/sim/linearizable.h"
@@ -803,6 +804,187 @@ Run merge_class(uint64_t seed, bool dropping) {
   return finished(run, invariants);
 }
 
+// Durability per acknowledgement level (the harness's step 3, part 3), judged against the
+// faults in the history. Five nodes increment a counter under lost and duplicated messages and
+// partitions, while nodes crash alone and a majority is killed together. `persist`: each keep
+// is durable before it answers (`replicated`); otherwise each store answers from memory and
+// syncs on its own every 200 to 600 ms (`decided`). A crashed node that lost what it had not
+// synced votes only once caught up; a majority killed together comes back with what each had
+// synced and votes at once, there being no majority left to catch up from. The history is then
+// judged at `judged`: every committed increment whose loss the faults excuse may or may not have
+// taken effect; any other must be there. `strict`, if given, says whether the history also
+// held with nothing excused.
+Run lasting(uint64_t seed, bool persist, AckLevel judged, bool* strict = nullptr) {
+  World world(seed);
+  NetworkFaults faults;
+  faults.drop_one_in = 10;
+  faults.duplicate_one_in = 10;
+  faults.max_delay_ms = 30;
+  Cluster cluster(world, 5, faults, persist);
+  Invariants invariants(world, cluster, counter_order());
+  const size_t majority = cluster.size() / 2 + 1;
+  std::vector<Fault> log;
+  const auto note = [&](std::string kind, std::vector<uint64_t> nodes) { log.push_back(Fault{world.now_ms(), std::move(kind), std::move(nodes), {}}); };
+  std::function<void(size_t)> sync_later = [&](size_t i) {
+    world.after(200 + world.random.below(400), [&, i] {
+      if (cluster.up(i)) {
+        cluster.store(i).sync();
+        note("sync", {i});
+      }
+      if (world.now_ms() < 1'004'000) sync_later(i);
+    });
+  };
+  if (!persist)
+    for (size_t i = 0; i < cluster.size(); ++i) sync_later(i);
+  std::vector<uint64_t> incarnation(cluster.size(), 0);
+  std::function<void(size_t, uint64_t)> catch_up = [&](size_t a, uint64_t at) {
+    if (!cluster.up(a) || incarnation[a] != at) return;
+    cluster.agreement(a).catch_up(Cluster::space, counter_slot, {agree::Name{'c'}}, cluster.ids(), Cluster::genesis_version, 1000ms, world.io.get_executor(),
+                                  [&, a, at](agree::Outcome outcome) {
+                                    if (!cluster.up(a) || incarnation[a] != at) return;
+                                    if (outcome.committed) return cluster.store(a).set_ready(true);
+                                    world.after(100, [&, a, at] { catch_up(a, at); });
+                                  });
+  };
+  // One node back: as it was, if each keep was durable; otherwise behind, catching up while a
+  // majority of the others is up and voting, or later.
+  std::function<void(size_t)> back = [&](size_t a) {
+    if (cluster.up(a)) return;
+    ++incarnation[a];
+    if (persist) return cluster.restart(a);
+    size_t voting = 0;
+    for (size_t i = 0; i < cluster.size(); ++i)
+      if (i != a && cluster.up(i) && cluster.store(i).ready()) ++voting;
+    if (voting < majority) return world.after(100, [&, a] { back(a); });
+    cluster.restart(a, false, false);
+    catch_up(a, incarnation[a]);
+  };
+  const auto voting = [&] {
+    size_t out = 0;
+    for (size_t i = 0; i < cluster.size(); ++i)
+      if (cluster.up(i) && cluster.store(i).ready()) ++out;
+    return out;
+  };
+  // A node alone: with stores that sync later, only while a majority of the rest still votes,
+  // so it can catch up. Separate crashes that leave a majority behind are a loss no rule
+  // excuses, and nothing to catch up from: not this simulation's.
+  const auto crash = [&](size_t a) {
+    if (!cluster.up(a)) return;
+    if (!persist && (!cluster.store(a).ready() || voting() - 1 < majority)) return;
+    cluster.crash(a);
+    note("kill", {a});
+    // What it had not synced is gone, as declared: the invariants start it afresh.
+    if (!persist) invariants.lost(a);
+    world.after(100 + world.random.below(300), [&, a] { back(a); });
+  };
+  // A majority together, from a cluster that is whole.
+  const auto kill_together = [&] {
+    if (voting() < cluster.size()) return;
+    std::vector<size_t> order;
+    for (size_t i = 0; i < cluster.size(); ++i) order.push_back(i);
+    for (size_t i = order.size(); i > 1; --i) std::swap(order[i - 1], order[world.random.below(i)]);
+    std::vector<uint64_t> killed;
+    for (size_t i = 0; i < majority; ++i)
+      if (cluster.up(order[i])) {
+        cluster.crash(order[i]);
+        killed.push_back(order[i]);
+      }
+    if (killed.empty()) return;
+    note("kill", killed);
+    const bool most = killed.size() >= majority;
+    if (!persist) {
+      if (most)
+        invariants.excused_loss();
+      else
+        for (const auto k : killed) invariants.lost(k);
+    }
+    world.after(200, [&, killed, most] {
+      for (const auto k : killed) {
+        if (cluster.up(k)) continue;
+        if (persist || !most) {
+          back(k);
+          continue;
+        }
+        ++incarnation[k];
+        cluster.restart(k);
+      }
+    });
+  };
+  std::vector<Op> history(40);
+  for (size_t n = 0; n < history.size(); ++n)
+    world.after(world.random.below(2000), [&, n] {
+      size_t at = world.random.below(cluster.size());
+      for (size_t tries = 0; tries < cluster.size() && !cluster.up(at); ++tries) at = (at + 1) % cluster.size();
+      if (!cluster.up(at)) return;
+      history[n].invoked = world.now_ms();
+      cluster.agreement(at).change(Cluster::space, counter_slot, {agree::Name{'c'}}, cluster.ids(), Cluster::genesis_version, increment(), {}, 3000ms,
+                                   world.io.get_executor(), [&, n](agree::Outcome outcome) {
+                                     auto& op = history[n];
+                                     op.completed = world.now_ms();
+                                     op.answered = true;
+                                     op.committed = outcome.committed;
+                                     if (outcome.committed) op.result = decode(outcome.result);
+                                   });
+    });
+  for (int f = 0; f < 10; ++f)
+    world.after(world.random.below(2000), [&] {
+      const auto a = world.random.below(cluster.size());
+      const auto b = world.random.below(cluster.size());
+      switch (world.random.below(6)) {
+        case 0:
+          if (a != b) cluster.block(a, b);
+          break;
+        case 1:
+          cluster.unblock_all();
+          break;
+        case 2:
+        case 3:
+          kill_together();
+          break;
+        default:
+          crash(a);
+          break;
+      }
+    });
+  world.after(2500, [&] {
+    cluster.unblock_all();
+    cluster.faults().drop_one_in = 0;
+    cluster.faults().duplicate_one_in = 0;
+    for (size_t i = 0; i < cluster.size(); ++i) back(i);
+  });
+  const auto all_answered = [&] { return std::all_of(history.begin(), history.end(), [](const Op& op) { return op.answered || op.invoked == 0; }); };
+  const auto all_voting = [&] {
+    for (size_t i = 0; i < cluster.size(); ++i)
+      if (!cluster.up(i) || !cluster.store(i).ready()) return false;
+    return true;
+  };
+  Run run;
+  if (!world.run_until([&] { return world.now_ms() >= 1'002'500 && all_answered() && all_voting(); }, 4'000'000)) {
+    run.unsettled = true;
+    run.violation = "the run did not settle";
+    return finished(run, invariants);
+  }
+  std::optional<agree::Outcome> read;
+  cluster.agreement(0).read(Cluster::space, counter_slot, {agree::Name{'c'}}, cluster.ids(), Cluster::genesis_version, {}, 5000ms, world.io.get_executor(),
+                            [&](agree::Outcome outcome) { read = std::move(outcome); });
+  world.run_until([&] { return read.has_value(); }, 2'000'000);
+  if (!read || !read->committed) {
+    run.unsettled = true;
+    run.violation = "the final read did not commit";
+    return finished(run, invariants);
+  }
+  std::vector<Op> invoked;
+  for (const auto& op : history)
+    if (op.invoked) invoked.push_back(op);
+  run.committed = static_cast<size_t>(std::count_if(invoked.begin(), invoked.end(), [](const Op& op) { return op.committed; }));
+  if (strict) *strict = !check(invoked, decode(read->values[0]));
+  // Judged at its level: a committed increment whose loss the faults excuse may not be there.
+  for (auto& op : invoked)
+    if (op.committed && loss_excused(log, judged, op.invoked, op.completed, 0, cluster.size())) op.committed = false;
+  if (const auto refused = check(invoked, decode(read->values[0]))) run.violation = "durability: " + *refused;
+  return finished(run, invariants);
+}
+
 uint64_t seeds(uint64_t fallback) {
   const char* set = std::getenv("DANNAN_SIM_SEEDS");
   return set && *set ? std::strtoull(set, nullptr, 10) : fallback;
@@ -876,6 +1058,67 @@ TEST(Simulation, TheCheckersCatchALyingSyncThatIsTrusted) {
 TEST(Simulation, TheCheckersCatchProposersWhoseRostersNameDifferentSets) {
   const auto caught = first_refused([](uint64_t seed) { return simulate(seed, Mode::other_roster); }, 400);
   ASSERT_TRUE(caught) << "no seed showed the broken protocol: the checkers are unproven";
+}
+
+// Each level's rule, on faults written out by hand.
+TEST(Durability, EachLevelIsExcusedOnlyByWhatLosesIt) {
+  const std::vector<Fault> kill_one{{20, "kill", {1}, {}}};
+  EXPECT_TRUE(loss_excused(kill_one, AckLevel::ephemeral, 10, 15, 1, 5));
+  EXPECT_FALSE(loss_excused(kill_one, AckLevel::ephemeral, 10, 15, 2, 5));
+  EXPECT_FALSE(loss_excused(kill_one, AckLevel::persisted, 10, 15, 1, 5));
+  EXPECT_TRUE(loss_excused({{20, "wipe", {1}, {}}}, AckLevel::persisted, 10, 15, 1, 5));
+  // Decided: a majority killed together, none of them synced since the answer.
+  const std::vector<Fault> three{{30, "kill", {0, 1, 2}, {}}};
+  EXPECT_TRUE(loss_excused(three, AckLevel::decided, 10, 15, 0, 5));
+  EXPECT_FALSE(loss_excused(three, AckLevel::replicated, 10, 15, 0, 5));
+  // One of them synced after the answer: a majority no longer lost it.
+  std::vector<Fault> synced = three;
+  synced.insert(synced.begin(), Fault{20, "sync", {1}, {}});
+  EXPECT_FALSE(loss_excused(synced, AckLevel::decided, 10, 15, 0, 5));
+  // A sync before the answer may not hold the write: it does not count.
+  std::vector<Fault> early = three;
+  early.insert(early.begin(), Fault{12, "sync", {1}, {}});
+  EXPECT_TRUE(loss_excused(early, AckLevel::decided, 10, 15, 0, 5));
+  // A kill before the write was invoked excuses nothing; two killed alone neither.
+  EXPECT_FALSE(loss_excused({{5, "kill", {0, 1, 2}, {}}}, AckLevel::decided, 10, 15, 0, 5));
+  EXPECT_FALSE(loss_excused({{20, "kill", {0}, {}}, {21, "kill", {1}, {}}, {22, "kill", {2}, {}}}, AckLevel::decided, 10, 15, 0, 5));
+  // Replicated: a majority's disks.
+  EXPECT_FALSE(loss_excused({{20, "wipe", {0, 1}, {}}}, AckLevel::replicated, 10, 15, 0, 5));
+  EXPECT_TRUE(loss_excused({{20, "wipe", {0, 1}, {}}, {25, "wipe", {2}, {}}}, AckLevel::replicated, 10, 15, 0, 5));
+}
+
+// Replicated: every keep durable before it answers, so a majority killed together loses
+// nothing, and the history holds with nothing excused.
+TEST(Simulation, AReplicatedCommitSurvivesAMajorityKilledTogether) {
+  size_t committed = 0;
+  for (uint64_t seed = 1; seed <= seeds(60); ++seed) {
+    const auto run = lasting(seed, true, AckLevel::replicated);
+    ASSERT_FALSE(run.violation) << "seed " << seed << ": " << *run.violation;
+    committed += run.committed;
+  }
+  EXPECT_GT(committed, 0u);
+}
+
+// Decided: stores answer from memory and sync later. A majority killed together before syncing
+// may lose commits, and some seed does (the history fails with nothing excused); every loss is
+// one the faults excuse, and nothing else is lost.
+TEST(Simulation, ADecidedCommitIsLostOnlyWhenAMajorityStopsBeforeSyncing) {
+  size_t lost = 0;
+  for (uint64_t seed = 1; seed <= seeds(60); ++seed) {
+    bool strict = true;
+    const auto run = lasting(seed, false, AckLevel::decided, &strict);
+    ASSERT_FALSE(run.violation) << "seed " << seed << ": " << *run.violation;
+    if (!strict) ++lost;
+  }
+  EXPECT_GT(lost, 0u) << "no seed lost a decided commit: the rule was never exercised";
+}
+
+// The broken protocol: stores that answer from memory, taken for replicated (a durable answer
+// that was not). A majority killed together loses commits the faults do not excuse at that level.
+TEST(Simulation, TheCheckersCatchADecidedStoreTakenForReplicated) {
+  const auto caught = first_refused([](uint64_t seed) { return lasting(seed, false, AckLevel::replicated); }, 200);
+  ASSERT_TRUE(caught) << "no seed showed the broken protocol: the checkers are unproven";
+  EXPECT_NE(caught->second.find("durability:"), std::string::npos) << caught->second;
 }
 
 // Ruling 16 kept: with the union of every promiser's merged state, every command sees every merge

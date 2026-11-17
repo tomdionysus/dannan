@@ -76,6 +76,13 @@ class Invariants {
     _acceptors.at(i) = {};
     _looked.at(i) = never;
   }
+  // A loss the faults excuse (a majority stopped together before syncing, at `decided`): what
+  // was chosen before it may be gone, so nothing before binds anything after. Checking goes on
+  // from here.
+  void excused_loss() {
+    for (size_t i = 0; i < _acceptors.size(); ++i) lost(i);
+    _ballots.clear();
+  }
 
   // The first breach: when, which acceptor and name, and what.
   const std::optional<std::string>& violation() const noexcept { return _violation; }
