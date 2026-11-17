@@ -15,7 +15,7 @@ target_compile_definitions(dannan_test_fixtures INTERFACE DANNAN_TEST_TEMP_ROOT=
 
 # The simulation harness's checkers' search, compiled once (the harness design's
 # "Packaging"): a hosted system's tests link it with the header-only fixtures.
-add_library(dannan_sim_checkers STATIC fixtures/sim/linearizable.cpp)
+add_library(dannan_sim_checkers STATIC fixtures/sim/linearizable.cpp fixtures/sim/serializable.cpp)
 target_include_directories(dannan_sim_checkers PUBLIC ${PROJECT_SOURCE_DIR})
 target_link_libraries(dannan_sim_checkers PRIVATE dannan_warnings)
 
@@ -61,6 +61,7 @@ add_executable(dannan_tests
   sched_worker_pool_test.cpp
   sim_agreement_test.cpp
   sim_checkers_test.cpp
+  sim_isolation_test.cpp
   sim_nodes_test.cpp
   status_log_test.cpp
   status_observation_test.cpp
