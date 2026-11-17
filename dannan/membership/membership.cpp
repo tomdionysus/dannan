@@ -15,6 +15,16 @@
 #include "dannan/identity/durable_file.h"
 
 namespace dannan::membership {
+
+namespace {
+
+// A changed record's stamp: strictly newer than every copy of the record before it, a peer
+// keeping only a newer stamp. A gossip reply or handshake stamps the copy it carries with the
+// wall's millisecond then, never later than the wall now, so the change takes the next
+// millisecond; and past the last change, for several changes within one.
+uint64_t changed_stamp(const contract::WallClock& wall, uint64_t last) { return std::max(wall.unix_ms() + 1, last + 1); }
+
+}  // namespace
 namespace {
 
 using Magic = std::array<uint8_t, 8>;
@@ -192,16 +202,14 @@ bool Membership::set_advert(const std::string& key, net::Bytes value) {
   if (found != _self.adverts.end() && found->second == value) return false;
   if (found == _self.adverts.end() && _self.adverts.size() >= max_adverts) throw std::invalid_argument("a node advertises at most 64 things");
   _self.adverts[key] = std::move(value);
-  // Strictly newer than the record before it, even within one millisecond: a peer keeps
-  // only a newer stamp, so an advert pushed at once must not tie the last.
-  _self.seen_unix_ms = std::max(_wall->unix_ms(), _self.seen_unix_ms + 1);
+  _self.seen_unix_ms = changed_stamp(*_wall, _self.seen_unix_ms);
   return true;
 }
 
 bool Membership::clear_advert(const std::string& key) {
   contract::Lock lock(_mutex);
   if (!_self.adverts.erase(key)) return false;
-  _self.seen_unix_ms = std::max(_wall->unix_ms(), _self.seen_unix_ms + 1);
+  _self.seen_unix_ms = changed_stamp(*_wall, _self.seen_unix_ms);
   return true;
 }
 

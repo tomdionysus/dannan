@@ -463,7 +463,11 @@ class Context {
   // can use agreement uses this, and builds no consensus of its own.
   virtual agree::Agreement& agreement() = 0;
   // The node's hybrid logical clock (0.9.0, TODO/2026-11-15-hlc-design.md): one per node, shared
-  // by every hosted system, its stamps never repeated across restarts.
+  // by every hosted system, its stamps never repeated across restarts. Its ceiling is sealed
+  // only with key custody: a node without custody keeps it in a durable file, so a state
+  // directory restored alone from an old copy is not refused and may reissue stamps, as every
+  // rollback refusal in Dannan needs custody (the maintainer, 2026-11-17, with Dagda, Lir and Mimir). The
+  // peer-witnessed high-water mark closes that case in 0.10.0.
   virtual contract::HlcClock& hlc() = 0;
   virtual Diagnostics diagnostics() const = 0;
 };

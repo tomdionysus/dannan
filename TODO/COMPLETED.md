@@ -3,6 +3,19 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
+**For 0.9.1: an advert change tied a snapshot's stamp** (Lir's finding on 0.9.0, 2026-11-17). Gossip replies and
+handshakes stamp the record with the wall's millisecond, unrecorded; `set_advert`/`clear_advert` took
+max(wall, last + 1), so a change in the millisecond of an earlier snapshot tied its stamp with new content and
+peers holding the snapshot refused it: pushes missed as "the peer holds an older record", messages after SUBACK
+lost. Now max(wall + 1, last + 1) (`membership.cpp`, no ABI change). Proved by
+`Membership.AnAdvertChangedInTheMillisecondOfASnapshotIsNewerThanIt` (failed at …005 against …005 before). Node-b:
+941 tests, 940 passed, 1 skipped.
+
+**0.9.0 is released** (`main` and tag at `59b7abc`, pushed at the maintainer's word, 2026-11-17; main's CI run 44158672535
+green on every job). The `.deb`s are staged in `../tomcully-apt/incoming/dannan/0.9.0/` and checked: SONAME
+`libdannan.so.0.9`, shlibs `libdannan0.9 (>= 0.9.0)`, `libdannan-dev` with the clock, storage and sim headers and
+`libdannan_sim_checkers.a`, for the maintainer to publish.
+
 ## 0.9.0's release preparation, 2026-11-17 evening
 
 - Scope from the sessions (the maintainer: "Find out what the other sessions actually need and that's your
@@ -104,8 +117,9 @@ left green. `ACTIVE.md` is the plan and this is the record.
   shipped after a build can be older than objects built from it, so ninja kept a stale test
   object with the old `NodeConfig` beside a library with the new one (a segfault, and fifteen
   "clean" repeats that had each crashed). The copy now uses `tar -m`.
-- Gates: node-b, 894 tests, 893 passed, 1 skipped (as root). TSan on node-c (CI's flags), 894
-  tests, 893 passed, no reports. The branch's CI run 44116803795: every job green; tsan x86-64
+- Gates: node-b, 894 tests, 893 passed, 1 skipped (as root). Not a gate: TSan on node-c (CI's
+  flags), a bug hunt for the TSan job's hang in CI run 44116803795: 894 tests, 893 passed, no
+  reports. Sanitizers run locally only for a release or a named bug (the maintainer). The branch's CI run 44116803795: every job green; tsan x86-64
   hung once in `ChildProcess.ChildrenStartOnManyThreadsAtOnce` (open in `ACTIVE.md`) and passed
   on re-run. macOS at `eb2342c`: 893 tests, 891 passed, 2 skipped (Linux-only).
 
