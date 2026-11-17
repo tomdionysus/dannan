@@ -80,6 +80,17 @@ std::vector<identity::NodeId> ids_of(const std::vector<NodeRecord>& nodes) {
 
 // --- The nouns: thin views of the node -------------------------------------
 
+namespace {
+
+// The node's worker pool, on the node's schedule when it has one (the simulation harness's).
+sched::WorkerPoolConfig workers_of(const NodeConfig& config) {
+  auto out = config.workers;
+  if (config.schedule) out.schedule = config.schedule;
+  return out;
+}
+
+}  // namespace
+
 class Node::NodesNoun final : public Nodes {
  public:
   explicit NodesNoun(Node& node) : _node(node) {}
@@ -508,7 +519,10 @@ Node::Node(asio::io_context& io, NodeConfig config)
       _activity(_config.time),
       _threads(std::chrono::seconds(1), std::chrono::seconds(60), _config.wall, _config.time, _config.log),
       _gates(_config.loader_gate, _config.speculative_gate, _config.gate_time ? _config.gate_time : _config.time, _config.gate_process_cpu),
-      _workers(_config.workers, _gates, &_threads, _config.time),
+      _workers(workers_of(_config), _gates, &_threads, _config.time,
+               // On the schedule, no CPU is charged: a reading of real CPU would make a seed's run
+               // its own each time.
+               _config.schedule ? sched::ThreadCpu([] { return 0.0; }) : sched::ThreadCpu{}),
       _wait_guard(status::ScopedLogger(_config.log, "wait")),
       _memory(_config.memory_bytes, _config.control_reserve_bytes, _config.foreground_reserve_bytes, _config.loader_reserve_bytes,
               _config.reassembly_reserve_bytes),

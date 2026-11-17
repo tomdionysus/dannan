@@ -368,6 +368,9 @@ class SimNodes {
     out.wall = _clocks.at(i).get();
     out.schedule = [this](std::chrono::milliseconds after, std::function<void()> task) { _world.after(static_cast<uint64_t>(after.count()), std::move(task)); };
     out.transport = _network.transport_for(i);
+    // The gates' CPU fixed, as the worker pool's is on a schedule: a real reading would make
+    // each run its own.
+    out.gate_process_cpu = [] { return 0.0; };
     if (configure) configure(i, out);
     return out;
   }
