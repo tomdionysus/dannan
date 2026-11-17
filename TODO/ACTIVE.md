@@ -64,7 +64,7 @@ current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluat
   from real rosters, merged (`COMPLETED.md`). Develop's CI at `d50bb67` failed ASan and TSan on
   the harness; fixed on the branch, whose CI run 44102424795 was green.
 - **Step 3, part 5** (the worker pool in the world, clients as actors, the transaction and
-  convergence checkers) is done on `feature/sim-workers` (`COMPLETED.md`). Part 6, `SimDisk`,
+  convergence checkers) is merged (`COMPLETED.md`); its branch's CI run 44116803795 was green. Part 6, `SimDisk`,
   waits on Dagda's answer below. **Next: step 4.**
 - **New for plan item 7**: multi-name changes in a slot go through the atomic commit too
   (Mimir and Kvasir agreed, option 2 of the review); until then `change()` takes one name.
@@ -142,10 +142,8 @@ gold-plating beyond what the design and its reviews ask.
       included. See `COMPLETED.md`, 2026-11-17.
    3. **Done** (2026-11-17): correlated kills (a majority at one step), and the durability rules per `ack_level` judged against the
       faults in the history.
-   4. **Membership, Routes and placement in the world.** This needs a transport seam under the node. A design note
-      goes to Kvasir and Mimir first.
-   5. **The transaction checker** (Adya cycles by isolation level, Kvasir's model), the convergence checker
-      (Mimir's merge class), client actors, and the worker pool in the world.
+   4. **Done**: membership, Routes and placement in the world, on the transport seam.
+   5. **Done**: the transaction checker, the convergence checker, client actors, the worker pool in the world.
    6. **`SimDisk`** on the durable-file contract, once Dagda says which one (asked; still open).
 4. **The file-system interface** (`2026-11-15-file-system-interface.md`, Dagda's review taken).
 5. **The hybrid clock** (`2026-11-15-hlc-design.md`, reviewed).

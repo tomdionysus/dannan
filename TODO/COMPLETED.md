@@ -39,7 +39,22 @@ left green. `ACTIVE.md` is the plan and this is the record.
   differed before it, so the check is not idle. Agreement converges replicas only through a
   command's accept; repair without one is the store's anti-entropy (`trie_diff`, the plan's),
   which this checker will judge when Dagda's store is in the world.
-- Gate: node-b, 893 tests, 892 passed, 1 skipped (as root).
+- **Found by CI, fixed before this merged** (`e5478b4`, `9b8860f`): the two-rosters run
+  committed nothing on seed 5 in the release x86-64 job, and two runs in fifteen of one binary
+  on node-b differed. A whole node drew its durability epoch, which seeds agreement's backoff,
+  and telemetry's boot id from the operating system at each start. `NodeConfig::fresh_id` now
+  gives them (empty: random, as before); `SimNodes` draws them from the seed. The replay test
+  compared only the join time; `ASeedReplaysExactlyWithAgreementOverTheNodes` compares every
+  operation's answer and time, and failed on all four seeds before the fix. Every seed's run
+  changed with it, so the whole-node runs were rescanned: 40 seeds of each pass.
+- Found in my own process: a file copied to a Pi with tar keeps its Mac edit time, and one
+  shipped after a build can be older than objects built from it, so ninja kept a stale test
+  object with the old `NodeConfig` beside a library with the new one (a segfault, and fifteen
+  "clean" repeats that had each crashed). The copy now uses `tar -m`.
+- Gates: node-b, 894 tests, 893 passed, 1 skipped (as root). TSan on node-c (CI's flags), 894
+  tests, 893 passed, no reports. The branch's CI run 44116803795: every job green; tsan x86-64
+  hung once in `ChildProcess.ChildrenStartOnManyThreadsAtOnce` (open in `ACTIVE.md`) and passed
+  on re-run. macOS at `eb2342c`: 893 tests, 891 passed, 2 skipped (Linux-only).
 
 ## The harness, step 3 part 4 completed: agreement over real membership, 2026-11-17 (`feature/sim-agreement-nodes`)
 
