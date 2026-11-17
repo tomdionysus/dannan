@@ -371,6 +371,9 @@ class SimNodes {
     // The gates' CPU fixed, as the worker pool's is on a schedule: a real reading would make
     // each run its own.
     out.gate_process_cpu = [] { return 0.0; };
+    // A start's fresh ids (its durability epoch, which seeds agreement's backoff, and telemetry's
+    // boot id) from the seed, as the node ids are.
+    out.fresh_id = [this] { return draw_id(); };
     if (configure) configure(i, out);
     return out;
   }
