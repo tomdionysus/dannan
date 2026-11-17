@@ -77,7 +77,10 @@ current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluat
   - The last full suite, on node-b at step 3 part 2, ran 847 tests: 846 passed and 1 skipped (it is skipped when
     run as root).
   - Develop's hosted CI was green on every job at `6dbec1d` (run 43965857206).
-  - The macOS gate runs on the maintainer's Mac at each merge to develop and before a release. Build directory:
+  - **No macOS build or test without asking the maintainer first** (the maintainer, 2026-11-17, relayed by the Lir Development Cluster
+    session: "build on the Mac with clang and your build will be killed", the macOS gate included). Builds and
+    tests go to a claimed Pi. What follows is how the gate ran until then.
+  - The macOS gate ran on the maintainer's Mac at each merge to develop and before a release. Build directory:
     `build/macos`, configured with `-DBoost_ROOT=/opt/local/libexec/boost/1.88
     -DOPENSSL_ROOT_DIR=/opt/local/libexec/openssl3
     "-DCMAKE_CXX_FLAGS=-I/Users/dev/devroot/dannan/build/ssl3-include --system-header-prefix=openssl/"`, Release,
