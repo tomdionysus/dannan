@@ -61,7 +61,9 @@ class SimTransport final : public net::Transport, public std::enable_shared_from
   SimTransport(SimNetwork& network, size_t index, net::TransportHooks hooks) : _network(network), _index(index), _hooks(std::move(hooks)) {}
 
   void listen() override;
-  void start() override {}
+  // Health pings on every route each `ping_every`, as the real client sends them: a peer that
+  // answers is seen, whatever membership's own exchanges are waiting on.
+  void start() override { ping_later(); }
   uint16_t bound_port() const override;
   void stop_serving() override { _serving = false; }
   void stop_calling() override { _calling = false; }
@@ -106,6 +108,7 @@ class SimTransport final : public net::Transport, public std::enable_shared_from
   }
 
  private:
+  void ping_later();
   std::shared_ptr<net::CallHandle> place(std::optional<size_t> to, net::MessageType type, net::Bytes payload, sched::FrameType frame,
                                          boost::asio::any_io_executor executor, net::Client::Done done);
 
@@ -127,6 +130,8 @@ class SimNetwork {
 
   World& world() noexcept { return _world; }
   NetworkFaults& faults() noexcept { return _faults; }
+  // How often each transport pings its routes: the nodes' heartbeat.
+  uint64_t ping_every_ms = 100;
 
   // The port node `index` listens on; its transport, made by the node through NodeConfig.
   static uint16_t port_of(size_t index) noexcept { return static_cast<uint16_t>(20000 + index); }
@@ -255,6 +260,18 @@ inline std::shared_ptr<net::CallHandle> SimTransport::call(const membership::Nod
 inline std::shared_ptr<net::CallHandle> SimTransport::call(const net::Endpoint& endpoint, net::MessageType type, net::Bytes payload, sched::FrameType frame,
                                                            boost::asio::any_io_executor executor, net::Client::Done done, net::CallWatch) {
   return place(_network.index_of(endpoint.port), type, std::move(payload), frame, std::move(executor), std::move(done));
+}
+
+inline void SimTransport::ping_later() {
+  const std::weak_ptr<SimTransport> self = weak_from_this();
+  _network.world().after(_network.ping_every_ms, [self] {
+    const auto me = self.lock();
+    if (!me || !me->calling()) return;
+    for (const auto& peer : std::vector<identity::NodeId>(me->_routes.begin(), me->_routes.end()))
+      if (const auto to = me->_network.index_of(peer))
+        (void)me->place(to, net::message::ping, {}, sched::FrameType::control, me->_network.world().io.get_executor(), [](net::CallOutcome) {});
+    me->ping_later();
+  });
 }
 
 inline bool SimTransport::send(const identity::NodeId& peer, net::Lane, const net::Message& message, sched::FrameType frame, bool) {
