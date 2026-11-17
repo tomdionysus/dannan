@@ -73,23 +73,33 @@ TEST(SimNodes, ASeedReplaysExactly) {
 // Mimir's third ask: a clean split, each side seeing the other leave within dead_after, and a
 // heal at a chosen tick after which everyone knows everyone again.
 TEST(SimNodes, ACleanSplitIsSeenFromBothSidesAndHealed) {
-  World world(3);
-  SimNodes nodes(world, 5);
-  ASSERT_TRUE(world.run_until([&] { return everyone_knows_everyone(nodes); }, 2'000'000));
-  nodes.network().partition({{0, 1, 2}, {3, 4}});
-  const auto apart = [&] {
-    for (const size_t a : {0, 1, 2})
-      for (const size_t b : {3, 4})
-        if (knows(nodes.node(a), nodes.id(b)) || knows(nodes.node(b), nodes.id(a))) return false;
-    return true;
-  };
-  ASSERT_TRUE(world.run_until(apart, 2'000'000));
-  // The sides still know their own.
-  EXPECT_TRUE(knows(nodes.node(0), nodes.id(2)));
-  EXPECT_TRUE(knows(nodes.node(3), nodes.id(4)));
-  const auto heal_at = world.now_ms() + 1000;
-  world.after(1000, [&] { nodes.network().heal(); });
-  ASSERT_TRUE(world.run_until([&] { return world.now_ms() >= heal_at && everyone_knows_everyone(nodes); }, 2'000'000));
+  for (uint64_t seed = 1; seed <= 10; ++seed) {
+    SCOPED_TRACE("seed " + std::to_string(seed));
+
+    World world(seed);
+    SimNodes nodes(world, 5);
+    ASSERT_TRUE(world.run_until([&] { return everyone_knows_everyone(nodes); }, 2'000'000));
+    // Settled first: a second of heartbeats, so every node has reached every other itself, not only
+    // heard of it through a seed's gossip. A peer known only through gossip when a split comes may
+    // be lost on its own side before it is reached: a pass reaches its peers in turn, and each one
+    // across the split waits out the exchange budget.
+    const auto settled = world.now_ms() + 1000;
+    ASSERT_TRUE(world.run_until([&] { return world.now_ms() >= settled; }, 2'000'000));
+    nodes.network().partition({{0, 1, 2}, {3, 4}});
+    const auto apart = [&] {
+      for (const size_t a : {0, 1, 2})
+        for (const size_t b : {3, 4})
+          if (knows(nodes.node(a), nodes.id(b)) || knows(nodes.node(b), nodes.id(a))) return false;
+      return true;
+    };
+    ASSERT_TRUE(world.run_until(apart, 2'000'000));
+    // The sides still know their own.
+    EXPECT_TRUE(knows(nodes.node(0), nodes.id(2)));
+    EXPECT_TRUE(knows(nodes.node(3), nodes.id(4)));
+    const auto heal_at = world.now_ms() + 1000;
+    world.after(1000, [&] { nodes.network().heal(); });
+    ASSERT_TRUE(world.run_until([&] { return world.now_ms() >= heal_at && everyone_knows_everyone(nodes); }, 2'000'000));
+  }
 }
 
 // Mimir's second ask: a node restarted with its state keeps its identity; restarted wiped it is a
