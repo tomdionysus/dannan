@@ -109,8 +109,9 @@ green on every job). The `.deb`s are staged in `../tomcully-apt/incoming/dannan/
   shipped after a build can be older than objects built from it, so ninja kept a stale test
   object with the old `NodeConfig` beside a library with the new one (a segfault, and fifteen
   "clean" repeats that had each crashed). The copy now uses `tar -m`.
-- Gates: node-b, 894 tests, 893 passed, 1 skipped (as root). TSan on node-c (CI's flags), 894
-  tests, 893 passed, no reports. The branch's CI run 44116803795: every job green; tsan x86-64
+- Gates: node-b, 894 tests, 893 passed, 1 skipped (as root). Not a gate: TSan on node-c (CI's
+  flags), a bug hunt for the TSan job's hang in CI run 44116803795: 894 tests, 893 passed, no
+  reports. Sanitizers run locally only for a release or a named bug (the maintainer). The branch's CI run 44116803795: every job green; tsan x86-64
   hung once in `ChildProcess.ChildrenStartOnManyThreadsAtOnce` (open in `ACTIVE.md`) and passed
   on re-run. macOS at `eb2342c`: 893 tests, 891 passed, 2 skipped (Linux-only).
 
