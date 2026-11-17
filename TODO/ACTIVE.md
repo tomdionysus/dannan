@@ -48,8 +48,13 @@ current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluat
   multi-name change half taken, a stall, `forget()`, a lost transfer and the floor. Merged at
   `ea84a31`, not pushed (hosted CI waits on the maintainer's push word). macOS gate at `522b1d8`: 858
   tests, 856 passed, 2 skipped (Linux-only). Lugh wants word when it is in a tag.
+- The agreement fixes are pushed (`6556f32`); develop's CI run 44072379624 was green on every
+  job, ASan and TSan included.
 - Step 3, part 3 (durability per `ack_level`, a majority killed together) is done
-  (`COMPLETED.md`, 2026-11-17), with two `catch_up()` faults it found.
+  (`COMPLETED.md`, 2026-11-17), with two `catch_up()` faults it found. Merged at `52cdffd`, not
+  pushed. macOS gate at `832bab2`: 862 tests, 860 passed, 2 skipped (Linux-only).
+- The transport seam for part 4 is reviewed by Mimir and Kvasir (option 2, pieces 2a and 2b):
+  `2026-11-17-sim-transport-seam.md`.
 - **Next: step 3, part 4** (membership, Routes and placement in the world; a transport seam under
   the node, its design note to Kvasir and Mimir first).
 - **New for plan item 7**: multi-name changes in a slot go through the atomic commit too
