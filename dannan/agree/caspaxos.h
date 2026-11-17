@@ -68,6 +68,14 @@ Slot slot_of(std::span<const uint8_t> name, uint32_t count);
 // version, a length, a digest of merge state). Dannan carries it and never reads it.
 inline constexpr size_t max_summary = 64;
 
+// A value's ancestry (the review of 2026-11-17): the ballots it was derived through, newest
+// first, its base's ballot then the base's own ancestry, at most this many. A zero ballot ends
+// it: derived from nothing. A retry reads it to tell whether an earlier accept of its own change
+// is in the value it found, so a change is applied once and a contended one still commits.
+inline constexpr size_t max_ancestry = 16;
+// The ancestry of a value derived from a base accepted at `ballot` whose own ancestry is `of`.
+std::vector<Ballot> descend(const Ballot& ballot, const std::vector<Ballot>& of);
+
 // What one acceptor keeps for one name: the hosted system's to hold, in memory or
 // durably, and the protocol's to change.
 struct AcceptorState {
@@ -90,6 +98,8 @@ struct AcceptorState {
   // delta and keeps everything, or nothing.
   std::optional<Bytes> delta{};
   Ballot base{};
+  // The accepted value's ancestry (max_ancestry). Kept with the state, as the ballots are.
+  std::vector<Ballot> ancestry{};
   auto operator<=>(const AcceptorState&) const = default;
 };
 // Whether a state holds a value, whether it was loaded with it or not.
@@ -131,6 +141,8 @@ struct NameState {
   // holder keeps past that summary, false when it is the whole value (a holder may always
   // answer whole; Mimir's digest cannot always be served past).
   bool past = false;
+  // The accepted value's ancestry.
+  std::vector<Ballot> ancestry{};
 };
 
 // A plain change names `set`; a transfer names the set it moves from as `set`, and `to`.
@@ -196,6 +208,8 @@ struct Accept {
   // summary differs (a merge write outside agreement) holds another value, and asks whole.
   // Empty: the ballot alone is checked.
   std::vector<Bytes> summaries{};
+  // One per name, or none: each new value's ancestry, kept with it.
+  std::vector<std::vector<Ballot>> ancestry{};
 };
 
 // Refused; or, for an accept whose deltas this acceptor could not take (its state not at a
@@ -269,6 +283,13 @@ struct Changed {
   // instead of the whole value to every acceptor that holds that base. The owner's store
   // applies it in keep(); Dannan never reads it. Empty: every value goes whole.
   std::vector<std::optional<Bytes>> deltas{};
+  // Whether this change may be applied to a value that may already hold it: a read, a
+  // compare-and-set on a version, a write that recognises its own mark. A retry that cannot
+  // tell whether another proposer built on an earlier accept of this change runs a repeatable
+  // change again; any other ends not committed, its outcome unknown (the maintainer, 2026-11-17). A
+  // repeatable change is always run again on the retry's own base, never handed an earlier
+  // one, so an owner's own mark check sees the value its result is applied to (Kvasir's review).
+  bool repeatable = false;
 };
 using Change = std::function<Changed(std::span<const std::optional<Bytes>> current)>;
 
@@ -317,6 +338,8 @@ struct Deltas {
   Bytes result;
   bool decline = false;
   std::vector<std::optional<Bytes>> summaries{};
+  // As Changed::repeatable.
+  bool repeatable = false;
 };
 using DeltaChange = std::function<Deltas(std::span<const Base> bases)>;
 
@@ -361,8 +384,10 @@ class Attempt {
   // reserved `ballot`, was the last committed, with `values` and `changed_at` as it committed
   // them. One round: the attempt starts accepting at the reserved ballot. Throws
   // std::invalid_argument for a ballot not above `last`.
+  // `ancestry`, one per name or none: the last commit's values' ancestry.
   static Attempt fast(ReplicaSet set, Slot slot, Ballot ballot, std::vector<Name> names, Change change, Ballot last,
-                      const std::vector<std::optional<Bytes>>& values, const std::vector<Ballot>& changed_at);
+                      const std::vector<std::optional<Bytes>>& values, const std::vector<Ballot>& changed_at,
+                      const std::vector<std::vector<Ballot>>& ancestry = {});
   // A value-less change of `names` by `self` (part 6): value-less, nothing fetched, the change
   // run on the bases. Every recipient is sent the same accept: the deltas, the ballot only for
   // a name left as it is. An acceptor that lacks a base answers need_whole: it is not counted,
@@ -374,7 +399,8 @@ class Attempt {
   // leaving each name with `summaries` and `changed_at`; `local` if this node took it. Throws
   // std::invalid_argument for a ballot not above `last` or counts that differ.
   static Attempt fast_deltas(ReplicaSet set, Slot slot, Ballot ballot, std::vector<Name> names, DeltaChange change, Ballot last,
-                             const std::vector<Bytes>& summaries, const std::vector<Ballot>& changed_at, bool local, identity::NodeId self);
+                             const std::vector<Bytes>& summaries, const std::vector<Ballot>& changed_at, bool local, identity::NodeId self,
+                             const std::vector<std::vector<Ballot>>& ancestry = {});
   // Whether this attempt is on the fast path.
   bool is_fast() const noexcept { return _accept && _accept->fast_from.has_value(); }
   // A value-less change: whether the owner declined; the acceptors that needed a name whole;
@@ -385,11 +411,16 @@ class Attempt {
   const std::vector<std::optional<Bytes>>& summaries() const noexcept { return _new_summaries; }
   bool read_only() const noexcept { return _read_only; }
   bool is_deltas() const noexcept { return static_cast<bool>(_deltas_change); }
-  // The ballots this proposer's earlier attempts at the same change sent accepts under, with
-  // each one's result. Where a majority's newest value for every name is one of them, the
-  // change is already in it: the attempt commits it unchanged and reports that result, so a
-  // retry after a partial accept never applies the change twice.
+  // The ballots this proposer's earlier attempts at the same change sent accepts under that an
+  // acceptor may have taken, with each one's result. Where a majority's newest value for every
+  // name is one of them, the change is already in it: the attempt commits it unchanged and
+  // reports that result. Where every name's newest is below all of them, the change cannot be
+  // in it, and is applied. Otherwise another proposer may have built on one of them: a
+  // repeatable change is applied, and any other refuses the attempt, its outcome unknown. So a
+  // change is never applied twice.
   void own(std::vector<std::pair<Ballot, Bytes>> earlier) { _own = std::move(earlier); }
+  // Refused because an earlier accept of this change may be in the value found (own()).
+  bool unknown() const noexcept { return _unknown; }
   // Asks for no values where it can: a change or a transfer, not yet prepared. Its answers then
   // say what is held, and once enough have promised the attempt is fetching until every base
   // that holds a value, and every answer the reduction asks for, is in. Returns whether it
@@ -452,8 +483,15 @@ class Attempt {
   // Adds a value to fetch: from the promisers that answered `name` with `of`'s ballot and
   // summary.
   void want(size_t name, std::optional<size_t> answer, const NameState& of, std::optional<Bytes> since);
-  // A plain change's accept from its names' current values.
-  Accept change_bases(std::vector<std::optional<Bytes>> current);
+  // A plain change's accept from its names' current values; none once refused as unknown.
+  std::optional<Accept> change_bases(std::vector<std::optional<Bytes>> current);
+  // Whether an earlier accept of this change (own()) is in the bases, read from each base's
+  // ancestry: in every name through one accept (the change is in, once), in none with every
+  // ancestry reaching below them all (it is not), or neither (unknown).
+  enum class Earlier : uint8_t { none, in, unknown };
+  std::pair<Earlier, const std::pair<Ballot, Bytes>*> earlier() const;
+  // Each name's new ancestry, from its base.
+  std::vector<std::vector<Ballot>> descended() const;
   // A transfer's accept: every name's current value, unchanged by any change.
   Accept transfer_bases(std::vector<std::optional<Bytes>> current);
   // A value-less change's accept from its bases, or none once committed (read) or declined.
@@ -498,6 +536,11 @@ class Attempt {
   identity::NodeId _self;
   bool _declined = false;
   bool _read_only = false;
+  bool _unknown = false;
+  // Refusals naming another set held only pending, while they all name one: that set, and how
+  // many.
+  std::optional<ReplicaSet> _pending_elsewhere;
+  size_t _pending_count = 0;
   std::vector<identity::NodeId> _need_whole_nodes;
   std::vector<std::optional<Bytes>> _new_summaries;
   std::vector<identity::NodeId> _accepted;

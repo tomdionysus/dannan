@@ -568,7 +568,8 @@ TEST(Deltas, ADeltaGoesOnlyWhereItsBaseIsHeld) {
 
 // The rule: a delta whose base is not held here asks for the name whole and keeps nothing; a
 // delta on the base is given to the store; an accept already kept at its ballot (resent, or
-// replayed after recovery) is kept again without its delta, so it is never applied twice.
+// replayed after recovery) is answered as taken before the store is asked (the design's
+// contract point 2), so its delta is never applied twice.
 TEST(Deltas, TheRuleAsksWholeOffTheBaseAndNeverAppliesADeltaTwice) {
   const SlotState served{three, std::nullopt, Ballot{}};
   const Held at_base{served, {}, {bytes("k")}, {AcceptorState{ballot(1, 1), ballot(1, 1), bytes("a"), ballot(1, 1), {}, true}}};
@@ -592,9 +593,8 @@ TEST(Deltas, TheRuleAsksWholeOffTheBaseAndNeverAppliesADeltaTwice) {
   const Held kept_already{served, {}, {bytes("k")}, {AcceptorState{ballot(2, 1), ballot(2, 1), bytes("a+"), ballot(2, 1), {}, true}}};
   const auto replayed = on_accept(node(1), node(1), accept, kept_already, genesis);
   EXPECT_TRUE(replayed.answer.need_whole.empty());
-  ASSERT_TRUE(replayed.keep);
-  EXPECT_FALSE(replayed.keep->states[0].delta);
-  EXPECT_EQ(text(*replayed.keep->states[0].value), "a+");
+  EXPECT_FALSE(replayed.answer.refused);
+  EXPECT_FALSE(replayed.keep);
 
   // The base's ballot with another summary (a merge write outside agreement) is another
   // value: asked for whole.
@@ -1019,6 +1019,143 @@ TEST(Agreement, ARetryAfterAPartialAcceptAppliesTheChangeOnce) {
   EXPECT_EQ(text(retry.result()), "v+");
 }
 
+// The review of 2026-11-17, finding 1: a partial accept that another proposer adopted. Node 1's
+// append reaches acceptor 1 only. Node 3 then changes the register: its majority (1 and 2)
+// shows node 1's accept newest, so node 3 builds on it, and that is chosen. Node 1's retry
+// finds node 3's value newest, not its own accept, though its append is already inside it.
+// Whatever the retry is told, the register holds node 1's append once.
+TEST(Agreement, ARetryDoesNotApplyItsChangeAgainOnAValueThatAdoptedItsPartialAccept) {
+  Acceptors acceptors;
+  ASSERT_EQ(run(acceptors, three, node(1), ballot(1, 1), {bytes("k")}, put("v")).phase(), Attempt::Phase::committed);
+  const auto append = [](char mark) {
+    return Change([mark](std::span<const std::optional<Bytes>> current) {
+      auto next = *current[0];
+      next.push_back(static_cast<uint8_t>(mark));
+      return Changed{{next}, next};
+    });
+  };
+  Attempt partial(three, slot, ballot(2, 1), {bytes("k")}, append('a'), {}, genesis);
+  drive(acceptors, partial, node(1), {}, {node(1)});
+  ASSERT_EQ(partial.phase(), Attempt::Phase::accepting);
+  Attempt other(three, slot, ballot(3, 3), {bytes("k")}, append('c'), {}, genesis);
+  drive(acceptors, other, node(3), {node(1), node(2)});
+  ASSERT_EQ(other.phase(), Attempt::Phase::committed);
+  ASSERT_EQ(text(*other.values()[0]), "vac");
+  Attempt retry(three, slot, ballot(4, 1), {bytes("k")}, append('a'), {}, genesis);
+  retry.own({{ballot(2, 1), partial.result()}});
+  drive(acceptors, retry, node(1));
+  const auto read = run(acceptors, three, node(2), ballot(9, 2), {bytes("k")}, identity_change());
+  ASSERT_EQ(read.phase(), Attempt::Phase::committed);
+  EXPECT_EQ(text(*read.values()[0]), "vac") << "the retry ended " << (retry.phase() == Attempt::Phase::committed ? "committed" : "refused");
+  // "vac"'s ancestry runs through the partial accept: the append is in, once. The retry commits
+  // the value as it is, with the partial attempt's result.
+  EXPECT_EQ(retry.phase(), Attempt::Phase::committed);
+  EXPECT_FALSE(retry.unknown());
+  EXPECT_EQ(text(retry.result()), "va");
+}
+
+// Where the ancestry cannot say (none at all here, as for a state kept before ancestry
+// existed), a change that is not repeatable ends unknown; a repeatable one goes on.
+TEST(Agreement, ARetryThatCannotTellEndsUnknownUnlessRepeatable) {
+  Acceptors acceptors;
+  ASSERT_EQ(run(acceptors, three, node(1), ballot(1, 1), {bytes("k")}, put("v")).phase(), Attempt::Phase::committed);
+  const Change append = [](std::span<const std::optional<Bytes>> current) {
+    auto next = *current[0];
+    next.push_back('a');
+    return Changed{{next}, next};
+  };
+  Attempt partial(three, slot, ballot(2, 1), {bytes("k")}, append, {}, genesis);
+  drive(acceptors, partial, node(1), {}, {node(1)});
+  ASSERT_EQ(partial.phase(), Attempt::Phase::accepting);
+  // Another proposer's value above it, with no ancestry: nothing says what it came from.
+  for (const auto& at : {node(1), node(2), node(3)}) {
+    auto& state = acceptors.held[at]["k"];
+    state.promised = ballot(3, 3);
+    state.accepted = ballot(3, 3);
+    state.value = bytes("v?");
+    state.has_value = true;
+    state.ancestry.clear();
+  }
+  Attempt retry(three, slot, ballot(4, 1), {bytes("k")}, append, {}, genesis);
+  retry.own({{ballot(2, 1), partial.result()}});
+  drive(acceptors, retry, node(1));
+  EXPECT_EQ(retry.phase(), Attempt::Phase::refused);
+  EXPECT_TRUE(retry.unknown());
+  Attempt again(
+      three, slot, ballot(5, 1), {bytes("k")}, [](std::span<const std::optional<Bytes>> current) { return Changed{{current[0]}, bytes("seen"), {}, true}; }, {},
+      genesis);
+  again.own({{ballot(2, 1), partial.result()}});
+  drive(acceptors, again, node(1));
+  EXPECT_EQ(again.phase(), Attempt::Phase::committed);
+  EXPECT_FALSE(again.unknown());
+}
+
+// An accept already taken, sent again (a duplicate, a resend, forget()'s check), is answered as
+// taken, though the acceptor has promised its reservation since.
+TEST(Agreement, AnAcceptAlreadyTakenIsAnsweredAsTakenAgain) {
+  Acceptors acceptors;
+  Attempt attempt(three, slot, ballot(1, 1), {bytes("k")}, put("v"), {}, genesis);
+  std::optional<Accept> accept;
+  for (const auto& at : attempt.recipients())
+    if (auto next = attempt.on_prepare(at, acceptors.prepare(at, node(1), attempt.prepare()))) accept = next;
+  ASSERT_TRUE(accept);
+  accept->reserve = ballot(2, 1);
+  ASSERT_FALSE(acceptors.accept(node(2), node(1), *accept).refused);
+  ASSERT_EQ(acceptors.held[node(2)]["k"].promised, ballot(2, 1));
+  const auto again = acceptors.accept(node(2), node(1), *accept);
+  EXPECT_FALSE(again.refused) << again.refused->why;
+  EXPECT_EQ(acceptors.held[node(2)]["k"].promised, ballot(2, 1));
+}
+
+// Finding 2: with an owner's reduction the retry does not look for its own accept at all, so
+// it applies the change again even with no other proposer.
+TEST(Agreement, ARetryWithAReductionAppliesTheChangeOnceToo) {
+  Acceptors acceptors;
+  ASSERT_EQ(run(acceptors, three, node(1), ballot(1, 1), {bytes("k")}, put("v")).phase(), Attempt::Phase::committed);
+  const Change append = [](std::span<const std::optional<Bytes>> current) {
+    auto next = *current[0];
+    next.push_back('+');
+    return Changed{{next}, next};
+  };
+  const Reduce base_only = [](const NameState& base, std::span<const NameState>) { return Reduced{base.value, {}}; };
+  Attempt partial(three, slot, ballot(2, 1), {bytes("k")}, append, base_only, genesis);
+  drive(acceptors, partial, node(1), {}, {node(1)});
+  ASSERT_EQ(partial.phase(), Attempt::Phase::accepting);
+  Attempt retry(three, slot, ballot(3, 1), {bytes("k")}, append, base_only, genesis);
+  retry.own({{ballot(2, 1), partial.result()}});
+  drive(acceptors, retry, node(1), {node(1), node(2)});
+  ASSERT_EQ(retry.phase(), Attempt::Phase::committed);
+  EXPECT_EQ(text(*retry.values()[0]), "v+");
+}
+
+// Finding 4: a transfer that lost. Two transfers leave the same set for different ones (two
+// rosters). The first's accept reaches acceptor 1 only; the second commits on 2, 3 and 5 and is
+// settled. Acceptor 1 is left holding the first's set, pending, for good: settling the second
+// does not move it, and its refusal, naming a set that never served the slot, ends at once any
+// change on the true set that hears it first, as a change made at node 1 itself always does.
+TEST(Reconfiguration, ATransferThatLostDoesNotLeaveAnAcceptorRefusingTheSetThatWon) {
+  Acceptors acceptors;
+  ASSERT_EQ(run(acceptors, three, node(1), ballot(1, 1), {bytes("k")}, put("v")).phase(), Attempt::Phase::committed);
+  const auto lost_set = ReplicaSet::of({node(1), node(2), node(3), node(4)}, 2);
+  const auto won_set = ReplicaSet::of({node(1), node(2), node(3), node(5)}, 2);
+  auto lost = Attempt::transfer(three, lost_set, slot, ballot(2, 1));
+  drive(acceptors, lost, node(1), {node(1), node(2), node(4)}, {node(1)});
+  ASSERT_NE(lost.phase(), Attempt::Phase::committed);
+  auto won = Attempt::transfer(three, won_set, slot, ballot(3, 2));
+  drive(acceptors, won, node(2), {node(2), node(3), node(5)}, {node(2), node(3), node(5)});
+  ASSERT_EQ(won.phase(), Attempt::Phase::committed);
+  for (const auto& at : won.recipients()) acceptors.settle(at, node(2), Settle{three, won_set, slot, ballot(3, 2)});
+  // Told of the committed move, acceptor 1 serves the set that won.
+  EXPECT_EQ(acceptors.slots[node(1)].served, won_set);
+  // A change on that set, made at node 1 (its own acceptor answers first), commits.
+  Attempt change(won_set, slot, ballot(4, 1), {bytes("k")}, put("w"), {}, genesis);
+  drive(acceptors, change, node(1));
+  EXPECT_EQ(change.phase(), Attempt::Phase::committed) << change.why();
+  if (change.serving()) {
+    EXPECT_NE(*change.serving(), lost_set) << "the change was sent to a set that never served the slot";
+  }
+}
+
 // The fast path (the design's "Fast path"): the proposer that committed last changes the
 // same names again in one round, its accept carrying its prepare.
 // The accept an attempt makes, sent to `to` with a reservation of the proposer's next ballot.
@@ -1388,13 +1525,17 @@ TEST(AgreementWire, RefusesWhatItCannotTrust) {
   auto flag = encode(PrepareMessage{"mimir", {three, std::nullopt, slot, ballot(4, 1), {bytes("k")}}});
   flag.back() = 2;
   EXPECT_THROW(decode_prepare(flag), net::DecodeError);
-  // An answer's has-value bit (its last byte) other than 0 or 1, or a value carried for a name
-  // that holds none.
+  // An answer's has-value bit (the byte before its empty ancestry's count) other than 0 or 1,
+  // or a value carried for a name that holds none; an ancestry over 16 ballots.
   const PrepareAnswer carried{std::nullopt, {}, {}, {}, {{ballot(1, 1), bytes("v"), ballot(1, 1), {}, true}}};
   auto held = encode(carried);
-  held.back() = 2;
+  ASSERT_EQ(held.back(), 0);
+  held[held.size() - 2] = 2;
   EXPECT_THROW(decode_prepare_answer(held), net::DecodeError);
-  held.back() = 0;
+  held[held.size() - 2] = 0;
+  EXPECT_THROW(decode_prepare_answer(held), net::DecodeError);
+  held[held.size() - 2] = 1;
+  held.back() = static_cast<uint8_t>(max_ancestry + 1);
   EXPECT_THROW(decode_prepare_answer(held), net::DecodeError);
   // A summary over 64 bytes is neither sent nor taken.
   const PrepareAnswer long_summary{std::nullopt, {}, {}, {}, {{ballot(1, 1), std::nullopt, ballot(1, 1), Bytes(max_summary + 1, 1), true}}};

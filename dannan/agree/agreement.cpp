@@ -156,6 +156,8 @@ struct Agreement::Core : std::enable_shared_from_this<Core> {
     // whether this node's acceptor took it. Kept under a key of its own.
     std::vector<Bytes> summaries{};
     bool local = false;
+    // Each name's ancestry as the commit left it.
+    std::vector<std::vector<Ballot>> ancestry{};
   };
   static constexpr size_t max_lasts = 65536;
   contract::Mutex lasts_mutex;
@@ -416,8 +418,37 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
   // names is cached; and what its commit leaves in the cache.
   std::function<std::optional<Attempt>()> make_fast;
   std::function<void(const Attempt&, const Ballot& reserved)> on_commit;
-  // Every accept this run has sent for its own change, with that attempt's result.
-  std::vector<std::pair<Ballot, Bytes>> sent;
+  // Every accept this run has sent for its own change, with that attempt's result, and what
+  // its recipients have answered so far, late answers included. One that every recipient
+  // refused was taken nowhere, so nothing can build on it; a silent recipient may have taken it.
+  struct Sent {
+    Ballot ballot;
+    Bytes result;
+    uint64_t generation = 0;
+    size_t recipients = 0;
+    std::set<identity::NodeId> refused;
+    std::set<identity::NodeId> took;
+  };
+  std::vector<Sent> sent;
+
+  // The accepts an acceptor may have taken, for the attempt's own().
+  std::vector<std::pair<Ballot, Bytes>> may_be_taken() const {
+    std::vector<std::pair<Ballot, Bytes>> out;
+    for (const auto& each : sent)
+      if (!each.took.empty() || each.refused.size() < each.recipients) out.emplace_back(each.ballot, each.result);
+    return out;
+  }
+  // An accept answer from `node` to generation `at`'s accept, whichever generation is current.
+  void tally(uint64_t at, const identity::NodeId& node, const std::optional<AcceptAnswer>& answer) {
+    if (!answer) return;
+    for (auto& each : sent) {
+      if (each.generation != at) continue;
+      if (answer->refused || !answer->need_whole.empty())
+        each.refused.insert(node);
+      else
+        each.took.insert(node);
+    }
+  }
   // The ballot the last accept sent reserved.
   std::optional<Ballot> reserved;
   contract::TimePoint deadline;
@@ -461,6 +492,15 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
     return std::max(std::chrono::ceil<std::chrono::milliseconds>(deadline - core->time->now()), std::chrono::milliseconds(1));
   }
 
+  // How long this attempt's prepares, accepts and fetches wait for an answer: first_round,
+  // doubled with each attempt, never past the deadline. A silent acceptor then counts as not
+  // answering, so the attempt retries, or a fetch moves to the next holder, rather than waiting
+  // on it until the deadline.
+  std::chrono::milliseconds round() const {
+    const auto doublings = std::min<uint32_t>(attempts > 0 ? attempts - 1 : 0, 16);
+    return std::min(first_round * (int64_t{1} << doublings), left());
+  }
+
   // The deadline on the injected time, through the core's schedule.
   void arm_watch() {
     const auto remaining = std::max(std::chrono::ceil<std::chrono::milliseconds>(deadline - core->time->now()), std::chrono::milliseconds(0));
@@ -489,14 +529,14 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
         return send_accept(*attempt->accept());
       }
     attempt = std::make_unique<Attempt>(finishing ? Attempt::transfer(finishing->first, finishing->second, slot, ballot) : make(ballot));
-    if (!attempt->prepare().to) attempt->own(sent);
+    if (!attempt->prepare().to) attempt->own(may_be_taken());
     // No answer carries a value; the bases are fetched, from this node's own acceptor when it
     // holds them.
     attempt->value_less();
     outstanding = attempt->recipients().size();
     const auto request = encode(PrepareMessage{space, attempt->prepare(), core->fingerprint});
     for (const auto& node : attempt->recipients())
-      core->send(node, net::message::agree_prepare, request, left(),
+      core->send(node, net::message::agree_prepare, request, round(),
                  [self = shared_from_this(), at = generation, node](std::optional<net::Bytes> answer, std::string) {
                    asio::post(self->strand, [self, at, node, answer = std::move(answer)] { self->prepared(at, node, answer); });
                  });
@@ -508,6 +548,8 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
     std::optional<Accept> accept;
     if (answer) {
       try {
+        // The earlier accepts as now answered: a late refusal may have cleared one since.
+        if (!attempt->prepare().to) attempt->own(may_be_taken());
         accept = attempt->on_prepare(node, decode_prepare_answer(*answer));
       } catch (const net::DecodeError&) {
       }
@@ -563,7 +605,7 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
     const auto& prepare = attempt->prepare();
     const auto request =
         encode(FetchMessage{space, prepare.set, slot, fetching->key, fetching->ballot, fetching->value.size(), core->fingerprint, fetching->since, prepare.to});
-    core->send(fetching->holders[fetching->holder], net::message::agree_fetch, request, left(),
+    core->send(fetching->holders[fetching->holder], net::message::agree_fetch, request, round(),
                [self = shared_from_this(), at = generation, fetching](std::optional<net::Bytes> answer, std::string) {
                  asio::post(self->strand, [self, at, fetching, answer = std::move(answer)] { self->fetched_piece(at, fetching, answer); });
                });
@@ -596,6 +638,7 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
     fetching->past = piece->past;
     fetching->value.insert(fetching->value.end(), piece->piece.begin(), piece->piece.end());
     if (fetching->value.size() < *fetching->total) return fetch_piece(fetching);
+    if (!attempt->prepare().to) attempt->own(may_be_taken());
     if (auto accept = attempt->fetched(fetching->id, std::move(fetching->value), fetching->past)) return send_accept(*accept);
     // The owner's reduction asked for more, or refused.
     if (attempt->phase() == Attempt::Phase::fetching) return fetch_bases();
@@ -604,8 +647,9 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
 
   void send_accept(Accept accept) {
     if (!accept.to) {
-      // Remembered, so a later attempt that finds it newest commits it rather than changing it again.
-      sent.emplace_back(accept.ballot, attempt->result());
+      // Remembered, so a later attempt that finds it newest commits it rather than changing it
+      // again, and one that cannot tell never changes it twice.
+      sent.push_back(Sent{accept.ballot, attempt->result(), generation, attempt->recipients().size(), {}, {}});
       // This node's next ballot, reserved by the acceptors that take this, for the fast path.
       accept.reserve = core->next_ballot(0);
       reserved = accept.reserve;
@@ -626,27 +670,30 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
   }
 
   void send_accept_to(const identity::NodeId& to, net::Bytes request) {
-    core->send(to, net::message::agree_accept, std::move(request), left(),
+    core->send(to, net::message::agree_accept, std::move(request), round(),
                [self = shared_from_this(), at = generation, to](std::optional<net::Bytes> replied, std::string) {
                  asio::post(self->strand, [self, at, to, replied = std::move(replied)] { self->accepted(at, to, replied); });
                });
   }
 
   void accepted(uint64_t at, const identity::NodeId& node, const std::optional<net::Bytes>& answer) {
-    if (finished || at != generation || attempt->phase() != Attempt::Phase::accepting) return;
-    --outstanding;
-    if (answer) {
-      try {
-        // An acceptor that needs names whole is sent the accept again, those names whole, with
-        // the reservation the first carried.
-        if (auto again = attempt->on_accept(node, decode_accept_answer(*answer))) {
-          if (!again->to) again->reserve = reserved;
-          ++outstanding;
-          return send_accept_to(node, encode(AcceptMessage{space, std::move(*again), core->fingerprint}));
-        }
+    std::optional<AcceptAnswer> decoded;
+    if (answer) try {
+        decoded = decode_accept_answer(*answer);
       } catch (const net::DecodeError&) {
       }
-    }
+    // Counted for whichever attempt sent it, a late answer to an earlier one included.
+    tally(at, node, decoded);
+    if (finished || at != generation || attempt->phase() != Attempt::Phase::accepting) return;
+    --outstanding;
+    // An acceptor that needs names whole is sent the accept again, those names whole, with the
+    // reservation the first carried.
+    if (decoded)
+      if (auto again = attempt->on_accept(node, *decoded)) {
+        if (!again->to) again->reserve = reserved;
+        ++outstanding;
+        return send_accept_to(node, encode(AcceptMessage{space, std::move(*again), core->fingerprint}));
+      }
     if (attempt->phase() == Attempt::Phase::committed) return committed();
     settle_or_retry();
   }
@@ -675,6 +722,9 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
   void settle_or_retry() {
     // The owner declined its value-less change: the end, at once.
     if (attempt->declined()) return fail(attempt->why(), false);
+    // An earlier accept of a change that is not repeatable may be in the value found: the end,
+    // its outcome unknown, rather than apply it twice.
+    if (attempt->unknown()) return fail(attempt->why(), false);
     // The fast path missed: the full way at once, no backoff (Mimir's "one round, kept one").
     const bool missed = attempt->phase() == Attempt::Phase::refused || outstanding == 0;
     if (attempt->is_fast() && missed && !(attempt->phase() == Attempt::Phase::refused && attempt->serving() && !attempt->unfinished()))
@@ -688,7 +738,9 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
       if (attempt->serving()) return fail(attempt->why(), false);
       return retry(attempt->higher() ? attempt->higher()->counter : 0);
     }
-    if (outstanding == 0) retry(0);
+    // Every recipient answered or timed out, with neither enough promises nor enough refusals:
+    // again, above any ballot a refusal named, or the next is refused for the same promise.
+    if (outstanding == 0) retry(attempt->higher() ? attempt->higher()->counter : 0);
   }
 
   // Jittered and growing, so two proposers duelling on one name pull apart.
@@ -738,6 +790,7 @@ struct Agreement::Run : std::enable_shared_from_this<Run> {
     finished = true;
     auto out = evidence();
     out.serving = attempt ? attempt->serving() : std::nullopt;
+    out.unknown = !may_be_taken().empty() || (attempt && attempt->unknown());
     out.why = timed_out ? "not committed within the deadline" + (why.empty() ? std::string() : ": " + why) : std::move(why);
     asio::post(reply, [done = std::move(done), out = std::move(out)] { done(out); });
   }
@@ -839,6 +892,13 @@ void check_slot(Slot slot, const Agreement::Table& table) {
 
 void Agreement::change(std::string space, Slot slot, std::vector<Name> names, std::vector<identity::NodeId> replicas, uint64_t version, Change change,
                        Reduce reduce, std::chrono::milliseconds deadline, asio::any_io_executor executor, std::function<void(Outcome)> done) {
+  if (names.size() > 1) throw std::invalid_argument("a change names one register until the atomic commit (plan item 7); a read may name several");
+  any_change(std::move(space), slot, std::move(names), std::move(replicas), version, std::move(change), std::move(reduce), deadline, std::move(executor),
+             std::move(done));
+}
+
+void Agreement::any_change(std::string space, Slot slot, std::vector<Name> names, std::vector<identity::NodeId> replicas, uint64_t version, Change change,
+                           Reduce reduce, std::chrono::milliseconds deadline, asio::any_io_executor executor, std::function<void(Outcome)> done) {
   check_slot(slot, _core->table);
   const auto set = ReplicaSet::of(std::move(replicas), version);
   const auto key = Core::last_key(space, slot, set, names);
@@ -853,10 +913,16 @@ void Agreement::change(std::string space, Slot slot, std::vector<Name> names, st
     run->make_fast = [core = _core, key, set, slot, names, change]() -> std::optional<Attempt> {
       auto last = core->take_last(key);
       if (!last) return std::nullopt;
-      return Attempt::fast(set, slot, last->reserved, names, change, last->ballot, last->values, last->changed_at);
+      return Attempt::fast(set, slot, last->reserved, names, change, last->ballot, last->values, last->changed_at, last->ancestry);
     };
     run->on_commit = [core = _core, key](const Attempt& committed, const Ballot& reserved) {
-      core->keep_last(key, Core::Last{committed.prepare().ballot, reserved, committed.values(), committed.changed_at()});
+      core->keep_last(key, Core::Last{committed.prepare().ballot,
+                                      reserved,
+                                      committed.values(),
+                                      committed.changed_at(),
+                                      {},
+                                      false,
+                                      committed.accept() ? committed.accept()->ancestry : std::vector<std::vector<Ballot>>{}});
     };
   }
   Run::start(run);
@@ -866,6 +932,7 @@ void Agreement::change_deltas(std::string space, Slot slot, std::vector<Name> na
                               DeltaChange change, std::chrono::milliseconds deadline, asio::any_io_executor executor, std::function<void(Outcome)> done) {
   check_slot(slot, _core->table);
   if (!change) throw std::invalid_argument("a value-less change needs its change");
+  if (names.size() > 1) throw std::invalid_argument("a change names one register until the atomic commit (plan item 7)");
   const auto set = ReplicaSet::of(std::move(replicas), version);
   // A key of its own: a whole-value change's cache holds values, this one's summaries.
   const auto key = "deltas/" + Core::last_key(space, slot, set, names);
@@ -876,7 +943,8 @@ void Agreement::change_deltas(std::string space, Slot slot, std::vector<Name> na
   run->make_fast = [core = _core, key, set, slot, names, change]() -> std::optional<Attempt> {
     auto last = core->take_last(key);
     if (!last) return std::nullopt;
-    return Attempt::fast_deltas(set, slot, last->reserved, names, change, last->ballot, last->summaries, last->changed_at, last->local, core->self);
+    return Attempt::fast_deltas(set, slot, last->reserved, names, change, last->ballot, last->summaries, last->changed_at, last->local, core->self,
+                                last->ancestry);
   };
   run->on_commit = [core = _core, key](const Attempt& committed, const Ballot& reserved) {
     // Only where every name's summary after the commit is known: a name without one takes no
@@ -888,16 +956,24 @@ void Agreement::change_deltas(std::string space, Slot slot, std::vector<Name> na
     }
     const auto& took = committed.accepted();
     const bool local = std::find(took.begin(), took.end(), core->self) != took.end();
-    core->keep_last(key, Core::Last{committed.prepare().ballot, reserved, {}, committed.changed_at(), std::move(summaries), local});
+    core->keep_last(key, Core::Last{committed.prepare().ballot,
+                                    reserved,
+                                    {},
+                                    committed.changed_at(),
+                                    std::move(summaries),
+                                    local,
+                                    committed.accept() ? committed.accept()->ancestry : std::vector<std::vector<Ballot>>{}});
   };
   Run::start(run);
 }
 
 void Agreement::read(std::string space, Slot slot, std::vector<Name> names, std::vector<identity::NodeId> replicas, uint64_t version, Reduce reduce,
                      std::chrono::milliseconds deadline, asio::any_io_executor executor, std::function<void(Outcome)> done) {
-  change(
+  // An identity change is repeatable: run again on any value, it changes nothing. Half taken, it
+  // changes nothing either, so a read may name several registers.
+  any_change(
       std::move(space), slot, std::move(names), std::move(replicas), version,
-      [](std::span<const std::optional<Bytes>> current) { return Changed{std::vector<std::optional<Bytes>>(current.begin(), current.end()), {}}; },
+      [](std::span<const std::optional<Bytes>> current) { return Changed{std::vector<std::optional<Bytes>>(current.begin(), current.end()), {}, {}, true}; },
       std::move(reduce), deadline, std::move(executor), std::move(done));
 }
 
@@ -1000,6 +1076,7 @@ void fan_out(const std::function<void(const identity::NodeId&, net::MessageType,
 
 void Agreement::forget(std::string space, Slot slot, std::vector<Name> names, std::vector<identity::NodeId> replicas, uint64_t version,
                        std::chrono::milliseconds deadline, asio::any_io_executor executor, std::function<void(Outcome)> done) {
+  if (names.size() > 1) throw std::invalid_argument("forget() names one register until the atomic commit (plan item 7)");
   const auto set = ReplicaSet::of(replicas, version);
   auto core = _core;
   const auto send = [core](const identity::NodeId& to, net::MessageType type, net::Bytes payload, std::chrono::milliseconds within, Reply reply) {
@@ -1007,7 +1084,9 @@ void Agreement::forget(std::string space, Slot slot, std::vector<Name> names, st
   };
   change(
       space, slot, names, replicas, version,
-      [](std::span<const std::optional<Bytes>> current) { return Changed{std::vector<std::optional<Bytes>>(current.size()), {}}; }, {}, deadline, executor,
+      // A tombstone is repeatable: written again, it is the same tombstone.
+      [](std::span<const std::optional<Bytes>> current) { return Changed{std::vector<std::optional<Bytes>>(current.size()), {}, {}, true}; }, {}, deadline,
+      executor,
       [space, slot, names, set, send, deadline, executor, fingerprint = core->fingerprint, done = std::move(done)](Outcome tombstone) mutable {
         if (!tombstone.committed) return done(std::move(tombstone));
         // Every replica must hold the tombstone before any forgets it: sent again, the same
@@ -1060,6 +1139,10 @@ void Agreement::catch_up(std::string space, Slot slot, std::vector<Name> names, 
         held.states[i] = AcceptorState{outcome.ballot, outcome.ballot, outcome.values[i], outcome.changed_at[i], {}, outcome.values[i].has_value()};
       held.slot.served = set;
       held.slot.pending_from.reset();
+      // The floor a purge leaves went with the lost state, and a purged name leaves nothing to
+      // catch up: the read's ballot is above the floor at a majority of the others, so a stale
+      // accept for a forgotten name is refused here as it is there (the review of 2026-11-17).
+      held.floor = std::max(held.floor, outcome.ballot);
       served->store->keep(slot, held,
                           [core, space, slot, record = held.slot, done = std::move(done), outcome = std::move(outcome)](AcceptorStore::Kept kept) mutable {
                             if (kept.kept) core->note(space, slot, record);

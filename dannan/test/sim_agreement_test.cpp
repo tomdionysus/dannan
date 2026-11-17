@@ -19,6 +19,7 @@
 #include <cstdlib>
 #include <deque>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <set>
@@ -237,7 +238,44 @@ struct Op {
 // The counter's history, checked by the harness's linearizability checker against its counter
 // model: each increment an operation (one not committed may or may not have taken effect),
 // then a read of the final value after everything.
+// The counter's own check, exact and linear after sorting: increments only, each committed one's
+// result the counter's value just after it, so that result is its place in any order. Every
+// result must be distinct and at most the final value; then, place by place from 1 to the
+// final value, each increment takes the earliest instant it can (after the previous one and its
+// invocation), a committed one by its result and not after its answer, a gap by the unanswered
+// increment invoked earliest. Every increment is +1, so taking the earliest is never worse.
+std::optional<std::string> check_counter(const std::vector<Op>& ops, uint64_t final_value) {
+  std::map<uint64_t, const Op*> placed;
+  std::vector<uint64_t> unanswered;
+  for (const auto& op : ops) {
+    if (!op.committed) {
+      unanswered.push_back(op.invoked);
+      continue;
+    }
+    if (op.result == 0 || op.result > final_value) return "a committed increment's result " + std::to_string(op.result) + " is outside 1 to the final value";
+    if (!placed.emplace(op.result, &op).second) return "two committed increments both say " + std::to_string(op.result);
+  }
+  if (final_value - placed.size() > unanswered.size()) return "the final value counts more increments than were made";
+  std::sort(unanswered.begin(), unanswered.end());
+  size_t next_unanswered = 0;
+  uint64_t at = 0;
+  for (uint64_t place = 1; place <= final_value; ++place) {
+    const auto committed = placed.find(place);
+    if (committed != placed.end()) {
+      at = std::max(at, committed->second->invoked);
+      if (at > committed->second->completed) return "no order puts the increment that answered " + std::to_string(place) + " in its place in time";
+      continue;
+    }
+    if (next_unanswered == unanswered.size()) return "nothing fills place " + std::to_string(place);
+    at = std::max(at, unanswered[next_unanswered++]);
+  }
+  return std::nullopt;
+}
+
 std::optional<std::string> check(const std::vector<Op>& ops, uint64_t final_value) {
+  // The counter's exact check decides; the general search (Wing-Gong) cross-checks it wherever
+  // it decides within its usual budget, so a disagreement between them is found too.
+  const auto counted = check_counter(ops, final_value);
   History history;
   uint64_t last = 0;
   for (size_t i = 0; i < ops.size(); ++i) {
@@ -247,9 +285,32 @@ std::optional<std::string> check(const std::vector<Op>& ops, uint64_t final_valu
   }
   const auto read = history.invoke(ops.size(), {"c"}, Bytes{'r'}, last + 1);
   history.answer(read, CounterModel::number(final_value), last + 2);
-  const auto verdict = check_linearizable(history, CounterModel{});
-  if (verdict.linearizable) return std::nullopt;
-  return verdict.why;
+  // Late commits overlap, so the general search can need tens of millions of steps (94 million
+  // at one fixed seed, 2026-11-17): it runs within its usual budget, and where it runs out the
+  // counter's check stands alone.
+  const auto verdict = check_linearizable(history, CounterModel{}, 250'000);
+  if (!verdict.exhausted && verdict.linearizable == counted.has_value())
+    return "the two checkers disagree: the counter's says " + counted.value_or("linearizable") + ", the search " +
+           (verdict.linearizable ? std::string("linearizable") : verdict.why);
+  return counted;
+}
+
+// The counter's check, on histories small enough to see: it passes what is right and names
+// each way of being wrong.
+TEST(CounterCheck, PassesAndRefusesAsItShould) {
+  const auto op = [](uint64_t invoked, uint64_t completed, std::optional<uint64_t> result) {
+    return Op{invoked, completed, result.has_value(), result.has_value(), result.value_or(0)};
+  };
+  EXPECT_FALSE(check_counter({op(1, 5, 1), op(2, 6, 2)}, 2));
+  // An unanswered one fills a gap, or never happened.
+  EXPECT_FALSE(check_counter({op(1, 5, 2), op(0, 0, std::nullopt)}, 2));
+  EXPECT_FALSE(check_counter({op(1, 5, 1), op(0, 0, std::nullopt)}, 1));
+  EXPECT_TRUE(check_counter({op(1, 5, 1), op(2, 6, 1)}, 2));
+  EXPECT_TRUE(check_counter({op(1, 5, 1)}, 2));
+  // Answered 2 before the one that answered 1 began.
+  EXPECT_TRUE(check_counter({op(10, 12, 1), op(1, 5, 2)}, 2));
+  // The gap at 1 is filled only by an increment invoked after the one at 2 answered.
+  EXPECT_TRUE(check_counter({op(1, 5, 2), Op{9, 0, false, false, 0}}, 2));
 }
 
 struct Run {
@@ -1067,9 +1128,11 @@ TEST(Simulation, ADeltaIsAppliedInPlaceAndAnAcceptorBehindIsSentTheWholeValue) {
                                         [](const Cluster::Crossed& each) { return each.type == net::message::agree_accept && each.request_bytes < 4096; });
   EXPECT_TRUE(small_accept);
   // Node 2 misses the next change, then changes the register itself: its own acceptor is
-  // behind the base, so it is sent the whole value.
-  cluster.block(0, 2);
-  ASSERT_TRUE(change_at(0, append_with_delta('c')).committed);
+  // behind the base, so it is sent the whole value. The next change is node 1's, which took
+  // the last: a fast-path miss with node 2 silent would end unknown, rightly (node 2 might have
+  // taken it and been built on), which is not what this test is about.
+  cluster.block(1, 2);
+  ASSERT_TRUE(change_at(1, append_with_delta('c')).committed);
   cluster.unblock_all();
   const auto changed = change_at(2, append_with_delta('d'));
   ASSERT_TRUE(changed.committed) << changed.why;
@@ -1167,7 +1230,7 @@ TEST(Simulation, AValueLessChangeCarriesOnlyDeltas) {
   EXPECT_EQ(stuck.need_whole, cluster.ids({2}));
   // An identity change() sends node 2 the whole value; then the value-less change commits.
   const auto caught = whole_at(0, [](std::span<const std::optional<agree::Bytes>> current) {
-    return agree::Changed{std::vector<std::optional<agree::Bytes>>(current.begin(), current.end()), {}};
+    return agree::Changed{std::vector<std::optional<agree::Bytes>>(current.begin(), current.end()), {}, {}, true};
   });
   ASSERT_TRUE(caught.committed) << caught.why;
   const auto after = deltas_at(0, append('e'));
@@ -1265,7 +1328,7 @@ TEST(Simulation, LargeValuesAndDeltasStayConsistentUnderFaults) {
       if (outcome.committed) committed.emplace_back(decode(outcome.result), byte);
     }
     cluster.faults() = NetworkFaults{};
-    const auto read = change_at(0, [](std::span<const std::optional<agree::Bytes>> current) { return agree::Changed{{current[0]}, {}}; });
+    const auto read = change_at(0, [](std::span<const std::optional<agree::Bytes>> current) { return agree::Changed{{current[0]}, {}, {}, true}; });
     ASSERT_TRUE(read.committed) << read.why;
     ASSERT_TRUE(read.values[0]);
     const auto& value = *read.values[0];
@@ -1310,6 +1373,259 @@ TEST(Simulation, TheFastPathIsTakenUncontendedAndLeftWhenContended) {
   const auto after = increment_at(0);
   EXPECT_TRUE(after.fast);
   EXPECT_EQ(decode(after.result), 5u);
+}
+
+// Liveness with one acceptor silent (the maintainer, 2026-11-17: "watch that commit fail"). Node 0
+// commits while node 2 hears nothing from it, reserving its next ballot at acceptors 0 and 1
+// (the fast path), and falls silent. Node 2's first prepare is promised by its own acceptor,
+// which missed the reservation, refused by acceptor 1 for it, and never answered by 0: neither
+// a majority promising nor a majority refusing. Nodes 1 and 2 are a live majority, and a retry
+// above the reservation commits. The change must not wait for the silent node until its own
+// deadline.
+TEST(Simulation, AChangeRefusedByOneAcceptorAndUnansweredByAnotherRetriesWithinItsDeadline) {
+  World world(3);
+  NetworkFaults quiet;
+  quiet.max_delay_ms = 1;
+  Cluster cluster(world, 3, quiet);
+  const auto change_at = [&](size_t at, agree::Change change) {
+    std::optional<agree::Outcome> out;
+    cluster.agreement(at).change(Cluster::space, counter_slot, {agree::Name{'m'}}, cluster.ids(), Cluster::genesis_version, std::move(change), {}, 5000ms,
+                                 world.io.get_executor(), [&](agree::Outcome outcome) { out = std::move(outcome); });
+    world.run_until([&] { return out.has_value(); }, 2'000'000);
+    return out.value_or(agree::Outcome{});
+  };
+  cluster.block(0, 2);
+  const auto written = change_at(0, put(agree::Bytes{'b', 'a', 's', 'e'}));
+  ASSERT_TRUE(written.committed) << written.why;
+  world.run_until([] { return false; }, 200'000);
+  ASSERT_FALSE(cluster.store(2).state(counter_slot, agree::Name{'m'}));
+  cluster.unblock_all();
+  cluster.crash(0);
+  const auto begun = world.now_ms();
+  const auto changed = change_at(2, append('!'));
+  EXPECT_TRUE(changed.committed) << changed.why;
+  // Well inside the deadline: a few rounds, not the five seconds.
+  EXPECT_LT(world.now_ms() - begun, 1000u) << changed.attempts << " attempts: " << changed.why;
+}
+
+// The same for a fetch: the base is on nodes 0, 1 and 2, node 4 cannot reach 0, and node 1, the
+// first holder node 4 fetches the base from, dies the moment it promises. Node 2 holds the same
+// base: the fetch moves to it after a round rather than waiting on 1 until the deadline.
+TEST(Simulation, AFetchWhoseHolderFallsSilentMovesToTheNextHolderWithinItsDeadline) {
+  World world(3);
+  NetworkFaults quiet;
+  quiet.max_delay_ms = 1;
+  Cluster cluster(world, 5, quiet);
+  std::optional<agree::Outcome> written;
+  cluster.block(0, 3);
+  cluster.block(0, 4);
+  cluster.agreement(0).change(Cluster::space, counter_slot, {agree::Name{'m'}}, cluster.ids(), Cluster::genesis_version, put(agree::Bytes{'b', 'a', 's', 'e'}),
+                              {}, 5000ms, world.io.get_executor(), [&](agree::Outcome outcome) { written = std::move(outcome); });
+  ASSERT_TRUE(world.run_until([&] { return written.has_value(); }, 2'000'000));
+  ASSERT_TRUE(written->committed) << written->why;
+  world.run_until([] { return false; }, 200'000);
+  cluster.unblock_all();
+  ASSERT_FALSE(cluster.store(4).state(counter_slot, agree::Name{'m'}));
+
+  cluster.block(4, 0);
+  std::optional<agree::Outcome> changed;
+  const auto begun = world.now_ms();
+  const auto before = cluster.store(1).changes();
+  cluster.agreement(4).change(Cluster::space, counter_slot, {agree::Name{'m'}}, cluster.ids(), Cluster::genesis_version, append('!'), {}, 5000ms,
+                              world.io.get_executor(), [&](agree::Outcome outcome) { changed = std::move(outcome); });
+  // Node 1 keeps its promise, and dies with the answer on its way.
+  ASSERT_TRUE(world.run_until([&] { return changed.has_value() || cluster.store(1).changes() != before; }, 2'000'000));
+  ASSERT_FALSE(changed.has_value()) << changed->why;
+  cluster.crash(1);
+  ASSERT_TRUE(world.run_until([&] { return changed.has_value(); }, 2'000'000));
+  EXPECT_TRUE(changed->committed) << changed->why;
+  EXPECT_LT(world.now_ms() - begun, 2000u) << changed->attempts << " attempts: " << changed->why;
+  const auto held = cluster.store(2).state(counter_slot, agree::Name{'m'});
+  ASSERT_TRUE(held && held->value);
+  EXPECT_EQ(std::string(held->value->begin(), held->value->end()), "base!");
+}
+
+// A change is applied once (the review of 2026-11-17, finding 1). The counter cannot show a
+// change applied twice while changes that did not commit may account for it, so here every
+// change appends a byte of its own: under the same faults as the counter's runs, no byte is in
+// the register twice.
+TEST(Simulation, NoChangeIsAppliedTwiceUnderFaults) {
+  size_t twice = 0;
+  // How the changes ended, over every seed: what a hosted system meets under these faults.
+  size_t committed = 0, unknown = 0, ambiguous = 0, failed = 0;
+  uint64_t first_seed = 0;
+  for (uint64_t seed = 1; seed <= seeds(150); ++seed) {
+    World world(seed);
+    NetworkFaults faults;
+    faults.drop_one_in = 8;
+    faults.duplicate_one_in = 10;
+    faults.max_delay_ms = 30;
+    Cluster cluster(world, 5, faults);
+    const agree::Name name{'l'};
+    size_t answered = 0, invoked = 0;
+    for (uint8_t n = 0; n < 40; ++n)
+      world.after(world.random.below(2000), [&, n] {
+        size_t at = world.random.below(cluster.size());
+        for (size_t tries = 0; tries < cluster.size() && !cluster.up(at); ++tries) at = (at + 1) % cluster.size();
+        if (!cluster.up(at)) return;
+        ++invoked;
+        cluster.agreement(at).change(Cluster::space, counter_slot, {name}, cluster.ids(), Cluster::genesis_version, append(static_cast<uint8_t>('0' + n)), {},
+                                     3000ms, world.io.get_executor(), [&](agree::Outcome outcome) {
+                                       ++answered;
+                                       ++(outcome.committed ? committed : outcome.unknown ? unknown : failed);
+                                       if (outcome.unknown && outcome.why.find("earlier accept") != std::string::npos) ++ambiguous;
+                                     });
+      });
+    for (int f = 0; f < 12; ++f)
+      world.after(world.random.below(2000), [&] {
+        const auto a = world.random.below(cluster.size());
+        const auto b = world.random.below(cluster.size());
+        switch (world.random.below(4)) {
+          case 0:
+            if (a != b) cluster.block(a, b);
+            break;
+          case 1:
+            cluster.unblock_all();
+            break;
+          case 2:
+            if (cluster.up(a)) cluster.crash(a);
+            break;
+          default:
+            if (!cluster.up(a)) cluster.restart(a);
+            break;
+        }
+      });
+    world.after(2500, [&] {
+      cluster.unblock_all();
+      cluster.faults() = NetworkFaults{};
+      for (size_t i = 0; i < cluster.size(); ++i)
+        if (!cluster.up(i)) cluster.restart(i);
+    });
+    ASSERT_TRUE(world.run_until([&] { return world.now_ms() >= 1'002'500 && answered == invoked; }, 2'000'000)) << "seed " << seed;
+    std::optional<agree::Outcome> read;
+    cluster.agreement(0).read(Cluster::space, counter_slot, {name}, cluster.ids(), Cluster::genesis_version, {}, 5000ms, world.io.get_executor(),
+                              [&](agree::Outcome outcome) { read = std::move(outcome); });
+    world.run_until([&] { return read.has_value(); }, 2'000'000);
+    ASSERT_TRUE(read && read->committed) << "seed " << seed;
+    const auto value = read->values[0].value_or(agree::Bytes{});
+    std::set<uint8_t> seen;
+    bool again = false;
+    for (const auto byte : value) again = !seen.insert(byte).second || again;
+    if (again) {
+      if (++twice == 1) {
+        first_seed = seed;
+        std::printf("[ twice    ] seed %llu: %s\n", static_cast<unsigned long long>(seed), std::string(value.begin(), value.end()).c_str());
+      }
+    }
+  }
+  std::printf("[ outcomes ] committed %zu, unknown %zu (%zu of them a retry that could not tell), failed and not taken %zu\n", committed, unknown, ambiguous,
+              failed);
+  EXPECT_EQ(twice, 0u) << "seeds with a change applied twice, the first seed " << first_seed;
+  EXPECT_GT(committed, 0u);
+}
+
+// Deleting a name through the runtime (the review of 2026-11-17, finding 3): with every replica
+// up and the network clean, forget() commits the tombstone, sees every replica hold it, and
+// purges it everywhere.
+TEST(Simulation, AForgottenNameIsPurgedAtEveryReplica) {
+  World world(41);
+  Cluster cluster(world, 3, NetworkFaults{});
+  const agree::Name name{'d'};
+  std::optional<agree::Outcome> written;
+  cluster.agreement(0).change(Cluster::space, counter_slot, {name}, cluster.ids(), Cluster::genesis_version, put(agree::Bytes{'x'}), {}, 5000ms,
+                              world.io.get_executor(), [&](agree::Outcome outcome) { written = std::move(outcome); });
+  ASSERT_TRUE(world.run_until([&] { return written.has_value(); }, 2'000'000));
+  ASSERT_TRUE(written->committed) << written->why;
+  world.run_until([] { return false; }, 200'000);
+  std::optional<agree::Outcome> forgotten;
+  cluster.agreement(1).forget(Cluster::space, counter_slot, {name}, cluster.ids(), Cluster::genesis_version, 5000ms, world.io.get_executor(),
+                              [&](agree::Outcome outcome) { forgotten = std::move(outcome); });
+  ASSERT_TRUE(world.run_until([&] { return forgotten.has_value(); }, 2'000'000));
+  ASSERT_TRUE(forgotten->committed) << forgotten->why;
+  EXPECT_TRUE(forgotten->forgotten) << forgotten->why;
+  for (size_t at = 0; at < cluster.size(); ++at) EXPECT_FALSE(cluster.store(at).state(counter_slot, name)) << "node " << at << " still holds the name";
+}
+
+// Finding 6: a node that lost its state and caught up keeps a forgotten name forgotten. The name
+// is purged everywhere, node 2 is wiped and catches up on another name, and a stale accept for
+// the forgotten one, below the floor every replica held, reaches it. It is refused, and a read
+// that node 2's own acceptor answers first still finds nothing.
+TEST(Simulation, ANodeCaughtUpAfterLosingItsStateRefusesAStaleAcceptForAForgottenName) {
+  World world(43);
+  Cluster cluster(world, 3, NetworkFaults{});
+  const agree::Name gone{'d'};
+  const auto told = [&](auto start) {
+    std::optional<agree::Outcome> out;
+    start([&](agree::Outcome outcome) { out = std::move(outcome); });
+    world.run_until([&] { return out.has_value(); }, 2'000'000);
+    world.run_until([] { return false; }, 200'000);
+    return out.value_or(agree::Outcome{});
+  };
+  ASSERT_TRUE(told([&](auto done) {
+                cluster.agreement(0).change(Cluster::space, counter_slot, {gone}, cluster.ids(), Cluster::genesis_version, put(agree::Bytes{'x'}), {}, 5000ms,
+                                            world.io.get_executor(), done);
+              }).committed);
+  const auto forgotten = told([&](auto done) {
+    cluster.agreement(0).forget(Cluster::space, counter_slot, {gone}, cluster.ids(), Cluster::genesis_version, 5000ms, world.io.get_executor(), done);
+  });
+  ASSERT_TRUE(forgotten.forgotten) << forgotten.why;
+  cluster.crash(2);
+  cluster.restart(2, true, false);
+  const auto caught = told([&](auto done) {
+    cluster.agreement(2).catch_up(Cluster::space, counter_slot, {agree::Name{'c'}}, cluster.ids(), Cluster::genesis_version, 5000ms, world.io.get_executor(),
+                                  done);
+  });
+  ASSERT_TRUE(caught.committed) << caught.why;
+  cluster.store(2).set_ready(true);
+  // The stale accept: the value before the tombstone, at the lowest ballot, from node 0.
+  agree::Accept stale;
+  stale.set = cluster.genesis();
+  stale.slot = counter_slot;
+  stale.ballot = agree::Ballot{1, cluster.id(0), {}};
+  stale.names = {gone};
+  stale.values = {agree::Bytes{'x'}};
+  stale.changed_at = {stale.ballot};
+  std::optional<net::Bytes> answer;
+  cluster.call(0, 2, net::message::agree_accept,
+               agree::encode(agree::AcceptMessage{Cluster::space, stale, agree::table_fingerprint(Cluster::slots, cluster.genesis())}), 500ms,
+               [&](std::optional<net::Bytes> reply, std::string) { answer = reply.value_or(net::Bytes{}); });
+  ASSERT_TRUE(world.run_until([&] { return answer.has_value(); }, 2'000'000));
+  ASSERT_FALSE(answer->empty());
+  EXPECT_TRUE(agree::decode_accept_answer(*answer).refused) << "the stale accept was taken";
+  const auto read = told([&](auto done) {
+    cluster.agreement(2).read(Cluster::space, counter_slot, {gone}, cluster.ids(), Cluster::genesis_version, {}, 5000ms, world.io.get_executor(), done);
+  });
+  ASSERT_TRUE(read.committed) << read.why;
+  EXPECT_FALSE(read.values[0]) << "the forgotten value came back";
+}
+
+// Finding 7 (2026-11-17): a change of several names can be half taken, since each name's base
+// is chosen on its own (proven at the core: one name adopted half of an accept that another
+// passed over). Until plan item 7's atomic commit, the runtime takes one name per change, so no
+// accept of several names is ever made to be half taken (Mimir's ask: refused, not documented).
+// A read may name several: its accept changes nothing, half taken or whole.
+TEST(Agreement, AChangeOfSeveralNamesIsNeverHalfTaken) {
+  World world(47);
+  Cluster cluster(world, 3, NetworkFaults{});
+  const std::vector<agree::Name> both{agree::Name{'x'}, agree::Name{'y'}};
+  const auto ignore = [](agree::Outcome) {};
+  EXPECT_THROW(cluster.agreement(0).change(Cluster::space, counter_slot, both, cluster.ids(), Cluster::genesis_version, put(agree::Bytes{'v'}), {}, 1000ms,
+                                           world.io.get_executor(), ignore),
+               std::invalid_argument);
+  EXPECT_THROW(cluster.agreement(0).change_deltas(
+                   Cluster::space, counter_slot, both, cluster.ids(), Cluster::genesis_version,
+                   [](std::span<const agree::Base> bases) { return agree::Deltas{std::vector<std::optional<agree::Bytes>>(bases.size()), {}}; }, 1000ms,
+                   world.io.get_executor(), ignore),
+               std::invalid_argument);
+  EXPECT_THROW(
+      cluster.agreement(0).forget(Cluster::space, counter_slot, both, cluster.ids(), Cluster::genesis_version, 1000ms, world.io.get_executor(), ignore),
+      std::invalid_argument);
+  std::optional<agree::Outcome> read;
+  cluster.agreement(0).read(Cluster::space, counter_slot, both, cluster.ids(), Cluster::genesis_version, {}, 1000ms, world.io.get_executor(),
+                            [&](agree::Outcome outcome) { read = std::move(outcome); });
+  ASSERT_TRUE(world.run_until([&] { return read.has_value(); }, 2'000'000));
+  EXPECT_TRUE(read->committed) << read->why;
+  EXPECT_EQ(read->values.size(), 2u);
 }
 
 // A seed replays exactly.
