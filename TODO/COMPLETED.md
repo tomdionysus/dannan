@@ -3,6 +3,25 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
+## The harness, step 3 part 4 completed: agreement over real membership, 2026-11-17 (`feature/sim-agreement-nodes`)
+
+- `SimNodes::restart(i, Wipe)`: nothing lost, the store lost (the same node, a new epoch: the
+  restart rule's case, Mimir's review), or a new identity; a `host` hook serves the hosted
+  system after every start.
+- Agreement over real membership: five nodes serve one space from their own stores, advertise its
+  capability through real gossip, and increment a counter under faults with a restart keeping its
+  store and one losing it (caught up before voting). Linearizable on 10 seeds.
+- Two rosters naming different sets, from real membership: a 3 and 2 split, each side naming
+  the genesis set and its own roster's set by turns. Linearizable on 10 seeds; neither a
+  roster's set nor the minority commits.
+- **Found and fixed** (`d8ec229`): a node's call deadline, booked on the schedule, ran after the
+  node was stopped and destroyed, completing into its membership pass (use after free in a
+  world that goes on). A stopped node now runs nothing it booked; `SimNodes` destroys a stopped
+  node only once the world's ready handlers have run.
+- Gate: node-c, 871 tests, 870 passed, 1 skipped (as root).
+- Part 4 is complete. Next: part 5 (the transaction checker, the convergence checker, client
+  actors, the worker pool in the world).
+
 ## The harness, step 3 part 4, piece 2b: whole nodes in the world, 2026-11-17 (`feature/sim-transport`)
 
 - `net::Answer::to` (`81b5d6f`): an answer made outside the scheduler, for a transport that

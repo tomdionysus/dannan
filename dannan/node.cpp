@@ -1341,7 +1341,14 @@ void Node::run_step(asio::io_context& context, const Step& step) {
 
 void Node::after(std::chrono::milliseconds delay, std::function<void()> task) {
   if (_config.schedule) {
-    return _config.schedule(delay, [executor = _io.get_executor(), task = std::move(task)]() mutable { asio::post(executor, std::move(task)); });
+    // Nothing booked runs once the node has stopped: the schedule may outlive the node (a world
+    // that goes on after it), and a task here may use it.
+    return _config.schedule(delay, [alive = _scheduled, executor = _io.get_executor(), task = std::move(task)]() mutable {
+      if (!alive->load()) return;
+      asio::post(executor, [alive, task = std::move(task)] {
+        if (alive->load()) task();
+      });
+    });
   }
   auto timer = std::make_shared<asio::steady_timer>(_io);
   when_time_reaches(timer, *_config.time, _config.time->now() + delay, std::move(task));

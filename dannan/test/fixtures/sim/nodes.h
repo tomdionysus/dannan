@@ -56,12 +56,14 @@ class SimNetwork;
 
 // One node's transport through the world: every message an event, delayed, lost, duplicated or
 // blocked as the network's faults say.
-class SimTransport final : public net::Transport {
+class SimTransport final : public net::Transport, public std::enable_shared_from_this<SimTransport> {
  public:
   SimTransport(SimNetwork& network, size_t index, net::TransportHooks hooks) : _network(network), _index(index), _hooks(std::move(hooks)) {}
 
   void listen() override;
-  void start() override {}
+  // Health pings on every route each `ping_every`, as the real client sends them: a peer that
+  // answers is seen, whatever membership's own exchanges are waiting on.
+  void start() override { ping_later(); }
   uint16_t bound_port() const override;
   void stop_serving() override { _serving = false; }
   void stop_calling() override { _calling = false; }
@@ -106,6 +108,7 @@ class SimTransport final : public net::Transport {
   }
 
  private:
+  void ping_later();
   std::shared_ptr<net::CallHandle> place(std::optional<size_t> to, net::MessageType type, net::Bytes payload, sched::FrameType frame,
                                          boost::asio::any_io_executor executor, net::Client::Done done);
 
@@ -127,6 +130,8 @@ class SimNetwork {
 
   World& world() noexcept { return _world; }
   NetworkFaults& faults() noexcept { return _faults; }
+  // How often each transport pings its routes: the nodes' heartbeat.
+  uint64_t ping_every_ms = 100;
 
   // The port node `index` listens on; its transport, made by the node through NodeConfig.
   static uint16_t port_of(size_t index) noexcept { return static_cast<uint16_t>(20000 + index); }
@@ -218,16 +223,19 @@ inline std::shared_ptr<net::CallHandle> SimTransport::place(std::optional<size_t
   const auto from = _index;
   auto& network = _network;
   const auto sender = local();
+  // The reply goes to this transport, not to whoever holds its index by then: a node restarted
+  // there is another node, and this one, and what its calls complete into, may be gone.
+  const std::weak_ptr<SimTransport> self = weak_from_this();
   const int copies = network.copies();
   for (int copy = 0; copy < copies; ++copy) {
     if (network.lost(from, *to)) continue;
-    network.world().after(network.delay(), [&network, from, to = *to, sender, type, payload, frame, executor, done, once] {
+    network.world().after(network.delay(), [&network, from, to = *to, sender, type, payload, frame, executor, done, once, self] {
       const auto server = network.at(to);
       if (!server || !server->serving()) return;
-      server->serve(sender, frame, net::Message{type, payload, {}}, [&network, from, to, executor, done, once](net::Message reply) {
+      server->serve(sender, frame, net::Message{type, payload, {}}, [&network, from, to, executor, done, once, self](net::Message reply) {
         if (network.lost(to, from)) return;
-        network.world().after(network.delay(), [&network, from, to, executor, done, once, reply = std::move(reply)]() mutable {
-          const auto caller = network.at(from);
+        network.world().after(network.delay(), [&network, to, executor, done, once, self, reply = std::move(reply)]() mutable {
+          const auto caller = self.lock();
           const auto answerer = network.at(to);
           if (!caller || !caller->calling() || *once) return;
           *once = true;
@@ -252,6 +260,18 @@ inline std::shared_ptr<net::CallHandle> SimTransport::call(const membership::Nod
 inline std::shared_ptr<net::CallHandle> SimTransport::call(const net::Endpoint& endpoint, net::MessageType type, net::Bytes payload, sched::FrameType frame,
                                                            boost::asio::any_io_executor executor, net::Client::Done done, net::CallWatch) {
   return place(_network.index_of(endpoint.port), type, std::move(payload), frame, std::move(executor), std::move(done));
+}
+
+inline void SimTransport::ping_later() {
+  const std::weak_ptr<SimTransport> self = weak_from_this();
+  _network.world().after(_network.ping_every_ms, [self] {
+    const auto me = self.lock();
+    if (!me || !me->calling()) return;
+    for (const auto& peer : std::vector<identity::NodeId>(me->_routes.begin(), me->_routes.end()))
+      if (const auto to = me->_network.index_of(peer))
+        (void)me->place(to, net::message::ping, {}, sched::FrameType::control, me->_network.world().io.get_executor(), [](net::CallOutcome) {});
+    me->ping_later();
+  });
 }
 
 inline bool SimTransport::send(const identity::NodeId& peer, net::Lane, const net::Message& message, sched::FrameType frame, bool) {
@@ -284,14 +304,21 @@ inline bool SimTransport::has_route(const identity::NodeId& peer, net::Lane) con
   return server && server->serving();
 }
 
+// How a node comes back from a restart (Mimir's review): with everything; as the same node (its
+// id kept, a new epoch) whose hosted store lost its state, the restart rule's case; or as a new
+// node, a new identity in a new directory, a membership change.
+enum class Wipe { nothing, store, identity };
+
 // A cluster of whole nodes in the world: each node's state in its own directory, its clock at
 // its own offset and drift, its loops on the world's schedule, its network the world's. A node
 // stops and comes back with its state kept or wiped, as the test chooses (Mimir's second ask).
 class SimNodes {
  public:
   // `size` nodes, each bootstrapping from node 0; clocks within `skew_ms` of the world's and
-  // drifting up to `drift_ppm`, from the seed.
-  SimNodes(World& world, size_t size, NetworkFaults faults = {}, int64_t skew_ms = 0, int64_t drift_ppm = 0) : _world(world), _network(world, faults) {
+  // drifting up to `drift_ppm`, from the seed. Started at once, or by start_all() once a test has
+  // set `configure` and `host` (which may read ids()).
+  SimNodes(World& world, size_t size, NetworkFaults faults = {}, int64_t skew_ms = 0, int64_t drift_ppm = 0, bool started = true)
+      : _world(world), _network(world, faults) {
     std::ofstream(_dir.path() / "cluster.key") << "sim cluster";
     _key = identity::load_cluster_key(_dir.path() / "cluster.key");
     for (size_t i = 0; i < size; ++i) {
@@ -299,8 +326,12 @@ class SimNodes {
       const int64_t drift = drift_ppm ? static_cast<int64_t>(world.random.below(static_cast<uint64_t>(2 * drift_ppm + 1))) - drift_ppm : 0;
       _clocks.push_back(std::make_unique<NodeClock>(world, offset, drift));
       _nodes.emplace_back();
+      _ids.push_back(draw_id());
     }
-    for (size_t i = 0; i < size; ++i) start(i);
+    if (started) start_all();
+  }
+  void start_all() {
+    for (size_t i = 0; i < _nodes.size(); ++i) start(i);
   }
   ~SimNodes() {
     for (size_t i = 0; i < _nodes.size(); ++i) stop(i);
@@ -311,7 +342,9 @@ class SimNodes {
   size_t size() const noexcept { return _nodes.size(); }
   bool up(size_t i) const { return _nodes.at(i) != nullptr; }
   Node& node(size_t i) { return *_nodes.at(i); }
-  identity::NodeId id(size_t i) const { return _nodes.at(i)->context().identity().id(); }
+  identity::NodeId id(size_t i) const { return _ids.at(i); }
+  // Every node's id, known before any starts (a genesis set names them).
+  const std::vector<identity::NodeId>& ids() const noexcept { return _ids; }
   SimNetwork& network() noexcept { return _network; }
 
   // What node `i` is configured with; a test may change it before a restart.
@@ -340,44 +373,63 @@ class SimNodes {
   }
   // A test's own settings for every node it starts.
   std::function<void(size_t, NodeConfig&)> configure;
+  // What the hosted system serves on node `i` once it has started, every start included:
+  // `lost` says its store lost its state (Wipe::store or Wipe::identity), and must not vote
+  // until caught up, unless it is new.
+  std::function<void(size_t i, Node& node, bool lost)> host;
   // Every node's log, kept for a test to look through rather than printed.
   std::shared_ptr<RecordingSink> log = std::make_shared<RecordingSink>();
 
-  void start(size_t i) {
+  void start(size_t i, bool lost = false) {
     _generation.resize(std::max(_generation.size(), i + 1), 0);
     auto settings = config(i);
     // The node's id from the seed, not the operating system's randomness: ids order the rosters
     // and every map keyed by them, so a run replays only if they do. Kept by a restart; a wiped
     // node's new directory draws a new one.
     if (!std::filesystem::exists(settings.state_path / "node-id")) {
-      identity::NodeId id;
-      for (auto& byte : id.bytes) byte = static_cast<uint8_t>(_world.random.next());
       std::filesystem::create_directories(settings.state_path);
-      std::ofstream(settings.state_path / "node-id") << identity::to_string(id) << "\n";
+      std::ofstream(settings.state_path / "node-id") << identity::to_string(_ids.at(i)) << "\n";
     }
     auto node = std::make_unique<Node>(_world.io, std::move(settings));
     node->start();
     _nodes.at(i) = std::move(node);
+    if (host) host(i, *_nodes.at(i), lost);
   }
+  // Stopped, then destroyed once the world's ready handlers have run while it still exists:
+  // after its stop nothing it booked on the schedule runs, and its transport, holding its hooks,
+  // goes with it. A call it had in flight is never answered.
   void stop(size_t i) {
     if (!_nodes.at(i)) return;
     _nodes.at(i)->stop();
+    _world.io.restart();
+    while (_world.io.poll_one() > 0) {
+    }
     _nodes.at(i).reset();
   }
-  // Back with its state as it was on disk, or with none (a new directory: a new identity).
-  void restart(size_t i, bool wiped = false) {
+  // Back as Wipe says.
+  void restart(size_t i, Wipe wipe = Wipe::nothing) {
     stop(i);
-    if (wiped) ++_generation.at(i);
-    start(i);
+    if (wipe == Wipe::identity) {
+      ++_generation.at(i);
+      _ids.at(i) = draw_id();
+    }
+    start(i, wipe != Wipe::nothing);
   }
 
  private:
+  identity::NodeId draw_id() {
+    identity::NodeId id;
+    for (auto& byte : id.bytes) byte = static_cast<uint8_t>(_world.random.next());
+    return id;
+  }
+
   World& _world;
   SimNetwork _network;
   TempDir _dir;
   identity::ClusterKey _key;
   std::vector<std::unique_ptr<NodeClock>> _clocks;
   std::vector<uint64_t> _generation;
+  std::vector<identity::NodeId> _ids;
   std::vector<std::unique_ptr<Node>> _nodes;
 };
 
