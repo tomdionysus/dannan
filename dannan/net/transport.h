@@ -26,6 +26,17 @@
 // reachable or not by its world.
 namespace dannan::net {
 
+// What a node gives a transport of the harness's own (NodeConfig::transport).
+struct TransportHooks {
+  // The node's own record, read at each message it sends.
+  std::function<membership::NodeRecord()> local;
+  // A peer's request or notification, served as the server would serve it: answered by
+  // returning, or deferred through the Answer.
+  DeferringHandler serve;
+  // A peer heard from directly, its record as it sent it: what a handshake tells a real node.
+  std::function<void(const membership::NodeRecord&)> heard;
+};
+
 class Transport {
  public:
   virtual ~Transport() = default;

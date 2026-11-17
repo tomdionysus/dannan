@@ -175,6 +175,10 @@ struct NodeConfig {
   // agreement's waits go through it too, so a world run on one thread orders all of them. Empty:
   // the loops are threads, as always.
   std::function<void(std::chrono::milliseconds after, std::function<void()> task)> schedule;
+  // The network as the harness gives it (the transport seam, piece 2b): set, the node builds no
+  // client, server or level 0 paths, and calls, sends and serves through what this returns,
+  // given the node's hooks. Empty: sockets, as always.
+  std::function<std::shared_ptr<net::Transport>(net::TransportHooks)> transport;
 };
 
 // Dannan's node: the control plane assembled. The identity under a locked
