@@ -216,6 +216,27 @@ TEST(Membership, AdvertsRideInTheRecordAndAreBounded) {
   EXPECT_NO_THROW(members.set_advert("k0", net::Bytes{1}));
 }
 
+// An advert changed in the same millisecond as a gossip reply or handshake that carried the
+// record before it is still newer than that copy, so a peer holding the copy takes the change
+// (Lir's finding on 0.9.0: a subscription's push refused as "the peer holds an older record").
+TEST(Membership, AnAdvertChangedInTheMillisecondOfASnapshotIsNewerThanIt) {
+  Clocks clocks;
+  auto members = make(clocks);
+  // A peer, holding this node's record.
+  Membership other(node(9, "10.0.0.9"), 30s, {}, std::chrono::milliseconds::max(), &clocks.steady, &clocks.wall);
+  clocks.wall.advance(5ms);
+  const auto snapshot = members.all().front();
+  other.observe(snapshot, true);
+  EXPECT_TRUE(members.set_advert("interest", net::Bytes{1}));
+  const auto changed = members.self();
+  EXPECT_GT(changed.seen_unix_ms, snapshot.seen_unix_ms);
+  other.observe(changed, true);
+  const auto held = other.all();
+  const auto mine = std::find_if(held.begin(), held.end(), [&](const NodeRecord& n) { return n.id == changed.id; });
+  ASSERT_NE(mine, held.end());
+  EXPECT_TRUE(mine->advert("interest"));
+}
+
 // Unheard of for the horizon (never under twice dead_after): forgotten.
 // Gossip that old does not teach it back; its own connection does.
 TEST(Membership, ForgetsAtTheHorizonAndOldGossipDoesNotTeachBack) {
