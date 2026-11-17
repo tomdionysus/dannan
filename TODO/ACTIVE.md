@@ -60,8 +60,10 @@ current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluat
   at `8118100`, 863 tests, 861 passed, 2 skipped (Linux-only). Piece 2b (whole nodes in the
   world, `fixtures/sim/nodes.h`) is merged (`COMPLETED.md`); macOS gate at `cf0c43d`: 868 tests,
   866 passed, 2 skipped (Linux-only).
-  **Next in part 4**: agreement over real membership in the world, and "two rosters naming
-  different sets" from real rosters.
+  Part 4 is complete: agreement over real membership, and two rosters naming different sets
+  from real rosters, on `feature/sim-agreement-nodes` (`COMPLETED.md`). **Next: step 3, part 5**
+  (the transaction checker, the convergence checker, client actors, the worker pool in the
+  world).
 - **New for plan item 7**: multi-name changes in a slot go through the atomic commit too
   (Mimir and Kvasir agreed, option 2 of the review); until then `change()` takes one name.
 - **Gates.**
