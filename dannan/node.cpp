@@ -96,13 +96,13 @@ class Node::NodesNoun final : public Nodes {
   }
   bool all_known_reachable() const override { return _node._members.all_known_reachable(); }
   std::optional<net::Purpose> path(const identity::NodeId& node, net::Lane lane) const override {
-    return _node._client ? _node._client->path_of(node, lane) : std::nullopt;
+    return _node._net ? _node._net->path_of(node, lane) : std::nullopt;
   }
   std::optional<std::chrono::milliseconds> latency(const identity::NodeId& node) const override {
-    return _node._client ? _node._client->peer_latency(node) : std::nullopt;
+    return _node._net ? _node._net->peer_latency(node) : std::nullopt;
   }
   std::map<identity::NodeId, std::chrono::milliseconds> latencies() const override {
-    return _node._client ? _node._client->peer_latencies() : decltype(latencies()){};
+    return _node._net ? _node._net->peer_latencies() : decltype(latencies()){};
   }
   std::vector<membership::IdentityReset> identity_resets() const override { return _node._members.identity_resets(); }
   bool apply_identity_reset(const membership::IdentityReset& reset) override { return _node.apply_identity_reset(reset); }
@@ -238,11 +238,11 @@ class Node::RoutesNoun final : public Routes {
 class Node::ChannelsNoun final : public Channels {
  public:
   explicit ChannelsNoun(Node& node) : _node(node) {}
-  size_t broadcast(const net::Message& message) override { return usable() ? _node._client->broadcast(message) : 0; }
+  size_t broadcast(const net::Message& message) override { return usable() ? _node._net->broadcast(message) : 0; }
   size_t broadcast_best_effort(const net::Message& message, sched::FrameType frame) override {
-    return usable() ? _node._client->broadcast_best_effort(message, frame) : 0;
+    return usable() ? _node._net->broadcast_best_effort(message, frame) : 0;
   }
-  size_t notify(const net::Message& message, sched::FrameType frame) override { return usable() ? _node._client->broadcast_notify(message, frame) : 0; }
+  size_t notify(const net::Message& message, sched::FrameType frame) override { return usable() ? _node._net->broadcast_notify(message, frame) : 0; }
   void open(std::string name, net::Delivery delivery, size_t replay_bytes) override { _node._fanout->open(std::move(name), delivery, replay_bytes); }
   uint64_t subscribe(const std::string& channel, std::string prefix, asio::any_io_executor executor, net::ChannelHandler handler) override {
     return _node._fanout->subscribe(channel, std::move(prefix), std::move(executor), std::move(handler));
@@ -261,7 +261,7 @@ class Node::ChannelsNoun final : public Channels {
   }
 
  private:
-  bool usable() const { return _node._client && !_node._stopping && !_node._calls_cancelled; }
+  bool usable() const { return _node._net && !_node._stopping && !_node._calls_cancelled; }
 
  private:
   Node& _node;
@@ -442,8 +442,8 @@ Diagnostics Node::diagnostics() const {
   out.started_unix_ms = _readiness.started_unix_ms();
   out.connectivity = connectivity();
   out.inbound = _inbound.state();
-  if (_client) out.client = _client->stats();
-  if (_server) out.work = _server->work_stats();
+  if (_net) out.client = _net->stats();
+  if (_net) out.work = _net->work_stats();
   out.traffic = traffic();
   out.threads = _threads.statuses();
   if (_paths) out.paths = _paths->stats();
@@ -575,11 +575,11 @@ Node::Node(asio::io_context& io, NodeConfig config)
                       std::function<void(membership::Pushed)> done) { push_advert(key, std::move(value), deadline, std::move(executor), std::move(done)); };
   hooks.call = [this](const NodeRecord& peer, net::MessageType type, net::Bytes payload, sched::FrameType frame, std::chrono::milliseconds deadline,
                       asio::any_io_executor executor, net::Client::Done done) {
-    if (!_client || _stopping || _calls_cancelled) return asio::post(executor, [done] { done({std::nullopt, "the node is not running", {}}); });
+    if (!_net || _stopping || _calls_cancelled) return asio::post(executor, [done] { done({std::nullopt, "the node is not running", {}}); });
     (void)place_call(peer, {peer.host, peer.port}, type, std::move(payload), frame, deadline, std::move(executor), std::move(done));
   };
   hooks.send = [this](const identity::NodeId& peer, const net::Message& message, sched::FrameType frame, bool best_effort) {
-    return _client && !_stopping && _client->send(peer, net::Lane::control, message, frame, best_effort);
+    return _net && !_stopping && _net->send(peer, net::Lane::control, message, frame, best_effort);
   };
   hooks.executor = _io.get_executor();
   hooks.replay_deadline = _config.connect_timeout * 2;
@@ -595,7 +595,7 @@ Node::Node(asio::io_context& io, NodeConfig config)
         std::optional<NodeRecord> peer;
         for (auto& node : _members.active())
           if (node.id == to) peer = std::move(node);
-        if (!peer || !_client || _stopping || _calls_cancelled) return asio::post(_io, [done] { done(std::nullopt, "the peer is not reachable now"); });
+        if (!peer || !_net || _stopping || _calls_cancelled) return asio::post(_io, [done] { done(std::nullopt, "the peer is not reachable now"); });
         (void)place_call(*peer, {peer->host, peer->port}, type, std::move(payload), sched::FrameType::control, deadline, _io.get_executor(),
                          [done](net::CallOutcome outcome) {
                            if (!outcome.reply) return done(std::nullopt, outcome.failure);
@@ -644,86 +644,97 @@ void Node::start() {
   }
   _frozen = std::make_shared<const net::RouteTable>(_table);
 
-  net::ServerOptions server_options;
-  server_options.credentials = _credentials;
-  server_options.local = [this] { return _members.self(); };
-  server_options.max_frame = _config.max_frame;
-  server_options.routes = _frozen;
-  server_options.limits = _config.limits;
-  server_options.memory = &_memory;
-  server_options.traffic = _traffic;
-  server_options.time = _config.time;
-  server_options.log = _config.log;
-  server_options.threads = &_threads;
-  _server = std::make_unique<net::Server>(
-      _io, _config.listen_host, _config.port, server_options,
-      [this](const NodeRecord& peer, sched::FrameType frame, net::Message request, net::Answer& answer) {
-        return handle(peer, frame, std::move(request), answer);
-      },
-      [this](const std::shared_ptr<net::Session>& session) {
-        if (_client) _client->admit(session);
-        note_certificate(session->established());
-        observe_direct(session->peer());
-      });
+  if (_config.transport) {
+    net::TransportHooks hooks;
+    hooks.local = [this] { return _members.self(); };
+    hooks.serve = [this](const NodeRecord& peer, sched::FrameType frame, net::Message request, net::Answer& answer) {
+      return handle(peer, frame, std::move(request), answer);
+    };
+    hooks.heard = [this](const NodeRecord& peer) { observe_direct(peer); };
+    _net = _config.transport(std::move(hooks));
+  } else {
+    net::ServerOptions server_options;
+    server_options.credentials = _credentials;
+    server_options.local = [this] { return _members.self(); };
+    server_options.max_frame = _config.max_frame;
+    server_options.routes = _frozen;
+    server_options.limits = _config.limits;
+    server_options.memory = &_memory;
+    server_options.traffic = _traffic;
+    server_options.time = _config.time;
+    server_options.log = _config.log;
+    server_options.threads = &_threads;
+    _server = std::make_unique<net::Server>(
+        _io, _config.listen_host, _config.port, server_options,
+        [this](const NodeRecord& peer, sched::FrameType frame, net::Message request, net::Answer& answer) {
+          return handle(peer, frame, std::move(request), answer);
+        },
+        [this](const std::shared_ptr<net::Session>& session) {
+          if (_client) _client->admit(session);
+          note_certificate(session->established());
+          observe_direct(session->peer());
+        });
 
-  net::ClientOptions client_options;
-  client_options.credentials = _credentials;
-  client_options.local = [this] { return _members.self(); };
-  client_options.max_frame = _config.max_frame;
-  client_options.routes = _frozen;
-  client_options.memory = &_memory;
-  client_options.traffic = _traffic;
-  client_options.time = _config.time;
-  client_options.connect_timeout = _config.connect_timeout;
-  client_options.control_no_progress = _config.control_no_progress;
-  client_options.data_no_progress = _config.data_no_progress;
-  client_options.control_stall_notice = _config.control_stall_notice;
-  client_options.data_stall_notice = _config.data_stall_notice;
-  client_options.log = _config.log;
-  client_options.dial_hook = _config.dial_hook;
-  client_options.call_fault = _config.call_fault;
-  client_options.heartbeat = _config.heartbeat;
-  client_options.dead_after = _config.dead_after;
-  client_options.alive = [this](const NodeRecord& peer) { observe_direct(peer); };
-  client_options.established = [this](const net::Established& session) {
-    note_certificate(session);
-    observe_direct(session.peer);
-  };
-  client_options.inbound.request = [this](const NodeRecord& peer, net::Frame frame, net::Reply reply) {
-    _server->scheduler().submit(peer, std::move(frame), std::move(reply));
-  };
-  client_options.inbound.promoted = [this](const identity::NodeId& peer, uint64_t id, sched::FrameType frame) {
-    _server->scheduler().promote(peer, id, frame);
-  };
-  client_options.inbound.cancelled = [this](const identity::NodeId& peer, uint64_t id) { _server->scheduler().cancel(peer, id); };
-  client_options.make_path = [this](const identity::NodeId& peer, net::Lane lane, std::function<void(std::string)> failed) {
-    if (_paths)
-      _paths->make_path(peer, lane, std::move(failed));
-    else
-      failed("level 0 is not running");
-  };
-  _client = std::make_unique<net::Client>(_io, client_options);
-  reach::PathsConfig paths;
-  paths.credentials = _credentials;
-  paths.threads = &_threads;
-  paths.connect_timeout = _config.connect_timeout;
-  paths.punch_window = _config.punch_window;
-  paths.relay = _config.relay;
-  paths.forced_class = _config.path_class;
-  paths.upgrade_every = _config.path_upgrade_every;
-  paths.max_data_circuits = _config.relay_data_circuits;
-  // Chunks that have not come within the liveness window are not coming.
-  paths.finish_wait = _config.relay_finish_wait.value_or(_config.dead_after);
-  paths.drop_hook = _config.relay_drop_hook;
-  _paths = std::make_unique<reach::Paths>(
-      _io, paths, *_client, [this] { return _members.self(); }, [this] { return _members.active(); },
-      [this](const NodeRecord& peer, net::MessageType type, net::Bytes payload, std::chrono::milliseconds deadline) {
-        return call_wait(peer, {peer.host, peer.port}, type, std::move(payload), deadline);
-      });
+    net::ClientOptions client_options;
+    client_options.credentials = _credentials;
+    client_options.local = [this] { return _members.self(); };
+    client_options.max_frame = _config.max_frame;
+    client_options.routes = _frozen;
+    client_options.memory = &_memory;
+    client_options.traffic = _traffic;
+    client_options.time = _config.time;
+    client_options.connect_timeout = _config.connect_timeout;
+    client_options.control_no_progress = _config.control_no_progress;
+    client_options.data_no_progress = _config.data_no_progress;
+    client_options.control_stall_notice = _config.control_stall_notice;
+    client_options.data_stall_notice = _config.data_stall_notice;
+    client_options.log = _config.log;
+    client_options.dial_hook = _config.dial_hook;
+    client_options.call_fault = _config.call_fault;
+    client_options.heartbeat = _config.heartbeat;
+    client_options.dead_after = _config.dead_after;
+    client_options.alive = [this](const NodeRecord& peer) { observe_direct(peer); };
+    client_options.established = [this](const net::Established& session) {
+      note_certificate(session);
+      observe_direct(session.peer);
+    };
+    client_options.inbound.request = [this](const NodeRecord& peer, net::Frame frame, net::Reply reply) {
+      _server->scheduler().submit(peer, std::move(frame), std::move(reply));
+    };
+    client_options.inbound.promoted = [this](const identity::NodeId& peer, uint64_t id, sched::FrameType frame) {
+      _server->scheduler().promote(peer, id, frame);
+    };
+    client_options.inbound.cancelled = [this](const identity::NodeId& peer, uint64_t id) { _server->scheduler().cancel(peer, id); };
+    client_options.make_path = [this](const identity::NodeId& peer, net::Lane lane, std::function<void(std::string)> failed) {
+      if (_paths)
+        _paths->make_path(peer, lane, std::move(failed));
+      else
+        failed("level 0 is not running");
+    };
+    _client = std::make_unique<net::Client>(_io, client_options);
+    _net = std::make_shared<net::RealTransport>(*_client, *_server);
+    reach::PathsConfig paths;
+    paths.credentials = _credentials;
+    paths.threads = &_threads;
+    paths.connect_timeout = _config.connect_timeout;
+    paths.punch_window = _config.punch_window;
+    paths.relay = _config.relay;
+    paths.forced_class = _config.path_class;
+    paths.upgrade_every = _config.path_upgrade_every;
+    paths.max_data_circuits = _config.relay_data_circuits;
+    // Chunks that have not come within the liveness window are not coming.
+    paths.finish_wait = _config.relay_finish_wait.value_or(_config.dead_after);
+    paths.drop_hook = _config.relay_drop_hook;
+    _paths = std::make_unique<reach::Paths>(
+        _io, paths, *_client, [this] { return _members.self(); }, [this] { return _members.active(); },
+        [this](const NodeRecord& peer, net::MessageType type, net::Bytes payload, std::chrono::milliseconds deadline) {
+          return call_wait(peer, {peer.host, peer.port}, type, std::move(payload), deadline);
+        });
+  }
   if (_config.path_class) _members.set_path_class(*_config.path_class);
   // An inbound-incapable node keeps both lanes dialled to every capable
   // peer: only it can restore its own reachability.
-  _client->set_maintained_peers([this] {
+  _net->set_maintained_peers([this] {
     std::vector<NodeRecord> out;
     for (auto& node : _members.active())
       if (node.id != _identity.id && node.inbound_capable()) out.push_back(std::move(node));
@@ -732,12 +743,13 @@ void Node::start() {
   // The transport must know a peer that cannot be dialled before its first
   // exchange, not after a refused dial.
   for (const auto& node : _members.all())
-    if (node.id != _identity.id) _client->note_peer(node);
-  for (const auto& reset : _members.identity_resets()) _client->invalidate_identity_association(reset);
+    if (node.id != _identity.id) _net->note_peer(node);
+  for (const auto& reset : _members.identity_resets()) _net->invalidate_identity_association(reset);
 
   _dial_back = std::make_unique<reach::DialBackResponder>(
       _config.dial_back_min_interval,
       [this](const net::Endpoint& endpoint, const identity::NodeId& expected) {
+        if (!_client) return std::string("this node's transport makes no probes");
         auto done = std::make_shared<std::promise<std::string>>();
         auto future = done->get_future();
         _client->probe(endpoint, expected, _io.get_executor(), [done](std::string error) { done->set_value(std::move(error)); });
@@ -746,8 +758,8 @@ void Node::start() {
       },
       _config.time, _config.log);
 
-  _server->start();
-  _bound_port = _server->bound_port();
+  _net->listen();
+  _bound_port = _net->bound_port();
   const auto self = _members.self();
   if (!self.host.empty() && self.port != _bound_port) _members.set_endpoint(self.host, _bound_port);
   _connectivity =
@@ -760,7 +772,7 @@ void Node::start() {
   }
   _readiness.close_declarations();
   _readiness.control_plane(true);
-  _client->start();
+  _net->start();
   _workers.start();
 
   if (_config.schedule) {
@@ -785,15 +797,15 @@ void Node::start() {
 
 void Node::cancel_outbound_calls() {
   if (!_started || _calls_cancelled.exchange(true)) return;
-  if (_client) _client->stop();
+  if (_net) _net->stop_calling();
 }
 
-size_t Node::release_stalled_calls(const std::optional<identity::NodeId>& peer) { return _client ? _client->release_stalled(peer) : 0; }
+size_t Node::release_stalled_calls(const std::optional<identity::NodeId>& peer) { return _net ? _net->release_stalled(peer) : 0; }
 
-size_t Node::stalled_calls() const { return _client ? _client->stalled() : 0; }
+size_t Node::stalled_calls() const { return _net ? _net->stalled() : 0; }
 
 void Node::close_route(const identity::NodeId& peer, net::Lane lane, const std::string& why) {
-  if (_client) _client->close_route(peer, lane, why);
+  if (_net) _net->close_route(peer, lane, why);
 }
 
 void Node::request_stop() {
@@ -810,7 +822,7 @@ void Node::stop() {
   _scheduled->store(false);
   request_stop();
   // The transport goes first: a loop waiting on a call is released by it.
-  if (_server) _server->stop();
+  if (_net) _net->stop_serving();
   cancel_outbound_calls();
   // After the calls: a task waiting on one is released, and what is queued is told it stopped.
   _workers.stop();
@@ -897,13 +909,13 @@ std::optional<reach::PublicConnectivityStatus> Node::connectivity() const {
 }
 
 std::optional<net::ClientStats> Node::client_stats() const {
-  if (!_client) return std::nullopt;
-  return _client->stats();
+  if (!_net) return std::nullopt;
+  return _net->stats();
 }
 
 std::optional<net::WorkStats> Node::work_stats() const {
-  if (!_server) return std::nullopt;
-  return _server->work_stats();
+  if (!_net) return std::nullopt;
+  return _net->work_stats();
 }
 
 status::TrafficTotals Node::traffic() const {
@@ -973,7 +985,11 @@ net::Handled Node::handle(const NodeRecord& peer, sched::FrameType frame, net::M
       for (const auto& reset : membership::decode_identity_resets(request.payload)) apply_identity_reset(reset);
     return net::Handled::processed({m::identity_resets_reply, membership::encode_identity_resets(_members.identity_resets()), {}});
   }
-  if (type == m::dial_request) return _client->handle_dial_request(peer, request);
+  if (type == m::dial_request) return _client ? _client->handle_dial_request(peer, request) : net::Handled::unrecognised();
+  // Level 0's own types: a node on the harness's transport has no paths to make.
+  if (!_paths && (type == m::punch_request || type == m::punch_go || type == m::relay_open || type == m::relay_offer || type == m::relay_data ||
+                  type == m::relay_close || type == m::relay_credit))
+    return net::Handled::unrecognised();
   if (type == m::punch_request) return _paths->punch_request(peer, request);
   if (type == m::punch_go) return _paths->punch_go(peer, request);
   if (type == m::relay_open) return _paths->relay_open(peer, request);
@@ -1116,7 +1132,7 @@ void Node::observe_direct(const NodeRecord& peer) {
   const auto previous = std::find_if(before.begin(), before.end(), [&](const NodeRecord& n) { return n.id == peer.id; });
   const bool changed = previous == before.end() || shape_changed(*previous, peer);
   _members.observe(peer, true);
-  if (_client && peer.id != _identity.id) _client->note_peer(peer);
+  if (_net && peer.id != _identity.id) _net->note_peer(peer);
   if (changed) topology_changed();
   signal_telemetry();
 }
@@ -1183,7 +1199,7 @@ void Node::push_advert(const std::string& key, std::optional<net::Bytes> value, 
     if (last) gathered->done(std::move(gathered->out));
   };
   for (const auto& peer : peers) {
-    if (!_client || _stopping || _calls_cancelled) {
+    if (!_net || _stopping || _calls_cancelled) {
       // Posted, as every completion is, never called inline.
       asio::post(executor, [answered, id = peer.id] { answered(id, {std::nullopt, "the node is not running", {}}); });
       continue;
@@ -1204,7 +1220,7 @@ void Node::merge(std::span<const uint8_t> payload) {
     auto node = membership::decode(reader);
     const auto previous = std::find_if(before_all.begin(), before_all.end(), [&](const NodeRecord& n) { return n.id == node.id; });
     changed = changed || previous == before_all.end() || shape_changed(*previous, node);
-    if (node.id != _identity.id && _client) _client->note_peer(node);
+    if (node.id != _identity.id && _net) _net->note_peer(node);
     _members.observe(std::move(node));
   }
   reader.finish();
@@ -1215,7 +1231,7 @@ void Node::merge(std::span<const uint8_t> payload) {
 std::shared_ptr<net::CallHandle> Node::place_call(std::optional<NodeRecord> peer, const net::Endpoint& endpoint, net::MessageType type, net::Bytes payload,
                                                   sched::FrameType frame, std::chrono::milliseconds deadline, asio::any_io_executor executor,
                                                   net::Client::Done done, net::CallWatch watch) {
-  if (!_started || _stopping || _calls_cancelled || !_client) {
+  if (!_started || _stopping || _calls_cancelled || !_net) {
     asio::post(executor, [done = std::move(done), why = std::string(_started ? "node is stopping; outbound calls are cancelled" : "node is not started")] {
       done(net::CallOutcome{std::nullopt, why, {}});
     });
@@ -1234,6 +1250,26 @@ std::shared_ptr<net::CallHandle> Node::place_call(std::optional<NodeRecord> peer
   };
   auto state = std::make_shared<State>();
   state->done = std::move(done);
+  if (_config.schedule) {
+    // On the schedule's time, as everything else is: one thread runs it all, so no strand.
+    after(deadline, [state, executor, deadline] {
+      state->expired = true;
+      const bool answered = state->finished.exchange(true);
+      if (state->handle) state->handle->cancel();
+      if (answered) return;
+      asio::post(executor, [state, deadline] {
+        state->done(net::CallOutcome{std::nullopt, "deadline of " + std::to_string(deadline.count()) + " ms passed before an answer", {}});
+      });
+    });
+    auto finish = [state](net::CallOutcome outcome) {
+      if (state->finished.exchange(true)) return;
+      state->done(std::move(outcome));
+    };
+    state->handle = peer ? _net->call(*peer, type, std::move(payload), frame, executor, std::move(finish), watch)
+                         : _net->call(endpoint, type, std::move(payload), frame, executor, std::move(finish), watch);
+    if (state->expired) state->handle->cancel();
+    return state->handle;
+  }
   auto strand = asio::make_strand(_io);
   auto timer = std::make_shared<asio::steady_timer>(strand);
   when_time_reaches(timer, *_config.time, _config.time->now() + deadline, [state, executor, deadline] {
@@ -1252,8 +1288,8 @@ std::shared_ptr<net::CallHandle> Node::place_call(std::optional<NodeRecord> peer
     if (state->finished.exchange(true)) return;
     state->done(std::move(outcome));
   };
-  auto handle = peer ? _client->call(*peer, type, std::move(payload), frame, executor, std::move(finish), watch)
-                     : _client->call(endpoint, type, std::move(payload), frame, executor, std::move(finish), watch);
+  auto handle = peer ? _net->call(*peer, type, std::move(payload), frame, executor, std::move(finish), watch)
+                     : _net->call(endpoint, type, std::move(payload), frame, executor, std::move(finish), watch);
   asio::post(strand, [state, handle] {
     state->handle = handle;
     if (state->expired) handle->cancel();
@@ -1443,7 +1479,7 @@ void Node::membership_step(std::function<bool()> stopped, asio::any_io_executor 
 void Node::membership_next(const std::shared_ptr<MembershipPass>& pass) {
   // A peer that takes no inbound connection is exchanged with only over
   // its own session; without one there is nothing to dial.
-  const auto unreachable = [this](const NodeRecord& node) { return !node.inbound_capable() && !_client->has_route(node.id, net::Lane::control); };
+  const auto unreachable = [this](const NodeRecord& node) { return !node.inbound_capable() && !_net->has_route(node.id, net::Lane::control); };
   // The next exchange once this one is over, whatever became of it: a seed or a peer down is
   // ordinary, and the next heartbeat tries again.
   const auto then = [this, pass](std::string what) {
@@ -1492,8 +1528,8 @@ void Node::telemetry_step(contract::TimePoint& last_gossip) {
     figures.phase = _readiness.phase();
     figures.peers_known = _peers_known;
     figures.peers_active = _peers_active;
-    if (_client) {
-      const auto rpc = _client->stats();
+    if (_net) {
+      const auto rpc = _net->stats();
       figures.connections_created = rpc.connections_created;
       figures.connections_reused = rpc.reused;
       figures.connections_canonical = rpc.canonical_connections;
@@ -1506,7 +1542,7 @@ void Node::telemetry_step(contract::TimePoint& last_gossip) {
       const auto records = _telemetry.recent(ttl, 64);
       // A node stays visible while busy: speculative, never waiting.
       if (!records.empty())
-        (void)_client->broadcast_best_effort({net::message::telemetry, status::encode_telemetry_set(records), {}}, sched::FrameType::speculative);
+        (void)_net->broadcast_best_effort({net::message::telemetry, status::encode_telemetry_set(records), {}}, sched::FrameType::speculative);
     }
   } catch (const std::exception& error) {
     // The next tick samples again.
@@ -1552,7 +1588,7 @@ std::chrono::milliseconds Node::classify() {
     changed = _members.set_path_class(membership::PathClass::public_path);
     const bool same = self.candidates.size() == 1 && self.candidates[0].host == self.host && self.candidates[0].port == self.port;
     if (!same) changed = _members.set_candidates({{self.host, self.port, true, _config.wall->unix_ms()}}) || changed;
-  } else if (const auto observation = _paths->observe()) {
+  } else if (const auto observation = _paths ? _paths->observe() : decltype(_paths->observe()){}) {
     changed = _members.set_path_class(reach::classify(*observation));
     std::vector<membership::Candidate> candidates;
     for (const auto& seen : observation->seen) {
@@ -1602,7 +1638,7 @@ void Node::connectivity_step(const std::shared_ptr<ConnectivityState>& state, as
   // Level 0: this node's path class and candidates, and the circuits
   // through it that have lost an end.
   if (_config.time->now() >= state->next_class) state->next_class = _config.time->now() + classify();
-  _paths->sweep();
+  if (_paths) _paths->sweep();
   if (!state->automatic || _config.time->now() < state->next) return done();
   // Evidence is a peer, reached over CONTROL, reporting whether a fresh
   // connection to the advertised endpoint completed a handshake. An
@@ -1610,7 +1646,7 @@ void Node::connectivity_step(const std::shared_ptr<ConnectivityState>& state, as
   state->next = _config.time->now() + _config.heartbeat;
   std::optional<NodeRecord> peer;
   for (const auto& node : _members.active()) {
-    if (node.id != _identity.id && node.inbound_capable() && _client->has_route(node.id, net::Lane::control)) {
+    if (node.id != _identity.id && node.inbound_capable() && _net->has_route(node.id, net::Lane::control)) {
       peer = node;
       break;
     }
@@ -1646,7 +1682,7 @@ bool Node::apply_identity_reset(const membership::IdentityReset& reset) {
   const bool changed = _members.apply_identity_reset(reset);
   // Idempotent: align every consumer even if one learned it first.
   _telemetry.apply_identity_reset(reset);
-  if (_client) _client->invalidate_identity_association(reset);
+  if (_net) _net->invalidate_identity_association(reset);
   if (changed) {
     status::ScopedLogger(_config.log, "node")
         .info("node identity association reset scope=" + reset.key() +
@@ -1667,9 +1703,9 @@ std::vector<identity::Revocation> Node::apply_revocations(const std::vector<iden
   // refused.
   for (const auto& revocation : kept) {
     if (revocation.node == _identity.id) continue;
-    if (_client) {
-      _client->close_route(revocation.node, net::Lane::control, "revoked");
-      _client->close_route(revocation.node, net::Lane::data, "revoked");
+    if (_net) {
+      _net->close_route(revocation.node, net::Lane::control, "revoked");
+      _net->close_route(revocation.node, net::Lane::data, "revoked");
     }
   }
   if (!kept.empty()) topology_changed();

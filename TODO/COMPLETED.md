@@ -3,6 +3,29 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
+## The harness, step 3 part 4, piece 2b: whole nodes in the world, 2026-11-17 (`feature/sim-transport`)
+
+- `net::Answer::to` (`81b5d6f`): an answer made outside the scheduler, for a transport that
+  delivers requests itself.
+- `net::Transport` (`817158e`): what the node asks of the network, from its own call sites (the
+  seam note's table); `RealTransport` forwards to the client and server, no change in
+  behaviour. The reach layer, probes, dial requests and the scheduler's wiring stay with the
+  real client.
+- `NodeConfig::transport` (`61e8e2c`): a node on the harness's transport builds no client,
+  server or level 0 paths; a call's deadline goes through the schedule.
+- `fixtures/sim/nodes.h` (`084c6d6`): `SimTransport`, `SimNetwork` (the faults, one-way blocks,
+  partitions and a heal), `NodeClock` (offset and drift per node), `SimNodes` (restart keeping or
+  wiping a node's state). Mimir's three asks are in it.
+- **Found on the way:** a run of whole nodes did not replay. A node draws its id from the
+  operating system, and ids order the rosters and every map keyed by them: the split test
+  failed 4 runs in 6. The harness now writes each node's id from the seed (8 runs in 8 clean).
+  The durability epoch is still the operating system's (it only breaks ties between ballots).
+- Tests: `SimNodes.*` (four) and `Answer.MadeOutsideASchedulerIsGivenOnceAndRefusesWhenDropped`.
+  Gate: node-c, 869 tests, 868 passed, 1 skipped (as root). Node-d rebooted twice and node-b
+  went unreachable during the session (noted on the board).
+- Next in part 4: agreement over real membership in the world, and the broken protocol "two
+  rosters naming different sets" from real rosters.
+
 ## The harness, step 3 part 4, piece 2a: the node's loops on a schedule, 2026-11-17 (`feature/sim-schedule`)
 
 The transport seam (`2026-11-17-sim-transport-seam.md`, reviewed by Mimir and Kvasir), its first

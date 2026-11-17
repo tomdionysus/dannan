@@ -29,6 +29,7 @@
 #include "dannan/membership/membership.h"
 #include "dannan/net/client.h"
 #include "dannan/net/server.h"
+#include "dannan/net/transport.h"
 #include "dannan/reach/connectivity.h"
 #include "dannan/reach/dial_back.h"
 #include "dannan/reach/inbound.h"
@@ -174,6 +175,10 @@ struct NodeConfig {
   // agreement's waits go through it too, so a world run on one thread orders all of them. Empty:
   // the loops are threads, as always.
   std::function<void(std::chrono::milliseconds after, std::function<void()> task)> schedule;
+  // The network as the harness gives it (the transport seam, piece 2b): set, the node builds no
+  // client, server or level 0 paths, and calls, sends and serves through what this returns,
+  // given the node's hooks. Empty: sockets, as always.
+  std::function<std::shared_ptr<net::Transport>(net::TransportHooks)> transport;
 };
 
 // Dannan's node: the control plane assembled. The identity under a locked
@@ -417,6 +422,9 @@ class Node final : public Context {
 
   std::unique_ptr<net::Server> _server;
   std::unique_ptr<net::Client> _client;
+  // What the node asks of the network (the harness's seam): the client and the server above,
+  // or the harness's own. Declared after them, so it goes first.
+  std::shared_ptr<net::Transport> _net;
   // Destroyed before the client it uses.
   std::unique_ptr<reach::Paths> _paths;
   // Channels; shared, since its completions hold it weakly.

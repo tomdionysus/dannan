@@ -690,5 +690,27 @@ TEST(Routes, OnSessionIsOnlyForAPlainNotification) {
   EXPECT_TRUE(table.is_on_session(message::relay_close));
 }
 
+// An answer made outside a scheduler (Answer::to, for a transport that delivers requests
+// itself): given once, later calls do nothing; dropped ungiven, it refuses as any does.
+TEST(Answer, MadeOutsideASchedulerIsGivenOnceAndRefusesWhenDropped) {
+  std::vector<Message> sent;
+  {
+    auto answer = Answer::to(Reply([&](Message reply) { sent.push_back(std::move(reply)); }));
+    EXPECT_TRUE(static_cast<bool>(answer));
+    answer(Message{message::ok, {1}, {}});
+    answer(Message{message::ok, {2}, {}});
+    EXPECT_FALSE(static_cast<bool>(answer));
+  }
+  ASSERT_EQ(sent.size(), 1u);
+  EXPECT_EQ(sent[0].payload, Bytes{1});
+  {
+    auto dropped = Answer::to(Reply([&](Message reply) { sent.push_back(std::move(reply)); }));
+  }
+  ASSERT_EQ(sent.size(), 2u);
+  const auto refusal = refusal_of(sent[1]);
+  ASSERT_TRUE(refusal);
+  EXPECT_EQ(refusal->status, 500);
+}
+
 }  // namespace
 }  // namespace dannan::net
