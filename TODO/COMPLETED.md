@@ -3,6 +3,14 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
+**For 0.9.1: an advert change tied a snapshot's stamp** (Lir's finding on 0.9.0, 2026-11-17). Gossip replies and
+handshakes stamp the record with the wall's millisecond, unrecorded; `set_advert`/`clear_advert` took
+max(wall, last + 1), so a change in the millisecond of an earlier snapshot tied its stamp with new content and
+peers holding the snapshot refused it: pushes missed as "the peer holds an older record", messages after SUBACK
+lost. Now max(wall + 1, last + 1) (`membership.cpp`, no ABI change). Proved by
+`Membership.AnAdvertChangedInTheMillisecondOfASnapshotIsNewerThanIt` (failed at …005 against …005 before). Node-b:
+941 tests, 940 passed, 1 skipped.
+
 **0.9.0 is released** (`main` and tag at `59b7abc`, pushed at the maintainer's word, 2026-11-17; main's CI run 44158672535
 green on every job). The `.deb`s are staged in `../tomcully-apt/incoming/dannan/0.9.0/` and checked: SONAME
 `libdannan.so.0.9`, shlibs `libdannan0.9 (>= 0.9.0)`, `libdannan-dev` with the clock, storage and sim headers and
