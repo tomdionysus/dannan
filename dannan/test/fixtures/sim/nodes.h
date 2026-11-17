@@ -78,7 +78,7 @@ class SimTransport final : public net::Transport, public std::enable_shared_from
   size_t broadcast_notify(const net::Message& message, sched::FrameType frame) override;
 
   bool has_route(const identity::NodeId& peer, net::Lane) const override;
-  void close_route(const identity::NodeId& peer, net::Lane, const std::string&) override { _routes.erase(peer); }
+  void close_route(const identity::NodeId& peer, net::Lane, const std::string&) override;
   void note_peer(const membership::NodeRecord&) override {}
   void set_maintained_peers(std::function<std::vector<membership::NodeRecord>()>) override {}
   void invalidate_identity_association(const membership::IdentityReset&) override {}
@@ -97,6 +97,13 @@ class SimTransport final : public net::Transport, public std::enable_shared_from
 
   // The network's side.
   membership::NodeRecord local() const { return _hooks.local(); }
+  // This node's record as the node at `index` holds it from their session: what it was when the
+  // route was first used, as a session's handshake carries it and its calls carry nothing newer.
+  membership::NodeRecord sent_as(size_t index) {
+    auto found = _sent_as.find(index);
+    if (found == _sent_as.end()) found = _sent_as.emplace(index, local()).first;
+    return found->second;
+  }
   bool serving() const noexcept { return _serving; }
   bool calling() const noexcept { return _calling; }
   // A request or notification from `from`, delivered: served as the server would, its reply
@@ -118,6 +125,8 @@ class SimTransport final : public net::Transport, public std::enable_shared_from
   bool _serving = false;
   bool _calling = true;
   std::set<identity::NodeId> _routes;
+  // This node's record per peer, as each session's handshake carried it (sent_as()).
+  std::map<size_t, membership::NodeRecord> _sent_as;
 };
 
 // The world's network for whole nodes: the faults of NetworkFaults, one-way blocks, and
@@ -222,7 +231,7 @@ inline std::shared_ptr<net::CallHandle> SimTransport::place(std::optional<size_t
   auto once = std::make_shared<bool>(false);
   const auto from = _index;
   auto& network = _network;
-  const auto sender = local();
+  const auto sender = sent_as(*to);
   // The reply goes to this transport, not to whoever holds its index by then: a node restarted
   // there is another node, and this one, and what its calls complete into, may be gone.
   const std::weak_ptr<SimTransport> self = weak_from_this();
@@ -234,12 +243,12 @@ inline std::shared_ptr<net::CallHandle> SimTransport::place(std::optional<size_t
       if (!server || !server->serving()) return;
       server->serve(sender, frame, net::Message{type, payload, {}}, [&network, from, to, executor, done, once, self](net::Message reply) {
         if (network.lost(to, from)) return;
-        network.world().after(network.delay(), [&network, to, executor, done, once, self, reply = std::move(reply)]() mutable {
+        network.world().after(network.delay(), [&network, from, to, executor, done, once, self, reply = std::move(reply)]() mutable {
           const auto caller = self.lock();
           const auto answerer = network.at(to);
           if (!caller || !caller->calling() || *once) return;
           *once = true;
-          const auto record = answerer ? answerer->local() : membership::NodeRecord{};
+          const auto record = answerer ? answerer->sent_as(from) : membership::NodeRecord{};
           if (answerer) caller->heard(record);
           boost::asio::post(executor, [done, reply = std::move(reply), record = std::make_shared<const membership::NodeRecord>(record)]() mutable {
             done({std::move(reply), {}, record});
@@ -281,7 +290,7 @@ inline bool SimTransport::send(const identity::NodeId& peer, net::Lane, const ne
   if (!_calling || !to || !has_route(peer, net::Lane::control)) return false;
   const auto from = _index;
   auto& network = _network;
-  const auto sender = local();
+  const auto sender = sent_as(*to);
   const int copies = network.copies();
   for (int copy = 0; copy < copies; ++copy) {
     if (network.lost(from, *to)) continue;
@@ -297,6 +306,11 @@ inline size_t SimTransport::broadcast_notify(const net::Message& message, sched:
   for (const auto& peer : std::vector<identity::NodeId>(_routes.begin(), _routes.end()))
     if (send(peer, net::Lane::control, message, frame)) ++sent;
   return sent;
+}
+
+inline void SimTransport::close_route(const identity::NodeId& peer, net::Lane, const std::string&) {
+  _routes.erase(peer);
+  if (const auto index = _network.index_of(peer)) _sent_as.erase(*index);
 }
 
 inline bool SimTransport::has_route(const identity::NodeId& peer, net::Lane) const {
