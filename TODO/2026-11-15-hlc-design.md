@@ -128,3 +128,19 @@ would measure skew without a hosted system's traffic, is a separate 0.9.0 wire q
   raises when 0.9.0's design is settled.
 - Mimir: refusal not the data's (taken); thread-safe, lock-free (taken); one encoding
   (taken); per-peer offsets on Status (taken); 48/16 and one minute fine.
+
+## As built (2026-11-17, step 5)
+
+`dannan/contract/hlc.h` and `.cpp`; on the node, `Context::hlc()`. Three choices made in
+building it, to be confirmed:
+- **The interface is `HlcClock`**, not `Clock`: `contract::Clock` is already the steady clock.
+- **`receive(stamp, peer)`** beside `receive(stamp)`: per-peer offsets on Status need the peer,
+  which the reviewed `receive` does not carry. It takes a short lock for the per-peer table;
+  `receive(stamp)` and `now()` stay lock-free.
+- **A node without key custody** has no sealed counters, which the design names as the
+  ceiling's home: it keeps the ceiling in `<state>/clock/hlc-ceiling`, a durable file. That is
+  as safe across a crash; it is not sealed, so a state directory restored alone is not refused.
+
+At a restart the clock begins at the wall, or one past the ceiling if the wall is not past it,
+so no stamp is reissued. Carrying stamps on Dannan's own wire stays a separate question.
+

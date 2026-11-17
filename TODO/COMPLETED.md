@@ -3,6 +3,20 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
+## Step 5: the hybrid logical clock, 2026-11-17 (`feature/hlc`)
+
+- `contract::HybridClock` (`fc0627d`): the stamp (48 bits of milliseconds, 16 of counter), its
+  big-endian encoding, `now()` and `receive()` lock-free by one compare-and-swap, a stamp too far
+  ahead not merged with its offset given, overflow moving the physical part, and the persisted
+  ceiling: raised synchronously only past it, kept two seconds ahead by `keep_ahead()`, begun
+  past at a restart.
+- On the node: `Context::hlc()`, `NodeConfig::hlc_max_ahead`, the counts and per-peer offsets on
+  `Diagnostics`, `keep_ahead()` on the roster step. The ceiling is the sealed counter
+  `dannan/hlc` with custody, a durable file without (a gap in the design, filled; for the maintainer).
+- The design's ten tests, on a stepped wall and a ceiling in memory, and two on the node (a
+  restart with the wall set back; the counter with custody).
+- Gate: node-b, 940 tests, 939 passed, 1 skipped (as root).
+
 ## Step 4: the file-system interface, 2026-11-17 (`feature/file-system`)
 
 - `dannan::storage` (`5d414a9`): `FileSystem` and `File` as Dagda reviewed them, a `Result` whose
