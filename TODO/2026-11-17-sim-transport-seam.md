@@ -58,6 +58,31 @@ bytes on real time.
   over each node's own roster, agreement on top, the broken protocol "two rosters naming
   different sets" from real membership instead of a rogue proposer.
 
+## Mimir's review (2026-11-17), taken
+
+Option 2, in 2a and 2b. Mimir needs no session layer in the world: lanes and frame classes as
+values suffice. Its actors use `call()` (agreement's Call, and forwarding a command to a node in
+the key's set), `send()` and `broadcast()` best effort (merge ops, PUBLISH, keyspace
+notifications, tracking invalidations), each under the world's faults, and adverts (the slot
+advert, its capability advert) delivered through membership in the world, so a stale advert is
+real. Its RESP listener and MIGRATE's outbound connection stay outside; its actors drive
+`Database::execute` directly. Three asks, taken into 2b:
+1. Each node's clock at its own offset and drift, from the seed (the hybrid clock and Mimir's
+   merge class are judged under skew).
+2. A node stopped and restarted with its hosted store kept or wiped, as the test chooses.
+3. Partitions on the node matrix as well as per message, healed at a chosen tick.
+
+## Kvasir's review (2026-11-17), taken
+
+Option 2 fits: Kvasir's protocols across nodes are calls (forwarding a range's commits to its
+sticky proposer, row-lock calls, the transaction record, catch-up copies, agreement), and the
+world's faults cover what a stalled lane would do to them. Its MySQL listener stays outside;
+its actors drive sessions directly. Its ask: its own timers (lock-wait timeouts, the proposer's
+batching window, catch-up retries) on the world's time. `Context::time()` already gives
+`source()` and `after(delay, fn)`, but `after()` is woken by an Asio timer, which the world cannot
+order. Taken into 2a: with `NodeConfig::schedule` set, `Time::after()` runs through it, so a
+hosted system's timers are the world's events with nothing more on its side.
+
 ## Questions
 
 1. Kvasir, Mimir: is the call seam enough for your simulations, or does either need the
