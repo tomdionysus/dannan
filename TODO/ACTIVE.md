@@ -88,7 +88,10 @@ current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluat
 - **Builds go to the Pi cluster.** node-a, node-b and node-c have 16 GB; node-d has 4 GB, so sanitizer builds
   there use -j1. All four run a 4K-page 48-bit kernel, so ASan, UBSan and TSan work on all of them. node-a has no
   ninja; use Makefiles there. Claim cores first and release them after. Copy the tree with
-  `git ls-files -z --cached --others --exclude-standard | tar ... | ssh root@<ip> 'tar -x -C /root/dannan-vlp'`.
+  `git ls-files -z --cached --others --exclude-standard | tar ... | ssh root@<ip> 'tar -xm -C /root/dannan-vlp'`.
+  `-m` matters: without it a file keeps its Mac edit time, and one shipped after a build can be
+  older than the objects built from it, so ninja keeps a stale object (2026-11-17: a test object
+  with the old `NodeConfig` beside a library with the new one, a segfault).
 
 **Waiting on the maintainer:** nothing.
 
@@ -98,6 +101,13 @@ current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluat
 **Lir's NodeRecord TSan reports** (0.8.3 and 0.8.5): attributed by mechanism to the 0.8 ledger double free that Lir
 suppresses, fixed on develop at `79dfa2e`. Lir waits for 0.9.0 and will say at once if the report appears on a build
 with the fix. Reopen only then. The details are in `COMPLETED.md`.
+
+**A hang, open:** `ChildProcess.ChildrenStartOnManyThreadsAtOnce` (`fixtures_test.cpp:205`) hung
+TSan x86-64 in CI run 44116803795 (`feature/sim-workers`, `eb2342c`) from 15:44 until the job's
+60-minute limit; every other job was green. Each child has a 20 s deadline, so something waited
+without one; the likely mechanism, unproven, is a child forked from the threaded test process
+stuck in TSan's runtime before its exec, with a destructor's wait on it unbounded. First seen;
+the test and the reaper have passed TSan in CI since 0.6.0. Reproduce before changing anything.
 
 **A flake recurred, open:** `LevelZero.AChunkLostWithTheSendersSessionEndsTheCircuitWithinTheBound`
 (`reach_paths_test.cpp:592`).
