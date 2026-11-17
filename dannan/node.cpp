@@ -10,6 +10,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <boost/asio/executor_work_guard.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
@@ -405,10 +406,7 @@ class Node::TimeNoun final : public Time {
   uint64_t unix_ms() const override { return _node._config.wall->unix_ms(); }
   const contract::TimeSource& source() const override { return *_node._config.time; }
   asio::any_io_executor executor() const override { return _node._io.get_executor(); }
-  void after(std::chrono::milliseconds delay, std::function<void()> fn) override {
-    auto timer = std::make_shared<asio::steady_timer>(_node._io);
-    when_time_reaches(timer, *_node._config.time, _node._config.time->now() + delay, std::move(fn));
-  }
+  void after(std::chrono::milliseconds delay, std::function<void()> fn) override { _node.after(delay, std::move(fn)); }
 
  private:
   Node& _node;
@@ -610,7 +608,7 @@ Node::Node(asio::io_context& io, NodeConfig config)
           if (record.id == node) return record.adverts.contains(capability);
         return false;
       },
-      _config.time, agree::Agreement::Schedule{},
+      _config.time, agree::Agreement::Schedule{_config.schedule},
       // The slot advert, through the roster's adverts like any hosted system's.
       [this](const std::string& key, std::optional<net::Bytes> value) {
         if (value)
@@ -765,6 +763,10 @@ void Node::start() {
   _client->start();
   _workers.start();
 
+  if (_config.schedule) {
+    _members.defer_observed_writes([this] { _roster_wanted.store(true); });
+    return schedule_loops();
+  }
   contract::Lock loops(_loops_mutex);
   _loops.emplace_back([this](std::stop_token stop) { _threads.loop("cluster-maintenance", stop, [this, stop] { membership_loop(stop); }); });
   _loops.emplace_back([this](std::stop_token stop) { _threads.loop("cluster-telemetry", stop, [this, stop] { telemetry_loop(stop); }); });
@@ -805,6 +807,7 @@ void Node::request_stop() {
 
 void Node::stop() {
   if (!_started || _stopping.exchange(true)) return;
+  _scheduled->store(false);
   request_stop();
   // The transport goes first: a loop waiting on a call is released by it.
   if (_server) _server->stop();
@@ -1270,14 +1273,99 @@ net::CallOutcome Node::call_wait(std::optional<NodeRecord> peer, const net::Endp
   return future.get();
 }
 
-void Node::exchange(std::optional<NodeRecord> peer, const net::Endpoint& endpoint) {
-  const auto outcome = call_wait(peer, endpoint, net::message::members, {}, _config.exchange_budget);
-  if (!outcome.reply) throw std::runtime_error(outcome.failure);
-  if (outcome.reply->type != net::message::members_reply) throw std::runtime_error("membership refused");
-  merge(outcome.reply->payload);
-  // Revocations ride the exchange: a node that missed one learns it within
-  // a heartbeat.
-  exchange_revocations(std::move(peer), endpoint, _config.exchange_budget);
+void Node::exchange(std::optional<NodeRecord> peer, const net::Endpoint& endpoint, asio::any_io_executor on, std::function<void(std::string)> done) {
+  (void)place_call(peer, endpoint, net::message::members, {}, sched::FrameType::control, _config.exchange_budget, on,
+                   [this, peer, endpoint, on, done = std::move(done)](net::CallOutcome outcome) mutable {
+                     if (!outcome.reply) return done(outcome.failure.empty() ? std::string("no answer") : outcome.failure);
+                     if (outcome.reply->type != net::message::members_reply) return done("membership refused");
+                     try {
+                       merge(outcome.reply->payload);
+                     } catch (const std::exception& error) {
+                       return done(error.what());
+                     }
+                     // Revocations ride the exchange: a node that missed one learns it within
+                     // a heartbeat.
+                     exchange_revocations(std::move(peer), endpoint, _config.exchange_budget, on, [done = std::move(done)] { done({}); });
+                   });
+}
+
+struct Node::ConnectivityState {
+  bool automatic = false;
+  // When the dial-back probe and the path class are next due.
+  contract::TimePoint next{};
+  contract::TimePoint next_class{};
+};
+
+void Node::run_step(asio::io_context& context, const Step& step) {
+  context.restart();
+  auto guard = std::make_shared<asio::executor_work_guard<asio::io_context::executor_type>>(context.get_executor());
+  step(context.get_executor(), [guard] { guard->reset(); });
+  context.run();
+}
+
+void Node::after(std::chrono::milliseconds delay, std::function<void()> task) {
+  if (_config.schedule) {
+    return _config.schedule(delay, [executor = _io.get_executor(), task = std::move(task)]() mutable { asio::post(executor, std::move(task)); });
+  }
+  auto timer = std::make_shared<asio::steady_timer>(_io);
+  when_time_reaches(timer, *_config.time, _config.time->now() + delay, std::move(task));
+}
+
+void Node::schedule_loops() {
+  advertise(_connectivity->refresh(_config.connectivity.check.enabled));
+  scheduled_membership();
+  scheduled_telemetry({});
+  scheduled_roster();
+  auto state = std::make_shared<ConnectivityState>();
+  state->automatic = _config.inbound == reach::Inbound::automatic;
+  state->next = _config.time->now();
+  state->next_class = state->next;
+  scheduled_connectivity(std::move(state));
+}
+
+void Node::scheduled_membership() {
+  const auto alive = _scheduled;
+  if (!alive->load()) return;
+  membership_step([alive] { return !alive->load(); }, _io.get_executor(),
+                  [this, alive] {
+                    if (alive->load())
+                      after(_config.heartbeat, [this, alive] {
+                        if (alive->load()) scheduled_membership();
+                      });
+                  });
+}
+
+void Node::scheduled_telemetry(contract::TimePoint last_gossip) {
+  const auto alive = _scheduled;
+  if (!alive->load()) return;
+  telemetry_step(last_gossip);
+  after(std::max(_config.telemetry_interval, std::chrono::milliseconds(250)), [this, alive, last_gossip] {
+    if (alive->load()) scheduled_telemetry(last_gossip);
+  });
+}
+
+void Node::scheduled_roster() {
+  const auto alive = _scheduled;
+  if (!alive->load()) return;
+  roster_step();
+  after(std::chrono::seconds(1), [this, alive] {
+    if (alive->load()) scheduled_roster();
+  });
+}
+
+void Node::scheduled_connectivity(std::shared_ptr<ConnectivityState> state) {
+  const auto alive = _scheduled;
+  if (!alive->load()) return;
+  connectivity_step(state, _io.get_executor(), [this, alive, state] {
+    if (!alive->load()) return;
+    // At least every heartbeat, sooner for a probe or a classification due.
+    const auto now = _config.time->now();
+    auto due = std::min(state->automatic ? std::min(state->next, state->next_class) : state->next_class, now + _config.heartbeat);
+    const auto wait = std::max(std::chrono::ceil<std::chrono::milliseconds>(due - now), std::chrono::milliseconds(1));
+    after(wait, [this, alive, state] {
+      if (alive->load()) scheduled_connectivity(state);
+    });
+  });
 }
 
 void Node::sleep_until(std::stop_token stop, contract::TimePoint due) {
@@ -1300,102 +1388,140 @@ void Node::roster_loop(std::stop_token stop) {
   status::ThreadCpuReporter cpu("cluster-roster", std::chrono::seconds(5), status::ScopedLogger(_config.log, "node"));
   while (!stop.stop_requested()) {
     cpu.tick();
-    _members.flush();
-    _agreed.flush();
-    flush_counters();
+    roster_step();
     std::unique_lock lock(_roster_mutex);
     // Observations made during a write combine into the next.
     _roster_wake.wait_for(lock, stop, std::chrono::seconds(1), [this] { return _roster_wanted.exchange(false); });
   }
 }
 
+void Node::roster_step() {
+  _members.flush();
+  _agreed.flush();
+  flush_counters();
+}
+
 void Node::membership_loop(std::stop_token stop) {
   status::ThreadCpuReporter cpu("cluster-maintenance", std::chrono::seconds(5), status::ScopedLogger(_config.log, "node"));
   while (!stop.stop_requested()) {
     cpu.tick();
-    if (const auto forgotten = _members.forget_unseen()) {
-      status::ScopedLogger(_config.log, "node").info("membership: forgot " + std::to_string(forgotten) + " node(s) not heard of for the absence horizon");
-      topology_changed();
-    } else {
-      topology_changed(true);
-    }
-    const auto known = _members.all();
-    _peers_known = static_cast<uint32_t>(known.size());
-    uint32_t active = 1;
-    std::set<std::pair<std::string, uint16_t>> exchanged;
-    // A peer that takes no inbound connection is exchanged with only over
-    // its own session; without one there is nothing to dial.
-    const auto unreachable = [&](const NodeRecord& node) { return !node.inbound_capable() && !_client->has_route(node.id, net::Lane::control); };
-    for (const auto& endpoint : _config.bootstrap) {
-      if (stop.stop_requested()) return;
-      exchanged.emplace(endpoint.host, endpoint.port);
-      const auto found = std::find_if(known.begin(), known.end(), [&](const NodeRecord& node) {
+    run_step(_membership_io, [this, &stop](asio::any_io_executor on, std::function<void()> done) {
+      membership_step([&stop] { return stop.stop_requested(); }, std::move(on), std::move(done));
+    });
+    if (stop.stop_requested()) return;
+    sleep_until(stop, _config.time->now() + _config.heartbeat);
+  }
+}
+
+struct Node::MembershipPass {
+  std::function<bool()> stopped;
+  asio::any_io_executor on;
+  std::function<void()> done;
+  std::vector<NodeRecord> known;
+  std::set<std::pair<std::string, uint16_t>> exchanged;
+  size_t next_seed = 0;
+  size_t next_peer = 0;
+  uint32_t active = 1;
+};
+
+void Node::membership_step(std::function<bool()> stopped, asio::any_io_executor on, std::function<void()> done) {
+  if (const auto forgotten = _members.forget_unseen()) {
+    status::ScopedLogger(_config.log, "node").info("membership: forgot " + std::to_string(forgotten) + " node(s) not heard of for the absence horizon");
+    topology_changed();
+  } else {
+    topology_changed(true);
+  }
+  auto pass = std::make_shared<MembershipPass>();
+  pass->stopped = std::move(stopped);
+  pass->on = std::move(on);
+  pass->done = std::move(done);
+  pass->known = _members.all();
+  _peers_known = static_cast<uint32_t>(pass->known.size());
+  membership_next(pass);
+}
+
+void Node::membership_next(const std::shared_ptr<MembershipPass>& pass) {
+  // A peer that takes no inbound connection is exchanged with only over
+  // its own session; without one there is nothing to dial.
+  const auto unreachable = [this](const NodeRecord& node) { return !node.inbound_capable() && !_client->has_route(node.id, net::Lane::control); };
+  // The next exchange once this one is over, whatever became of it: a seed or a peer down is
+  // ordinary, and the next heartbeat tries again.
+  const auto then = [this, pass](std::string what) {
+    return [this, pass, what = std::move(what)](const std::string& failed) {
+      if (failed.empty())
+        ++pass->active;
+      else
+        status::ScopedLogger(_config.log, "node").debug(what + failed);
+      membership_next(pass);
+    };
+  };
+  while (!pass->stopped()) {
+    if (pass->next_seed < _config.bootstrap.size()) {
+      const auto endpoint = _config.bootstrap[pass->next_seed++];
+      pass->exchanged.emplace(endpoint.host, endpoint.port);
+      const auto found = std::find_if(pass->known.begin(), pass->known.end(), [&](const NodeRecord& node) {
         return node.id != _identity.id && node.host == endpoint.host && node.port == endpoint.port;
       });
-      try {
-        if (found != known.end() && unreachable(*found)) continue;
-        exchange(found != known.end() ? std::optional(*found) : std::nullopt, endpoint);
-        ++active;
-      } catch (const std::exception& error) {
-        // A seed down is ordinary; the next heartbeat tries again.
-        status::ScopedLogger(_config.log, "node").debug(std::string("bootstrap: ") + error.what());
-      }
+      const auto peer = found != pass->known.end() ? std::optional(*found) : std::nullopt;
+      if (peer && unreachable(*peer)) continue;
+      return exchange(peer, endpoint, pass->on, then("bootstrap: "));
     }
-    for (const auto& node : known) {
-      if (stop.stop_requested()) return;
-      if (node.id == _identity.id || !exchanged.emplace(node.host, node.port).second || unreachable(node)) continue;
-      try {
-        exchange(node, {node.host, node.port});
-        ++active;
-      } catch (const std::exception& error) {
-        status::ScopedLogger(_config.log, "node").debug("peer " + node.host + ": " + error.what());
-      }
+    if (pass->next_peer < pass->known.size()) {
+      const auto node = pass->known[pass->next_peer++];
+      if (node.id == _identity.id || !pass->exchanged.emplace(node.host, node.port).second || unreachable(node)) continue;
+      return exchange(node, {node.host, node.port}, pass->on, then("peer " + node.host + ": "));
     }
-    _peers_active = active;
-    sleep_until(stop, _config.time->now() + _config.heartbeat);
+    _peers_active = pass->active;
+    break;
+  }
+  pass->done();
+}
+
+void Node::telemetry_step(contract::TimePoint& last_gossip) {
+  const auto interval = std::max(_config.telemetry_interval, std::chrono::milliseconds(250));
+  // Sampling follows demand; gossip at most once a second.
+  const auto gossip_every = std::min(interval, std::chrono::milliseconds(1000));
+  const auto ttl = std::max(_config.dead_after * 2, std::chrono::milliseconds(60000));
+  // A reading on whichever io thread takes this: the busier the pool, the more
+  // of them get a turn. Macha's per-connection threads have no equivalent here.
+  asio::post(_io, [readings = _io_cpu] { readings->tick(); });
+  try {
+    status::LocalFigures figures;
+    figures.self = _members.self();
+    figures.version = _config.version;
+    figures.phase = _readiness.phase();
+    figures.peers_known = _peers_known;
+    figures.peers_active = _peers_active;
+    if (_client) {
+      const auto rpc = _client->stats();
+      figures.connections_created = rpc.connections_created;
+      figures.connections_reused = rpc.reused;
+      figures.connections_canonical = rpc.canonical_connections;
+    }
+    figures.node_name = _config.node_name;
+    figures.traffic = traffic();
+    _telemetry.refresh_local(figures, _config.telemetry_fields);
+    if (const auto now = _config.time->now(); now - last_gossip >= gossip_every) {
+      last_gossip = now;
+      const auto records = _telemetry.recent(ttl, 64);
+      // A node stays visible while busy: speculative, never waiting.
+      if (!records.empty())
+        (void)_client->broadcast_best_effort({net::message::telemetry, status::encode_telemetry_set(records), {}}, sched::FrameType::speculative);
+    }
+  } catch (const std::exception& error) {
+    // The next tick samples again.
+    status::ScopedLogger(_config.log, "node").debug(std::string("telemetry refresh skipped: ") + error.what());
   }
 }
 
 void Node::telemetry_loop(std::stop_token stop) {
   status::ThreadCpuReporter cpu("cluster-telemetry", std::chrono::seconds(5), status::ScopedLogger(_config.log, "node"));
   const auto interval = std::max(_config.telemetry_interval, std::chrono::milliseconds(250));
-  // Sampling follows demand; gossip at most once a second.
-  const auto gossip_every = std::min(interval, std::chrono::milliseconds(1000));
-  const auto ttl = std::max(_config.dead_after * 2, std::chrono::milliseconds(60000));
   contract::TimePoint last_gossip{};
   while (!stop.stop_requested()) {
     const auto demand = _telemetry_demand.load(std::memory_order_acquire);
     cpu.tick();
-    // A reading on whichever io thread takes this: the busier the pool, the more
-    // of them get a turn. Macha's per-connection threads have no equivalent here.
-    asio::post(_io, [readings = _io_cpu] { readings->tick(); });
-    try {
-      status::LocalFigures figures;
-      figures.self = _members.self();
-      figures.version = _config.version;
-      figures.phase = _readiness.phase();
-      figures.peers_known = _peers_known;
-      figures.peers_active = _peers_active;
-      if (_client) {
-        const auto rpc = _client->stats();
-        figures.connections_created = rpc.connections_created;
-        figures.connections_reused = rpc.reused;
-        figures.connections_canonical = rpc.canonical_connections;
-      }
-      figures.node_name = _config.node_name;
-      figures.traffic = traffic();
-      _telemetry.refresh_local(figures, _config.telemetry_fields);
-      if (const auto now = _config.time->now(); now - last_gossip >= gossip_every) {
-        last_gossip = now;
-        const auto records = _telemetry.recent(ttl, 64);
-        // A node stays visible while busy: speculative, never waiting.
-        if (!records.empty())
-          (void)_client->broadcast_best_effort({net::message::telemetry, status::encode_telemetry_set(records), {}}, sched::FrameType::speculative);
-      }
-    } catch (const std::exception& error) {
-      // The next tick samples again.
-      status::ScopedLogger(_config.log, "node").debug(std::string("telemetry refresh skipped: ") + error.what());
-    }
+    telemetry_step(last_gossip);
     std::unique_lock lock(_wait_mutex);
     _wake.wait_for(lock, stop, interval, [&] { return _telemetry_demand.load(std::memory_order_acquire) != demand; });
   }
@@ -1445,9 +1571,10 @@ std::chrono::milliseconds Node::classify() {
 
 void Node::connectivity_loop(std::stop_token stop) {
   advertise(_connectivity->refresh(_config.connectivity.check.enabled));
-  const bool automatic = _config.inbound == reach::Inbound::automatic;
-  auto next = _config.time->now();
-  auto next_class = next;
+  auto state = std::make_shared<ConnectivityState>();
+  state->automatic = _config.inbound == reach::Inbound::automatic;
+  state->next = _config.time->now();
+  state->next_class = state->next;
   status::ThreadCpuReporter cpu("cluster-connectivity", std::chrono::seconds(5), status::ScopedLogger(_config.log, "node"));
   while (!stop.stop_requested()) {
     cpu.tick();
@@ -1455,7 +1582,7 @@ void Node::connectivity_loop(std::stop_token stop) {
     const auto tick = _config.time->now() + _config.heartbeat;
     {
       // Unlike sleep_until, a refresh someone asked for ends this wait.
-      const auto due = std::min(automatic ? std::min(next, next_class) : next_class, tick);
+      const auto due = std::min(state->automatic ? std::min(state->next, state->next_class) : state->next_class, tick);
       std::unique_lock lock(_wait_mutex);
       const auto now = _config.time->now();
       if (due > now)
@@ -1465,46 +1592,54 @@ void Node::connectivity_loop(std::stop_token stop) {
         });
     }
     if (stop.stop_requested()) return;
-    serve_refreshes();
-    // Level 0: this node's path class and candidates, and the circuits
-    // through it that have lost an end.
-    if (_config.time->now() >= next_class) next_class = _config.time->now() + classify();
-    _paths->sweep();
-    if (!automatic || _config.time->now() < next) continue;
-    // Evidence is a peer, reached over CONTROL, reporting whether a fresh
-    // connection to the advertised endpoint completed a handshake. An
-    // unaskable peer is no evidence.
-    next = _config.time->now() + _config.heartbeat;
-    std::optional<NodeRecord> peer;
-    for (const auto& node : _members.active()) {
-      if (node.id != _identity.id && node.inbound_capable() && _client->has_route(node.id, net::Lane::control)) {
-        peer = node;
-        break;
-      }
-    }
-    if (!peer) continue;
-    const auto self = _members.self();
-    const auto outcome =
-        call_wait(peer, {peer->host, peer->port}, net::message::dial_back, reach::encode_dial_back_request({self.host, self.port}), _config.exchange_budget);
-    if (!outcome.reply || outcome.reply->type != net::message::dial_back_reply) {
-      status::ScopedLogger(_config.log, "node")
-          .debug("dial-back probe not answered peer=" + identity::to_string(peer->id).substr(0, 12) +
-                 " error=" + (outcome.reply ? std::string("refused") : outcome.failure));
-      continue;
-    }
-    try {
-      const auto [reachable, error] = reach::decode_dial_back_reply(outcome.reply->payload);
-      const auto verdict = _inbound.observe_probe(peer->id, reachable, error);
-      status::ScopedLogger(_config.log, "node")
-          .debug("dial-back probe peer=" + identity::to_string(peer->id).substr(0, 12) + " endpoint=" + self.host + ":" + std::to_string(self.port) +
-                 " reachable=" + (reachable ? "true" : "false") + (error.empty() ? "" : " error=" + error) +
-                 " consecutive_failures=" + std::to_string(_inbound.state().consecutive_failures));
-      if (!verdict.persist_error.empty()) status::ScopedLogger(_config.log, "node").warn("inbound resolution not persisted: " + verdict.persist_error);
-      if (verdict.changed) apply_inbound(_inbound.capable());
-      next = _config.time->now() + verdict.next_probe;
-    } catch (const net::DecodeError&) {
+    run_step(_connectivity_io,
+             [this, state](asio::any_io_executor on, std::function<void()> done) { connectivity_step(state, std::move(on), std::move(done)); });
+  }
+}
+
+void Node::connectivity_step(const std::shared_ptr<ConnectivityState>& state, asio::any_io_executor on, std::function<void()> done) {
+  serve_refreshes();
+  // Level 0: this node's path class and candidates, and the circuits
+  // through it that have lost an end.
+  if (_config.time->now() >= state->next_class) state->next_class = _config.time->now() + classify();
+  _paths->sweep();
+  if (!state->automatic || _config.time->now() < state->next) return done();
+  // Evidence is a peer, reached over CONTROL, reporting whether a fresh
+  // connection to the advertised endpoint completed a handshake. An
+  // unaskable peer is no evidence.
+  state->next = _config.time->now() + _config.heartbeat;
+  std::optional<NodeRecord> peer;
+  for (const auto& node : _members.active()) {
+    if (node.id != _identity.id && node.inbound_capable() && _client->has_route(node.id, net::Lane::control)) {
+      peer = node;
+      break;
     }
   }
+  if (!peer) return done();
+  const auto self = _members.self();
+  (void)place_call(peer, {peer->host, peer->port}, net::message::dial_back, reach::encode_dial_back_request({self.host, self.port}), sched::FrameType::control,
+                   _config.exchange_budget, on, [this, state, peer = *peer, self, done = std::move(done)](net::CallOutcome outcome) {
+                     if (!outcome.reply || outcome.reply->type != net::message::dial_back_reply) {
+                       status::ScopedLogger(_config.log, "node")
+                           .debug("dial-back probe not answered peer=" + identity::to_string(peer.id).substr(0, 12) +
+                                  " error=" + (outcome.reply ? std::string("refused") : outcome.failure));
+                       return done();
+                     }
+                     try {
+                       const auto [reachable, error] = reach::decode_dial_back_reply(outcome.reply->payload);
+                       const auto verdict = _inbound.observe_probe(peer.id, reachable, error);
+                       status::ScopedLogger(_config.log, "node")
+                           .debug("dial-back probe peer=" + identity::to_string(peer.id).substr(0, 12) + " endpoint=" + self.host + ":" +
+                                  std::to_string(self.port) + " reachable=" + (reachable ? "true" : "false") + (error.empty() ? "" : " error=" + error) +
+                                  " consecutive_failures=" + std::to_string(_inbound.state().consecutive_failures));
+                       if (!verdict.persist_error.empty())
+                         status::ScopedLogger(_config.log, "node").warn("inbound resolution not persisted: " + verdict.persist_error);
+                       if (verdict.changed) apply_inbound(_inbound.capable());
+                       state->next = _config.time->now() + verdict.next_probe;
+                     } catch (const net::DecodeError&) {
+                     }
+                     done();
+                   });
 }
 
 bool Node::apply_identity_reset(const membership::IdentityReset& reset) {
@@ -1551,6 +1686,21 @@ void Node::exchange_revocations(std::optional<NodeRecord> peer, const net::Endpo
     (void)apply_revocations(identity::decode_revocations(outcome.reply->payload));
   } catch (const net::DecodeError&) {
   }
+}
+
+void Node::exchange_revocations(std::optional<NodeRecord> peer, const net::Endpoint& endpoint, std::chrono::milliseconds deadline, asio::any_io_executor on,
+                                std::function<void()> done) {
+  if (!_revocations) return done();
+  const auto held = _revocations->all();
+  if (held.empty()) return done();
+  (void)place_call(std::move(peer), endpoint, net::message::revocations, identity::encode_revocations(held), sched::FrameType::control, deadline, on,
+                   [this, done = std::move(done)](net::CallOutcome outcome) {
+                     if (outcome.reply && outcome.reply->type == net::message::revocations_reply) try {
+                         (void)apply_revocations(identity::decode_revocations(outcome.reply->payload));
+                       } catch (const net::DecodeError&) {
+                       }
+                     done();
+                   });
 }
 
 void Node::propagate_identity_reset(const membership::IdentityReset& reset, std::chrono::milliseconds deadline) {

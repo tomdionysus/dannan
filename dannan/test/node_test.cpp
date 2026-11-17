@@ -2417,5 +2417,66 @@ TEST(Node, AgreementCommitsAcrossTheClusterAndRefusesANodeWithoutTheCapability) 
   EXPECT_FALSE(refused.why.empty());
 }
 
+// A schedule the test runs by hand (NodeConfig::schedule): each task with the delay it was
+// booked for, run only when the test says.
+struct HandSchedule {
+  std::mutex mutex;
+  std::vector<std::pair<std::chrono::milliseconds, std::function<void()>>> tasks;
+  std::function<void(std::chrono::milliseconds, std::function<void()>)> hook() {
+    return [this](std::chrono::milliseconds after, std::function<void()> task) {
+      std::lock_guard lock(mutex);
+      tasks.emplace_back(after, std::move(task));
+    };
+  }
+  // Runs every task booked so far, not those they book; how many ran.
+  size_t run() {
+    std::vector<std::pair<std::chrono::milliseconds, std::function<void()>>> now;
+    {
+      std::lock_guard lock(mutex);
+      now.swap(tasks);
+    }
+    for (auto& [_, task] : now) task();
+    return now.size();
+  }
+  bool booked(std::chrono::milliseconds after) {
+    std::lock_guard lock(mutex);
+    return std::any_of(tasks.begin(), tasks.end(), [after](const auto& task) { return task.first == after; });
+  }
+};
+
+// The simulation's schedule (step 3 part 4, piece 2a): with one, the node starts no loop threads.
+// Its loops' first steps run at start, and each books its next through the schedule, the
+// membership pass a heartbeat after it ends; Time::after() books through it too, and fires
+// only when the schedule runs it. After a stop, what was booked does nothing.
+TEST(Node, WithAScheduleItsLoopsAndTimersRunWhenTheScheduleRunsThem) {
+  Io io;
+  test::TempDir dir;
+  const auto key = cluster_key(dir.path());
+  Node a(io.context, config(dir.path() / "a", key));
+  a.start();
+  HandSchedule schedule;
+  auto b_config = config(dir.path() / "b", key, {{"127.0.0.1", a.port()}});
+  b_config.schedule = schedule.hook();
+  Node b(io.context, b_config);
+  b.start();
+  // The first membership pass ran at start: B learned A from its seed.
+  ASSERT_TRUE(eventually([&] { return knows(b, a.context().identity().id()); }));
+  ASSERT_TRUE(eventually([&] { return schedule.booked(b_config.heartbeat); }));
+  // A timer through the context is the schedule's.
+  std::atomic<bool> fired{false};
+  b.context().time().after(1234ms, [&] { fired = true; });
+  ASSERT_TRUE(schedule.booked(1234ms));
+  EXPECT_FALSE(fired.load());
+  EXPECT_GT(schedule.run(), 0u);
+  EXPECT_TRUE(eventually([&] { return fired.load(); }));
+  // A pass run again by the schedule exchanges again, and books its next.
+  ASSERT_TRUE(eventually([&] { return schedule.booked(b_config.heartbeat); }));
+  b.stop();
+  // Booked before the stop, run after it: nothing happens and nothing more is booked.
+  (void)schedule.run();
+  EXPECT_FALSE(schedule.booked(b_config.heartbeat));
+  a.stop();
+}
+
 }  // namespace
 }  // namespace dannan
