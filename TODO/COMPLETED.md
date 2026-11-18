@@ -3,6 +3,47 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
+## The Macha move to Dagda: Dannan's part, 2026-11-18
+
+the maintainer: Macha, Dannan and Dagda work only on Macha's move to Dagda until ready for the cutover on live-a and
+live-b. What Dannan settled with Macha Server and Dagda:
+- **Version.** The cutover deploys Dannan 0.9.2, not 0.8.5 (Macha's decision). 0.8.5 has two defects: the ledger
+  use-after-free (`sched::Lease`, fixed at `79dfa2e`) and a durable write's unsynced new directory (fixed at
+  `ef3b212`). Dagda's `feature/macha-store-gaps` (`fbdd50a`) builds and gates on 0.9.2: on node-a 1148 ran, 1144
+  passed, 3 skipped, and 1 failed, its version pin, since fixed.
+- **Custody steps per dannan-custody(1).** One message said to `tee` the root to an offline copy, against the man
+  page; it was corrected the same day. Macha's runbook is `../macha/TODO/2026-11-18-cutover-runbook.md`
+  (`a9556c2`).
+- **`dannan-import-macha` is a dry-run check on the live nodes.** Its formats are unchanged since 0.5.3. Its man page
+  now says what each outcome means and that it may be run again.
+- **Dagda's own directory-sync gap** (directories it makes before `durable_replace_file`) is Dagda's to fix.
+- `docs/packaging.md`'s examples now name 0.9.
+- **The macOS gate's setup, kept for when the maintainer allows one.**
+  - Configure `build/macos` (the main checkout's `build/`, against `build/wt-feature`) with
+    `-DBoost_ROOT=/opt/local/libexec/boost/1.88 -DOPENSSL_ROOT_DIR=/opt/local/libexec/openssl3
+    "-DCMAKE_CXX_FLAGS=-I/Users/dev/devroot/dannan/build/ssl3-include --system-header-prefix=openssl/"`, Release,
+    testing on, warnings as errors.
+  - Build with `cmake --build build/macos -j 4 --target dannan_tests`, logging to `build/macos-build.log`; run
+    `build/macos/dannan_tests`, logging to `build/macos-tests.log`.
+  - Two tests skip there as Linux-only: `CustodyTool.InitTakesCustodyBackWhenTheRootCannotBeWritten` and
+    `PeerSocket.ChoosesBbrWhereOffered`.
+
+## Settled questions moved from ACTIVE, 2026-11-18
+
+- The first commit is `2a923f5` on `main`; `develop` branched. `CLAUDE.md` stays uncommitted (the maintainer's global gitignore
+  excludes it). the maintainer (2026-11-03): commit at each completed milestone without asking; no attribution lines, ever.
+- the maintainer had the Macha session delete the morning's leftovers in `../macha`: the goldens branch, the two-process
+  script, the 0.91.2 worktree and its runs.
+- GoogleTest 1.18.0 from MacPorts (`gtest`).
+- The repository copies are the masters (2026-11-04).
+- Core message types are Dannan's; the rest are the user's (the maintainer, 2026-11-03).
+- Step 10, 2026-11-04: a node is revoked at once by a CA-signed revocation, gossiped and enforced at every v2
+  handshake. The Context stays callback style (Lugh decided).
+- the maintainer, 2026-11-04: the Macha port "not yet" until Dagda's heads and leases were tagged. That is superseded by the
+  2026-11-18 order above. `origin` holds main, develop and the tags; each push needs his ask.
+- Step 3's parts 1 to 5, the file system, the hybrid clock and the per-call record copies all landed for 0.9.0 (the
+  entries below). Part 6, `SimDisk`, is the simulated disk, and waits only on Dagda's paths moving onto it.
+
 **0.9.1 is released** (`main` and tag at `7206e53`, at the maintainer's word; main's CI run 44184976022 green). The `.deb`s
 are staged in `../tomcully-apt/incoming/dannan/0.9.1/` and checked on node-a (shlibs `libdannan0.9 (>= 0.9.1)`).
 Lir's SUBACK probe on 0.9.1: 20/20 at every delay, no misses.
