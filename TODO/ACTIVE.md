@@ -98,9 +98,25 @@ flight.
   older than the objects built from it, so ninja keeps a stale object (2026-11-17: a test object
   with the old `NodeConfig` beside a library with the new one, a segfault).
 
+**After the cutover: 0.9.3, the hybrid clock's ceiling written only for stamps issued** (the maintainer, 2026-11-19: "after
+the cutover"). Lir's cluster found every node rewriting the ceiling once a second, idle or not: about 5 to 6 disk
+writes a second, each a temp file, an fsync, a rename and a directory fsync. With custody it is `identity/counters`
+at the same rate.
+- The cause: `keep_ahead()` (`hlc.cpp:131`, from `node.cpp:1504`) raises the ceiling to max(last issued, wall) + 2 s.
+  The wall moves 1 s each pass, so every pass writes. Dannan issues no stamps itself, and neither Macha nor Dagda
+  uses the clock (no hits in either), so an idle node pays the write to protect stamps nobody issued.
+- The fix, as put to the maintainer:
+  - the ceiling follows the last stamp issued, never the wall, so an idle node writes nothing;
+  - the first stamp after an idle spell raises it once on the write path, counted on Status as `raises_off_loop`;
+  - while stamping, it is raised to issued + 30 s when within 2 s, one write each 28 s; a crash restart may then
+    start up to 30 s ahead of the wall, half the default `max_ahead`;
+  - a clean stop writes the ceiling down to the last stamp, so a planned restart starts at the wall;
+  - the directory fsync stays, because the replace is by rename.
+- Tests first, from the design: an idle node writes nothing over a stepped minute; the restart rules hold; a crash
+  just after a raise starts above every stamp.
+- The change is invisible to Macha. Lir repins once the maintainer approves the rollout. Its time cost is about a day.
+
 **Waiting on the maintainer:**
-- publishing the staged `.deb`s;
-- pushing `develop`'s record commits;
 - the word for the cutover on live-a and live-b, once Macha and Dagda are ready (asked by Macha).
 
 **Waiting on others:**
