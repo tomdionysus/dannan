@@ -1,73 +1,54 @@
 # Dannan - Active Work
 
-Last updated: 2026-11-18 (rationalised before a context clear: history to `COMPLETED.md`). Dannan is written in this repository as its own
-library, Macha's code at `00861dd` being the source of truth, and Macha is ported
-onto it.
-That reverses the morning's "in-tree first" (the maintainer, 2026-11-03: "I
-misplanned. It should be here first."). "Resume here" below says what is
-built. `COMPLETED.md` is the record; move items across as they land, with what
-shipped and the gate counts.
+Last updated: 2026-11-19, rationalised after a crash: history to `COMPLETED.md`, and "Resume here" written for a
+context clear. Dannan is written in this repository as its own library, Macha's code at `00861dd` being the source of
+truth, and Macha is ported onto it (the maintainer, 2026-11-03: "here first"). `COMPLETED.md` is the record; move items across
+as they land, with what shipped and the gate counts.
 
-The design is the maintainer's, 2026-11-02, in two documents: "Dannan: Distributed
-Substrate Library Plan" (the library in full) and "Macha Core Extraction
-Plan" (the seams, now read as port steps). Both are rendered here as
-[`2026-11-02-dannan-plan.md`](2026-11-02-dannan-plan.md) and
-[`2026-11-02-macha-core-extraction-plan.md`](2026-11-02-macha-core-extraction-plan.md);
-these copies are the masters (the maintainer, 2026-11-04: the Claude Docs the
-projects started from are starters only, to be deleted, never read for
-direction or edited). Where the two differ the Dannan plan is the later
-and wins. The Dannan plan's "Repository, build, versioning" now says
-Dannan is its own repository from the start (the maintainer's decision above). The port of Macha is
-[`2026-11-03-macha-extraction.md`](2026-11-03-macha-extraction.md): its
-file table and each seam's "what must not change" and gate still hold,
-its direction is reversed, and a note at its head says how to read it.
-The list of everything Macha does that Dannan and Dagda must do, and that
-Macha must still do once ported, is
-[`2026-11-03-macha-function-inventory.md`](2026-11-03-macha-function-inventory.md).
+The design is the maintainer's, 2026-11-02, in [`2026-11-02-dannan-plan.md`](2026-11-02-dannan-plan.md) (the library; it wins
+where the two differ) and [`2026-11-02-macha-core-extraction-plan.md`](2026-11-02-macha-core-extraction-plan.md)
+(the seams, read as port steps). These copies are the masters (the maintainer, 2026-11-04). The Claude Docs the projects
+started from are never read for direction or edited.
+- The port's seams: [`2026-11-03-macha-extraction.md`](2026-11-03-macha-extraction.md), with a note at its head on
+  how to read it.
+- What Macha does that must survive:
+  [`2026-11-03-macha-function-inventory.md`](2026-11-03-macha-function-inventory.md).
+- The live cluster is live-a and live-b (Pi 5, Debian 13), on Macha 0.94.2 and Dannan 0.5.3.
 
-**The sources, as of 2026-11-04.** `../macha` is at 0.92.2 (`5776392`),
-cluster protocol 23, state layout v18, 785 test cases (744 + 20 + 21). The
-live cluster is live-a and live-b, both Pi 5 on Debian 13 with Boost
-1.83. `../athenasip` is on `develop` at `8d65593`, tagged `0.12.0`; plugin
-contract `API_VERSION` 24. The laptop is on MacPorts for everything. Macha's
-current account of itself is `../macha/TODO/2026-11-04-dannan-dagda-port-evaluation.md`.
-
-## Resume here (2026-11-18, written for a context clear)
+## Resume here (2026-11-19, written for a context clear)
 
 **The one job now.** the maintainer, 2026-11-18, to Macha, Dannan and Dagda: "work together and focus on the Macha move to
 Dagda. Work on nothing else until this is done. Work autonomously until you're ready to do the cutover on live-a
-and live-b." Dannan's part has three pieces:
+and live-b." the maintainer, 2026-11-19, to Macha: do not begin the cutover; get ready for it. Dannan's part has three
+pieces:
 - answer Macha Server and Dagda;
 - take first any port failure whose cause is in Dannan: prove its mechanism, write the failing test first, then fix;
 - start nothing else, 0.10.0 included.
 
-The cutover itself on live-a and live-b needs the maintainer's word.
+**On a fresh start:** check the claim board and `ListAgents` for peers' messages. Read `../macha/TODO/ACTIVE.md`'s
+"Resume here" and `../macha/TODO/2026-11-18-cutover-runbook.md` for where the move stands. Nothing of Dannan's is in
+flight.
 
-**Where the move stands (2026-11-18).**
-- Macha's port is `../macha` on `port/dannan-dagda`. What remains of its suite is
-  `../macha/TODO/2026-11-17-port-suite-triage.md`.
-- **The cutover deploys Dannan 0.9.2** (Macha Server's decision, 2026-11-18). 0.8.5 carries two defects that 0.9.0
-  fixed:
-  - the ledger's use-after-free when a Node is destroyed while a call completion still holds a `sched::Lease`
-    (`sched/retained_memory`, fixed at `79dfa2e`);
-  - a durable write that made a directory without syncing it into its parent (`identity/durable_file.cpp`, fixed at
-    `ef3b212`).
-- **Macha's side of the move to 0.9.2:**
-  - it adapts `CallOutcome::peer` and the request and submit signatures in its `dannan_host.cpp`;
-  - it builds 0.9.2 from the tag on the Pis;
-  - it asks for the `.deb`s when it makes the deploy tarball.
-  - It was also asked whether its stop sequence can destroy the Node with completions still pending, which is where
-    the 0.8 defect bites.
-- **Dagda's `feature/macha-store-gaps` (`fbdd50a`) builds and gates on 0.9.2.** On node-a 1148 tests ran: 1144
-  passed, 3 skipped, and 1 failed, its version case's minor pin, since fixed. Its two adaptations:
-  - `durable_replace_file` wrapped in a lambda, because of the new defaulted `FileSystem&`;
-  - the pushed `advertise` overload on its roster double.
-  - Its ASan and UBSan runs were under way.
-- **Dagda's own directory-sync gap.** Dagda makes directories itself before calling `durable_replace_file`, so
-  0.9.2's fix never sees them as new:
-  - its `node.cpp:769`, `storage_pool.cpp:217` and `unreferenced_since.cpp:129`;
-  - the tries', retention's and the node pack's directories at open.
-  - Dagda fixes these, failing case first, after its gate, together with its move onto `storage::FileSystem`.
+**Where the move stands (2026-11-19, about 03:30Z).**
+- **Macha's port is green.** `../macha` `port/dannan-dagda` at `fe74e9b`, the 0.95.0 release commit, pushed and
+  untagged: 545 of 545 on Dannan 0.9.2 with Dagda `053ee6e`. No open failure has a Dannan cause.
+- **Dagda 0.3.0**, the read fix included, is in its release gate on node-b and node-c, against Dannan 0.9.2.
+- **Macha's remaining steps toward readiness** (its "Resume here"):
+  - the Dagda 0.3.0 tag;
+  - the deploy tarball;
+  - the two-version smoke test (Macha 0.94.2 on Dannan 0.5.3 against 0.95.0 on 0.9.2, on two build Pis);
+  - then the maintainer's decisions, each asked with a recommendation.
+- **The cutover deploys Dannan 0.9.2** (Macha's decision, 2026-11-18). 0.8.5 has the ledger use-after-free
+  (`79dfa2e`) and the unsynced new directory (`ef3b212`).
+- **The mixed-version window, answered and checked** (`COMPLETED.md`, 2026-11-19).
+  - Dannan 0.5.3 and 0.9.2 form one cluster when live-b keeps the cluster key, custody or not.
+  - With a certificate alone they are two islands.
+  - Lane and class rules are checked on replies too, at both ends. A refusal ends the session, which bears on five
+    store types whose rules differ between Macha 0.94.2 and Dagda.
+  - Macha's smoke test covers what node-a's check did not: telemetry contents, advert pushes, and Macha's and
+    Dagda's own types.
+- **Dagda's own directory-sync gap** (directories it makes before `durable_replace_file`): Dagda's, to fix with its
+  move onto `storage::FileSystem`.
 - **Custody, as given to Macha.** dannan-custody(1) is the procedure.
   - With the node stopped, run `dannan-custody init --state <state> --credential dannan-root`, piped straight into
     `systemd-creds encrypt --name=dannan-root - /etc/credstore.encrypted/dannan-root`. Init keeps the existing
@@ -90,12 +71,16 @@ The cutover itself on live-a and live-b needs the maintainer's word.
   - `clock/hlc-ceiling` (0.9, only without custody).
 
 **Dannan's own state.**
-- **0.9.2 is the last release** (`main` and tag at `36d6ded`). `develop` is at `9e4bdce` plus this record, and
-  nothing is in flight. The worktree is `build/wt-feature`, on `develop`.
+- **0.9.2 is the last release** (`main` and tag at `36d6ded`). `develop` holds only records past it; its last pushed
+  commit, `9e4bdce`, is green in CI (44202755089). Commits after it are local until the maintainer says push. Nothing is in
+  flight.
+- **Worktrees.** `build/wt-feature` is on `develop`, and `build/wt-main` on `main`. The main checkout sits on the
+  merged `feature/advert-push` because `develop` is checked out in the worktree. Every local `feature/*` branch is
+  merged into `develop`.
 - The `.deb`s of 0.9.0, 0.9.1 and 0.9.2 are staged in `../tomcully-apt/incoming/dannan/` for the maintainer to publish:
   `cd ~/devroot/tomcully-apt && sh publish.sh incoming/dannan/0.9.0/*.deb incoming/dannan/0.9.1/*.deb
   incoming/dannan/0.9.2/*.deb`, check `public/`, then rsync it to the site.
-- 0.9.0, 0.9.1 and 0.9.2 are recorded in `COMPLETED.md`. Lir is on 0.9.2 (361 of 361).
+- Lir is on 0.9.2 (361 of 361).
 
 **Gates.**
 - The last full suite, on node-a for 0.9.2, ran 942 tests: 941 passed and 1 skipped (skipped when run as root).
@@ -103,9 +88,11 @@ The cutover itself on live-a and live-b needs the maintainer's word.
   his one exception). If he allows one, the setup is in `COMPLETED.md`'s 0.9.x entries: `build/macos` in the main
   checkout, configured against `build/wt-feature`.
 - **Sanitizers run locally only for a release or a named bug.**
-- **Builds go to the Pi cluster.** node-a, node-b and node-c have 16 GB; node-d has 4 GB, so sanitizer builds
-  there use -j1. All four run a 4K-page 48-bit kernel, so ASan, UBSan and TSan work on all of them. node-a has no
-  ninja; use Makefiles there. Claim cores first and release them after. Copy the tree with
+- **Builds go to the Pi cluster.** The Pis were wiped to bare OS on 2026-11-18 and rebuilt. Dannan has no tree on
+  them now: `/root/dannan-vlp` is gone, and its logs are in `build/pi-logs-2026-11-18/`. Check that a tool is
+  present before relying on it. node-a, node-b and node-c have 16 GB; node-d has 4 GB, so sanitizer builds
+  there use -j1. All four run a 4K-page 48-bit kernel, so ASan, UBSan and TSan work on all of them. node-a has
+  ninja since the rebuild. Claim cores first and release them after. Copy the tree with
   `git ls-files -z --cached --others --exclude-standard | tar ... | ssh root@<ip> 'tar -xm -C /root/dannan-vlp'`.
   `-m` matters: without it a file keeps its Mac edit time, and one shipped after a build can be
   older than the objects built from it, so ninja keeps a stale object (2026-11-17: a test object
@@ -113,12 +100,14 @@ The cutover itself on live-a and live-b needs the maintainer's word.
 
 **Waiting on the maintainer:**
 - publishing the staged `.deb`s;
-- the word for the cutover on live-a and live-b, once Macha and Dagda are ready.
+- pushing `develop`'s record commits;
+- the word for the cutover on live-a and live-b, once Macha and Dagda are ready (asked by Macha).
 
 **Waiting on others:**
-- Macha Server: the port's suite on 0.9.2, and any failure with a Dannan cause.
-- Dagda, after the move: its disk paths through `storage::FileSystem`. Real Dagda then runs above
-  `test::sim::Disk`, which is also step 3's part 6, `SimDisk`.
+- Macha Server: its two-version smoke test, and any failure with a Dannan cause.
+- Dagda: 0.3.0's gate and tag; after the move, its disk paths through `storage::FileSystem`. Real Dagda then runs
+  above `test::sim::Disk`, which is also step 3's part 6, `SimDisk`.
+- Miach: whether it builds the adapter it asked about (answered 2026-11-18; not part of the one job).
 
 **Lir's NodeRecord TSan reports** (0.8.3 and 0.8.5): attributed by mechanism to the 0.8 ledger double free that Lir
 suppresses, fixed on develop at `79dfa2e`. Lir waits for 0.9.0 and will say at once if the report appears on a build
@@ -223,133 +212,66 @@ every contract in `macha/TODO/CLIENT-CONTRACTS.md`, the config schema as
 `macha.yaml.example` and the config golden define it, every field of
 `GET /api/v1/status` and its sub-resources (the Status golden), the FUSE
 behaviour, the tools, the plugin loading and build-identity refusal,
-`build/deploy.sh` and the rollback directories, protocol 23 and layout v18
-until level 0. The inventory lists the rest, with how each is proven, and
-a port step that cannot name the proof for a behaviour it touches does
-not happen.
+`build/deploy.sh` and the rollback directories. The inventory lists the
+rest, with how each is proven, and a port step that cannot name the proof
+for a behaviour it touches does not happen.
 
-Two consequences that shape every step:
+**Dannan is written from the design, not transcribed from Macha.** Its
+shape, names, namespaces, style and tests are its own from the first file.
+Macha's code is read for what it does, where the inventory points, and
+never copied; a Dannan test comes from the design, the laws and the
+inventory row, and is written before the code. Where the design and
+Macha's behaviour differ, the behaviour is the plan (the maintainer, 2026-11-05).
 
-- **Dannan is written from the design, not transcribed from Macha.** Its
-  shape, names, namespaces, style and tests are its own from the first
-  file. Macha's code is read for what it does, where the inventory points,
-  and never copied; a Dannan test comes from the design, the laws and the
-  inventory row, and is written before the code. Where the design's form
-  and Macha's behaviour differ, the behaviour is what the port keeps
-  (grandfathering) and the design's form arrives at the protocol bump the
-  design names for it.
-- **No byte moves.** Nothing on disk or on the wire changes before level
-  0: the handshake and protocol 23, the frame, the fragments, the message
-  numbers, the roster and telemetry records, the metadata snapshot
-  (SM15 to SM18, DLT9/DLT10), layout v18. Dannan speaks Macha's wire
-  exactly, so a Dannan node and a Macha node form one cluster, which the
-  two-process test proves at every step that touches the wire. The plan
-  has exactly two protocol bumps: 24 for level 0 and 25 for identity.
+The wire is Dannan's own, versioned from 1 (Decisions, 2026-11-03 night):
+nothing of protocol 23 or layout v18 binds it, and "No byte moves" and the
+protocol-23 two-process test went with that decision. What must not move
+now is Dannan's own wire across its releases: a cluster upgraded node by
+node mixes versions, as the 0.5.3 and 0.9.2 window does.
 
 ## Waiting on the maintainer
 
 Each stops something; a session that has lost its context sees them
 first.
 
-Rulings on the first cutover, the maintainer, 2026-11-05, settled:
+Each stops something. "Resume here" lists the current asks; these stand longer:
 
-- **A. Deadlines (F2).** "Every call must specify, there is no default. Macha will have to
-  adapt to that in the refactor." `Routes::call` keeps its required deadline, there is no
-  blanket constant in the facade, and each of Macha's call sites chooses one in the port.
-- **B. Thread rows (F14).** Accepted: `/status/diagnostics` changes bytes, rows with no
-  thread go, and the three loop threads are renamed `cluster-telemetry`,
-  `cluster-maintenance` and `cluster-connectivity` (step 6).
-- **C. DIAG lines (G48).** Dannan adds a thread CPU reporter, per pool on the worker and io
-  threads, not per connection (step 5).
-- **D. Bounds (replaces the first answer).** "the bounds exist to enforce fair usage and
-  prevent problems. For Dannan, the concept is more useful than strict fidelity with Macha -
-  BUT, the existing macha budgets and limits MUST be representable in Dannan IF Dannan is
-  responsible for that layer or how that layer is implemented." So limits above the layer
-  (playback sessions, transcodes, password checks) stay Macha's, and Dannan adds no
-  per-principal bound for them. Limits in the layer Dannan owns must each be expressible in
-  Dannan, not necessarily in Macha's form (step 8's budget table).
-- **Disk limits are Dagda's; the generics are shared.** the maintainer, 2026-11-05: Dagda owns disk
-  limits but should use the same work-class generics for them: "common code goes to the
-  lowest level, Dagda depends on Dannan". Dagda already uses `WorkClass` and `WorkContext`.
-  Under discussion with the Macha session: `sched::RetainedMemoryLedger`, Dagda's
-  `DataResourceArbiter` and its `IoReserve` look like one admission mechanism written three
-  times, with different policies. That Dagda is mid-work does not hold this back; Dagda
-  takes direction from this session.
-- **Live nodes.** The Macha session's own loopback runs on live-a were fine. The hold
-  covers Dannan's work, the Pi measurements and the gateway.
-- **The live-a copy.** Allowed, read-only, without stopping the node: the roster, inbound
-  and telemetry files only (step 7).
-- **The Pi baselines.** The Macha session's, later, at his word, with the deployed version.
+- **Held until he says:** anything on live-a or live-b, the cutover included; the Pi baselines and
+  measurements; the real IGD run. Each push and release is his word too (`origin` is
+  `git@github.com:tomdionysus/dannan.git`).
+- **The AthenaSIP port (step 11): not yet** (the maintainer, 2026-11-04). The Macha move to Dagda is the one job.
+- **Cloud providers and budget for the chaos cluster**, when level 0 is ready to be tried for real. Until then: the
+  compose cluster only (the maintainer, 2026-11-03), and no cloud spend.
+- **Under discussion with the Macha session, from the maintainer's 2026-11-05 ruling on disk limits:** Dannan's
+  `sched::RetainedMemoryLedger` and Dagda's `DataResourceArbiter` and `IoReserve` look like one admission mechanism
+  written three times, with different policies. It is not for now.
 
-Held until he says: the Pi baselines and measurements, the real IGD run, anything on
-live-a or live-b. Each push and release is his word too.
-
-0. The AthenaSIP port (step 11): **not yet** (the maintainer, 2026-11-04). The Macha move to Dagda is now
-   the one job (the maintainer, 2026-11-18, "Resume here"). `origin` is `git@github.com:tomdionysus/dannan.git`;
-   each push needs his ask.
-
-1. **The suite counts on the live nodes** at `0.91.2`, and at each Macha release
-   the port makes, recorded in `COMPLETED.md`. A deploy-day act under
-   Macha's rules.
-2. **Cloud providers and budget for the chaos cluster**, when level 0 is
-   ready to be tried for real. Until then: the compose cluster only (the maintainer,
-   2026-11-03), and no cloud spend.
-3. **Macha findings that are Macha's to settle**, noted here only:
-   `availability/test_a_disk_coming_back_is_surveyed_without_a_namespace_change`
-   is flaky on macOS at the baseline (1 run in 5), and
-   `maintenance_trace/test_trace_backend_offline_and_back` on live-a
-   (Macha session, 1 in 3). Both are with the Macha session.
-Items settled earlier (the first commit, the leftovers in `../macha`, GoogleTest from MacPorts,
-the repository copies as masters, core message types, per-node revocation and callback style) are
-in `COMPLETED.md`, "Settled questions moved from ACTIVE, 2026-11-18".
+The first cutover's settled rulings (2026-11-05: deadlines, thread rows, DIAG lines, bounds, disk limits) and the
+earlier settled questions are in `COMPLETED.md` ("Moved here from ACTIVE at the 2026-11-19 rationalisation", and
+"Settled questions moved from ACTIVE, 2026-11-18").
 
 ## How to prove it
 
 Two gates, and both are run.
 
-**Dannan's own gate**, every commit here: `dannan_tests` and
-`dagda_tests` (`-DDANNAN_BUILD_TESTING=ON`, run the binaries), counts
-recorded in `COMPLETED.md` and never lower; a test is never deleted; time
-is injected and nothing sleeps; sanitizers before a release and to hunt a
-bug that cannot be pinned any other way (`build-asan/` with
-`ASAN_OPTIONS=detect_container_overflow=0`, `build-tsan/` with
-`TSAN_OPTIONS=suppressions=$PWD/dannan/test/tsan-suppressions.txt`; the
-flags are in `COMPLETED.md`'s 0.1.0 entries). At every step that speaks the
-wire, the two-process test: a Dannan node (a small executable built here)
-against the Macha binary over loopback, both ways round, in whatever form
-the step can prove (step 2: handshake, membership, telemetry, both lanes;
-step 7: objects, commits both ways, a divergence merged).
+**Dannan's own gate**, every commit here.
+- Hosted CI on every push: Debian 13 x86-64 and arm64, with release, clang, ASan, TSan, coverage, abi, deb and
+  package jobs.
+- Locally, on a claimed Pi: `dannan_tests` (`-DDANNAN_BUILD_TESTING=ON`; run the binary, not `ctest`), with the
+  counts recorded in `COMPLETED.md` and never lower. A test is never deleted. Time is injected and nothing sleeps.
+- Sanitizers before a release, or to hunt a bug that cannot be pinned any other way: ASan with
+  `ASAN_OPTIONS=detect_container_overflow=0`, TSan with
+  `TSAN_OPTIONS=suppressions=$PWD/dannan/test/tsan-suppressions.txt`.
+- A wire change is also run against the previous release's `dannan-node`, as `build/mixed-version.sh` does for 0.5.3
+  against 0.9.2.
 
-**The port gate**, before and after every port step in `../macha`, on
-the laptop and then on the live nodes: the nine items of "The seam gate" in the
-extraction document, which are: the three suites with counts equal or
-above, the config golden, the Status golden, the route list, the plugins,
-the install, wire and disk (protocol 23, layout v18, the mixed-build
-two-process test), the diff reviewed with every content change named,
-and the inventory updated. Macha's rules on the laptop hold: no verdict on
-timing under load, touched tests here, all three suites on the live nodes, never
-both nodes down at once.
+**The port gate** is Macha's, in `../macha` on the Pis: its suite with counts equal or above, the config golden,
+the Status golden, the route list, the plugins, the install, the diff reviewed with every content change named, and
+the inventory updated. The live nodes are never both down at once. Macha's runbook adds the two-version smoke test
+before the first node.
 
-```
-Macha:  cmake -S . -B build-macports ... (COMPLETED.md has the line)
-        cmake --build build-macports -j8
-        sh ./run-tests.sh build-macports
-Dannan: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DDANNAN_BUILD_TESTING=ON \
-          -DDANNAN_WARNINGS_AS_ERRORS=ON \
-          -DCMAKE_PREFIX_PATH="/opt/local/libexec/boost/1.88;/opt/local" \
-          -DDANNAN_MACHA_INTEROP_DIR=$PWD/build/interop/macha-0.91.2 \
-          -DDANNAN_MACHA_BINARY=$PWD/../macha/build-macports/macha
-        cmake --build build -j8
-        ./build/dannan_tests && ./build/dagda_tests && ./build/dannan_interop_tests
-```
-
-`dannan_interop_tests` holds the in-process byte-for-byte cases (against
-the pinned 0.91.2 export) and, with `DANNAN_MACHA_BINARY`, the two-process
-test (that binary and `dannan-node`, about 5 s).
-
-For AthenaSIP (step 11): `./build-tests/athenasip_tests` with Redis and
-MQTT set, then `test/e2e/cluster.sh` with the second node behind CGNAT and
-no public address (`docs/testing.md` there is the whole of it).
+For AthenaSIP (step 11, not yet): `./build-tests/athenasip_tests` with Redis and MQTT set, then
+`test/e2e/cluster.sh` with the second node behind CGNAT and no public address (`docs/testing.md` there).
 
 ## Principles
 

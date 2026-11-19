@@ -3,6 +3,70 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
+## The Macha move to Dagda: Dannan's part, 2026-11-18 evening to 2026-11-19
+
+No code changed; `develop` is at `3bb372c` and CI's last run, on `9e4bdce`, is green (44202755089).
+- **The cluster wipe** (Lir Development Cluster, 16:05Z 2026-11-18: all four Pis cleaned to bare OS). Nothing of
+  Dannan's on them was unique: `/root/dannan-vlp` was a copied tree, not a checkout. Its build and test logs (99
+  files, about 7 MB) were copied to `build/pi-logs-2026-11-18/<host>/` first. The Pis were rebuilt; Macha's tag
+  builds of Dannan 0.5.3 and 0.9.2 are on node-a in `/home/dev/deps/`.
+- **Miach asked** (for the maintainer) whether its deterministic parallel work could run distributed over Dannan. The answer:
+  yes, through a separate adapter process that links Dannan, Miach's core keeping only GoogleTest and yaml-cpp.
+  - Work units are route calls in the loader or speculative class, with large payloads on the DATA lane. A message
+    may be up to 128 MiB, sent in frames of up to 4 MiB.
+  - Long units (10 to 40 s) use `bind_deferred`, with a deadline and a `CallWatch` sized to the work.
+  - Small units, such as the SAT obligations, are batched.
+  - Adverts say what each node holds and offers (64 per node, values up to 1 KiB). `placement()` by input hash keeps
+    each node's cache warm.
+  - Dagda objects, content-addressed, hold the result cache. The 187 MB device database is chunked or staged once
+    per node.
+  - The job model, the barriers and the merge order are the adapter's; Dannan has no scheduler.
+  - The adapter claims cores on the board before advertising them.
+- **Macha asked whether a 0.5.3 node and a 0.9.2 node mix** for the cutover window: live-b on Macha 0.95.0 and
+  Dannan 0.9.2, live-a on Macha 0.94.2 and Dannan 0.5.3.
+  - **From code: yes, if live-b keeps the cluster key.**
+    - The wire range (1..2), the frame, the codec, the message numbers and the record encoding are unchanged.
+    - 0.9.2's new `admit` check refuses only a peer with a different agreement slot table; 0.5.3 publishes none.
+    - Custody alone does not change the proof. A certificate with `--no-cluster-key` offers only version 2, which
+      0.5.3 cannot speak.
+    - 0.5.3 ignores a pushed record's payload on `members`, so a push from 0.9.2 reports live-a as missed until
+      gossip carries the change.
+    - 0.9.2 sends the `agree_*` types only to nodes advertising agreement.
+  - **Replies are checked too.**
+    - `FrameOpener::header` (`net/channel.cpp:428-441`) checks every inbound frame, replies included, against the
+      receiver's table. `FrameSealer::seal` (`:399-403`) checks every outbound frame against the sender's.
+    - Either refusal ends the session and fails every call on it. A reply rides its request's lane and class.
+    - Of the five store types whose rules differ between Macha 0.94.2 and Dagda, the risk is 0.95.0 calling 0.94.2
+      in a class that 0.94.2's narrower reply rules refuse. Macha took that into its runbook.
+  - **Checked on node-a** (`build/mixed-version.sh`; logs in `build/mixed-version-2026-11-19/`). The tag builds of
+    dannan-node ran on loopback with one cluster key, 60 s per case, echo every 2 s on both lanes.
+    - 0.9.2 with custody and the key, 0.5.3 dialling it: one cluster, echo ok on both lanes both ways, 12 of 12
+      status lines clean on each side.
+    - The same with 0.9.2 dialling: the same.
+    - 0.9.2 by certificate alone: never peers.
+    - Not covered: telemetry contents, advert pushes, and Macha's and Dagda's own types. Macha's two-version smoke
+      test, a gate in its runbook, covers those.
+- **Moved here from ACTIVE at the 2026-11-19 rationalisation:**
+  - The sources as of 2026-11-04. Macha 0.92.2 (`5776392`), protocol 23, layout v18, 785 cases. AthenaSIP
+    `8d65593`, tag `0.12.0`, plugin `API_VERSION` 24. Macha's evaluation is
+    `../macha/TODO/2026-11-04-dannan-dagda-port-evaluation.md`.
+  - The first cutover's rulings (the maintainer, 2026-11-05), all settled:
+    - A, deadlines: every call names one, with no default.
+    - B, thread rows: the three loop threads are renamed `cluster-telemetry`, `cluster-maintenance` and
+      `cluster-connectivity`.
+    - C, DIAG lines: a thread CPU reporter per pool.
+    - D, bounds: limits above Dannan's layer stay the hosted system's, and those in its layer are expressible in
+      Dannan.
+    - Disk limits are Dagda's, on Dannan's work-class generics.
+    - The live-a read-only copy was allowed.
+    - The Pi baselines are the Macha session's, at the maintainer's word.
+  - Macha's own findings: the flaky `availability/test_a_disk_coming_back_...` on macOS and
+    `maintenance_trace/test_trace_backend_offline_and_back`. Also the live-node suite counts at 0.91.2. All are
+    Macha's.
+  - "How to prove it" in its protocol-23 form. `dannan_interop_tests` against the pinned 0.91.2 export and the
+    two-process test against the Macha binary went with wire v1 (2026-11-03 night); the laptop commands it gave are
+    void since the maintainer's Pi-only ruling (2026-11-14, 2026-11-17).
+
 ## The Macha move to Dagda: Dannan's part, 2026-11-18
 
 the maintainer: Macha, Dannan and Dagda work only on Macha's move to Dagda until ready for the cutover on live-a and
