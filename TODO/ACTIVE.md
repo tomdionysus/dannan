@@ -1,7 +1,7 @@
 # Dannan - Active Work
 
-Last updated: 2026-11-19, rationalised after a crash: history to `COMPLETED.md`, and "Resume here" written for a
-context clear. Dannan is written in this repository as its own library, Macha's code at `00861dd` being the source of
+Last updated: 2026-11-19 afternoon, rationalised for a context clear: the apt repository complete, 0.9.3 planned
+for after the cutover. Dannan is written in this repository as its own library, Macha's code at `00861dd` being the source of
 truth, and Macha is ported onto it (the maintainer, 2026-11-03: "here first"). `COMPLETED.md` is the record; move items across
 as they land, with what shipped and the gate counts.
 
@@ -27,9 +27,9 @@ pieces:
 
 **On a fresh start:** check the claim board and `ListAgents` for peers' messages. Read `../macha/TODO/ACTIVE.md`'s
 "Resume here" and `../macha/TODO/2026-11-18-cutover-runbook.md` for where the move stands. Nothing of Dannan's is in
-flight.
+flight. Once the cutover is done, the next Dannan work is 0.9.3 (below); nothing else starts first.
 
-**Where the move stands (2026-11-19, about 03:30Z).**
+**Where the move stands (2026-11-19, about 03:30Z; no news from Macha or Dagda since).**
 - **Macha's port is green.** `../macha` `port/dannan-dagda` at `fe74e9b`, the 0.95.0 release commit, pushed and
   untagged: 545 of 545 on Dannan 0.9.2 with Dagda `053ee6e`. No open failure has a Dannan cause.
 - **Dagda 0.3.0**, the read fix included, is in its release gate on node-b and node-c, against Dannan 0.9.2.
@@ -72,14 +72,15 @@ flight.
 
 **Dannan's own state.**
 - **0.9.2 is the last release** (`main` and tag at `36d6ded`). `develop` holds only records past it; its last pushed
-  commit, `9e4bdce`, is green in CI (44202755089). Commits after it are local until the maintainer says push. Nothing is in
-  flight.
+  commit, `6eaa5fc`, is green in CI (44534666674) and CodeQL. The plan commits after it are local until the maintainer says
+  push. Nothing is in flight.
 - **Worktrees.** `build/wt-feature` is on `develop`, and `build/wt-main` on `main`. The main checkout sits on the
   merged `feature/advert-push` because `develop` is checked out in the worktree. Every local `feature/*` branch is
   merged into `develop`.
 - **Every release from 0.5.6 to 0.9.2 is on the apt repository** (the maintainer published them, 2026-11-19). Each version has
   its 5 packages on arm64 and amd64, all 120 files download, and `InRelease` verifies. the maintainer runs `publish.sh` and the
-  upload himself; the rsync has no `--delete`.
+  upload himself; the rsync never has `--delete` (the maintainer, 2026-11-19; `../tomcully-apt/README` corrected to match).
+  Check a publish against the live `dists/trixie/main/binary-<arch>/Packages` and `reprepro list trixie`.
 - Lir is on 0.9.2 (361 of 361).
 
 **Gates.**
@@ -112,9 +113,14 @@ at the same rate.
     start up to 30 s ahead of the wall, half the default `max_ahead`;
   - a clean stop writes the ceiling down to the last stamp, so a planned restart starts at the wall;
   - the directory fsync stays, because the replace is by rename.
+  - the constructor's write at start goes too: a node that never stamps never touches the file.
+- The design's revision is in `2026-11-15-hlc-design.md`, "Revised (2026-11-19)". The contract text in `hlc.h`
+  (`HlcClock`, `keep_ahead`, `reserve`) and `context.h`'s `hlc()` describe the 0.9.2 behaviour and change with the
+  code.
 - Tests first, from the design: an idle node writes nothing over a stepped minute; the restart rules hold; a crash
-  just after a raise starts above every stamp.
-- The change is invisible to Macha. Lir repins once the maintainer approves the rollout. Its time cost is about a day.
+  just after a raise starts above every stamp; a clean stop's lowered ceiling is still past every stamp issued.
+- The change is invisible to Macha: it keeps the ABI, and the state file format is unchanged. Lir and the maintainer have the
+  plan. Lir repins once the maintainer approves the rollout. Its time cost is about a day.
 
 **Waiting on the maintainer:**
 - the word for the cutover on live-a and live-b, once Macha and Dagda are ready (asked by Macha).
@@ -124,10 +130,6 @@ at the same rate.
 - Dagda: 0.3.0's gate and tag; after the move, its disk paths through `storage::FileSystem`. Real Dagda then runs
   above `test::sim::Disk`, which is also step 3's part 6, `SimDisk`.
 - Miach: whether it builds the adapter it asked about (answered 2026-11-18; not part of the one job).
-
-**Lir's NodeRecord TSan reports** (0.8.3 and 0.8.5): attributed by mechanism to the 0.8 ledger double free that Lir
-suppresses, fixed on develop at `79dfa2e`. Lir waits for 0.9.0 and will say at once if the report appears on a build
-with the fix. Reopen only then. The details are in `COMPLETED.md`.
 
 **A hang, open:** `ChildProcess.ChildrenStartOnManyThreadsAtOnce` (`fixtures_test.cpp:205`) hung
 TSan x86-64 in CI run 44116803795 (`feature/sim-workers`, `eb2342c`) from 15:44 until the job's
@@ -193,7 +195,9 @@ the test and the reaper have passed TSan in CI since 0.6.0. Reproduce before cha
 
 **Peers' open threads:**
 - Mimir and Kvasir accepted the final `AcceptorStore` and `change_deltas` (2026-11-16), and 0.9.0 is tagged for them.
-- Lir is on 0.9.2; its NodeRecord TSan report reopens only if it appears on a build with the fix.
+- Lir is on 0.9.2. Its NodeRecord TSan reports (0.8.3, 0.8.5) are attributed to the ledger double free fixed at
+  `79dfa2e`, and reopen only if one appears on a build with the fix (`COMPLETED.md`). It waits for 0.9.3's ceiling
+  fix.
 
 **Where things are built and tested** (the maintainer, 2026-11-14: "STOP all builds on the Mac now. Use the RPi cluster only."):
 - No builds or tests on the Mac without asking the maintainer first (2026-11-17, the macOS gate included). Editing, git, gh,
