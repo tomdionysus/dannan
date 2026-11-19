@@ -77,9 +77,9 @@ flight.
 - **Worktrees.** `build/wt-feature` is on `develop`, and `build/wt-main` on `main`. The main checkout sits on the
   merged `feature/advert-push` because `develop` is checked out in the worktree. Every local `feature/*` branch is
   merged into `develop`.
-- The `.deb`s of 0.9.0, 0.9.1 and 0.9.2 are staged in `../tomcully-apt/incoming/dannan/` for the maintainer to publish:
-  `cd ~/devroot/tomcully-apt && sh publish.sh incoming/dannan/0.9.0/*.deb incoming/dannan/0.9.1/*.deb
-  incoming/dannan/0.9.2/*.deb`, check `public/`, then rsync it to the site.
+- **Every release from 0.5.6 to 0.9.2 is on the apt repository** (the maintainer published them, 2026-11-19). Each version has
+  its 5 packages on arm64 and amd64, all 120 files download, and `InRelease` verifies. the maintainer runs `publish.sh` and the
+  upload himself; the rsync has no `--delete`.
 - Lir is on 0.9.2 (361 of 361).
 
 **Gates.**
