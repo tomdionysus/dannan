@@ -50,6 +50,40 @@ Changed:
 - The library package is `libdannan0.10`. The README is about installing and using Dannan;
   why it exists and what it does moved to `docs/overview.md`.
 
+Adopting 0.10.0: what a dependant can now delete or replace in its own code, and what to check.
+Each is one home in the stack, so a copy kept elsewhere breaks the no-duplication rule.
+
+- Your own callback result types, error enums or "posted, never inline" helpers: replace them with
+  `Completion<T>` and `Outcome<T>` (`contract/completion.h`), and your ack-level names with
+  `contract/ack_level.h`.
+- A logger that drops lines written before the real sink is set, or swaps its sink under a lock:
+  use `status::SwappableSink`. Tests that capture log lines by scope: use `test::RecordingSink`.
+- An acceptor store kept in memory for tests or a single-node mode: use `agree::MemoryStore`.
+- Your own fuzz driver, mutator or corpus replay: register targets with `dannan::testing`, and run
+  them through `dannan::fuzz::smoke` in your own test binary. Your own copies of the simulation's
+  checkers: link `dannan::sim_checkers`, now available in a fetched build too.
+- A retry loop written by hand because `RetryPolicy` parked after its failure budget: use
+  `RetryPolicy::unbounded(initial, ceiling)`.
+- Your own 16-byte random ids: use `identity::RandomId<Tag>`, one type per kind of id.
+- SHA-1 or HMAC-SHA1 code, or a dependency for it (Valkey script ids, TOTP): use `identity::sha1`
+  and `identity::hmac_sha1`.
+- `mkdir -p` plus fsync written by hand: use `identity::durable_create_directories` and
+  `durable_sync_directory`.
+- base64, base64url, base32, hex or UTF-8 checks of your own: use `encoding/base.h`, decoding
+  secrets straight into a `SecureBuffer`.
+- A CI step that builds Dannan's packages itself: replace it with `tools/ci.sh install-debs 0.10.0`.
+- Sanitizer builds: build Dannan from source with `DANNAN_SANITIZE=address` or `thread`
+  (`docs/building.md`), never against the Debian package, and check the library carries the
+  `__asan_` or `__tsan_` symbols.
+- Check: anything that parses an allow-list prefix with `listen::Prefix::parse` and wrote "a.b.c.d/n"
+  with host bits set now gets an error. Write the network address instead.
+- Delete: any teardown ordering you added to keep an `Agreement`, or the node under it, alive until
+  your store's completions had run (posted turns before `node.reset()`, a store kept past the
+  node). Both lifetime faults are fixed, so a store may complete after the node has gone.
+
+Dependencies are unchanged: Boost 1.83 or later (Asio, headers only), OpenSSL 3 and yaml-cpp 0.7 or
+later. Nothing in their newer releases replaces code of Dannan's in this release.
+
 ## 0.9.2: an advert reaches a peer met after it was set
 
 Fixed: an advert set before a node had met a peer, as when a hosted system advertises at
