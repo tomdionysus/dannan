@@ -29,10 +29,11 @@ same way in every binary:
 |---|---|---|---|
 | YAML | dotted key; each dot is one level of nesting | `log: {level: info}` | `listen: {port: 7437}` |
 | flag | `--`, then the key with `.` and `_` as `-` | `--log-level` | `--listen-port` |
-| variable | the binary's prefix, `_`, then the key in upper case with `.` and `-` as `_` | `KVASIR_LOG_LEVEL` | `DANNAN_NODE_LISTEN_PORT` |
+| variable | the project's prefix, `_`, then the key in upper case with `.` and `-` as `_` | `KVASIR_LOG_LEVEL` | `DANNAN_LISTEN_PORT` |
 
-The prefix is the binary's name in upper case with `-` as `_`: `DANNAN_NODE`, `LIR_NODE`,
-`KVASIR`. A list is a YAML list, a repeated flag, or a variable split on commas and whitespace. A
+The prefix is the project's name in upper case, not the binary's: lugh-node's variables are
+`LUGH_...`, mimir-node's `MIMIR_...` and dannan-node's `DANNAN_...`, which is how every deployed
+unit already works. A list is a YAML list, a repeated flag, or a variable split on commas and whitespace. A
 toggle is `true` or `false`; the flag alone means `true`.
 
 A binary may leave a setting off the command line or out of the environment, such as a secret
@@ -56,6 +57,8 @@ A setting that two binaries both need is added here, so it is named once for the
 
 ## dannan-node today
 
-dannan-node still has its own short flags for some keys, such as `--port` for `listen.port`. They
-move to the rule's names in 0.11.0, the next minor, since a flag is part of its interface. Its
-variables already follow the rule.
+dannan-node does not follow the rule yet, in two ways:
+- it has its own short flags for some keys, such as `--port` for `listen.port`;
+- its variables carry the binary's prefix, `DANNAN_NODE_...`, where the rule gives `DANNAN_...`.
+
+Both are part of its interface, so both move to the rule's names in 0.11.0, the next minor.

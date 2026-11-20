@@ -39,6 +39,8 @@ started from are never read for direction or edited.
    - Whether a store may offer only some levels is Kvasir's ruling (Dagda asked).
    - dannan-node follows docs/config.md:
      - its flags are made from their keys, so `--port` becomes `--listen-port`;
+     - its variables take the project's prefix, so `DANNAN_NODE_...` becomes `DANNAN_...`, and
+       the README's example changes with them;
      - it takes `log.level` and `log.format`, the stack's shared keys.
      The flags are part of its interface, so the change waits for the minor.
 3. **Raise with the maintainer:** `found()` gives each slot its own deadline, counted from when that
