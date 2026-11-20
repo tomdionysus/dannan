@@ -988,3 +988,29 @@ dannan::sim_checkers in a fetched build (Louhi). The test fixtures' headers keep
   HMAC-SHA256 under a cluster-key subkey, so any node checks it with no session store; an hour by
   default with sliding refresh; Bearer accepted for API calls; sign-in limited by item 10.
 - The React code stays each service's. Sent to the four and Lugh 2026-11-20; answers pending.
+
+Answers on item 24 (2026-11-20): Mimir, Louhi, Lir and Lugh confirm 1 to 3; Kvasir pending. Folded in:
+- **Authentication per route** (Lir): a route names its authenticator (session cookie or bearer;
+  the service's own, as Lir's MQTT grants; or none, the handler decides), and the cookie or bearer
+  token reaches the handler. Root-level routes (/publish, /mqtt) are routes, never the fallback.
+- **Revocation per request** (Mimir, Lugh): the cookie carries the principal's version as issued,
+  and the core runs the service's authorize(subject, scopes, issued_at, version) -> allow or deny
+  before every handler, answered from the service's memory (Mimir's ACL, lugh_client's version
+  floor), no network call. Scopes are opaque to the core (Louhi's louhi:<project>:<action>).
+- **Accounts behind an interface** (Lir, Mimir): password sign-in asks an AccountSource for a
+  name's verifier: item 11's PHC credential from the service's YAML (Lir, Louhi), or the service's
+  own check (Mimir's SHA-256 ACL hashes, Valkey's form). A Dagda register-map space can be a source
+  later. Sign-in limited per client address (Mimir) through item 10.
+- **Cookie name the service's** (Lugh): two services on one host never collide. Short expiry,
+  refreshed in use. Lugh keeps its own stateful sessions for itself (admin-listed, revoked at once,
+  phr and acr); the core's stateless cookie is for the dashboards.
+- **Server-sent events** (Mimir, Lir): a streaming response on the connection's executor, never
+  blocking; a heartbeat comment; a bound on the outbound queue (a slow client is closed); the
+  session cookie accepted (EventSource sends no headers), and the stream ended when the session
+  expires or authorize() turns to deny.
+- **Asynchronous handlers** (Mimir; Macha's deferral): a handler may return pending and complete
+  later from any executor, under a per-route deadline.
+- **Bounded JSON bodies** (Mimir): a maximum body per route; a parse bounded in depth and size;
+  413 or 400 in the service's error shape (Mimir {error, message}).
+- **Configurable paths** (Louhi): the SPA fallback's API prefixes per service (Louhi /v1/), the
+  OpenAPI document's path (Louhi /v1/openapi.json, Mimir /api/v1/openapi.json).
