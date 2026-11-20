@@ -48,6 +48,12 @@ started from are never read for direction or edited.
      - libdannan-dev installs it;
      - the CMake package sets `DANNAN_TSAN_SUPPRESSIONS` to its path, installed or fetched;
      - docs/building.md tells every TSan run to pass it, so the stack keeps one list.
+   - A TimeSource that tells its waiters when it is stepped, so a stepped or frozen clock arms
+     no timer until it moves. Today every wait on it re-arms each `wake_within` (5 ms by
+     default), and each pending call's watchdog is one such wait. With thousands of calls and a
+     frozen clock, that churn starved a shared io_context under TSan (Dagda's
+     PromptReplication stalls, 2026-11-20). That is to be confirmed by Dagda's coarse
+     wake_within run.
    - Dagda's ask: `NodeConfig::liveness_time`, a TimeSource for liveness probes and call
      watchdogs that defaults to `time`. Today a test stepping a node's clock by more than
      dead_after/3 also gives up its links (client.cpp's await_ping).
