@@ -2415,10 +2415,20 @@ class HeldKeepStore final : public agree::AcceptorStore {
   void load(agree::Slot slot, std::span<const agree::Name> names, bool every, bool values, std::function<void(agree::Held)> done) override {
     _store.load(slot, names, every, values, std::move(done));
   }
+  // Holds only a keep that names the slot's served set, as founding's accept does: that keep's
+  // completion publishes the slot advert, the path into the node. Every other keep completes.
   void keep(agree::Slot slot, const agree::Held& held, std::function<void(Kept)> done) override {
-    std::lock_guard lock(_mutex);
-    _store.keep(slot, held, [this](Kept kept) { _kept = std::move(kept); });
-    _held.push_back(std::move(done));
+    Kept out;
+    {
+      std::lock_guard lock(_mutex);
+      _store.keep(slot, held, [&out](Kept kept) { out = std::move(kept); });
+      if (held.slot.served) {
+        _kept = out;
+        _held.push_back(std::move(done));
+        return;
+      }
+    }
+    done(std::move(out));
   }
   bool ready() const override { return true; }
   size_t waiting() {
