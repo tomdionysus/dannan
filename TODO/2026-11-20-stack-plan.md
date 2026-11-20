@@ -1014,3 +1014,12 @@ Answers on item 24 (2026-11-20): Mimir, Louhi, Lir and Lugh confirm 1 to 3; Kvas
   413 or 400 in the service's error shape (Mimir {error, message}).
 - **Configurable paths** (Louhi): the SPA fallback's API prefixes per service (Louhi /v1/), the
   OpenAPI document's path (Louhi /v1/openapi.json, Mimir /api/v1/openapi.json).
+- Kvasir (2026-11-20) confirms item 17's carrier and item 24's core. Item 17 also states: (a) the
+  client end runs a client TLS handshake trusting the listener's certificate; (b) the test sets
+  peer() (per-source back-off); (c) faults from the client end: half-close, abort mid-packet, and a
+  stall so the server's deadline fires; (d) bytes delivered in pieces the test chooses, to test a
+  packet reader across arbitrary splits. Kvasir's tests with Connector/C++ over loopback TCP need
+  nothing more. Item 24: the dashboard on its own configurable port with the node's certificates,
+  off by default; accounts from a pluggable source (Kvasir's MySQL users, later Lugh's); the cookie
+  key a cluster-key subkey taken from the node helper (item 14); a scope check per route (two admin
+  actions: kill a session, drain a node). **Item 24's shape is confirmed by all five.**
