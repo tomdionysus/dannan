@@ -46,6 +46,19 @@ TEST(SteppedTime, StandsStillUntilAdvanced) {
   EXPECT_EQ(time.now(), start + std::chrono::seconds(30));
 }
 
+// A waiter on a stepped clock looks again every 5 ms by default; a fixture with many waiters
+// gives a coarser poll, so a frozen clock does not starve a shared io_context (0.10.2; Dagda's
+// stalls under TSan stopped at 250 ms).
+TEST(SteppedTime, PollsEveryFiveMillisecondsUnlessToldOtherwise) {
+  test::SteppedTime fine;
+  EXPECT_EQ(fine.wake_within(std::chrono::seconds(10)), std::chrono::milliseconds(5));
+  EXPECT_EQ(fine.wake_within(std::chrono::milliseconds(2)), std::chrono::milliseconds(2));
+  test::SteppedTime coarse(std::chrono::milliseconds(250));
+  EXPECT_EQ(coarse.wake_within(std::chrono::seconds(10)), std::chrono::milliseconds(250));
+  EXPECT_EQ(coarse.wake_within(std::chrono::milliseconds(40)), std::chrono::milliseconds(40));
+  EXPECT_EQ(coarse.wake_within(std::chrono::milliseconds(0)), std::chrono::milliseconds(0));
+}
+
 // A test waits for another thread to have read the clock before moving it.
 TEST(SteppedTime, CountsReads) {
   test::SteppedTime time;
