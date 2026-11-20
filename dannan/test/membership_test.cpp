@@ -468,7 +468,7 @@ TEST(Membership, AnAddressWideResetDropsEveryNodeThereAndOnlyThem) {
   first.seen_unix_ms = before;
   auto second = node(3, "192.0.2.99", 57402);
   second.seen_unix_ms = before;
-  auto other = node(4, "192.0.2.99", 57401);
+  auto other = node(4, "192.0.2.98", 57401);
   other.seen_unix_ms = before;
   members.observe(first, true);
   members.observe(second, true);
