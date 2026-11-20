@@ -172,6 +172,24 @@ struct Agreement::Core : std::enable_shared_from_this<Core> {
   // publish out of order. Lock order: this before the roster's own (publish sets an advert).
   contract::Mutex publishing;
   std::map<std::string, std::vector<uint8_t>> bitmaps DANNAN_GUARDED_BY(publishing);
+  // Cleared as the owner goes, under `publishing`: `publish` reaches into the node, and a store's
+  // completion may still note a keep after it (Mimir's report on 0.9.2).
+  bool may_publish DANNAN_GUARDED_BY(publishing) = true;
+  // Cleared as the owner goes: an answer to a request a peer made reaches into the node too.
+  // Held shared across each answer, so the owner's end waits for one in flight.
+  contract::SharedMutex answering;
+  bool may_answer DANNAN_GUARDED_BY(answering) = true;
+
+  // `answer`, given only while the owner is there, and nothing after: a store may complete a
+  // request at any time, and the core outlive the node.
+  std::function<void(net::Message)> guarded(std::function<void(net::Message)> answer) {
+    return [weak = weak_from_this(), answer = std::move(answer)](net::Message message) {
+      const auto core = weak.lock();
+      if (!core) return;
+      contract::ReadLock lock(core->answering);
+      if (core->may_answer) answer(std::move(message));
+    };
+  }
 
   // The fast path's cache: this node's last committed change of each name list, by space,
   // slot, set and names. Taken by the next change of the same names, put back by its commit,
@@ -249,6 +267,7 @@ struct Agreement::Core : std::enable_shared_from_this<Core> {
     if (!publish) return;
     const bool serving = record.served && record.served->contains(self);
     contract::Lock lock(publishing);
+    if (!may_publish) return;
     auto& bitmap = bitmaps[space];
     bitmap.resize((table.slots + 7) / 8);
     const auto bit = static_cast<uint8_t>(1u << (slot % 8));
@@ -262,12 +281,16 @@ struct Agreement::Core : std::enable_shared_from_this<Core> {
   void withdraw(const std::string& space) {
     if (!publish) return;
     contract::Lock lock(publishing);
+    if (!may_publish) return;
     bitmaps.erase(space);
     publish(Agreement::slot_advert(space), std::nullopt);
   }
 
   // Serves a request: an answer at once, or nothing when `answer` will be called.
   std::optional<net::Message> serve(const identity::NodeId& from, const net::Message& message, std::function<void(net::Message)> answer) {
+    // An answer given later, through whatever the store holds, reaches the asker only while the
+    // owner is there.
+    answer = guarded(std::move(answer));
     if (message.type == net::message::agree_fetch) return serve_fetch(from, message, std::move(answer));
     Request request;
     try {
@@ -889,18 +912,29 @@ Agreement::Agreement(asio::any_io_executor executor, identity::NodeId self, iden
 }
 
 Agreement::~Agreement() {
-  {
-    contract::WriteLock lock(_core->lifetime);
-    _core->closed = true;
-  }
   // The core goes on while a change still retries: it lets go of every space, so what a space
-  // or its store still holds of the core (Mimir's report on 0.9.2) holds nothing back.
+  // or its store still holds of the core (Mimir's report on 0.9.2) holds nothing back. Each
+  // queued request is refused while the owner can still carry the answer.
   std::map<std::string, std::shared_ptr<Space>> spaces;
   {
     contract::Lock lock(_core->mutex);
     spaces.swap(_core->spaces);
   }
   for (auto& [name, space] : spaces) space->close();
+  // Then nothing the core does reaches the owner again: no answer, no advert, no call. Each
+  // waits for one in flight, so none runs once this returns.
+  {
+    contract::WriteLock lock(_core->answering);
+    _core->may_answer = false;
+  }
+  {
+    contract::Lock lock(_core->publishing);
+    _core->may_publish = false;
+  }
+  {
+    contract::WriteLock lock(_core->lifetime);
+    _core->closed = true;
+  }
 }
 
 const Agreement::Table& Agreement::table() const noexcept { return _core->table; }
