@@ -1,8 +1,9 @@
-# Unreleased
+# Current release
 
-## 0.10.0 (in progress): the Cluster Stack's first minor
+## 0.10.0: the Cluster Stack's first minor
 
-A new minor (TODO/2026-11-20-stack-plan.md, the first of three). Added:
+A new minor: the ABI changes, so move a pin from 0.9.x in one step (TODO/2026-11-20-stack-plan.md,
+the first of three). Added:
 
 - `contract/completion.h`: the stack's callback vocabulary. `Completion<T>` posts one answer to
   the caller's executor, never inline, by its deadline on a steady timer or an injected
@@ -23,6 +24,9 @@ A new minor (TODO/2026-11-20-stack-plan.md, the first of three). Added:
 - `encoding/base.h`: base64, base64url (padded or not), base32, exact decoders into any buffer
   (a secret into `SecureBuffer`), and `utf8_length`, `valid_utf8`, `printable`. `hex` and `unhex`
   move here; `identity::hex` and `identity::unhex` forward to them.
+- `tools/ci.sh install-debs <tag>`: a dependant's CI builds and installs a release's packages in
+  one step.
+- `CODE_OF_CONDUCT.md`, the Contributor Covenant 2.1.
 
 Changed:
 
@@ -32,8 +36,8 @@ Changed:
   match before. `Prefix::to_string` and `listen::unmapped` are added.
 - `fuzz_smoke_test` draws its inputs from SplitMix64, so they differ from 0.9's (the same on
   every standard library now).
-
-# Current release
+- The library package is `libdannan0.10`. The README is about installing and using Dannan;
+  why it exists and what it does moved to `docs/overview.md`.
 
 ## 0.9.2: an advert reaches a peer met after it was set
 

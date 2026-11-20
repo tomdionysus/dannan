@@ -5,14 +5,15 @@ Everyone taking part follows the [Code of Conduct](CODE_OF_CONDUCT.md).
 ## Read first
 
 `TODO/ACTIVE.md` is the plan and `TODO/COMPLETED.md` is the record. Dannan is
-the network layer of a stack of three projects with one set of conventions:
-Dannan (`../dannan`), Dagda the store (`../dagda`) and Lugh the directory
-(`../lugh`). `../dagda/TODO/2026-11-03-stack.md` says what each owns. Dagda and
-Lugh use Dannan as their network layer, Lugh uses Dagda as its datastore, and
-no code is duplicated between the three (the maintainer, 2026-11-03). Macha
-(`../macha`) is the first customer: the design is complete when Macha can be
-refactored onto it. Dannan is written from the design, never transcribed from
-Macha, and has its own wire, versioned from 1.
+the network layer of a stack of projects with one set of conventions; the
+README's "The stack" lists them, with [Dagda](https://github.com/tomdionysus/dagda)
+the store and [Lugh](https://github.com/tomdionysus/lugh) the directory. Dagda's
+`TODO/2026-11-03-stack.md` says what each owns. Every project uses Dannan as its
+network layer, and no code is duplicated between them (the maintainer,
+2026-11-03). [Macha](https://github.com/tomdionysus/macha) is the first
+customer: the design is complete when Macha can be refactored onto it. Dannan
+is written from the design, never transcribed from Macha, and has its own wire,
+versioned from 1.
 
 The four laws and five disciplines (`docs/principles-and-laws.md`, a verbatim copy
 of Macha's) govern every change here, cited by number. A change that touches

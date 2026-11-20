@@ -1,4 +1,4 @@
-<!-- Verbatim copy of ../macha/docs/principles-and-laws.md at Macha develop a547ddf (2026-11-03). Dannan cites the laws and disciplines by these numbers; Macha's copy is the master. -->
+<!-- Verbatim copy of docs/principles-and-laws.md in Macha (https://github.com/tomdionysus/macha) at Macha develop a547ddf (2026-11-03). Dannan cites the laws and disciplines by these numbers; Macha's copy is the master. -->
 
 # Macha principles and laws
 
