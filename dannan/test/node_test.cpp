@@ -616,13 +616,16 @@ TEST(Node, ACallFaultRefusesACallByPeerAndTypeBeforeTheWire) {
   pair.b->start();
   ASSERT_TRUE(eventually([&] { return record_of(*pair.b, a).has_value(); }));
   const auto record = *record_of(*pair.b, a);
+  // The passed type first: its call connects B's client to A, so A's address is one B has met.
+  // Made later, the address call raced the node's own first connection and could go out unknown
+  // (TSan in 0.10.1's gate on the build cluster).
+  const auto passed = pair.b->context().routes().call_and_wait(record, passed_type, {}, FrameType::control, 5s);
+  EXPECT_TRUE(passed.reply) << passed.failure;
   const auto refused = pair.b->context().routes().call_and_wait(record, faulted_type, {}, FrameType::control, 5s);
   EXPECT_FALSE(refused.reply);
   EXPECT_EQ(refused.failure, "link refused by the test");
   const auto by_address = pair.b->context().routes().call_and_wait(net::Endpoint{"127.0.0.1", pair.a->port()}, faulted_type, {}, FrameType::control, 5s);
   EXPECT_EQ(by_address.failure, "link refused by the test");
-  const auto passed = pair.b->context().routes().call_and_wait(record, passed_type, {}, FrameType::control, 5s);
-  EXPECT_TRUE(passed.reply) << passed.failure;
   EXPECT_EQ(handled.load(), 1);
   EXPECT_EQ(plan->taken.load(), 2);
 }
