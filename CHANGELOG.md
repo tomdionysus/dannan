@@ -36,6 +36,10 @@ Changed:
   match before. `Prefix::to_string` and `listen::unmapped` are added.
 - `fuzz_smoke_test` draws its inputs from SplitMix64, so they differ from 0.9's (the same on
   every standard library now).
+- Fixed: an `Agreement` that went while a change still retried leaked its core, its served spaces
+  and their stores, which held one another (Mimir's LeakSanitizer report on 0.9.2). Its end now
+  closes each space, refusing what is queued, and a store's completions hold nothing of the space.
+  `unserve` closes its space the same way.
 - The library package is `libdannan0.10`. The README is about installing and using Dannan;
   why it exists and what it does moved to `docs/overview.md`.
 
