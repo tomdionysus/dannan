@@ -18,6 +18,7 @@
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
+#include <utility>
 
 #include "dannan/supervise/supervised.h"
 
@@ -233,6 +234,45 @@ std::shared_ptr<LogSink> null_sink() {
   };
   static const auto sink = std::make_shared<Null>();
   return sink;
+}
+
+SwappableSink::SwappableSink(std::shared_ptr<LogSink> initial) : _mask(0) {
+  if (!initial) throw std::invalid_argument("SwappableSink: a sink is required");
+  _mask.store(mask_of(*initial));
+  contract::Lock lock(_mutex);
+  _sink = std::move(initial);
+}
+
+uint8_t SwappableSink::mask_of(const LogSink& sink) noexcept {
+  uint8_t mask = 0;
+  for (const auto level : {LogLevel::all, LogLevel::debug, LogLevel::info, LogLevel::warn, LogLevel::error})
+    if (sink.enabled(level)) mask = static_cast<uint8_t>(mask | (1u << static_cast<unsigned>(level)));
+  return mask;
+}
+
+void SwappableSink::set(std::shared_ptr<LogSink> sink) {
+  if (!sink) throw std::invalid_argument("SwappableSink: a sink is required");
+  const auto mask = mask_of(*sink);
+  std::shared_ptr<LogSink> previous;
+  {
+    contract::Lock lock(_mutex);
+    previous = std::exchange(_sink, std::move(sink));
+    _mask.store(mask);
+  }
+  // `previous` is released here, outside the lock: a write still inside it holds its own copy.
+}
+
+std::shared_ptr<LogSink> SwappableSink::current() const {
+  contract::Lock lock(_mutex);
+  return _sink;
+}
+
+bool SwappableSink::enabled(LogLevel level) const noexcept { return (_mask.load(std::memory_order_relaxed) >> static_cast<unsigned>(level)) & 1u; }
+
+void SwappableSink::write(LogLevel level, std::string_view scope, std::string_view message) { current()->write(level, scope, message); }
+
+void SwappableSink::write_at(std::chrono::system_clock::time_point at, LogLevel level, std::string_view scope, std::string_view message) {
+  current()->write_at(at, level, scope, message);
 }
 
 std::shared_ptr<LogSink> console_sink(LogFormat format, LogLevel level) {
