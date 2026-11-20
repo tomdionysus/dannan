@@ -16,6 +16,10 @@
 #   tools/ci.sh package    install, then build and run a consumer (test/package)
 #   tools/ci.sh coverage   a coverage build's tests; lcov report build-ci/coverage.info
 #   tools/ci.sh abi        the library against the minor's last release, by abidiff
+#   tools/ci.sh install-debs <tag>
+#                          for a dependant's CI: builds the tag's libdannan<major.minor>
+#                          and libdannan-dev with tools/build-deb.sh (tests skipped) and
+#                          installs them; DANNAN_REPOSITORY names another clone source
 #
 # Builds go under build-ci/ (DANNAN_CI_OUT to move it). Needs g++ cmake
 # ninja-build libboost-dev libssl-dev libyaml-cpp-dev libgtest-dev libgmock-dev,
@@ -159,8 +163,26 @@ case "$step" in
       exit 1
     fi
     ;;
+  install-debs)
+    # One step every dependant's CI shares (Lir, Lugh, Louhi, Mimir, Kvasir, Dagda), so none
+    # builds Dannan's packages its own way. The tag's own packaging builds them, so a dependant
+    # pinned to an older tag gets that tag's packages. Needs git, dpkg-dev, apt and root or sudo.
+    tag=${2:?usage: tools/ci.sh install-debs <tag>}
+    repository=${DANNAN_REPOSITORY:-https://github.com/tomdionysus/dannan.git}
+    sudo=
+    if [ "$(id -u)" -ne 0 ]; then sudo=sudo; fi
+    work="$out/install-debs"
+    rm -rf "$work"
+    mkdir -p "$work"
+    git clone --quiet --depth 1 --branch "$tag" "$repository" "$work/src"
+    $sudo apt-get install -y --no-install-recommends dpkg-dev
+    $sudo apt-get build-dep -y "$work/src"
+    (cd "$work/src" && DEB_BUILD_OPTIONS=nocheck tools/build-deb.sh)
+    $sudo apt-get install -y "$work"/src/build-deb/libdannan[0-9]*_*.deb "$work"/src/build-deb/libdannan-dev_*.deb
+    dpkg-query -W -f='${Package} ${Version}\n' 'libdannan*'
+    ;;
   *)
-    echo "usage: tools/ci.sh check|release|clang|asan|tsan|package|coverage|abi" >&2
+    echo "usage: tools/ci.sh check|release|clang|asan|tsan|package|coverage|abi|install-debs <tag>" >&2
     exit 2
     ;;
 esac
