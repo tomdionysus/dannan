@@ -43,6 +43,11 @@ started from are never read for direction or edited.
        the README's example changes with them;
      - it takes `log.level` and `log.format`, the stack's shared keys.
      The flags are part of its interface, so the change waits for the minor.
+   - Ship `dannan/test/tsan-suppressions.txt` (Dagda's ask; Asio's executor count, a false
+     positive every TSan build on Asio can hit). Steps:
+     - libdannan-dev installs it;
+     - the CMake package sets `DANNAN_TSAN_SUPPRESSIONS` to its path, installed or fetched;
+     - docs/building.md tells every TSan run to pass it, so the stack keeps one list.
    - Dagda's ask: `NodeConfig::liveness_time`, a TimeSource for liveness probes and call
      watchdogs that defaults to `time`. Today a test stepping a node's clock by more than
      dead_after/3 also gives up its links (client.cpp's await_ping).
