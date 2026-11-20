@@ -73,6 +73,7 @@ add_executable(dannan_tests
   sim_convergence_test.cpp
   sim_isolation_test.cpp
   sim_nodes_test.cpp
+  sim_streams_test.cpp
   storage_file_system_test.cpp
   status_log_injection_test.cpp
   status_log_test.cpp

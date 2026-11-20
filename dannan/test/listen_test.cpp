@@ -1418,5 +1418,197 @@ TEST(StreamListener, StopsInTwoStepsAndClosesCleanly) {
   listener.stop();
 }
 
+// --- In memory (item 17) ----------------------------------------------------
+
+Connected adopt_now(StreamConnector& connector, Io& io, std::unique_ptr<Carrier> carrier, std::optional<ClientTls> tls) {
+  auto told = std::make_shared<std::promise<Connected>>();
+  connector.adopt(io.context.get_executor(), std::move(carrier), std::move(tls), 10s,
+                  [told](std::shared_ptr<Stream> stream, std::string why) { told->set_value({std::move(stream), std::move(why)}); });
+  auto future = told->get_future();
+  if (future.wait_for(30s) != std::future_status::ready) return {nullptr, "not told"};
+  return future.get();
+}
+
+ConnectorConfig client_config() {
+  ConnectorConfig out;
+  out.name = "client";
+  return out;
+}
+
+// An injected connection is served as an accepted one: handed up, counted, echoing, reporting
+// the client address the test gave and "memory" as its transport.
+TEST(StreamListener, ServesAnInjectedConnectionAsAnAcceptedOne) {
+  Io io;
+  Served served;
+  StreamListener listener(io.context, plain_config());
+  listener.start(io.context.get_executor(), [&](std::shared_ptr<Stream> stream) {
+    echo(stream);
+    served.handler()(std::move(stream));
+  });
+  MemoryOptions options;
+  options.client_address = {asio::ip::make_address("192.0.2.7"), 51000};
+  auto injected = listener.inject(io.context.get_executor(), options);
+  StreamConnector connector(io.context.get_executor(), client_config());
+  const auto client = adopt_now(connector, io, std::move(injected.client), std::nullopt);
+  ASSERT_TRUE(client.stream) << client.why;
+  EXPECT_EQ(ask(client.stream, "over memory"), "over memory");
+  ASSERT_TRUE(eventually([&] { return served.count() == 1; }));
+  EXPECT_STREQ(served.at(0)->transport(), "memory");
+  EXPECT_EQ(served.at(0)->peer(), options.client_address);
+  EXPECT_EQ(listener.counters().accepted, 1u);
+  listener.stop();
+}
+
+// Real TLS over the pipe: the chain checked, the name checked, a client certificate verified
+// (Lugh's RFC 8705 tests with no socket).
+TEST(StreamListener, AnInjectedConnectionTakesARealTlsHandshake) {
+  Io io;
+  Pki pki;
+  auto config = tls_config(std::make_shared<Certificates>(named_server(pki, "memory", "DNS:localhost,IP:127.0.0.1")), "memory-tls");
+  config.tls.client_certificates = ClientCertificates::optional;
+  Served served;
+  StreamListener listener(io.context, config);
+  listener.start(io.context.get_executor(), [&](std::shared_ptr<Stream> stream) {
+    echo(stream);
+    served.handler()(std::move(stream));
+  });
+  write(pki.dir.path() / "trust.pem", pki.ca.certificate().pem());
+  const auto issued = pki.issue(11);
+  write(pki.dir.path() / "client.crt", issued.chain);
+  write(pki.dir.path() / "client.key", issued.key);
+  ClientTls tls;
+  tls.trust = std::make_shared<ClientTrust>(pki.dir.path() / "trust.pem");
+  tls.server_name = "localhost";
+  tls.certificate = std::make_shared<Certificates>(CertificatePaths{pki.dir.path() / "client.crt", pki.dir.path() / "client.key", {}});
+  StreamConnector connector(io.context.get_executor(), client_config());
+  const auto client = adopt_now(connector, io, listener.inject(io.context.get_executor()).client, tls);
+  ASSERT_TRUE(client.stream) << client.why;
+  EXPECT_TRUE(client.stream->is_tls());
+  EXPECT_EQ(ask(client.stream, "secret"), "secret");
+  ASSERT_TRUE(eventually([&] { return served.count() == 1; }));
+  ASSERT_TRUE(served.at(0)->client_certificate());
+  EXPECT_TRUE(served.at(0)->client_certificate()->verified);
+  // A name the certificate does not carry is refused, as over TCP.
+  tls.server_name = "other.example";
+  EXPECT_FALSE(adopt_now(connector, io, listener.inject(io.context.get_executor()).client, tls).stream);
+  listener.stop();
+}
+
+TEST(StreamListener, AnInjectedConnectionMeetsTheListenersLimits) {
+  Io io;
+  auto config = plain_config();
+  config.max_connections = 1;
+  Served served;
+  StreamListener listener(io.context, config);
+  listener.start(io.context.get_executor(), served.handler());
+  auto first = listener.inject(io.context.get_executor());
+  ASSERT_TRUE(eventually([&] { return served.count() == 1; }));
+  auto second = listener.inject(io.context.get_executor());
+  EXPECT_TRUE(eventually([&] { return listener.counters().refused_cap == 1; }));
+  EXPECT_EQ(served.count(), 1u);
+  listener.stop();
+}
+
+TEST(StreamListener, InjectIsRefusedBeforeStartAndAfterStop) {
+  Io io;
+  StreamListener listener(io.context, plain_config());
+  EXPECT_THROW(listener.inject(io.context.get_executor()), std::logic_error);
+  listener.start(io.context.get_executor(), [](std::shared_ptr<Stream>) {});
+  EXPECT_NO_THROW(listener.inject(io.context.get_executor()));
+  listener.stop_accepting();
+  EXPECT_THROW(listener.inject(io.context.get_executor()), std::logic_error);
+  listener.stop();
+}
+
+// A severed connection resets the client's reads, as a dropped TCP connection does.
+TEST(StreamListener, ASeveredInjectedConnectionResetsTheClient) {
+  Io io;
+  StreamListener listener(io.context, plain_config());
+  listener.start(io.context.get_executor(), [](std::shared_ptr<Stream> stream) { echo(stream); });
+  auto injected = listener.inject(io.context.get_executor());
+  auto link = injected.link;
+  StreamConnector connector(io.context.get_executor(), client_config());
+  const auto client = adopt_now(connector, io, std::move(injected.client), std::nullopt);
+  ASSERT_TRUE(client.stream) << client.why;
+  EXPECT_EQ(ask(client.stream, "up"), "up");
+  link->sever();
+  auto read = std::make_shared<std::promise<boost::system::error_code>>();
+  auto byte = std::make_shared<char>();
+  asio::post(client.stream->get_executor(), [stream = client.stream, read, byte] {
+    stream->async_read_some(asio::buffer(byte.get(), 1), [read](boost::system::error_code error, std::size_t) { read->set_value(error); });
+  });
+  auto future = read->get_future();
+  ASSERT_EQ(future.wait_for(10s), std::future_status::ready);
+  EXPECT_EQ(future.get(), asio::error::connection_reset);
+  listener.stop();
+}
+
+// StartTLS from the client's side (Kvasir: MySQL's SSLRequest, then the ClientHello at once):
+// the server reads the request and takes start_tls_unanswered; the client upgrades.
+TEST(StreamConnector, UpgradesAPlaintextStreamToTlsFromTheClientsSide) {
+  Io io;
+  Pki pki;
+  auto config = tls_config(std::make_shared<Certificates>(named_server(pki, "upgrade", "DNS:localhost,IP:127.0.0.1")), "upgrade");
+  config.start_tls = true;
+  StreamListener listener(io.context, config);
+  listener.start(io.context.get_executor(), [](std::shared_ptr<Stream> stream) {
+    auto request = std::make_shared<char>();
+    asio::async_read(*stream, asio::buffer(request.get(), 1), [stream, request](boost::system::error_code error, std::size_t) {
+      if (error) return;
+      stream->start_tls_unanswered([stream](const std::string& why) {
+        if (why.empty()) echo(stream);
+      });
+    });
+  });
+  write(pki.dir.path() / "trust.pem", pki.ca.certificate().pem());
+  ClientTls tls;
+  tls.trust = std::make_shared<ClientTrust>(pki.dir.path() / "trust.pem");
+  tls.server_name = "localhost";
+  StreamConnector connector(io.context.get_executor(), client_config());
+  const auto client = adopt_now(connector, io, listener.inject(io.context.get_executor()).client, std::nullopt);
+  ASSERT_TRUE(client.stream) << client.why;
+  client.stream->send("S");
+  auto upgraded = std::make_shared<std::promise<std::string>>();
+  connector.upgrade(client.stream, tls, 10s, [upgraded](std::string why) { upgraded->set_value(std::move(why)); });
+  auto future = upgraded->get_future();
+  ASSERT_EQ(future.wait_for(30s), std::future_status::ready);
+  const auto why = future.get();
+  ASSERT_TRUE(why.empty()) << why;
+  EXPECT_TRUE(client.stream->is_tls());
+  EXPECT_EQ(ask(client.stream, "after upgrade"), "after upgrade");
+  // Once in TLS, a second upgrade is refused.
+  auto again = std::make_shared<std::promise<std::string>>();
+  connector.upgrade(client.stream, tls, 10s, [again](std::string why) { again->set_value(std::move(why)); });
+  EXPECT_NE(again->get_future().get().find("already"), std::string::npos);
+  listener.stop();
+}
+
+// The dial seam reaches a listener in place of TCP: connected, refused at once, or silent until
+// the deadline (a node cut off).
+TEST(StreamConnector, DialsThroughTheSeamInPlaceOfTcp) {
+  Io io;
+  StreamListener listener(io.context, plain_config());
+  listener.start(io.context.get_executor(), [](std::shared_ptr<Stream> stream) { echo(stream); });
+  auto config = client_config();
+  config.dial = [&](const std::string& host, uint16_t port, asio::any_io_executor executor, std::function<void(std::unique_ptr<Carrier>, std::string)> done) {
+    if (host == "silent") return;
+    if (host != "node-a" || port != 7000) return done(nullptr, "connection refused");
+    done(listener.inject(std::move(executor)).client, {});
+  };
+  StreamConnector connector(io.context.get_executor(), config);
+  const auto reached = connect_now(connector, io, "node-a", 7000, std::nullopt);
+  ASSERT_TRUE(reached.stream) << reached.why;
+  EXPECT_EQ(ask(reached.stream, "dialled"), "dialled");
+  const auto refused = connect_now(connector, io, "node-b", 7000, std::nullopt);
+  EXPECT_FALSE(refused.stream);
+  EXPECT_NE(refused.why.find("did not connect: connection refused"), std::string::npos) << refused.why;
+  const auto silent = connect_now(connector, io, "silent", 7000, std::nullopt, 200ms);
+  EXPECT_FALSE(silent.stream);
+  EXPECT_NE(silent.why.find("within the deadline"), std::string::npos) << silent.why;
+  EXPECT_EQ(connector.counters().refused_connect, 1u);
+  EXPECT_EQ(connector.counters().timed_out, 1u);
+  listener.stop();
+}
+
 }  // namespace
 }  // namespace dannan::listen
