@@ -1023,3 +1023,8 @@ Answers on item 24 (2026-11-20): Mimir, Louhi, Lir and Lugh confirm 1 to 3; Kvas
   off by default; accounts from a pluggable source (Kvasir's MySQL users, later Lugh's); the cookie
   key a cluster-key subkey taken from the node helper (item 14); a scope check per route (two admin
   actions: kill a session, drain a node). **Item 24's shape is confirmed by all five.**
+- Item 27 gains Louhi's three Reader gaps (2026-11-20, from louhi-ctl's move onto the Reader): a
+  value-kind flag given twice is refused as a usage error (list kinds take repeats; last-wins goes,
+  in the CHANGELOG); a lone "-" is positional and "--" ends options; and a per-setting
+  empty_is_unset for environment values, the default staying "empty is a value" unless the
+  Reader's other users ask otherwise.
