@@ -31,6 +31,7 @@
 
 #include "dannan/contract/time_source.h"
 #include "dannan/contract/unique_function.h"
+#include "dannan/listen/carrier.h"
 
 namespace dannan::listen {
 
@@ -61,13 +62,14 @@ class Stream : public std::enable_shared_from_this<Stream> {
  public:
   using executor_type = boost::asio::any_io_executor;
   using Socket = boost::asio::ip::tcp::socket;
-  using TlsStream = boost::asio::ssl::stream<Socket&>;
+  // TLS is layered over the carrier, whatever carries the bytes.
+  using TlsStream = boost::asio::ssl::stream<Carrier&>;
 
   ~Stream();
   Stream(const Stream&) = delete;
   Stream& operator=(const Stream&) = delete;
 
-  executor_type get_executor() noexcept { return _socket.get_executor(); }
+  executor_type get_executor() noexcept { return _carrier->get_executor(); }
 
   // Reads what has arrived, as a socket's async_read_some; plaintext or TLS alike.
   // The handler's executor, allocator and cancellation slot reach the read, so a
@@ -82,7 +84,7 @@ class Stream : public std::enable_shared_from_this<Stream> {
           if (self->_tls)
             self->_tls->async_read_some(to, std::move(*done));
           else
-            self->_socket.async_read_some(to, std::move(*done));
+            self->_carrier->async_read_some(to, std::move(*done));
         },
         token, buffers);
   }
@@ -98,7 +100,7 @@ class Stream : public std::enable_shared_from_this<Stream> {
           if (self->_tls)
             self->_tls->async_write_some(from, std::move(*done));
           else
-            self->_socket.async_write_some(from, std::move(*done));
+            self->_carrier->async_write_some(from, std::move(*done));
         },
         token, buffers);
   }
@@ -168,8 +170,8 @@ class Stream : public std::enable_shared_from_this<Stream> {
   const std::optional<ClientCertificate>& peer_certificate() const noexcept { return _client_certificate; }
   // The protocol ALPN chose; empty for none.
   const std::string& alpn() const noexcept { return _alpn; }
-  // "tcp" or "tls".
-  const char* transport() const noexcept { return _tls ? "tls" : "tcp"; }
+  // "tls", or the carrier's: "tcp", or "memory" for one inside a test.
+  const char* transport() const noexcept { return _tls ? "tls" : _carrier->transport(); }
   // The TLS session, for what the hosted system reads of it; null before TLS.
   SSL* native_tls() noexcept { return _tls ? _tls->native_handle() : nullptr; }
   // The listener's name.
@@ -181,8 +183,9 @@ class Stream : public std::enable_shared_from_this<Stream> {
   struct Private {};
 
  public:
-  // Made by its listener.
+  // Made by its listener or connector, over a socket or another carrier.
   Stream(Private, Socket socket, std::shared_ptr<ListenerShared> shared);
+  Stream(Private, std::unique_ptr<Carrier> carrier, std::shared_ptr<ListenerShared> shared);
 
  private:
   // The handshake as the server, within the listener's handshake deadline.
@@ -232,7 +235,7 @@ class Stream : public std::enable_shared_from_this<Stream> {
   void tls_shutdown();
   void finish(bool clean);
 
-  Socket _socket;
+  std::unique_ptr<Carrier> _carrier;
   std::shared_ptr<ListenerShared> _shared;
   boost::asio::ip::tcp::endpoint _peer;
   std::unique_ptr<TlsStream> _tls;

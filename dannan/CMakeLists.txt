@@ -54,6 +54,7 @@ add_library(dannan SHARED
   agree/caspaxos.cpp
   agree/memory_store.cpp
   agree/wire.cpp
+  listen/carrier.cpp
   listen/certificates.cpp
   listen/connector.cpp
   listen/limits.cpp

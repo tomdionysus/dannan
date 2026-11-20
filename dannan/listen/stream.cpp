@@ -54,10 +54,12 @@ std::optional<ClientCertificate> presented(SSL* session, bool bundle) {
 
 }  // namespace
 
-Stream::Stream(Private, Socket socket, std::shared_ptr<ListenerShared> shared)
-    : _socket(std::move(socket)), _shared(std::move(shared)), _idle_timer(_socket.get_executor()) {
+Stream::Stream(Private, Socket socket, std::shared_ptr<ListenerShared> shared) : Stream(Private{}, socket_carrier(std::move(socket)), std::move(shared)) {}
+
+Stream::Stream(Private, std::unique_ptr<Carrier> carrier, std::shared_ptr<ListenerShared> shared)
+    : _carrier(std::move(carrier)), _shared(std::move(shared)), _idle_timer(_carrier->get_executor()) {
   boost::system::error_code error;
-  _peer = _socket.remote_endpoint(error);
+  _peer = _carrier->remote_endpoint(error);
   _last_read = _shared->time->now().time_since_epoch().count();
 }
 
@@ -80,7 +82,7 @@ void Stream::handshake(std::function<void(std::string)> done) {
     asio::post(get_executor(), [done = std::move(done)] { done("the listener has no certificates"); });
     return;
   }
-  _tls = std::make_unique<TlsStream>(_socket, _context->context);
+  _tls = std::make_unique<TlsStream>(*_carrier, _context->context);
   // Past the deadline the socket goes, and the handshake fails with it.
   auto timer = std::make_shared<asio::steady_timer>(get_executor());
   std::weak_ptr<Stream> weak = shared_from_this();
@@ -110,7 +112,7 @@ void Stream::handshake(std::function<void(std::string)> done) {
 
 void Stream::client_handshake(std::shared_ptr<detail::ServerTls> context, const std::string& name, std::function<void(std::string)> done) {
   _context = std::move(context);
-  _tls = std::make_unique<TlsStream>(_socket, _context->context);
+  _tls = std::make_unique<TlsStream>(*_carrier, _context->context);
   SSL* session = _tls->native_handle();
   X509_VERIFY_PARAM* param = SSL_get0_param(session);
   boost::system::error_code literal;
@@ -173,18 +175,19 @@ void Stream::start_tls(std::string answer, std::function<void(std::string)> done
     boost::system::error_code error;
     // Before the answer goes, no client may yet begin its handshake: a byte here is
     // plaintext past the request, where none may be.
-    if (self->_socket.available(error) > 0 || error) {
+    if (self->_carrier->available(error) > 0 || error) {
       self->finish(false);
       return refuse("plaintext bytes arrived after the StartTLS request");
     }
     auto held = std::make_shared<std::string>(std::move(answer));
-    asio::async_write(self->_socket, asio::buffer(*held), [self, held, done = std::move(done)](const boost::system::error_code& written, std::size_t) mutable {
-      if (written) {
-        self->finish(false);
-        return done(written.message());
-      }
-      self->handshake(std::move(done));
-    });
+    asio::async_write(*self->_carrier, asio::buffer(*held),
+                      [self, held, done = std::move(done)](const boost::system::error_code& written, std::size_t) mutable {
+                        if (written) {
+                          self->finish(false);
+                          return done(written.message());
+                        }
+                        self->handshake(std::move(done));
+                      });
   });
 }
 
@@ -213,15 +216,13 @@ void Stream::set_idle(std::chrono::milliseconds idle) {
 void Stream::set_no_delay(bool on) {
   asio::dispatch(get_executor(), [self = shared_from_this(), on] {
     boost::system::error_code ignored;
-    if (self->_socket.is_open()) self->_socket.set_option(Socket::protocol_type::no_delay(on), ignored);
+    self->_carrier->set_no_delay(on, ignored);
   });
 }
 
 bool Stream::no_delay() const {
-  Socket::protocol_type::no_delay option;
   boost::system::error_code error;
-  _socket.get_option(option, error);
-  return !error && option.value();
+  return _carrier->no_delay(error);
 }
 
 void Stream::arm_idle() {
@@ -282,7 +283,7 @@ void Stream::write_next() {
   if (_tls)
     asio::async_write(*_tls, asio::buffer(_outbound.front()), std::move(done));
   else
-    asio::async_write(_socket, asio::buffer(_outbound.front()), std::move(done));
+    asio::async_write(*_carrier, asio::buffer(_outbound.front()), std::move(done));
 }
 
 void Stream::close() {
@@ -309,7 +310,7 @@ void Stream::shut_down() {
   _shutting_down = true;
   if (!_tls) {
     boost::system::error_code ignored;
-    _socket.shutdown(Socket::shutdown_send, ignored);
+    _carrier->shutdown_send(ignored);
     return finish(true);
   }
   // No send() is outstanding, but the hosted system's reads and writes may be: the
@@ -320,7 +321,7 @@ void Stream::shut_down() {
   if (_ops > 0) {
     _shutdown_waiting = true;
     boost::system::error_code ignored;
-    _socket.cancel(ignored);
+    _carrier->cancel(ignored);
     return;
   }
   tls_shutdown();
@@ -356,7 +357,7 @@ void Stream::finish(bool clean) {
   if (_closed.exchange(true)) return;
   boost::system::error_code ignored;
   _idle_timer.cancel();
-  _socket.close(ignored);
+  _carrier->close(ignored);
   {
     contract::Lock lock(_shared->mutex);
     ++(clean ? _shared->counters.closed_clean : _shared->counters.closed_abrupt);
