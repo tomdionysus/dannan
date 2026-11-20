@@ -198,6 +198,10 @@ TEST(Fault, EveryKindHasItsName) {
   EXPECT_STREQ(fault_name(Fault::failed), "failed");
 }
 
+TEST(Fault, AValueOutOfRangeIsNamedUnknown) { EXPECT_STREQ(fault_name(static_cast<Fault>(200)), "unknown"); }
+
+TEST(AckLevel, AValueOutOfRangeIsNamedUnknown) { EXPECT_STREQ(ack_level_name(static_cast<AckLevel>(200)), "unknown"); }
+
 TEST(AckLevel, TheFourAreOrderedWeakestFirst) {
   EXPECT_LT(AckLevel::ephemeral, AckLevel::persisted);
   EXPECT_LT(AckLevel::persisted, AckLevel::decided);
