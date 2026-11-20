@@ -58,6 +58,7 @@ add_library(dannan SHARED
   listen/certificates.cpp
   listen/connector.cpp
   listen/limits.cpp
+  listen/memory.cpp
   listen/listener.cpp
   listen/stream.cpp
   sched/class_gate.cpp

@@ -36,6 +36,7 @@ add_executable(dannan_tests
   identity_sha1_test.cpp
   identity_signing_test.cpp
   listen_backoff_test.cpp
+  listen_memory_test.cpp
   listen_prefix_test.cpp
   listen_test.cpp
   membership_agreed_test.cpp
