@@ -13,10 +13,19 @@
 # on the nodes stay by hand.
 name: CI
 
+# develop and main only: a feature branch's gate runs on the build cluster. Notes and docs build
+# nothing; no test reads them.
 on:
   push:
-    branches: [main, develop]
+    branches: [develop, main]
+    paths-ignore: ["TODO/**", "docs/**", "**/*.md"]
   pull_request:
+    paths-ignore: ["TODO/**", "docs/**", "**/*.md"]
+
+# A newer push to the same ref replaces the run in progress.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
