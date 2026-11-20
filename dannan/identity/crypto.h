@@ -58,6 +58,11 @@ class Sha256Hasher {
 
 Hash256 sha256(std::span<const uint8_t>);
 std::array<uint8_t, 32> hmac_sha256(std::span<const uint8_t> key, std::span<const uint8_t> data);
+// SHA-1 and HMAC-SHA-1 (TODO/2026-11-20-stack-plan.md, item 12), for formats that fix them: a
+// Valkey script's id (Mimir), TOTP (RFC 6238, Lugh). Never for a new design: SHA-1 is broken for
+// collisions.
+std::array<uint8_t, 20> sha1(std::span<const uint8_t> data);
+std::array<uint8_t, 20> hmac_sha1(std::span<const uint8_t> key, std::span<const uint8_t> data);
 // HKDF-SHA256 (RFC 5869), 32 bytes of output. An empty salt is no salt.
 std::array<uint8_t, 32> hkdf_sha256(std::span<const uint8_t> key, std::span<const uint8_t> salt, std::span<const uint8_t> info);
 // As above, into secure memory: for a key that must never sit in ordinary

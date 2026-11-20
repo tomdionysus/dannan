@@ -70,6 +70,20 @@ std::array<uint8_t, 32> hmac_sha256(std::span<const uint8_t> key, std::span<cons
   return out;
 }
 
+std::array<uint8_t, 20> sha1(std::span<const uint8_t> data) {
+  std::array<uint8_t, 20> out{};
+  unsigned size = 0;
+  if (EVP_Digest(data.data(), data.size(), out.data(), &size, EVP_sha1(), nullptr) != 1 || size != 20) throw std::runtime_error("SHA-1 failed");
+  return out;
+}
+
+std::array<uint8_t, 20> hmac_sha1(std::span<const uint8_t> key, std::span<const uint8_t> data) {
+  std::array<uint8_t, 20> out{};
+  unsigned size = 0;
+  if (!HMAC(EVP_sha1(), key.data(), length(key.size()), data.data(), data.size(), out.data(), &size) || size != 20) throw std::runtime_error("HMAC failed");
+  return out;
+}
+
 namespace {
 
 // HKDF-SHA256 into `out`, whatever memory it is.
