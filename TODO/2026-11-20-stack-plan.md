@@ -1028,3 +1028,22 @@ Answers on item 24 (2026-11-20): Mimir, Louhi, Lir and Lugh confirm 1 to 3; Kvas
   in the CHANGELOG); a lone "-" is positional and "--" ends options; and a per-setting
   empty_is_unset for environment values, the default staying "empty is a value" unless the
   Reader's other users ask otherwise.
+
+### Item 6: the clock rules, as agreed (Mimir, Dagda, 2026-11-20)
+
+- Membership stamps every record change max(wall + 1, last + 1), as adverts already did.
+- HlcClock::admit(stamp, peer) returns the receipt and AdmitVerdict {admitted, ahead,
+  self_out_of_bounds} with a reason; merged=false means refuse, never apply. Dagda applies it when a
+  peer's commit is offered for acceptance, never inside the merge (a merge stays a pure function of
+  its heads); a refused commit is transient and Dagda retries on its own backoff. No re-entry notice.
+- max_ahead's default: five seconds. The offset bound: two seconds.
+- A clock probe (a new message type; an old node refuses it as unknown) estimates each peer's offset
+  NTP-style on the heartbeat. A node whose offset passes the bound against more than half of the
+  agreed roster, itself counted at zero, leaves ready, and hlc().now() throws ClockOutOfBounds (a
+  std::runtime_error) at once, never waits. One or two nodes cannot reach that majority, with no
+  special case by size.
+- Agreement (Mimir's Mi-2): change() takes an optional HlcStamp, hlc().now() when absent, fixed for
+  the change's life including retries, carried in prepare and accept, admitted by each acceptor and
+  refused with "the proposer's clock is <n> ms ahead"; the Change gets it in a context argument.
+  read() takes none. An agreement wire change: the cluster moves together.
+- D-2 (tombstone maturity) is closed by these rules with no low watermark (Dagda).
