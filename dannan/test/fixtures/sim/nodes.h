@@ -186,6 +186,9 @@ class SimNetwork {
   std::shared_ptr<SimTransport> at(size_t index) const { return index < _transports.size() ? _transports[index].lock() : nullptr; }
   size_t size() const noexcept { return _transports.size(); }
   bool lost(size_t from, size_t to) { return _blocked.contains({from, to}) || _world.random.one_in(_faults.drop_one_in); }
+  // Whether `from` is cut off from `to` by a block or a partition: no random draw, so asking
+  // leaves the seed's sequence as it was.
+  bool blocked(size_t from, size_t to) const { return _blocked.contains({from, to}); }
   uint64_t delay() { return 1 + _world.random.below(_faults.max_delay_ms); }
   int copies() { return _world.random.one_in(_faults.duplicate_one_in) ? 2 : 1; }
 
@@ -431,12 +434,17 @@ class SimNodes {
   // goes with it. A call it had in flight is never answered.
   void stop(size_t i) {
     if (!_nodes.at(i)) return;
+    for (const auto& hook : stopping) hook(i);
     _nodes.at(i)->stop();
     _world.io.restart();
     while (_world.io.poll_one() > 0) {
     }
     _nodes.at(i).reset();
   }
+  // Told before node `i` stops: what a test or a fixture holds of it ends with it (the stream
+  // directory severs its streams).
+  std::vector<std::function<void(size_t)>> stopping;
+
   // Back as Wipe says.
   void restart(size_t i, Wipe wipe = Wipe::nothing) {
     stop(i);

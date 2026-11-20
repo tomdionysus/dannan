@@ -21,6 +21,7 @@
 #include "dannan/contract/time_source.h"
 #include "dannan/listen/certificates.h"
 #include "dannan/listen/limits.h"
+#include "dannan/listen/memory.h"
 #include "dannan/listen/stream.h"
 
 namespace dannan::listen {
@@ -111,10 +112,23 @@ class StreamListener {
   ListenerCounters counters() const;
   const ListenerConfig& config() const noexcept;
 
+  // A connection made in memory and served by this listener as an accepted one is: the same
+  // limits, counters, TLS or StartTLS, and hand-up to `accepted` on a strand of the listener's
+  // executor (TODO/2026-11-20-stack-plan.md, item 17). The test holds the client end, delivering
+  // on `client`, and the link (pieces, stall, resume, sever); the server end reports
+  // options.client_address as its peer (Lugh's rate limits and X-Forwarded-For key on it). A
+  // client that wants a Stream of its own, TLS included, adopts the end with
+  // StreamConnector::adopt. Throws std::logic_error before start() or after stop_accepting().
+  struct Injected {
+    std::unique_ptr<Carrier> client;
+    std::shared_ptr<MemoryLink> link;
+  };
+  Injected inject(boost::asio::any_io_executor client, MemoryOptions options = {});
+
  private:
   // The accept loop holds only the shared state, never the listener, which may go first.
   static void accept(const std::shared_ptr<ListenerShared>& shared);
-  static void served(const std::shared_ptr<ListenerShared>& shared, boost::asio::ip::tcp::socket socket);
+  static void served(const std::shared_ptr<ListenerShared>& shared, std::unique_ptr<Carrier> carrier);
 
   std::shared_ptr<ListenerShared> _shared;
   std::atomic<uint16_t> _port{0};
