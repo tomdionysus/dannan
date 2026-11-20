@@ -54,8 +54,10 @@ void MemoryStore::load(Slot slot, std::span<const Name> names, bool every, bool 
 
 std::optional<std::vector<AcceptorState>> MemoryStore::prepared(Slot slot, const Held& held, Kept& refusal) const {
   const auto found = _slots.find(slot);
+  // Taken here, under the lock prepared() requires: the analysis does not carry it into a lambda.
+  const bool none = found == _slots.end();
   const auto current = [&](size_t i) -> const AcceptorState* {
-    if (found == _slots.end()) return nullptr;
+    if (none) return nullptr;
     const auto it = found->second.names.find(key_of(held.names[i]));
     return it == found->second.names.end() ? nullptr : &it->second;
   };
