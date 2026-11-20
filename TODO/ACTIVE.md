@@ -37,6 +37,15 @@ started from are never read for direction or edited.
      - timed_out's text: "the outcome is unknown, and a write may yet land";
      - Dagda carries AckLevel's four names, plus `durable` as its own.
    - Whether a store may offer only some levels is Kvasir's ruling (Dagda asked).
+   - dannan-node follows docs/config.md:
+     - its flags are made from their keys, so `--port` becomes `--listen-port`;
+     - its variables take the project's prefix, so `DANNAN_NODE_...` becomes `DANNAN_...`, and
+       the README's example changes with them;
+     - it takes `log.level` and `log.format`, the stack's shared keys.
+     The flags are part of its interface, so the change waits for the minor.
+   - Dagda's ask: `NodeConfig::liveness_time`, a TimeSource for liveness probes and call
+     watchdogs that defaults to `time`. Today a test stepping a node's clock by more than
+     dead_after/3 also gives up its links (client.cpp's await_ping).
 3. **Raise with the maintainer:** `found()` gives each slot its own deadline, counted from when that
    slot's run starts, so with its node gone a founding's outcome takes a deadline per window of 16
    slots.

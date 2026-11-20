@@ -21,7 +21,9 @@
 // lir-node, ...; the maintainer, 2026-11-04: lifted from Lugh's, on yaml-cpp). A
 // binary declares its settings; the reader layers them and says where each
 // value came from; the binary reads them typed, and a value that cannot be
-// used is refused in the same words whichever layer gave it.
+// used is refused in the same words whichever layer gave it. docs/config.md has the naming rule
+// every binary follows: a flag and a variable made from the YAML key, which stays the source of
+// truth (the maintainer, 2026-11-20).
 namespace dannan::config {
 
 // A setting was given that cannot be used, or a layer could not be read:
