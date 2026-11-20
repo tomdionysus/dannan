@@ -19,7 +19,8 @@
 #   tools/ci.sh install-debs <tag>
 #                          for a dependant's CI: builds the tag's libdannan<major.minor>
 #                          and libdannan-dev with tools/build-deb.sh (tests skipped) and
-#                          installs them; DANNAN_REPOSITORY names another clone source
+#                          installs them; DANNAN_REPOSITORY names another clone source, and
+#                          DEB_BUILD_OPTIONS (parallel=N, say) is kept, with nocheck added
 #
 # Builds go under build-ci/ (DANNAN_CI_OUT to move it). Needs g++ cmake
 # ninja-build libboost-dev libssl-dev libyaml-cpp-dev libgtest-dev libgmock-dev,
@@ -190,7 +191,9 @@ case "$step" in
     git clone --quiet --depth 1 --branch "$tag" "$repository" "$work/src"
     $sudo apt-get install -y --no-install-recommends dpkg-dev
     $sudo apt-get build-dep -y "$work/src"
-    (cd "$work/src" && DEB_BUILD_OPTIONS=nocheck tools/build-deb.sh)
+    # The caller's options kept, nocheck added: a caller's parallel= holds the build to the cores it
+    # claimed (Mimir's, a 1.5 GB container on one core).
+    (cd "$work/src" && DEB_BUILD_OPTIONS="${DEB_BUILD_OPTIONS:+$DEB_BUILD_OPTIONS }nocheck" tools/build-deb.sh)
     $sudo apt-get install -y "$work"/src/build-deb/libdannan[0-9]*_*.deb "$work"/src/build-deb/libdannan-dev_*.deb
     dpkg-query -W -f='${Package} ${Version}\n' 'libdannan*'
     ;;

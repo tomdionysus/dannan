@@ -9,6 +9,10 @@ check before the node stopped ran on while the node was destroyed. Hosted CI's T
 caught a roster step writing to a freed path. The stop now waits for a step already under way,
 once it has released what that step might wait on. A node without a schedule was not affected.
 
+Fixed: `tools/ci.sh install-debs` replaced the caller's `DEB_BUILD_OPTIONS` with `nocheck`, so a
+caller's `parallel=1` was lost and the build ran on every CPU (Mimir's container, 1.5 GB on one
+core, had its compiler killed). The caller's options are kept, with `nocheck` added.
+
 Added: `agree::MemoryStore::each_held(slot, after, visit)`, the names a slot holds a value for,
 in the order of their bytes, from strictly past `after`, until the visitor returns false (Mimir's
 ask). Pages by the last name given, so a name removed between pages skips no other.
