@@ -16,6 +16,7 @@ target_compile_definitions(dannan_test_fixtures INTERFACE DANNAN_TEST_TEMP_ROOT=
 add_executable(dannan_tests
   contract_hlc_test.cpp
   agree_caspaxos_test.cpp
+  contract_completion_test.cpp
   contract_test.cpp
   custody_tool_test.cpp
   fixtures_test.cpp
