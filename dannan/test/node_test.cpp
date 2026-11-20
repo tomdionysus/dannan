@@ -2408,6 +2408,74 @@ agree::Outcome agree_now(Node& node, const std::vector<identity::NodeId>& replic
   });
 }
 
+// A store that keeps as MemoryStore does, but holds each keep's completion until the test lets
+// it go: a store whose disk is slow as the node stops.
+class HeldKeepStore final : public agree::AcceptorStore {
+ public:
+  void load(agree::Slot slot, std::span<const agree::Name> names, bool every, bool values, std::function<void(agree::Held)> done) override {
+    _store.load(slot, names, every, values, std::move(done));
+  }
+  // Holds only a keep that names the slot's served set, as founding's accept does: that keep's
+  // completion publishes the slot advert, the path into the node. Every other keep completes.
+  void keep(agree::Slot slot, const agree::Held& held, std::function<void(Kept)> done) override {
+    Kept out;
+    {
+      std::lock_guard lock(_mutex);
+      _store.keep(slot, held, [&out](Kept kept) { out = std::move(kept); });
+      if (held.slot.served) {
+        _kept = out;
+        _held.push_back(std::move(done));
+        return;
+      }
+    }
+    done(std::move(out));
+  }
+  bool ready() const override { return true; }
+  size_t waiting() {
+    std::lock_guard lock(_mutex);
+    return _held.size();
+  }
+  // Each held completion, posted as a store completes from its own thread; `ran` counts those
+  // that have returned.
+  size_t release(asio::io_context& io, std::atomic<size_t>& ran) {
+    std::lock_guard lock(_mutex);
+    const auto count = _held.size();
+    for (auto& done : _held)
+      asio::post(io, [done = std::move(done), kept = _kept, &ran] {
+        done(kept);
+        ++ran;
+      });
+    _held.clear();
+    return count;
+  }
+
+ private:
+  MemoryStore _store;
+  Kept _kept;
+  std::mutex _mutex;
+  std::vector<std::function<void(Kept)>> _held;
+};
+
+// A store's completion that runs after its node is destroyed reaches nothing of the node (Mimir's
+// ASan report on 0.9.2: a keep posted as the node stopped ran after it, and the slot advert it
+// published wrote into the node's freed roster). Under ASan this is the use-after-free itself.
+TEST(Node, AStoreCompletionAfterItsNodeIsDestroyedReachesNothingOfIt) {
+  Pair pair({}, {}, true);
+  auto store = std::make_shared<HeldKeepStore>();
+  pair.a->context().agreement().serve("test", "test", store);
+  // Not waited for: with the node gone, each slot's run waits out its own deadline in turn.
+  pair.a->context().agreement().found("test", 2s, pair.io.context.get_executor(), [](agree::Outcome) {});
+  ASSERT_TRUE(eventually([&] { return store->waiting() > 0; }));
+  pair.b.reset();
+  pair.a->stop();
+  pair.a.reset();
+  std::atomic<size_t> ran{0};
+  const auto held = store->release(pair.io.context, ran);
+  EXPECT_GT(held, 0u);
+  // Each completion runs to its end, reaching nothing of the node it was for.
+  EXPECT_TRUE(eventually([&] { return ran.load() == held; }));
+}
+
 // Agreement across the cluster (0.9.0): founded on A alone, the genesis, and grown to A and
 // B by a transfer; a change on both nodes' acceptors commits on both, and the other node's
 // strict read sees it; a node that does not advertise the space's capability is refused by

@@ -444,7 +444,7 @@ crosses the network.
 **Wire:** prepare gains a flag for "values wanted". The prepare answer's `NameState` loses
 its value and gains the summary and a has-value bit. The accept carries, per name, a whole
 value or a delta with its base ballot. The accept answer gains a per-name "need whole" list.
-Agreement's wire is unreleased on 0.9, so it changes in place, at version 1.
+Agreement's wire is unreleased before 0.9.0, so it changes in place, at version 1.
 
 **Safety:** unchanged. The value a change works from is the base's, which the fetch proves
 by its ballot: an acceptor answers only for exactly that ballot. A delta is applied only on

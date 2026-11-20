@@ -431,7 +431,7 @@ Used today, not to break:
   get_executor; listen/listener.h StreamListener, ListenerConfig (start_tls), Certificates.
 - Test: fixtures/stepped_time.h; next, fixtures/sim/nodes.h (SimNodes), dannan::sim_checkers and
   DANNAN_TEST_TEMP_ROOT for its step 3.
-- Context::time().after() routed through the sim's schedule (on 0.9; must not break).
+- Context::time().after() routed through the sim's schedule (since 0.9.0; must not break).
 
 Kvasir's steps: 2a one node in memory (now), 2b state in Dagda, 3 the commit protocol in the
 simulator, 4 the cluster at decided and replicated, 6 ephemeral and persisted, splits and merges.

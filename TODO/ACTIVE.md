@@ -1,7 +1,6 @@
 # Dannan - Active Work
 
-Last updated: 2026-11-19 afternoon, rationalised for a context clear: the apt repository complete, 0.9.3 planned
-for after the cutover. Dannan is written in this repository as its own library, Macha's code at `00861dd` being the source of
+Last updated: 2026-11-20 evening, at 0.10.0's release. Dannan is written in this repository as its own library, Macha's code at `00861dd` being the source of
 truth, and Macha is ported onto it (the maintainer, 2026-11-03: "here first"). `COMPLETED.md` is the record; move items across
 as they land, with what shipped and the gate counts.
 
@@ -15,9 +14,36 @@ started from are never read for direction or edited.
   [`2026-11-03-macha-function-inventory.md`](2026-11-03-macha-function-inventory.md).
 - The live cluster is live-a and live-b (Pi 5, Debian 13), on Macha 0.94.2 and Dannan 0.5.3.
 
-## Resume here (2026-11-20)
+## Resume here (2026-11-20 evening)
 
-**Planning the Cluster Stack's needs; code held.** the maintainer, 2026-11-20, after the duplication and
+**0.10.0 is released** (COMPLETED.md). In order, next:
+1. **0.10.1, a patch, ABI kept:** `agree::MemoryStore::each_held`, agreed with Mimir so it can drop
+   its own store:
+   `void each_held(Slot, const std::optional<Name>& after, const std::function<bool(const Name&, const AcceptorState&)>& visit) const;`
+   - the walk resumes strictly past `after`, by the name's bytes, whether or not that name is
+     still held;
+   - the visitor returns false to stop;
+   - the store's lock is held across the walk, so a visitor never calls back into the store;
+   - order is stable while nothing is kept;
+   - first test: a name removed between two pages is never skipped.
+2. **0.11.0:**
+   - the stream carrier (feature/stream-carrier, for Lir): its memory-pipe write test fails, and a
+     run ended in a bus error;
+   - item 6 (feature/clock-rules), its fixes re-gated;
+   - then the plan's second minor (2026-11-20-stack-plan.md).
+   - Agreed with Dagda for its matching minor:
+     - `Outcome<T>::failure(Fault, message, T evidence)` keeps the evidence beside the fault;
+     - `Fault::cancelled`, added last;
+     - timed_out's text: "the outcome is unknown, and a write may yet land";
+     - Dagda carries AckLevel's four names, plus `durable` as its own.
+   - Whether a store may offer only some levels is Kvasir's ruling (Dagda asked).
+3. **Raise with the maintainer:** `found()` gives each slot its own deadline, counted from when that
+   slot's run starts, so with its node gone a founding's outcome takes a deadline per window of 16
+   slots.
+4. **Dependencies:** read Boost's, OpenSSL's and yaml-cpp's newer releases against Dannan's code
+   (the maintainer, 2026-11-20).
+
+**Earlier on 2026-11-20: planning the Cluster Stack's needs; code held.** the maintainer, 2026-11-20, after the duplication and
 special-roles audits: "You should start planning now"; on starting code, "Keep holding". The
 plan is [`2026-11-20-stack-plan.md`](2026-11-20-stack-plan.md): 31 items in three minors, every
 consumer's answer (what it uses today, what it needs, the proof), and the shapes reconciled.
@@ -81,7 +107,7 @@ flight. Once the cutover is done, the next Dannan work is 0.9.3 (below); nothing
   - `membership/known-nodes.bin`, `membership/agreed-nodes.bin`;
   - `telemetry/last-known.bin`, `connectivity/inbound.bin`, `observation/`;
   - `identity/custody`, `identity/counters` (with custody), `identity/revocations` (with certificates);
-  - `clock/hlc-ceiling` (0.9, only without custody).
+  - `clock/hlc-ceiling` (since 0.9.0, only without custody).
 
 **Dannan's own state.**
 - **0.9.2 is the last release** (`main` and tag at `36d6ded`). `develop` holds only records past it; its last pushed

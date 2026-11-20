@@ -42,6 +42,18 @@ configure() {
   cmake --build "$out/$dir" -j "$jobs" --target dannan_tests
 }
 
+# The library itself carries the sanitizer, not only the tests that link it: its undefined
+# symbols name the runtime's entry points (`prefix`, __asan_ or __tsan_).
+instrumented() {
+  library=$(find "$1" -maxdepth 2 -name 'libdannan.so*' -type f | head -n 1)
+  count=$(nm -D --undefined-only "$library" | grep -c "$2" || true)
+  if [ "$count" -eq 0 ]; then
+    echo "$library is not instrumented: no $2 symbols" >&2
+    exit 1
+  fi
+  echo "$library: $count $2 symbols"
+}
+
 case "$step" in
   check)
     cd "$top"
@@ -64,13 +76,14 @@ case "$step" in
     "$out/clang/dannan_tests"
     ;;
   asan)
-    flags="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined"
-    configure asan -DCMAKE_BUILD_TYPE=RelWithDebInfo -DDANNAN_WARNINGS_AS_ERRORS=OFF -DCMAKE_CXX_FLAGS="$flags" -DCMAKE_EXE_LINKER_FLAGS="$flags" -DCMAKE_SHARED_LINKER_FLAGS="$flags"
+    # Through DANNAN_SANITIZE, the switch a consumer fetching Dannan uses, so the gate proves it.
+    configure asan -DCMAKE_BUILD_TYPE=RelWithDebInfo -DDANNAN_WARNINGS_AS_ERRORS=OFF -DDANNAN_SANITIZE=address
+    instrumented "$out/asan" __asan_
     ASAN_OPTIONS=detect_stack_use_after_return=1 UBSAN_OPTIONS=print_stacktrace=1 "$out/asan/dannan_tests"
     ;;
   tsan)
-    flags="-fsanitize=thread -fno-omit-frame-pointer"
-    configure tsan -DCMAKE_BUILD_TYPE=RelWithDebInfo -DDANNAN_WARNINGS_AS_ERRORS=OFF -DCMAKE_CXX_FLAGS="$flags" -DCMAKE_EXE_LINKER_FLAGS="$flags" -DCMAKE_SHARED_LINKER_FLAGS="$flags"
+    configure tsan -DCMAKE_BUILD_TYPE=RelWithDebInfo -DDANNAN_WARNINGS_AS_ERRORS=OFF -DDANNAN_SANITIZE=thread
+    instrumented "$out/tsan" __tsan_
     TSAN_OPTIONS="halt_on_error=1 second_deadlock_stack=1 suppressions=$top/dannan/test/tsan-suppressions.txt" "$out/tsan/dannan_tests"
     ;;
   package)

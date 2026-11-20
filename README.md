@@ -191,7 +191,8 @@ cmake --build build -j8
 
 Pass `-DCMAKE_PREFIX_PATH` where Boost and OpenSSL are not on the default
 path (on macOS with MacPorts, for example
-`"/opt/local/libexec/boost/1.88;/opt/local"`).
+`"/opt/local/libexec/boost/1.88;/opt/local"`). [`docs/building.md`](docs/building.md)
+has every option, including `DANNAN_SANITIZE` for an instrumented build.
 
 ## The stack
 

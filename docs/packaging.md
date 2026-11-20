@@ -2,10 +2,11 @@
 
 Dannan is packaged for Debian trixie, on x86-64 and arm64, as:
 
-- `libdannan<major.minor>` (for example `libdannan0.9`): the shared library. Its
-  SONAME is major.minor, `libdannan.so.0.9`. A patch release keeps the ABI (see
-  "The ABI" below), so a host built against 0.9.0 loads any later 0.9 patch. A
-  minor release is a new SONAME and a new package, installable beside the old.
+- `libdannan<major.minor>` (for example `libdannan0.10`): the shared library. Its
+  SONAME is major.minor, `libdannan.so.0.10`. A patch release keeps the ABI (see
+  "The ABI" below), so a host built against 0.10.0 loads 0.10.1 or any later patch
+  of that minor. A minor release is a new SONAME and a new package, installable
+  beside the old.
 - `libdannan-dev`: the headers, the `libdannan.so` link and the CMake package
   configuration. It depends on exactly its own release's library.
   `find_package(dannan <version> CONFIG)` accepts that version or any later
@@ -27,7 +28,7 @@ Dagda tag and takes the Dannan minor that Dagda was built on.
   `abidiff` over the installed public headers. CI fails on an incompatible
   change.
 - An addition is a patch's to make. A consumer's package therefore depends on
-  `libdannan0.9 (>= <the patch it was built with>)` (`dh_makeshlibs -V`).
+  `libdannan0.10 (>= <the full version it was built with, such as 0.10.0>)` (`dh_makeshlibs -V`).
 - An ABI change is a minor release: the next minor's first release has no base
   to compare with.
 - The check sees layout and symbols: the types reached through exported
@@ -41,11 +42,12 @@ Dagda tag and takes the Dannan minor that Dagda was built on.
 A consumer's packaging, for example Dagda's:
 
 ```
-Build-Depends: libdannan-dev (>= 0.9.2), libdannan-dev (<< 0.10~)
-Depends: ${shlibs:Depends}          # gives libdannan0.9 (>= 0.9.2)
+Build-Depends: libdannan-dev (>= 0.10.0), libdannan-dev (<< 0.11~)
+Depends: ${shlibs:Depends}          # gives libdannan0.10 (>= 0.10.0)
 ```
 
-and in CMake `find_package(dannan 0.9.2 CONFIG REQUIRED)`.
+and in CMake `find_package(dannan 0.10.0 CONFIG REQUIRED)`, or with FetchContent
+`GIT_TAG 0.10.0`. A pin always names one full release, never a minor alone.
 
 The promise starts at 0.6.0, under a SONAME no earlier release used. 0.5.0 to
 0.5.5 were all `libdannan.so.0.5`, yet 0.5.4 changed their ABI: against 0.5.3 it
