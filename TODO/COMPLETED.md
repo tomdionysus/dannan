@@ -38,7 +38,7 @@ Moved to 0.11.0: the stream carrier and item 6.
 ## The Macha move to Dagda: Dannan's part, 2026-11-18 evening to 2026-11-19
 
 No code changed; `develop` is at `3bb372c` and CI's last run, on `9e4bdce`, is green (44202755089).
-- **The cluster wipe** (Lir Development Cluster, 16:05Z 2026-11-18: all four Pis cleaned to bare OS). Nothing of
+- **The cluster wipe** (the coordinating session, 16:05Z 2026-11-18: all four Pis cleaned to bare OS). Nothing of
   Dannan's on them was unique: `/root/dannan-vlp` was a copied tree, not a checkout. Its build and test logs (99
   files, about 7 MB) were copied to `build/pi-logs-2026-11-18/<host>/` first. The Pis were rebuilt; Macha's tag
   builds of Dannan 0.5.3 and 0.9.2 are on node-a in `/home/dev/deps/`.

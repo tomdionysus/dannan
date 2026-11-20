@@ -2,9 +2,8 @@
 
 Started 2026-11-20. This is Dannan's own plan for what the Cluster Stack (Macha, Dannan, Dagda,
 Lir, Lugh, Louhi, Mimir, Kvasir; not AthenaSIP or Miach) needs of it. The placements were settled
-among the sessions and are kept by Lir Development Cluster in
-`../lir-develop-cluster/TODO/2026-11-20-cluster-stack-placement.md` ("The converged plan" ->
-"Dannan"). This file turns them into a baseline Dannan can build from: who needs each item, the
+among the sessions and are kept by the coordinating session in the stack's placement record
+("The converged plan" -> "Dannan"). This file turns them into a baseline Dannan can build from: who needs each item, the
 shape, the test that proves it, and what is still open.
 
 **State.** Planning only. the maintainer, 2026-11-20: "You should start planning now." Code stays held

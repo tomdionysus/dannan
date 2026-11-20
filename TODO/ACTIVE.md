@@ -47,8 +47,8 @@ started from are never read for direction or edited.
 special-roles audits: "You should start planning now"; on starting code, "Keep holding". The
 plan is [`2026-11-20-stack-plan.md`](2026-11-20-stack-plan.md): 31 items in three minors, every
 consumer's answer (what it uses today, what it needs, the proof), and the shapes reconciled.
-The placements were settled through Lir Development Cluster
-(`../lir-develop-cluster/TODO/2026-11-20-cluster-stack-placement.md`). the maintainer's rulings that day: HTTP
+The placements were settled through the coordinating session, which keeps the stack's
+placement record. the maintainer's rulings that day: HTTP
 and JSON into Dannan, register order by hlc, a DNS responder in Dannan, no automatic removal of
 absent nodes, the lower project keeps what two need, Macha injects a logger and the Context (no
 holders), no single-node special cases, squash commits onto develop, sanitizers at a feature's
