@@ -43,6 +43,7 @@ add_executable(dannan_tests
   reach_upnp_test.cpp
   config_test.cpp
   encoding_percent_test.cpp
+  encoding_test.cpp
   net_assembler_test.cpp
   node_test.cpp
   net_channel_test.cpp
