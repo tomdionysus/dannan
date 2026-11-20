@@ -38,6 +38,11 @@ toggle is `true` or `false`; the flag alone means `true`.
 A binary may leave a setting off the command line or out of the environment, such as a secret
 that should not appear in `ps` output. It never gives one under a name other than these.
 
+A list whose items may hold a comma or whitespace is not offered as a variable: a variable is
+split on both, and there is no escape. Kvasir's argon2id credentials are an example
+(`m=..,t=..,p=..`). Such a list comes from YAML, and a secret one from `secrets.yaml`; a repeated
+flag, where the binary offers one, carries each item whole.
+
 ## Shared settings
 
 These keys mean the same in every binary:
