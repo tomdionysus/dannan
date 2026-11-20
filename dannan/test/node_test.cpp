@@ -2425,11 +2425,18 @@ class HeldKeepStore final : public agree::AcceptorStore {
     std::lock_guard lock(_mutex);
     return _held.size();
   }
-  // Each held completion, posted as a store completes from its own thread.
-  void release(asio::io_context& io) {
+  // Each held completion, posted as a store completes from its own thread; `ran` counts those
+  // that have returned.
+  size_t release(asio::io_context& io, std::atomic<size_t>& ran) {
     std::lock_guard lock(_mutex);
-    for (auto& done : _held) asio::post(io, [done = std::move(done), kept = _kept] { done(kept); });
+    const auto count = _held.size();
+    for (auto& done : _held)
+      asio::post(io, [done = std::move(done), kept = _kept, &ran] {
+        done(kept);
+        ++ran;
+      });
     _held.clear();
+    return count;
   }
 
  private:
@@ -2446,15 +2453,17 @@ TEST(Node, AStoreCompletionAfterItsNodeIsDestroyedReachesNothingOfIt) {
   Pair pair({}, {}, true);
   auto store = std::make_shared<HeldKeepStore>();
   pair.a->context().agreement().serve("test", "test", store);
-  std::atomic<bool> told{false};
-  pair.a->context().agreement().found("test", 2s, pair.io.context.get_executor(), [&told](agree::Outcome) { told = true; });
+  // Not waited for: with the node gone, each slot's run waits out its own deadline in turn.
+  pair.a->context().agreement().found("test", 2s, pair.io.context.get_executor(), [](agree::Outcome) {});
   ASSERT_TRUE(eventually([&] { return store->waiting() > 0; }));
   pair.b.reset();
   pair.a->stop();
   pair.a.reset();
-  store->release(pair.io.context);
-  // The founding change ends by its deadline, the node long gone.
-  EXPECT_TRUE(eventually([&] { return told.load(); }));
+  std::atomic<size_t> ran{0};
+  const auto held = store->release(pair.io.context, ran);
+  EXPECT_GT(held, 0u);
+  // Each completion runs to its end, reaching nothing of the node it was for.
+  EXPECT_TRUE(eventually([&] { return ran.load() == held; }));
 }
 
 // Agreement across the cluster (0.9.0): founded on A alone, the genesis, and grown to A and
