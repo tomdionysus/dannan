@@ -70,41 +70,65 @@ bool Bucket::full(contract::TimePoint now) {
   return _tokens >= _rate.burst;
 }
 
+namespace {
+
+std::array<uint8_t, 16> bytes_of(const boost::asio::ip::address& a) {
+  std::array<uint8_t, 16> out{};
+  if (a.is_v4()) {
+    const auto v4 = a.to_v4().to_bytes();
+    std::copy(v4.begin(), v4.end(), out.begin());
+  } else {
+    const auto v6 = a.to_v6().to_bytes();
+    std::copy(v6.begin(), v6.end(), out.begin());
+  }
+  return out;
+}
+
+}  // namespace
+
+boost::asio::ip::address unmapped(const boost::asio::ip::address& address) {
+  if (address.is_v6() && address.to_v6().is_v4_mapped()) return boost::asio::ip::make_address_v4(boost::asio::ip::v4_mapped, address.to_v6());
+  return address;
+}
+
 Prefix Prefix::parse(std::string_view text) {
+  const auto refuse = [&](const char* why) { return std::invalid_argument("not an address or prefix: " + std::string(text) + " (" + why + ")"); };
   const auto slash = text.find('/');
   boost::system::error_code error;
   Prefix out;
   out.address = boost::asio::ip::make_address(std::string(trimmed(text.substr(0, slash))), error);
-  if (error) throw std::invalid_argument("not an address or prefix: " + std::string(text));
-  const unsigned bits = out.address.is_v4() ? 32 : 128;
+  if (error) throw refuse("no address");
+  unsigned bits = out.address.is_v4() ? 32 : 128;
   if (slash == std::string_view::npos) {
-    out.length = static_cast<uint8_t>(bits);
+    out.address = unmapped(out.address);
+    out.length = static_cast<uint8_t>(out.address.is_v4() ? 32 : 128);
     return out;
   }
-  const auto length = std::string(trimmed(text.substr(slash + 1)));
-  char* end = nullptr;
-  const unsigned long parsed = std::strtoul(length.c_str(), &end, 10);
-  if (length.empty() || *end != '\0' || parsed > bits) throw std::invalid_argument("not an address or prefix: " + std::string(text));
+  const auto length = trimmed(text.substr(slash + 1));
+  if (length.empty() || length.size() > 3 || !std::all_of(length.begin(), length.end(), [](char c) { return c >= '0' && c <= '9'; }))
+    throw refuse("the length is not a number");
+  unsigned parsed = 0;
+  for (const char c : length) parsed = parsed * 10 + static_cast<unsigned>(c - '0');
+  if (parsed > bits) throw refuse("the length is past the address's bits");
+  // An IPv4-mapped prefix of at least /96 is the IPv4 prefix it maps.
+  if (out.address.is_v6() && out.address.to_v6().is_v4_mapped() && parsed >= 96) {
+    out.address = unmapped(out.address);
+    parsed -= 96;
+    bits = 32;
+  }
+  const auto held = bytes_of(out.address);
+  for (unsigned i = parsed; i < bits; ++i)
+    if (held[i / 8] & (0x80u >> (i % 8))) throw refuse("host bits are set past the length");
   out.length = static_cast<uint8_t>(parsed);
   return out;
 }
 
+std::string Prefix::to_string() const { return address.to_string() + "/" + std::to_string(length); }
+
 bool Prefix::contains(const boost::asio::ip::address& candidate) const noexcept {
   // An IPv4 peer met on an IPv6 socket is the same address.
-  auto peer = candidate;
-  if (peer.is_v6() && peer.to_v6().is_v4_mapped()) peer = boost::asio::ip::make_address_v4(boost::asio::ip::v4_mapped, peer.to_v6());
+  const auto peer = unmapped(candidate);
   if (peer.is_v4() != address.is_v4()) return false;
-  const auto bytes_of = [](const boost::asio::ip::address& a) {
-    std::array<uint8_t, 16> out{};
-    if (a.is_v4()) {
-      const auto v4 = a.to_v4().to_bytes();
-      std::copy(v4.begin(), v4.end(), out.begin());
-    } else {
-      const auto v6 = a.to_v6().to_bytes();
-      std::copy(v6.begin(), v6.end(), out.begin());
-    }
-    return out;
-  };
   const auto ours = bytes_of(address);
   const auto theirs = bytes_of(peer);
   const unsigned whole = length / 8;
