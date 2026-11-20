@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -136,6 +137,36 @@ class AsyncSink final : public LogSink {
 // A sink that takes nothing, for a component given none.
 std::shared_ptr<LogSink> null_sink();
 
+// The sink a process root owns from its first line, before any node exists, and hands to the
+// node and to every component (TODO/2026-11-20-stack-plan.md, item 28; the maintainer, 2026-11-20): what is
+// behind it may be swapped while other threads log, and loggers handed out before the swap
+// write to the new sink after it. enabled() is one atomic load of the level filter taken from
+// the sink at set(), so it never locks or allocates; a sink whose own filter changes is set
+// again. write() holds the sink it writes to, so a swap never frees a sink a write is still in.
+// Thread-safe.
+class SwappableSink final : public LogSink {
+ public:
+  explicit SwappableSink(std::shared_ptr<LogSink> initial);
+
+  // Every record after this goes to `sink`. Waits on nothing but a write already copying the
+  // previous sink out.
+  void set(std::shared_ptr<LogSink> sink);
+  std::shared_ptr<LogSink> current() const;
+
+  bool enabled(LogLevel level) const noexcept override;
+  void write(LogLevel, std::string_view scope, std::string_view message) override;
+  void write_at(std::chrono::system_clock::time_point at, LogLevel, std::string_view scope, std::string_view message) override;
+
+ private:
+  static uint8_t mask_of(const LogSink& sink) noexcept;
+
+  // Bit n set: LogLevel n is enabled.
+  std::atomic<uint8_t> _mask;
+  // Held only to copy the pointer in or out; never across a write.
+  mutable contract::Mutex _mutex;
+  std::shared_ptr<LogSink> _sink DANNAN_GUARDED_BY(_mutex);
+};
+
 // How a node writes its log: "text" (ConsoleSink) or "json" (JsonSink), in
 // any case. Throws std::invalid_argument naming the accepted spellings.
 enum class LogFormat : unsigned char { text, json };
@@ -157,6 +188,9 @@ class ScopedLogger {
   void log(LogLevel level, std::string_view message) const {
     if (_sink->enabled(level)) _sink->write(level, _scope, message);
   }
+  // Writes without asking the filter: for a caller that filtered already by its own rule, such
+  // as a library's log callback carrying the library's own level. Safe from any thread.
+  void emit(LogLevel level, std::string_view message) const { _sink->write(level, _scope, message); }
 
   const std::string& scope() const noexcept { return _scope; }
   // A logger for a part of this component: "net" becomes "net.client".
