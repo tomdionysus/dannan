@@ -25,6 +25,7 @@ add_executable(dannan_tests
   fuzz_smoke_test.cpp
   identity_certificate_test.cpp
   identity_crypto_test.cpp
+  identity_durable_directories_test.cpp
   identity_durable_file_test.cpp
   identity_key_custody_test.cpp
   identity_node_identity_test.cpp
