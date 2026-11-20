@@ -1976,13 +1976,13 @@ class SlowKeepStore final : public agree::AcceptorStore {
  public:
   explicit SlowKeepStore(agree::ReplicaSet served) : _served(std::move(served)) {}
   void load(agree::Slot, std::span<const agree::Name> names, bool, bool, std::function<void(agree::Held)> done) override {
-    agree::Held held;
-    held.slot.served = _served;
+    agree::Held out;
+    out.slot.served = _served;
     for (const auto& name : names) {
-      held.names.push_back(name);
-      held.states.emplace_back();
+      out.names.push_back(name);
+      out.states.emplace_back();
     }
-    done(std::move(held));
+    done(std::move(out));
   }
   void keep(agree::Slot, const agree::Held&, std::function<void(Kept)> done) override { held.push_back(std::move(done)); }
   bool ready() const override { return true; }
