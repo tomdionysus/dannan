@@ -2595,5 +2595,38 @@ TEST(Node, WithAScheduleItsLoopsAndTimersRunWhenTheScheduleRunsThem) {
   a.stop();
 }
 
+// A stop waits for a scheduled step already running (0.10.1: hosted CI's TSan found a roster
+// step writing while its node was destroyed, the step having passed its check before the stop).
+// A step held running on an io thread keeps stop() from returning until it ends.
+TEST(Node, AStopWaitsForAScheduledStepAlreadyRunning) {
+  Io io;
+  test::TempDir dir;
+  const auto key = cluster_key(dir.path());
+  HandSchedule schedule;
+  auto b_config = config(dir.path() / "b", key);
+  b_config.schedule = schedule.hook();
+  Node b(io.context, b_config);
+  b.start();
+  std::promise<void> running;
+  std::promise<void> release;
+  auto released = release.get_future().share();
+  std::atomic<bool> ended{false};
+  b.context().time().after(4321ms, [&running, released, &ended] {
+    running.set_value();
+    released.wait();
+    ended = true;
+  });
+  ASSERT_TRUE(schedule.booked(4321ms));
+  (void)schedule.run();
+  ASSERT_EQ(running.get_future().wait_for(10s), std::future_status::ready);
+  auto stopped = std::async(std::launch::async, [&b] { b.stop(); });
+  // While the step runs, the stop waits for it. The bound only gives a wrong stop the time to
+  // return; a right one never does while the step is held.
+  EXPECT_EQ(stopped.wait_for(200ms), std::future_status::timeout) << "stop returned while a scheduled step was still running";
+  release.set_value();
+  ASSERT_EQ(stopped.wait_for(10s), std::future_status::ready);
+  EXPECT_TRUE(ended.load()) << "stop returned before the step it waited for had ended";
+}
+
 }  // namespace
 }  // namespace dannan
