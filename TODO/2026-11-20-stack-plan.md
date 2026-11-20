@@ -1047,3 +1047,9 @@ Answers on item 24 (2026-11-20): Mimir, Louhi, Lir and Lugh confirm 1 to 3; Kvas
   refused with "the proposer's clock is <n> ms ahead"; the Change gets it in a context argument.
   read() takes none. An agreement wire change: the cluster moves together.
 - D-2 (tombstone maturity) is closed by these rules with no low watermark (Dagda).
+- **0.9.3's ceiling fix folds into item 6, with the five-second max_ahead** (the maintainer, 2026-11-20:
+  "Hold stamps after a crash"). The ceiling follows stamps issued as ruled on 2026-11-19 (issued +
+  30 s, one write each 28 s while stamping; nothing written while idle; a clean stop writes it down
+  to the last stamp). After a crash restart, while this node's last stamp is more than max_ahead
+  past its wall, it counts as out of bounds: now() throws ClockOutOfBounds (up to about 25 s), so
+  peers never meet a stamp they would refuse. A clean restart is unaffected.
