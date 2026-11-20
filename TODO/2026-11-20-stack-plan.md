@@ -927,3 +927,10 @@ Reconciled, and open:
   still says which peers hold a just-added filter (the SUBACK hold rests on it). 17's in-world
   client Stream with Dagda's nodes in the same world unblocks Lir's step 2 and is the item Lir
   waits on most.
+- Dagda (2026-11-20), item 13: agreed. "durable" stays Dagda's own value in store::Durability, not
+  a fifth member of the stack's enum (the maintainer, 2026-11-15, already ruled it stays beside the four). It
+  means on disk on every available member of the object's set, never waiting for a known-dead
+  member, never undone, evidence naming who is pending; replicated is a majority. A caller asking
+  the stack's "replicated" gets Dagda's replicated; durable is never offered under the stack's
+  names. Confirms the registered retire check, the fixtures forwarding for one minor and
+  agreement.h's ABI held through the first minor. **The ack-level open question is closed.**
