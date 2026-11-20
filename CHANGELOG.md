@@ -27,6 +27,10 @@ the first of three). Added:
 - `tools/ci.sh install-debs <tag>`: a dependant's CI builds and installs a release's packages in
   one step.
 - `CODE_OF_CONDUCT.md`, the Contributor Covenant 2.1.
+- `DANNAN_SANITIZE=address|thread`: instruments every target Dannan builds, fetched or not, and
+  carries the flags to what links `dannan::dannan` in the build tree, so a consumer's sanitizer
+  build never links an uninstrumented Dannan. `tools/ci.sh asan` and `tsan` build through it and
+  check the library carries the runtime's symbols. `docs/building.md` has every option.
 
 Changed:
 
