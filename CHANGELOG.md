@@ -40,6 +40,9 @@ Changed:
   and their stores, which held one another (Mimir's LeakSanitizer report on 0.9.2). Its end now
   closes each space, refusing what is queued, and a store's completions hold nothing of the space.
   `unserve` closes its space the same way.
+- Fixed: a keep that a store completed after its `Agreement` had gone published the slot advert into
+  the node's freed roster and answered the peer through the freed node (Mimir's ASan report on
+  0.9.2). Once the `Agreement` has gone, nothing reaches the owner: no answer, no advert, no call.
 - The library package is `libdannan0.10`. The README is about installing and using Dannan;
   why it exists and what it does moved to `docs/overview.md`.
 
