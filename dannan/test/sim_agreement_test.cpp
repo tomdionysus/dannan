@@ -1918,6 +1918,59 @@ TEST(Agreement, AChangeOfSeveralNamesIsNeverHalfTaken) {
   EXPECT_EQ(read->values.size(), 2u);
 }
 
+// A store that holds its load's completion and never answers: a store still busy as its owner
+// goes (Mimir's, at a SIGTERM).
+class HoldingStore final : public agree::AcceptorStore {
+ public:
+  void load(agree::Slot, std::span<const agree::Name>, bool, bool, std::function<void(agree::Held)> done) override { held.push_back(std::move(done)); }
+  void keep(agree::Slot, const agree::Held&, std::function<void(Kept)> done) override { done(Kept{true, {}}); }
+  bool ready() const override { return true; }
+  std::vector<std::function<void(agree::Held)>> held;
+};
+
+// An Agreement that goes while one request waits on its store and another is queued behind it
+// lets go of everything: the space, its store, and each change, which still ends by its deadline
+// (Mimir's LeakSanitizer report on 0.9.2: the core, a space's queue and the store's completion
+// held one another).
+TEST(Agreement, OneThatGoesWithRequestsWaitingOnItsStoreLetsGoOfThem) {
+  World world(1);
+  Time time(world);
+  identity::NodeId self;
+  self.bytes[15] = 1;
+  auto store = std::make_shared<HoldingStore>();
+  const std::weak_ptr<HoldingStore> store_alive = store;
+  const auto genesis = agree::ReplicaSet::of({self}, 0);
+  auto agreement = std::make_unique<agree::Agreement>(
+      world.io.get_executor(), self, identity::NodeId{}, agree::Agreement::Table{4, genesis},
+      [](const identity::NodeId&, net::MessageType, net::Bytes, std::chrono::milliseconds, std::function<void(std::optional<net::Bytes>, std::string)> done) {
+        done(std::nullopt, "no network");
+      },
+      [](const identity::NodeId&, const std::string&) { return true; }, &time,
+      [&world](std::chrono::milliseconds after, std::function<void()> task) { world.after(static_cast<uint64_t>(after.count()), std::move(task)); });
+  agreement->serve("held", "held", store);
+
+  std::vector<std::optional<agree::Outcome>> outcomes(2);
+  std::vector<std::weak_ptr<int>> changes;
+  for (size_t i = 0; i < outcomes.size(); ++i) {
+    auto token = std::make_shared<int>(0);
+    changes.push_back(token);
+    agreement->change("held", counter_slot, {agree::Name{static_cast<uint8_t>('a' + i)}}, {self}, 0, increment(), {}, 1000ms, world.io.get_executor(),
+                      [&outcomes, i, token](agree::Outcome outcome) { outcomes[i] = std::move(outcome); });
+  }
+  ASSERT_TRUE(world.run_until([&] { return store->held.size() == 1; }, 10'000));
+
+  agreement.reset();
+  ASSERT_TRUE(world.run_until([&] { return outcomes[0] && outcomes[1]; }, 2'000'000));
+  EXPECT_FALSE(outcomes[0]->committed);
+  EXPECT_FALSE(outcomes[1]->committed);
+  while (world.step()) {
+  }
+  // The store still holds its completion; only the test's own reference keeps it.
+  store.reset();
+  EXPECT_TRUE(store_alive.expired()) << "the store is held past its Agreement";
+  for (size_t i = 0; i < changes.size(); ++i) EXPECT_TRUE(changes[i].expired()) << "change " << i << " is held past its Agreement";
+}
+
 // A seed replays exactly.
 TEST(Simulation, ASeedReplaysExactly) {
   const auto first = simulate(42, Mode::keep);
