@@ -157,14 +157,14 @@ void Membership::set_endpoint(std::string host, uint16_t port) {
   contract::Lock lock(_mutex);
   _self.host = std::move(host);
   _self.port = port;
-  _self.seen_unix_ms = _wall->unix_ms();
+  _self.seen_unix_ms = changed_stamp(*_wall, _self.seen_unix_ms);
 }
 
 bool Membership::set_capabilities(uint32_t capabilities) {
   contract::Lock lock(_mutex);
   if (_self.capabilities == capabilities) return false;
   _self.capabilities = capabilities;
-  _self.seen_unix_ms = _wall->unix_ms();
+  _self.seen_unix_ms = changed_stamp(*_wall, _self.seen_unix_ms);
   return true;
 }
 
@@ -173,7 +173,7 @@ bool Membership::set_inbound_capable(bool capable) {
   const auto capabilities = capable ? _self.capabilities | capability_inbound : _self.capabilities & ~capability_inbound;
   if (_self.capabilities == capabilities) return false;
   _self.capabilities = capabilities;
-  _self.seen_unix_ms = _wall->unix_ms();
+  _self.seen_unix_ms = changed_stamp(*_wall, _self.seen_unix_ms);
   return true;
 }
 
@@ -181,7 +181,7 @@ bool Membership::set_path_class(PathClass path) {
   contract::Lock lock(_mutex);
   if (_self.path_class == path) return false;
   _self.path_class = path;
-  _self.seen_unix_ms = _wall->unix_ms();
+  _self.seen_unix_ms = changed_stamp(*_wall, _self.seen_unix_ms);
   return true;
 }
 
@@ -190,7 +190,7 @@ bool Membership::set_candidates(std::vector<Candidate> candidates) {
   contract::Lock lock(_mutex);
   if (_self.candidates == candidates) return false;
   _self.candidates = std::move(candidates);
-  _self.seen_unix_ms = _wall->unix_ms();
+  _self.seen_unix_ms = changed_stamp(*_wall, _self.seen_unix_ms);
   return true;
 }
 

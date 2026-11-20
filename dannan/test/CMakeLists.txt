@@ -38,6 +38,7 @@ add_executable(dannan_tests
   listen_prefix_test.cpp
   listen_test.cpp
   membership_agreed_test.cpp
+  membership_stamp_test.cpp
   membership_test.cpp
   placement_test.cpp
   reach_paths_test.cpp
