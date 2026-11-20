@@ -105,10 +105,11 @@ class Pipe final : public MemoryLink, public std::enable_shared_from_this<Pipe> 
         due.push_back({std::move(done), end.executor, {}, 0});
       } else {
         auto slot = asio::get_associated_cancellation_slot(done);
-        end.reading = Reading{into, std::move(done)};
+        const auto id = ++end.reads;
+        end.reading = Reading{into, std::move(done), id};
         if (slot.is_connected())
-          slot.assign([weak = weak_from_this(), at](asio::cancellation_type) {
-            if (const auto pipe = weak.lock()) pipe->abort_read(at);
+          slot.assign([weak = weak_from_this(), at, id](asio::cancellation_type) {
+            if (const auto pipe = weak.lock()) pipe->abort_read(at, id);
           });
         flow_locked(at, due);
       }
@@ -202,6 +203,8 @@ class Pipe final : public MemoryLink, public std::enable_shared_from_this<Pipe> 
   struct Reading {
     asio::mutable_buffer into;
     Handler done;
+    // Which read of this end it is: a cancellation fires only the read it was bound to.
+    uint64_t id = 0;
   };
   struct Writing {
     asio::const_buffer from;
@@ -214,6 +217,8 @@ class Pipe final : public MemoryLink, public std::enable_shared_from_this<Pipe> 
     std::optional<Reading> reading;
     std::optional<Writing> writing;
     std::function<size_t(size_t)> pieces;
+    // Reads started at this end, the last one's id.
+    uint64_t reads = 0;
     // No more writes from this end (a half-close, or a close).
     bool shut = false;
     bool closed = false;
@@ -229,12 +234,18 @@ class Pipe final : public MemoryLink, public std::enable_shared_from_this<Pipe> 
     return done;
   }
 
-  void abort_read(End at) {
+  // From the read's cancellation slot, inside its handler: the slot is not cleared here, since that
+  // would destroy the handler running (the bus error this once caused). The id keeps a signal
+  // bound to an earlier read from reaching a later one.
+  void abort_read(End at, uint64_t id) {
     std::vector<Due> due;
     {
       contract::Lock lock(_mutex);
       auto& end = _ends[index(at)];
-      if (end.reading) due.push_back({taken(end.reading), end.executor, asio::error::operation_aborted, 0});
+      if (end.reading && end.reading->id == id) {
+        due.push_back({std::move(end.reading->done), end.executor, asio::error::operation_aborted, 0});
+        end.reading.reset();
+      }
     }
     complete(due);
   }
