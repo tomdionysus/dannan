@@ -2,7 +2,7 @@
 
 ## 0.10.0: the Cluster Stack's first minor
 
-A new minor: the ABI changes, so move a pin from 0.9.x in one step (TODO/2026-11-20-stack-plan.md,
+A new minor: the ABI changes, so move a pin from 0.9.2 to 0.10.0 in one step (TODO/2026-11-20-stack-plan.md,
 the first of three). Added:
 
 - `contract/completion.h`: the stack's callback vocabulary. `Completion<T>` posts one answer to
@@ -38,7 +38,7 @@ Changed:
   naming it, where it was read as 10.0.0.0/8 before) and a length that is not plain digits; an
   IPv4-mapped prefix or bare address is read as the IPv4 one, which `contains()` could never
   match before. `Prefix::to_string` and `listen::unmapped` are added.
-- `fuzz_smoke_test` draws its inputs from SplitMix64, so they differ from 0.9's (the same on
+- `fuzz_smoke_test` draws its inputs from SplitMix64, so they differ from 0.9.2's (the same on
   every standard library now).
 - Fixed: an `Agreement` that went while a change still retried leaked its core, its served spaces
   and their stores, which held one another (Mimir's LeakSanitizer report on 0.9.2). Its end now

@@ -674,7 +674,7 @@ P7, Alpine in CI: not now (the maintainer). The 0.6 and 0.7 work's detailed note
 - RS256 verification, verify only (Lugh's P11, the maintainer's ruling; in 0.8.3 at the maintainer's word): `verify_rs256(n, e, message,
   signature)`, merged at `22bf306`, tested with generated keys (no Wycheproof file here, none written from memory).
   CI run 43747779212 green on every job. Lugh approved.
-- Not in it, 0.9's (Lease's layout changes): Lir's TSan finding, a Lease released after its node's ledger was
+- Not in it, 0.9.0's (Lease's layout changes): Lir's TSan finding, a Lease released after its node's ledger was
   destroyed; fixed on `feature/agreement`. Lir suppresses that one race under TSan until 0.9.0.
 
 ## Handoff, 2026-11-15: 0.8.2 prepared; 0.8.1 released

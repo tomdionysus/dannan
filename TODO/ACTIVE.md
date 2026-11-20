@@ -81,7 +81,7 @@ flight. Once the cutover is done, the next Dannan work is 0.9.3 (below); nothing
   - `membership/known-nodes.bin`, `membership/agreed-nodes.bin`;
   - `telemetry/last-known.bin`, `connectivity/inbound.bin`, `observation/`;
   - `identity/custody`, `identity/counters` (with custody), `identity/revocations` (with certificates);
-  - `clock/hlc-ceiling` (0.9, only without custody).
+  - `clock/hlc-ceiling` (since 0.9.0, only without custody).
 
 **Dannan's own state.**
 - **0.9.2 is the last release** (`main` and tag at `36d6ded`). `develop` holds only records past it; its last pushed
