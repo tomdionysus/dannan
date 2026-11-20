@@ -21,6 +21,7 @@ add_executable(dannan_tests
   contract_test.cpp
   custody_tool_test.cpp
   fixtures_test.cpp
+  fuzz_harness_test.cpp
   fuzz_smoke_test.cpp
   identity_certificate_test.cpp
   identity_crypto_test.cpp
@@ -77,7 +78,7 @@ add_executable(dannan_tests
   two_process_test.cpp
   version_test.cpp
 )
-target_link_libraries(dannan_tests PRIVATE dannan dannan_test_fixtures dannan_sim_checkers GTest::gtest_main dannan_warnings)
+target_link_libraries(dannan_tests PRIVATE dannan dannan_test_fixtures dannan_testing GTest::gtest_main dannan_warnings)
 # Every fuzz target, run by the smoke test.
 target_sources(dannan_tests PRIVATE $<TARGET_OBJECTS:dannan_fuzz_targets>)
 

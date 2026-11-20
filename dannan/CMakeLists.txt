@@ -109,12 +109,27 @@ add_library(dannan_sim_checkers STATIC test/fixtures/sim/linearizable.cpp test/f
 set_target_properties(dannan_sim_checkers PROPERTIES POSITION_INDEPENDENT_CODE ON EXPORT_NAME sim_checkers)
 target_include_directories(dannan_sim_checkers PUBLIC $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}> $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_link_libraries(dannan_sim_checkers PRIVATE $<BUILD_INTERFACE:dannan_warnings>)
+# The same name in a fetched build as installed (Louhi).
+add_library(dannan::sim_checkers ALIAS dannan_sim_checkers)
+
+# The stack's one test package (TODO/2026-11-20-stack-plan.md, item 17): the fuzz harness (the
+# target registry, the smoke run, replay) with the simulation's checkers, so a hosted system runs
+# its own fuzz targets and simulations in its own test binary, linking dannan::testing. Built and
+# installed always: it needs no GoogleTest. The fixtures' headers keep their paths
+# (dannan/test/fixtures/...), installed with the rest.
+add_library(dannan_testing STATIC fuzz/harness.cpp)
+set_target_properties(dannan_testing PROPERTIES POSITION_INDEPENDENT_CODE ON EXPORT_NAME testing)
+target_include_directories(dannan_testing PUBLIC $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}> $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+target_link_libraries(dannan_testing PUBLIC dannan dannan_sim_checkers PRIVATE $<BUILD_INTERFACE:dannan_warnings>)
+add_library(dannan::testing ALIAS dannan_testing)
 
 include(CMakePackageConfigHelpers)
-install(TARGETS dannan dannan_sim_checkers EXPORT dannanTargets LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR} ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(TARGETS dannan dannan_sim_checkers dannan_testing EXPORT dannanTargets LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR} RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/dannan FILES_MATCHING PATTERN "*.h"
         PATTERN "include" EXCLUDE PATTERN "fuzz" EXCLUDE PATTERN "test/plugins" EXCLUDE PATTERN "test/interop" EXCLUDE)
+# The fuzz harness's header, without the targets' sources.
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/fuzz/fuzz.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/dannan/fuzz)
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/dannan/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/dannan FILES_MATCHING PATTERN "*.h")
 install(FILES ${PROJECT_BINARY_DIR}/generated/dannan/version.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/dannan)
 install(EXPORT dannanTargets NAMESPACE dannan:: DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/dannan)
