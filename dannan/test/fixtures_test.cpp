@@ -138,6 +138,23 @@ TEST(ChildProcess, TakesAnEnvironmentInputAndATerminal) {
   ChildProcess deaf({"/bin/sleep", "30"}, dir.path() / "deaf.log", ignored);
 }
 
+// A child starts with the signals a test sends at their defaults, whatever the test inherited: a
+// suite run as a shell's background job has SIGINT ignored, and a child that kept it ignored an
+// interrupt (the 0.10.0 gate on a Pi).
+TEST(ChildProcess, StartsWithDefaultSignalsWhateverTheTestInherited) {
+  TempDir dir;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  struct sigaction ignore{};
+  ignore.sa_handler = SIG_IGN;
+  sigemptyset(&ignore.sa_mask);
+  struct sigaction before{};
+  ASSERT_EQ(::sigaction(SIGINT, &ignore, &before), 0);
+  ChildProcess interrupted({"/bin/sleep", "30"}, dir.path() / "sleep.log");
+  ::sigaction(SIGINT, &before, nullptr);
+  interrupted.signal(SIGINT);
+  EXPECT_EQ(interrupted.wait(deadline), 128 + SIGINT);
+}
+
 // Whether `pid` is a process still running: not gone, and on Linux not a
 // zombie nobody has reaped (a container's first process may never reap one).
 bool running(pid_t pid) {
