@@ -30,7 +30,7 @@ end. AthenaSIP is not part of the group. Next: draw the open shapes (paged trans
 catch-up first), send each consumer its shapes to confirm, and start code only at the maintainer's word.
 
 **Before 2026-11-20, the one job was the Macha move** (kept below for the record).
-the maintainer, 2026-11-18: the maintainer, 2026-11-18, to Macha, Dannan and Dagda: "work together and focus on the Macha move to
+the maintainer, 2026-11-18, to Macha, Dannan and Dagda: "work together and focus on the Macha move to
 Dagda. Work on nothing else until this is done. Work autonomously until you're ready to do the cutover on live-a
 and live-b." the maintainer, 2026-11-19, to Macha: do not begin the cutover; get ready for it. Dannan's part has three
 pieces:

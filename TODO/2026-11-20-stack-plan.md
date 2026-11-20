@@ -922,3 +922,8 @@ Reconciled, and open:
 - 8: subscribe takes the per-peer bound; Pushed names slow peers separately from missed ones.
 - 24 gains SSE with backpressure and a WebSocket upgrade handed over as a Stream.
 - 25: A and AAAA required, SRV optional, TTL configurable (Lir 5 s).
+- Lir (2026-11-20): confirms 31, 17, 8, 24 and 25 as recorded. 31 in the third minor is fine;
+  Lir's harness tests run at tens of filters. Keep: Pushed computed from the interest exchange
+  still says which peers hold a just-added filter (the SUBACK hold rests on it). 17's in-world
+  client Stream with Dagda's nodes in the same world unblocks Lir's step 2 and is the item Lir
+  waits on most.
