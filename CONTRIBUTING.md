@@ -1,5 +1,7 @@
 # Contributing to Dannan
 
+Everyone taking part follows the [Code of Conduct](CODE_OF_CONDUCT.md).
+
 ## Read first
 
 `TODO/ACTIVE.md` is the plan and `TODO/COMPLETED.md` is the record. Dannan is

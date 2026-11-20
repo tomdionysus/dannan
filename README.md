@@ -300,8 +300,9 @@ minor versions while the hosted systems are built on them. Macha and
 AthenaSIP will be ported onto Dannan and Dagda later.
 
 `CONTRIBUTING.md` has the conventions, the layout and how to run the test
-suites, the fuzz targets and the Docker test bed.
+suites, the fuzz targets and the Docker test bed. Everyone taking part follows
+the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Licence
 
-Copyright (C) 2026 the maintainer. Licensed under the GNU GPLv3; see `LICENSE`.
+Copyright (C) 2026 Tom Cully. Licensed under the GNU GPLv3; see `LICENSE`.
