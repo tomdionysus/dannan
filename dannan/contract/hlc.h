@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <map>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 
@@ -57,6 +58,33 @@ struct PeerSkew {
   std::chrono::milliseconds behind{0};
 };
 
+// What admit() decided about a peer's stamp (TODO/2026-11-20-stack-plan.md, item 6).
+enum class AdmitVerdict : uint8_t {
+  // Within max_ahead of this node's wall: merged, and may be applied.
+  admitted,
+  // Past max_ahead: refused, never applied by its stamp.
+  ahead,
+  // This node's own clock is out of bounds against its peers, so it judges no stamp: refused,
+  // and worth trying again once it is back.
+  self_out_of_bounds,
+};
+const char* admit_verdict_name(AdmitVerdict verdict) noexcept;
+
+struct Admission {
+  HlcReceipt receipt;
+  AdmitVerdict verdict = AdmitVerdict::admitted;
+  // Empty when admitted; otherwise for a person, naming the peer and how far.
+  std::string reason;
+  bool admitted() const noexcept { return verdict == AdmitVerdict::admitted; }
+};
+
+// What now() throws while this node's clock is out of bounds against its peers: it issues no
+// stamp until it is back, and never waits for that.
+class ClockOutOfBounds : public std::runtime_error {
+ public:
+  using std::runtime_error::runtime_error;
+};
+
 struct HlcStats {
   // Stamps not merged, being too far ahead.
   uint64_t not_merged = 0;
@@ -76,15 +104,25 @@ struct HlcStats {
 class HlcClock {
  public:
   virtual ~HlcClock() = default;
-  // A stamp for an event here: after every stamp this node has made or received.
+  // A stamp for an event here: after every stamp this node has made or received. Throws
+  // ClockOutOfBounds at once while this node's clock is out of bounds (issuing() false).
   virtual HlcStamp now() = 0;
   // A peer's stamp, merged into this clock unless it is too far ahead.
   virtual HlcReceipt receive(HlcStamp remote) = 0;
   // The same, its offset kept per peer for Status (`peer` names it: a node id's text). Takes a
   // short lock for that table.
   virtual HlcReceipt receive(HlcStamp remote, std::string_view peer) = 0;
-  // How far ahead of local wall time a received stamp may be (NodeConfig, default one minute).
+  // How far ahead of local wall time a received stamp may be (NodeConfig, default five seconds).
   virtual std::chrono::milliseconds max_ahead() const = 0;
+  // The one check every receiver makes of a peer's stamp before applying what it carries (Dagda
+  // at a commit's acceptance, an agreement acceptor, Lir): merged when admitted; refused, and so
+  // never applied by its stamp, when it is past max_ahead or when this node is out of bounds.
+  // Never throws.
+  virtual Admission admit(HlcStamp remote, std::string_view peer) = 0;
+  // Whether this node issues stamps: false while its offset is past the bound against more than
+  // half of the agreed roster (the node's to decide, from its clock probes).
+  virtual bool issuing() const = 0;
+  virtual void set_out_of_bounds(bool out) = 0;
   virtual HlcStats stats() const = 0;
 };
 
@@ -106,12 +144,15 @@ class HybridClock final : public HlcClock {
 
   // Begins after every stamp a run before could have issued: at the wall, or past the ceiling if
   // the wall is not, and raises the ceiling past it before returning (one durable write).
-  HybridClock(const WallClock& wall, HlcCeiling& ceiling, std::chrono::milliseconds max_ahead = std::chrono::minutes(1));
+  HybridClock(const WallClock& wall, HlcCeiling& ceiling, std::chrono::milliseconds max_ahead = std::chrono::seconds(5));
 
   HlcStamp now() override;
   HlcReceipt receive(HlcStamp remote) override;
   HlcReceipt receive(HlcStamp remote, std::string_view peer) override;
   std::chrono::milliseconds max_ahead() const override { return _max_ahead; }
+  Admission admit(HlcStamp remote, std::string_view peer) override;
+  bool issuing() const override { return !_out_of_bounds.load(); }
+  void set_out_of_bounds(bool out) override { _out_of_bounds.store(out); }
   HlcStats stats() const override;
   // The roster loop's, each second: the ceiling raised to what was issued (or the wall, if later)
   // plus the reserve, when it has fallen nearer than that. Waits on the state device.
@@ -131,6 +172,7 @@ class HybridClock final : public HlcClock {
   std::atomic<uint64_t> _not_merged{0};
   std::atomic<uint64_t> _overflows{0};
   std::atomic<uint64_t> _raises_off_loop{0};
+  std::atomic<bool> _out_of_bounds{false};
   // One raise at a time; never held by now() or receive() but to raise.
   Mutex _raising;
   mutable Mutex _peers_mutex;

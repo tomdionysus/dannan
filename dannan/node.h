@@ -180,8 +180,8 @@ struct NodeConfig {
   // replays exactly. Empty: random.
   std::function<identity::NodeId()> fresh_id;
   // How far ahead of this node's wall time a received hybrid-clock stamp may be and still be
-  // merged (the HLC design: one minute).
-  std::chrono::milliseconds hlc_max_ahead = std::chrono::minutes(1);
+  // merged: five seconds, past the two-second offset bound a ready node keeps (the plan's item 6).
+  std::chrono::milliseconds hlc_max_ahead = std::chrono::seconds(5);
   // The network as the harness gives it (the transport seam, piece 2b): set, the node builds no
   // client, server or level 0 paths, and calls, sends and serves through what this returns,
   // given the node's hooks. Empty: sockets, as always.
