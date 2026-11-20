@@ -1,3 +1,36 @@
+# Unreleased
+
+## 0.10.0 (in progress): the Cluster Stack's first minor
+
+A new minor (TODO/2026-11-20-stack-plan.md, the first of three). Added:
+
+- `contract/completion.h`: the stack's callback vocabulary. `Completion<T>` posts one answer to
+  the caller's executor, never inline, by its deadline on a steady timer or an injected
+  schedule; `Outcome<T>` with one `Fault` kind for every hosted system (none, not_found,
+  conflict, duplicate, invalid, refused, unavailable, timed_out, failed). `contract/ack_level.h`:
+  the four ack levels in order, with their standard names.
+- `status::SwappableSink`, a root's sink from its first line with a lock-free filter and a
+  race-free swap; `ScopedLogger::emit`, past the filter. `test::RecordingSink` keeps scopes.
+- `agree::MemoryStore`, the production in-memory acceptor store.
+- `dannan::testing`: the fuzz harness (`smoke`, `mutate`, `replay`, `run_all` on SplitMix64) with
+  the simulation's checkers, installed with `fuzz/fuzz.h`; `dannan::sim_checkers` now names the
+  checkers in a fetched build too.
+- `RetryPolicy::unbounded(initial, ceiling)`, a policy that never parks.
+- `identity::RandomId<Tag>`, a random 16-byte id, one type per kind.
+- `identity::sha1` and `hmac_sha1`, for Valkey script ids and TOTP only.
+- `encoding/base.h`: base64, base64url (padded or not), base32, exact decoders into any buffer
+  (a secret into `SecureBuffer`), and `utf8_length`, `valid_utf8`, `printable`. `hex` and `unhex`
+  move here; `identity::hex` and `identity::unhex` forward to them.
+
+Changed:
+
+- `listen::Prefix::parse` refuses host bits set past the length ("10.0.0.1/8" is now an error
+  naming it, where it was read as 10.0.0.0/8 before) and a length that is not plain digits; an
+  IPv4-mapped prefix or bare address is read as the IPv4 one, which `contains()` could never
+  match before. `Prefix::to_string` and `listen::unmapped` are added.
+- `fuzz_smoke_test` draws its inputs from SplitMix64, so they differ from 0.9's (the same on
+  every standard library now).
+
 # Current release
 
 ## 0.9.2: an advert reaches a peer met after it was set
