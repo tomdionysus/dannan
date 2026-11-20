@@ -35,9 +35,12 @@ struct Pipe {
   Carrier& server() { return *pair.server; }
   MemoryLink& link() { return *pair.link; }
 
+  // Each helper restarts the io_context before it runs it: a test that ran it last and stopped
+  // leaves it stopped, and a run then returns at once with the completion still pending.
   void write(Carrier& from, const std::string& text) {
     std::optional<error_code> result;
     asio::async_write(from, asio::buffer(text), [&](error_code e, std::size_t) { result = e; });
+    io.restart();
     io.run();
     io.restart();
     ASSERT_TRUE(result);
@@ -48,6 +51,7 @@ struct Pipe {
     std::string into(most, '\0');
     std::optional<std::pair<size_t, error_code>> result;
     at.async_read_some(asio::buffer(into), [&](error_code e, std::size_t n) { result = std::make_pair(n, e); });
+    io.restart();
     io.run();
     io.restart();
     if (!result) return {"", asio::error::would_block};
@@ -225,10 +229,36 @@ TEST(MemoryCarrier, APerOperationCancelAbortsJustThatRead) {
   p.io.restart();
   signal.emit(asio::cancellation_type::terminal);
   p.io.run();
+  p.io.restart();
   ASSERT_TRUE(result);
   EXPECT_EQ(*result, asio::error::operation_aborted);
   p.write(p.client(), "still");
   EXPECT_EQ(p.read_some(p.server()).first, "still");
+}
+
+// A signal that fires after its read is done, or that a later read reuses, aborts only the read it
+// was bound to: an earlier read's cancel never reaches a later one.
+TEST(MemoryCarrier, ACancelForAReadAlreadyDoneAbortsNoLaterRead) {
+  Pipe p;
+  asio::cancellation_signal signal;
+  std::string into(16, '\0');
+  std::optional<error_code> first;
+  p.server().async_read_some(asio::buffer(into), asio::bind_cancellation_slot(signal.slot(), [&](error_code e, std::size_t) { first = e; }));
+  p.write(p.client(), "one");
+  ASSERT_TRUE(first);
+  EXPECT_FALSE(*first);
+  // A later read, bound to nothing: the old signal fires and must not reach it.
+  std::optional<error_code> later;
+  p.server().async_read_some(asio::buffer(into), [&](error_code e, std::size_t) { later = e; });
+  p.io.run();
+  p.io.restart();
+  signal.emit(asio::cancellation_type::terminal);
+  p.io.run();
+  p.io.restart();
+  EXPECT_FALSE(later) << "a cancel bound to a finished read aborted a later one";
+  p.write(p.client(), "two");
+  ASSERT_TRUE(later);
+  EXPECT_FALSE(*later);
 }
 
 TEST(MemoryCarrier, EachEndKnowsTheOthersAddress) {
