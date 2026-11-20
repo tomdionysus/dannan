@@ -31,6 +31,7 @@ add_executable(dannan_tests
   identity_sealed_counters_test.cpp
   identity_random_id_test.cpp
   identity_secure_memory_test.cpp
+  identity_sha1_test.cpp
   identity_signing_test.cpp
   listen_backoff_test.cpp
   listen_test.cpp
