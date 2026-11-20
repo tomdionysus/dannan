@@ -514,8 +514,10 @@ class Node final : public Context {
   // live as long as the node: a late answer to a call that timed out may still be posted.
   boost::asio::io_context _membership_io;
   boost::asio::io_context _connectivity_io;
-  // With a schedule: false once the node stops, so a step booked earlier does nothing after.
-  std::shared_ptr<std::atomic<bool>> _scheduled = std::make_shared<std::atomic<bool>>(true);
+  // With a schedule: false once the node stops, so a step booked earlier does nothing after. It is
+  // the first member of node.cpp's gate, which holds each running step and makes the stop wait for
+  // one under way (0.10.1); the member keeps its type so the ABI does.
+  std::shared_ptr<std::atomic<bool>> _scheduled;
 
   std::unique_ptr<NodesNoun> _nodes;
   std::unique_ptr<RoutesNoun> _routes_noun;
