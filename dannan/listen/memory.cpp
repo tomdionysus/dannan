@@ -8,6 +8,7 @@
 #include "dannan/listen/memory.h"
 
 #include <algorithm>
+#include <boost/asio/append.hpp>
 #include <boost/asio/associated_cancellation_slot.hpp>
 #include <boost/asio/associated_executor.hpp>
 #include <boost/asio/post.hpp>
@@ -35,10 +36,9 @@ struct Due {
 };
 
 void complete(std::vector<Due>& due) {
-  for (auto& d : due) {
-    auto executor = asio::get_associated_executor(d.handler, d.fallback);
-    asio::post(executor, [handler = std::move(d.handler), error = d.error, bytes = d.bytes]() mutable { std::move(handler)(error, bytes); });
-  }
+  // Posted with its arguments appended: post runs it through the handler's own associated
+  // executor (a strand stays a strand), and never inline.
+  for (auto& d : due) asio::post(d.fallback, asio::append(std::move(d.handler), d.error, d.bytes));
   due.clear();
 }
 
