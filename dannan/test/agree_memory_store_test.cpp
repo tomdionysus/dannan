@@ -295,5 +295,63 @@ TEST_F(MemoryStoreTest, AStateNeverHeldIsNone) {
   EXPECT_EQ(store.size(), 0u);
 }
 
+// each_held (0.10.1, Mimir's ask, so it can drop its own store): the names a slot holds a value
+// for, with their states, in the order of the names' bytes, from past `after` if given, until
+// the visitor says stop. A paging catch-up resumes after the last name it sent.
+std::vector<std::string> walk(const MemoryStore& store, Slot slot, std::optional<Name> after = {}, size_t most = 1000) {
+  std::vector<std::string> out;
+  store.each_held(slot, after, [&](const Name& n, const AcceptorState& state) {
+    EXPECT_TRUE(state.has_value) << "a name with no value was visited";
+    out.emplace_back(n.begin(), n.end());
+    return out.size() < most;
+  });
+  return out;
+}
+
+TEST_F(MemoryStoreTest, EachHeldVisitsTheNamesHoldingAValueInTheirBytesOrder) {
+  MemoryStore store(io.get_executor(), true);
+  AcceptorState promised_only;
+  promised_only.promised = ballot(1);
+  ASSERT_TRUE(keep(store, 4, held_of({{name("b"), whole(1, "2")}, {name("a"), whole(1, "1")}, {name("p"), promised_only}})).kept);
+  // A name past every ASCII one, by its bytes: 0xff sorts after 'z'.
+  ASSERT_TRUE(keep(store, 4, held_of({{Name{0xff}, whole(2, "3")}, {name("z"), whole(2, "4")}})).kept);
+  ASSERT_TRUE(keep(store, 5, held_of({{name("other"), whole(1, "5")}})).kept);
+  EXPECT_EQ(walk(store, 4), (std::vector<std::string>{"a", "b", "z", "\xff"}));
+  EXPECT_EQ(walk(store, 9), std::vector<std::string>{}) << "a slot never kept holds nothing";
+  std::optional<AcceptorState> seen;
+  store.each_held(4, std::nullopt, [&](const Name& n, const AcceptorState& state) {
+    if (n == name("b")) seen = state;
+    return true;
+  });
+  ASSERT_TRUE(seen);
+  EXPECT_EQ(seen->value, bytes("2"));
+}
+
+TEST_F(MemoryStoreTest, EachHeldStopsWhenTheVisitorSaysSo) {
+  MemoryStore store(io.get_executor(), true);
+  ASSERT_TRUE(keep(store, 1, held_of({{name("a"), whole(1, "1")}, {name("b"), whole(1, "2")}, {name("c"), whole(1, "3")}})).kept);
+  EXPECT_EQ(walk(store, 1, std::nullopt, 2), (std::vector<std::string>{"a", "b"}));
+}
+
+TEST_F(MemoryStoreTest, EachHeldResumesStrictlyPastTheNameGivenHeldOrNot) {
+  MemoryStore store(io.get_executor(), true);
+  ASSERT_TRUE(keep(store, 1, held_of({{name("a"), whole(1, "1")}, {name("c"), whole(1, "3")}, {name("e"), whole(1, "5")}})).kept);
+  EXPECT_EQ(walk(store, 1, name("a")), (std::vector<std::string>{"c", "e"}));
+  EXPECT_EQ(walk(store, 1, name("b")), (std::vector<std::string>{"c", "e"})) << "from a name not held";
+  EXPECT_EQ(walk(store, 1, name("e")), std::vector<std::string>{});
+}
+
+// Pages by the last name sent, not by index: a name removed between two pages shifts no later
+// name out of the walk (Mimir's reason for `after`).
+TEST_F(MemoryStoreTest, APagedWalkSkipsNoNameWhenOneIsRemovedBetweenPages) {
+  MemoryStore store(io.get_executor(), true);
+  ASSERT_TRUE(keep(store, 1, held_of({{name("a"), whole(1, "1")}, {name("b"), whole(1, "2")}, {name("c"), whole(1, "3")}, {name("d"), whole(1, "4")}})).kept);
+  const auto first = walk(store, 1, std::nullopt, 2);
+  ASSERT_EQ(first, (std::vector<std::string>{"a", "b"}));
+  // "a" is removed: a default state is dropped.
+  ASSERT_TRUE(keep(store, 1, held_of({{name("a"), AcceptorState{}}})).kept);
+  EXPECT_EQ(walk(store, 1, name(first.back()), 2), (std::vector<std::string>{"c", "d"}));
+}
+
 }  // namespace
 }  // namespace dannan::agree
