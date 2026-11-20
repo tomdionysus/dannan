@@ -16,19 +16,26 @@ target_compile_definitions(dannan_test_fixtures INTERFACE DANNAN_TEST_TEMP_ROOT=
 add_executable(dannan_tests
   contract_hlc_test.cpp
   agree_caspaxos_test.cpp
+  agree_memory_store_test.cpp
+  contract_completion_test.cpp
   contract_test.cpp
   custody_tool_test.cpp
   fixtures_test.cpp
+  fuzz_harness_test.cpp
   fuzz_smoke_test.cpp
   identity_certificate_test.cpp
   identity_crypto_test.cpp
+  identity_durable_directories_test.cpp
   identity_durable_file_test.cpp
   identity_key_custody_test.cpp
   identity_node_identity_test.cpp
   identity_sealed_counters_test.cpp
+  identity_random_id_test.cpp
   identity_secure_memory_test.cpp
+  identity_sha1_test.cpp
   identity_signing_test.cpp
   listen_backoff_test.cpp
+  listen_prefix_test.cpp
   listen_test.cpp
   membership_agreed_test.cpp
   membership_test.cpp
@@ -38,6 +45,7 @@ add_executable(dannan_tests
   reach_upnp_test.cpp
   config_test.cpp
   encoding_percent_test.cpp
+  encoding_test.cpp
   net_assembler_test.cpp
   node_test.cpp
   net_channel_test.cpp
@@ -51,6 +59,7 @@ add_executable(dannan_tests
   net_session_test.cpp
   sched_duty_share_test.cpp
   sched_memory_test.cpp
+  sched_retry_unbounded_test.cpp
   sched_walk_retry_test.cpp
   sched_work_test.cpp
   sched_worker_pool_test.cpp
@@ -60,6 +69,7 @@ add_executable(dannan_tests
   sim_isolation_test.cpp
   sim_nodes_test.cpp
   storage_file_system_test.cpp
+  status_log_injection_test.cpp
   status_log_test.cpp
   status_observation_test.cpp
   status_process_test.cpp
@@ -74,7 +84,7 @@ add_executable(dannan_tests
   two_process_test.cpp
   version_test.cpp
 )
-target_link_libraries(dannan_tests PRIVATE dannan dannan_test_fixtures dannan_sim_checkers GTest::gtest_main dannan_warnings)
+target_link_libraries(dannan_tests PRIVATE dannan dannan_test_fixtures dannan_testing GTest::gtest_main dannan_warnings)
 # Every fuzz target, run by the smoke test.
 target_sources(dannan_tests PRIVATE $<TARGET_OBJECTS:dannan_fuzz_targets>)
 

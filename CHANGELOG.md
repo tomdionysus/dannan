@@ -1,5 +1,90 @@
 # Current release
 
+## 0.10.0: the Cluster Stack's first minor
+
+A new minor: the ABI changes, so move a pin from 0.9.2 to 0.10.0 in one step (TODO/2026-11-20-stack-plan.md,
+the first of three). Added:
+
+- `contract/completion.h`: the stack's callback vocabulary. `Completion<T>` posts one answer to
+  the caller's executor, never inline, by its deadline on a steady timer or an injected
+  schedule; `Outcome<T>` with one `Fault` kind for every hosted system (none, not_found,
+  conflict, duplicate, invalid, refused, unavailable, timed_out, failed). `contract/ack_level.h`:
+  the four ack levels in order, with their standard names.
+- `status::SwappableSink`, a root's sink from its first line with a lock-free filter and a
+  race-free swap; `ScopedLogger::emit`, past the filter. `test::RecordingSink` keeps scopes.
+- `agree::MemoryStore`, the production in-memory acceptor store.
+- `dannan::testing`: the fuzz harness (`smoke`, `mutate`, `replay`, `run_all` on SplitMix64) with
+  the simulation's checkers, installed with `fuzz/fuzz.h`; `dannan::sim_checkers` now names the
+  checkers in a fetched build too.
+- `RetryPolicy::unbounded(initial, ceiling)`, a policy that never parks.
+- `identity::RandomId<Tag>`, a random 16-byte id, one type per kind.
+- `identity::sha1` and `hmac_sha1`, for Valkey script ids and TOTP only.
+- `identity::durable_create_directories` and `durable_sync_directory`; `durable_replace_file` and
+  `durable_create_file` take the mode of the directories they make (0700 by default, as before).
+- `encoding/base.h`: base64, base64url (padded or not), base32, exact decoders into any buffer
+  (a secret into `SecureBuffer`), and `utf8_length`, `valid_utf8`, `printable`. `hex` and `unhex`
+  move here; `identity::hex` and `identity::unhex` forward to them.
+- `tools/ci.sh install-debs <tag>`: a dependant's CI builds and installs a release's packages in
+  one step.
+- `CODE_OF_CONDUCT.md`, the Contributor Covenant 2.1.
+- `DANNAN_SANITIZE=address|thread`: instruments every target Dannan builds, fetched or not, and
+  carries the flags to what links `dannan::dannan` in the build tree, so a consumer's sanitizer
+  build never links an uninstrumented Dannan. `tools/ci.sh asan` and `tsan` build through it and
+  check the library carries the runtime's symbols. `docs/building.md` has every option.
+
+Changed:
+
+- `listen::Prefix::parse` refuses host bits set past the length ("10.0.0.1/8" is now an error
+  naming it, where it was read as 10.0.0.0/8 before) and a length that is not plain digits; an
+  IPv4-mapped prefix or bare address is read as the IPv4 one, which `contains()` could never
+  match before. `Prefix::to_string` and `listen::unmapped` are added.
+- `fuzz_smoke_test` draws its inputs from SplitMix64, so they differ from 0.9.2's (the same on
+  every standard library now).
+- Fixed: an `Agreement` that went while a change still retried leaked its core, its served spaces
+  and their stores, which held one another (Mimir's LeakSanitizer report on 0.9.2). Its end now
+  closes each space, refusing what is queued, and a store's completions hold nothing of the space.
+  `unserve` closes its space the same way.
+- Fixed: a keep that a store completed after its `Agreement` had gone published the slot advert into
+  the node's freed roster and answered the peer through the freed node (Mimir's ASan report on
+  0.9.2). Once the `Agreement` has gone, nothing reaches the owner: no answer, no advert, no call.
+- The library package is `libdannan0.10`. The README is about installing and using Dannan;
+  why it exists and what it does moved to `docs/overview.md`.
+
+Adopting 0.10.0: what a dependant can now delete or replace in its own code, and what to check.
+Each is one home in the stack, so a copy kept elsewhere breaks the no-duplication rule.
+
+- Your own callback result types, error enums or "posted, never inline" helpers: replace them with
+  `Completion<T>` and `Outcome<T>` (`contract/completion.h`), and your ack-level names with
+  `contract/ack_level.h`.
+- A logger that drops lines written before the real sink is set, or swaps its sink under a lock:
+  use `status::SwappableSink`. Tests that capture log lines by scope: use `test::RecordingSink`.
+- An acceptor store kept in memory for tests or a single-node mode: use `agree::MemoryStore`.
+- Your own fuzz driver, mutator or corpus replay: register targets with `dannan::testing`, and run
+  them through `dannan::fuzz::smoke` in your own test binary. Your own copies of the simulation's
+  checkers: link `dannan::sim_checkers`, now available in a fetched build too.
+- A retry loop written by hand because `RetryPolicy` parked after its failure budget: use
+  `RetryPolicy::unbounded(initial, ceiling)`.
+- Your own 16-byte random ids: use `identity::RandomId<Tag>`, one type per kind of id.
+- SHA-1 or HMAC-SHA1 code, or a dependency for it (Valkey script ids, TOTP): use `identity::sha1`
+  and `identity::hmac_sha1`.
+- `mkdir -p` plus fsync written by hand: use `identity::durable_create_directories` and
+  `durable_sync_directory`.
+- base64, base64url, base32, hex or UTF-8 checks of your own: use `encoding/base.h`, decoding
+  secrets straight into a `SecureBuffer`.
+- A CI step that builds Dannan's packages itself: replace it with `tools/ci.sh install-debs 0.10.0`.
+- Sanitizer builds: build Dannan from source with `DANNAN_SANITIZE=address` or `thread`
+  (`docs/building.md`), never against the Debian package, and check the library carries the
+  `__asan_` or `__tsan_` symbols.
+- Check: anything that parses an allow-list prefix with `listen::Prefix::parse` and wrote "a.b.c.d/n"
+  with host bits set now gets an error. Write the network address instead.
+- Delete: any teardown ordering you added to keep an `Agreement`, or the node under it, alive until
+  your store's completions had run (posted turns before `node.reset()`, a store kept past the
+  node). Both lifetime faults are fixed, so a store may complete after the node has gone.
+
+Dependencies are unchanged: Boost 1.83 or later (Asio, headers only), OpenSSL 3 and yaml-cpp 0.7 or
+later, Debian 13's own versions. No dependency moved in this release; reading their newer releases
+against Dannan's code is planned work for the next.
+
 ## 0.9.2: an advert reaches a peer met after it was set
 
 Fixed: an advert set before a node had met a peer, as when a hosted system advertises at

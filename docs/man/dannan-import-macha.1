@@ -15,7 +15,18 @@ Macha state directory
 .I STATE
 into Dannan's formats, once, with the node stopped. Each original is kept as
 .IR name .macha;
-restoring those is the rollback. It prints each file and what was done with it.
+restoring those is the rollback. It prints each file and what was done with it:
+.B imported
+(converted),
+.B already
+(in Dannan's format, left alone),
+.B absent
+or
+.BR ignored .
+It may be run again: on a node whose files are all Dannan's, as after a node has
+run Dannan, it changes nothing, and
+.B \-\-dry-run
+is the check that none was left in Macha's format.
 .SH OPTIONS
 .TP
 .B \-\-dry-run

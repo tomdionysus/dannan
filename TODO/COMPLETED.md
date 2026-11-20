@@ -3,9 +3,151 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
+## 0.10.0, 2026-11-20: the Cluster Stack's first minor
+
+What shipped is in CHANGELOG.md, with what a dependant can now delete or replace. The release
+fixed these on the way:
+- the history scrub collapsed two test addresses into one (62e70fc);
+- clang's -Wthread-safety refused the in-memory store's prepared() (e9aac3d);
+- test children inherited an ignored SIGINT (240b67f);
+- Mimir's two agreement lifetime faults: the leak, and the use-after-free into the freed node.
+
+The gate, once each, on the final tree or its predecessor in test code only:
+- check;
+- release and clang, 1048 tests each on e3e2553;
+- TSan, 1048, with libdannan carrying 36 __tsan_ symbols;
+- ASan: 1047 of 1048 at d3141db. The one failure was the node test's own wrong expectation, since
+  corrected; libdannan carries 35 __asan_ symbols;
+- package; abi (the first of its minor, no base);
+- fuzz: agree, handshake, level0 and records, 60 s each, all clean;
+- the deb build with its tests, 1048;
+- install-debs in a clean debian:trixie container, which installed libdannan0.10, libdannan-dev
+  and the dbgsym package.
+
+Proofs, each test failing first:
+- Agreement.OneThatGoesWithRequestsWaitingOnItsStoreLetsGoOfThem: "the store is held past its
+  Agreement".
+- Agreement.AKeepCompletedAfterItsAgreementHasGoneReachesNothingOfTheOwners: 1 advert and 1 answer
+  after the Agreement had gone, where 0 of each were expected.
+- Node.AStoreCompletionAfterItsNodeIsDestroyedReachesNothingOfIt: ASan's heap-use-after-free in
+  Membership::set_advert through Core::note, Mimir's stack, against the agreement as at 1fa08d4.
+
+Run on the build cluster's four nodes. The logs are kept locally, outside the repository.
+Moved to 0.11.0: the stream carrier and item 6.
+
+## The Macha move to Dagda: Dannan's part, 2026-11-18 evening to 2026-11-19
+
+No code changed; `develop` is at `3bb372c` and CI's last run, on `9e4bdce`, is green (44202755089).
+- **The cluster wipe** (Lir Development Cluster, 16:05Z 2026-11-18: all four Pis cleaned to bare OS). Nothing of
+  Dannan's on them was unique: `/root/dannan-vlp` was a copied tree, not a checkout. Its build and test logs (99
+  files, about 7 MB) were copied to `build/pi-logs-2026-11-18/<host>/` first. The Pis were rebuilt; Macha's tag
+  builds of Dannan 0.5.3 and 0.9.2 are on node-a in `/home/dev/deps/`.
+- **Miach asked** (for the maintainer) whether its deterministic parallel work could run distributed over Dannan. The answer:
+  yes, through a separate adapter process that links Dannan, Miach's core keeping only GoogleTest and yaml-cpp.
+  - Work units are route calls in the loader or speculative class, with large payloads on the DATA lane. A message
+    may be up to 128 MiB, sent in frames of up to 4 MiB.
+  - Long units (10 to 40 s) use `bind_deferred`, with a deadline and a `CallWatch` sized to the work.
+  - Small units, such as the SAT obligations, are batched.
+  - Adverts say what each node holds and offers (64 per node, values up to 1 KiB). `placement()` by input hash keeps
+    each node's cache warm.
+  - Dagda objects, content-addressed, hold the result cache. The 187 MB device database is chunked or staged once
+    per node.
+  - The job model, the barriers and the merge order are the adapter's; Dannan has no scheduler.
+  - The adapter claims cores on the board before advertising them.
+- **Macha asked whether a 0.5.3 node and a 0.9.2 node mix** for the cutover window: live-b on Macha 0.95.0 and
+  Dannan 0.9.2, live-a on Macha 0.94.2 and Dannan 0.5.3.
+  - **From code: yes, if live-b keeps the cluster key.**
+    - The wire range (1..2), the frame, the codec, the message numbers and the record encoding are unchanged.
+    - 0.9.2's new `admit` check refuses only a peer with a different agreement slot table; 0.5.3 publishes none.
+    - Custody alone does not change the proof. A certificate with `--no-cluster-key` offers only version 2, which
+      0.5.3 cannot speak.
+    - 0.5.3 ignores a pushed record's payload on `members`, so a push from 0.9.2 reports live-a as missed until
+      gossip carries the change.
+    - 0.9.2 sends the `agree_*` types only to nodes advertising agreement.
+  - **Replies are checked too.**
+    - `FrameOpener::header` (`net/channel.cpp:428-441`) checks every inbound frame, replies included, against the
+      receiver's table. `FrameSealer::seal` (`:399-403`) checks every outbound frame against the sender's.
+    - Either refusal ends the session and fails every call on it. A reply rides its request's lane and class.
+    - Of the five store types whose rules differ between Macha 0.94.2 and Dagda, the risk is 0.95.0 calling 0.94.2
+      in a class that 0.94.2's narrower reply rules refuse. Macha took that into its runbook.
+  - **Checked on node-a** (`build/mixed-version.sh`; logs in `build/mixed-version-2026-11-19/`). The tag builds of
+    dannan-node ran on loopback with one cluster key, 60 s per case, echo every 2 s on both lanes.
+    - 0.9.2 with custody and the key, 0.5.3 dialling it: one cluster, echo ok on both lanes both ways, 12 of 12
+      status lines clean on each side.
+    - The same with 0.9.2 dialling: the same.
+    - 0.9.2 by certificate alone: never peers.
+    - Not covered: telemetry contents, advert pushes, and Macha's and Dagda's own types. Macha's two-version smoke
+      test, a gate in its runbook, covers those.
+- **Moved here from ACTIVE at the 2026-11-19 rationalisation:**
+  - The sources as of 2026-11-04. Macha 0.92.2 (`5776392`), protocol 23, layout v18, 785 cases. AthenaSIP
+    `8d65593`, tag `0.12.0`, plugin `API_VERSION` 24. Macha's evaluation is
+    `../macha/TODO/2026-11-04-dannan-dagda-port-evaluation.md`.
+  - The first cutover's rulings (the maintainer, 2026-11-05), all settled:
+    - A, deadlines: every call names one, with no default.
+    - B, thread rows: the three loop threads are renamed `cluster-telemetry`, `cluster-maintenance` and
+      `cluster-connectivity`.
+    - C, DIAG lines: a thread CPU reporter per pool.
+    - D, bounds: limits above Dannan's layer stay the hosted system's, and those in its layer are expressible in
+      Dannan.
+    - Disk limits are Dagda's, on Dannan's work-class generics.
+    - The live-a read-only copy was allowed.
+    - The Pi baselines are the Macha session's, at the maintainer's word.
+  - Macha's own findings: the flaky `availability/test_a_disk_coming_back_...` on macOS and
+    `maintenance_trace/test_trace_backend_offline_and_back`. Also the live-node suite counts at 0.91.2. All are
+    Macha's.
+  - "How to prove it" in its protocol-23 form. `dannan_interop_tests` against the pinned 0.91.2 export and the
+    two-process test against the Macha binary went with wire v1 (2026-11-03 night); the laptop commands it gave are
+    void since the maintainer's Pi-only ruling (2026-11-14, 2026-11-17).
+
+## The Macha move to Dagda: Dannan's part, 2026-11-18
+
+the maintainer: Macha, Dannan and Dagda work only on Macha's move to Dagda until ready for the cutover on live-a and
+live-b. What Dannan settled with Macha Server and Dagda:
+- **Version.** The cutover deploys Dannan 0.9.2, not 0.8.5 (Macha's decision). 0.8.5 has two defects: the ledger
+  use-after-free (`sched::Lease`, fixed at `79dfa2e`) and a durable write's unsynced new directory (fixed at
+  `ef3b212`). Dagda's `feature/macha-store-gaps` (`fbdd50a`) builds and gates on 0.9.2: on node-a 1148 ran, 1144
+  passed, 3 skipped, and 1 failed, its version pin, since fixed.
+- **Custody steps per dannan-custody(1).** One message said to `tee` the root to an offline copy, against the man
+  page; it was corrected the same day. Macha's runbook is `../macha/TODO/2026-11-18-cutover-runbook.md`
+  (`a9556c2`).
+- **`dannan-import-macha` is a dry-run check on the live nodes.** Its formats are unchanged since 0.5.3. Its man page
+  now says what each outcome means and that it may be run again.
+- **Dagda's own directory-sync gap** (directories it makes before `durable_replace_file`) is Dagda's to fix.
+- `docs/packaging.md`'s examples now name 0.9.
+- **The macOS gate's setup, kept for when the maintainer allows one.**
+  - Configure `build/macos` (the main checkout's `build/`, against `build/wt-feature`) with
+    `-DBoost_ROOT=/opt/local/libexec/boost/1.88 -DOPENSSL_ROOT_DIR=/opt/local/libexec/openssl3
+    "-DCMAKE_CXX_FLAGS=-I/Users/dev/devroot/dannan/build/ssl3-include --system-header-prefix=openssl/"`, Release,
+    testing on, warnings as errors.
+  - Build with `cmake --build build/macos -j 4 --target dannan_tests`, logging to `build/macos-build.log`; run
+    `build/macos/dannan_tests`, logging to `build/macos-tests.log`.
+  - Two tests skip there as Linux-only: `CustodyTool.InitTakesCustodyBackWhenTheRootCannotBeWritten` and
+    `PeerSocket.ChoosesBbrWhereOffered`.
+
+## Settled questions moved from ACTIVE, 2026-11-18
+
+- The first commit is `2a923f5` on `main`; `develop` branched. `CLAUDE.md` stays uncommitted (the maintainer's global gitignore
+  excludes it). the maintainer (2026-11-03): commit at each completed milestone without asking; no attribution lines, ever.
+- the maintainer had the Macha session delete the morning's leftovers in `../macha`: the goldens branch, the two-process
+  script, the 0.91.2 worktree and its runs.
+- GoogleTest 1.18.0 from MacPorts (`gtest`).
+- The repository copies are the masters (2026-11-04).
+- Core message types are Dannan's; the rest are the user's (the maintainer, 2026-11-03).
+- Step 10, 2026-11-04: a node is revoked at once by a CA-signed revocation, gossiped and enforced at every v2
+  handshake. The Context stays callback style (Lugh decided).
+- the maintainer, 2026-11-04: the Macha port "not yet" until Dagda's heads and leases were tagged. That is superseded by the
+  2026-11-18 order above. `origin` holds main, develop and the tags; each push needs his ask.
+- Step 3's parts 1 to 5, the file system, the hybrid clock and the per-call record copies all landed for 0.9.0 (the
+  entries below). Part 6, `SimDisk`, is the simulated disk, and waits only on Dagda's paths moving onto it.
+
 **0.9.1 is released** (`main` and tag at `7206e53`, at the maintainer's word; main's CI run 44184976022 green). The `.deb`s
 are staged in `../tomcully-apt/incoming/dannan/0.9.1/` and checked on node-a (shlibs `libdannan0.9 (>= 0.9.1)`).
 Lir's SUBACK probe on 0.9.1: 20/20 at every delay, no misses.
+
+**0.9.2 is released** (`main` and tag at `36d6ded`, at the maintainer's word, 2026-11-17, with a macOS gate as his exception:
+941 tests, 939 passed, 2 skipped; main's CI run 44198359185 green). The `.deb`s are staged in
+`../tomcully-apt/incoming/dannan/0.9.2/` and checked on node-b (shlibs `libdannan0.9 (>= 0.9.2)`). Lir on 0.9.2:
+361 of 361, SlowGossipClusterTest 20 of 20 (6 of 30 failed on 0.9.1).
 
 **For 0.9.2: an advert set before a peer was met** (Lir's finding on 0.9.1). A push reaches only the peers known
 when made; the bootstrap peer kept the handshake's older record until its own next exchange. A node now pushes its
@@ -564,7 +706,7 @@ P7, Alpine in CI: not now (the maintainer). The 0.6 and 0.7 work's detailed note
 - RS256 verification, verify only (Lugh's P11, the maintainer's ruling; in 0.8.3 at the maintainer's word): `verify_rs256(n, e, message,
   signature)`, merged at `22bf306`, tested with generated keys (no Wycheproof file here, none written from memory).
   CI run 43747779212 green on every job. Lugh approved.
-- Not in it, 0.9's (Lease's layout changes): Lir's TSan finding, a Lease released after its node's ledger was
+- Not in it, 0.9.0's (Lease's layout changes): Lir's TSan finding, a Lease released after its node's ledger was
   destroyed; fixed on `feature/agreement`. Lir suppresses that one race under TSan until 0.9.0.
 
 ## Handoff, 2026-11-15: 0.8.2 prepared; 0.8.1 released

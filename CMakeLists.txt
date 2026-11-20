@@ -8,7 +8,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 # One number for the repository: both libraries, the tag and --version.
-project(dannan VERSION 0.9.2 LANGUAGES CXX)
+project(dannan VERSION 0.10.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -28,6 +28,25 @@ option(DANNAN_BUILD_FUZZING "Build each fuzz target as its own binary (libFuzzer
 option(DANNAN_BUILD_TOOLS "Build and install the tools: dannan-node, dannan-ca, dannan-bench, dannan-import-macha, dannan-version" ON)
 if(DANNAN_BUILD_TESTING AND NOT DANNAN_BUILD_TOOLS)
   message(FATAL_ERROR "DANNAN_BUILD_TESTING needs DANNAN_BUILD_TOOLS: the tests run dannan-node and dannan-ca")
+endif()
+
+# The stack's one sanitizer switch (docs/building.md): "address" (ASan with UBSan) or "thread"
+# (TSan). It instruments every target Dannan builds, fetched or not, and a consumer that sets it
+# before fetching Dannan gets an instrumented library: a sanitizer gate never links an
+# uninstrumented Dannan (the maintainer, 2026-11-20). Dagda passes it to the Dannan it fetches.
+set(DANNAN_SANITIZE "" CACHE STRING "Instrument Dannan: empty, address (ASan and UBSan) or thread (TSan)")
+set_property(CACHE DANNAN_SANITIZE PROPERTY STRINGS "" address thread)
+if(DANNAN_SANITIZE STREQUAL "address")
+  set(DANNAN_SANITIZER_FLAGS -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined)
+elseif(DANNAN_SANITIZE STREQUAL "thread")
+  set(DANNAN_SANITIZER_FLAGS -fsanitize=thread -fno-omit-frame-pointer)
+elseif(NOT DANNAN_SANITIZE STREQUAL "")
+  message(FATAL_ERROR "DANNAN_SANITIZE is empty, address or thread, not \"${DANNAN_SANITIZE}\"")
+endif()
+if(DANNAN_SANITIZER_FLAGS)
+  # This directory and below only: every Dannan target, never the consumer's own.
+  add_compile_options(${DANNAN_SANITIZER_FLAGS})
+  add_link_options(${DANNAN_SANITIZER_FLAGS})
 endif()
 
 # Asio is header-only. The floor is Debian 13's 1.83, which the live nodes run
@@ -55,6 +74,11 @@ endif()
 configure_file(dannan/include/dannan/version.h.in ${PROJECT_BINARY_DIR}/generated/dannan/version.h @ONLY)
 
 add_subdirectory(dannan)
+if(DANNAN_SANITIZER_FLAGS)
+  # What links an instrumented Dannan links the sanitizer's runtime with it. Not installed: a
+  # package is never built instrumented.
+  target_link_options(dannan INTERFACE $<BUILD_INTERFACE:${DANNAN_SANITIZER_FLAGS}>)
+endif()
 if(DANNAN_BUILD_TOOLS)
   add_subdirectory(tools)
 endif()

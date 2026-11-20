@@ -111,7 +111,20 @@ class ChildProcess {
       for (const auto& entry : *options.environment) env.push_back(const_cast<char*>(entry.c_str()));
       env.push_back(nullptr);
     }
-    const int spawned = posix_spawn(&_pid, args[0], &actions, nullptr, args.data(), options.environment ? env.data() : environ);
+    // The signals a test sends at their defaults, and none blocked, whatever the test inherited: a
+    // test run as a shell's background job has SIGINT and SIGQUIT ignored, and a child keeps that.
+    posix_spawnattr_t attributes;
+    posix_spawnattr_init(&attributes);
+    sigset_t defaults;
+    sigset_t none;
+    sigemptyset(&defaults);
+    for (const int number : {SIGINT, SIGQUIT, SIGTERM, SIGHUP, SIGPIPE, SIGUSR1, SIGUSR2, SIGALRM, SIGCHLD}) sigaddset(&defaults, number);
+    sigemptyset(&none);
+    posix_spawnattr_setsigdefault(&attributes, &defaults);
+    posix_spawnattr_setsigmask(&attributes, &none);
+    posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK);
+    const int spawned = posix_spawn(&_pid, args[0], &actions, &attributes, args.data(), options.environment ? env.data() : environ);
+    posix_spawnattr_destroy(&attributes);
     posix_spawn_file_actions_destroy(&actions);
     ::close(out[1]);
     if (in[0] >= 0) ::close(in[0]);

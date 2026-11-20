@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cstddef>
 #include <deque>
+#include <limits>
 #include <optional>
 
 #include "dannan/contract/time_source.h"
@@ -30,6 +31,15 @@ struct RetryPolicy {
   // Backstop for what the window cannot see: an item failing unbroken this
   // long parks however sparsely retried. Zero disables it.
   std::chrono::milliseconds max_failing_duration = std::chrono::hours(1);
+
+  // A policy that never parks: backoff from `initial` to `ceiling` and no failure budget, for
+  // work that must go on trying because nothing else will (a token source, a key source, an
+  // agent's reconnect). Discipline 2 still holds for the caller: an item that can be handed to
+  // an operator should be, with a bounded policy.
+  static RetryPolicy unbounded(std::chrono::milliseconds initial, std::chrono::milliseconds ceiling) noexcept {
+    // A window of one millisecond keeps the failure record to the failures of one instant.
+    return RetryPolicy{std::numeric_limits<size_t>::max(), std::chrono::milliseconds(1), initial, ceiling, std::chrono::milliseconds(0)};
+  }
 };
 
 // One item's retry state. Time comes from the caller's injected source.

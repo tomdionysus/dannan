@@ -70,6 +70,20 @@ std::array<uint8_t, 32> hmac_sha256(std::span<const uint8_t> key, std::span<cons
   return out;
 }
 
+std::array<uint8_t, 20> sha1(std::span<const uint8_t> data) {
+  std::array<uint8_t, 20> out{};
+  unsigned size = 0;
+  if (EVP_Digest(data.data(), data.size(), out.data(), &size, EVP_sha1(), nullptr) != 1 || size != 20) throw std::runtime_error("SHA-1 failed");
+  return out;
+}
+
+std::array<uint8_t, 20> hmac_sha1(std::span<const uint8_t> key, std::span<const uint8_t> data) {
+  std::array<uint8_t, 20> out{};
+  unsigned size = 0;
+  if (!HMAC(EVP_sha1(), key.data(), length(key.size()), data.data(), data.size(), out.data(), &size) || size != 20) throw std::runtime_error("HMAC failed");
+  return out;
+}
+
 namespace {
 
 // HKDF-SHA256 into `out`, whatever memory it is.
@@ -221,35 +235,5 @@ bool constant_time_equal(std::span<const uint8_t> a, std::span<const uint8_t> b)
 }
 
 void cleanse(std::span<uint8_t> bytes) noexcept { OPENSSL_cleanse(bytes.data(), bytes.size()); }
-
-std::string hex(std::span<const uint8_t> bytes) {
-  static constexpr char digits[] = "0123456789abcdef";
-  std::string out;
-  out.reserve(bytes.size() * 2);
-  for (const auto byte : bytes) {
-    out.push_back(digits[byte >> 4]);
-    out.push_back(digits[byte & 15]);
-  }
-  return out;
-}
-
-std::optional<Bytes> unhex(const std::string& text) {
-  if (text.size() % 2) return std::nullopt;
-  const auto value = [](char c) -> int {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    return -1;
-  };
-  Bytes out;
-  out.reserve(text.size() / 2);
-  for (size_t i = 0; i < text.size(); i += 2) {
-    const int high = value(text[i]);
-    const int low = value(text[i + 1]);
-    if (high < 0 || low < 0) return std::nullopt;
-    out.push_back(static_cast<uint8_t>(high << 4 | low));
-  }
-  return out;
-}
 
 }  // namespace dannan::identity

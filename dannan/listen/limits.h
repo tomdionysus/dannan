@@ -51,11 +51,17 @@ class Bucket {
 struct Prefix {
   boost::asio::ip::address address;
   uint8_t length = 0;
-  // "10.0.0.0/8", "2001:db8::/64" or a bare address. Throws std::invalid_argument
-  // for anything else, or a length past the family's bits.
+  // "10.0.0.0/8", "2001:db8::/64" or a bare address. An IPv4-mapped IPv6 prefix
+  // ("::ffff:10.0.0.0/104") is read as the IPv4 one. Throws std::invalid_argument naming
+  // the text for anything else: a length that is not digits or is past the family's
+  // bits, or host bits set past the length ("10.0.0.1/8" is a mistake, not 10.0.0.0/8).
   static Prefix parse(std::string_view text);
   bool contains(const boost::asio::ip::address& candidate) const noexcept;
+  // "address/length".
+  std::string to_string() const;
 };
+// An IPv4 address met on an IPv6 socket (::ffff:a.b.c.d) as the IPv4 address; any other as it is.
+boost::asio::ip::address unmapped(const boost::asio::ip::address& address);
 // Whether any of `prefixes` contains `address`.
 bool within(const std::vector<Prefix>& prefixes, const boost::asio::ip::address& address) noexcept;
 

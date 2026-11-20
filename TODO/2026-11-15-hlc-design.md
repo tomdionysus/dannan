@@ -150,3 +150,25 @@ Mimir, who reviewed the design:
 At a restart the clock begins at the wall, or one past the ceiling if the wall is not past it,
 so no stamp is reissued. Carrying stamps on Dannan's own wire stays a separate question.
 
+## Revised (2026-11-19): the ceiling covers stamps issued, not the wall
+
+Lir's cluster found every node, idle or not, rewriting the ceiling once a second (a temp file,
+an fsync, a rename, a directory fsync; with custody, `identity/counters` at the same rate). The
+cause is above: the roster loop raises the ceiling to `max(issued, wall) + 2 s`, and the wall
+moves a second each pass. A ceiling has only to cover stamps issued, and an idle node issues
+none: Dannan issues no stamps itself, and neither Macha nor Dagda uses the clock.
+
+the maintainer, 2026-11-19, asking why anything is written when nothing happens; 0.9.3, after the Macha
+cutover:
+- The ceiling follows the last stamp issued, never the wall. A node that issues nothing writes
+  nothing, at start included.
+- The first stamp past the ceiling raises it on the write path (one durable write, counted as a
+  raise off the loop). This is the wait the contract already names, now met after an idle spell
+  as well.
+- While stamps are issued, the loop raises the ceiling to `issued + 30 s` once it comes within
+  2 s: one write each 28 s. A crash restart may begin up to 30 s past the wall, half the default
+  `max_ahead`, so peers still merge its stamps.
+- A clean stop writes the ceiling down to the last stamp, so a planned restart begins at the
+  wall.
+- The directory fsync stays, because the replace is by rename.
+

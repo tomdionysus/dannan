@@ -16,6 +16,10 @@
 #   tools/ci.sh package    install, then build and run a consumer (test/package)
 #   tools/ci.sh coverage   a coverage build's tests; lcov report build-ci/coverage.info
 #   tools/ci.sh abi        the library against the minor's last release, by abidiff
+#   tools/ci.sh install-debs <tag>
+#                          for a dependant's CI: builds the tag's libdannan<major.minor>
+#                          and libdannan-dev with tools/build-deb.sh (tests skipped) and
+#                          installs them; DANNAN_REPOSITORY names another clone source
 #
 # Builds go under build-ci/ (DANNAN_CI_OUT to move it). Needs g++ cmake
 # ninja-build libboost-dev libssl-dev libyaml-cpp-dev libgtest-dev libgmock-dev,
@@ -36,6 +40,18 @@ configure() {
   shift
   cmake -S "$top" -B "$out/$dir" -G Ninja -DDANNAN_BUILD_TESTING=ON -DDANNAN_WARNINGS_AS_ERRORS=ON "$@"
   cmake --build "$out/$dir" -j "$jobs" --target dannan_tests
+}
+
+# The library itself carries the sanitizer, not only the tests that link it: its undefined
+# symbols name the runtime's entry points (`prefix`, __asan_ or __tsan_).
+instrumented() {
+  library=$(find "$1" -maxdepth 2 -name 'libdannan.so*' -type f | head -n 1)
+  count=$(nm -D --undefined-only "$library" | grep -c "$2" || true)
+  if [ "$count" -eq 0 ]; then
+    echo "$library is not instrumented: no $2 symbols" >&2
+    exit 1
+  fi
+  echo "$library: $count $2 symbols"
 }
 
 case "$step" in
@@ -60,13 +76,14 @@ case "$step" in
     "$out/clang/dannan_tests"
     ;;
   asan)
-    flags="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined"
-    configure asan -DCMAKE_BUILD_TYPE=RelWithDebInfo -DDANNAN_WARNINGS_AS_ERRORS=OFF -DCMAKE_CXX_FLAGS="$flags" -DCMAKE_EXE_LINKER_FLAGS="$flags" -DCMAKE_SHARED_LINKER_FLAGS="$flags"
+    # Through DANNAN_SANITIZE, the switch a consumer fetching Dannan uses, so the gate proves it.
+    configure asan -DCMAKE_BUILD_TYPE=RelWithDebInfo -DDANNAN_WARNINGS_AS_ERRORS=OFF -DDANNAN_SANITIZE=address
+    instrumented "$out/asan" __asan_
     ASAN_OPTIONS=detect_stack_use_after_return=1 UBSAN_OPTIONS=print_stacktrace=1 "$out/asan/dannan_tests"
     ;;
   tsan)
-    flags="-fsanitize=thread -fno-omit-frame-pointer"
-    configure tsan -DCMAKE_BUILD_TYPE=RelWithDebInfo -DDANNAN_WARNINGS_AS_ERRORS=OFF -DCMAKE_CXX_FLAGS="$flags" -DCMAKE_EXE_LINKER_FLAGS="$flags" -DCMAKE_SHARED_LINKER_FLAGS="$flags"
+    configure tsan -DCMAKE_BUILD_TYPE=RelWithDebInfo -DDANNAN_WARNINGS_AS_ERRORS=OFF -DDANNAN_SANITIZE=thread
+    instrumented "$out/tsan" __tsan_
     TSAN_OPTIONS="halt_on_error=1 second_deadlock_stack=1 suppressions=$top/dannan/test/tsan-suppressions.txt" "$out/tsan/dannan_tests"
     ;;
   package)
@@ -159,8 +176,26 @@ case "$step" in
       exit 1
     fi
     ;;
+  install-debs)
+    # One step every dependant's CI shares (Lir, Lugh, Louhi, Mimir, Kvasir, Dagda), so none
+    # builds Dannan's packages its own way. The tag's own packaging builds them, so a dependant
+    # pinned to an older tag gets that tag's packages. Needs git, dpkg-dev, apt and root or sudo.
+    tag=${2:?usage: tools/ci.sh install-debs <tag>}
+    repository=${DANNAN_REPOSITORY:-https://github.com/tomdionysus/dannan.git}
+    sudo=
+    if [ "$(id -u)" -ne 0 ]; then sudo=sudo; fi
+    work="$out/install-debs"
+    rm -rf "$work"
+    mkdir -p "$work"
+    git clone --quiet --depth 1 --branch "$tag" "$repository" "$work/src"
+    $sudo apt-get install -y --no-install-recommends dpkg-dev
+    $sudo apt-get build-dep -y "$work/src"
+    (cd "$work/src" && DEB_BUILD_OPTIONS=nocheck tools/build-deb.sh)
+    $sudo apt-get install -y "$work"/src/build-deb/libdannan[0-9]*_*.deb "$work"/src/build-deb/libdannan-dev_*.deb
+    dpkg-query -W -f='${Package} ${Version}\n' 'libdannan*'
+    ;;
   *)
-    echo "usage: tools/ci.sh check|release|clang|asan|tsan|package|coverage|abi" >&2
+    echo "usage: tools/ci.sh check|release|clang|asan|tsan|package|coverage|abi|install-debs <tag>" >&2
     exit 2
     ;;
 esac
