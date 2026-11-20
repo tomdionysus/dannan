@@ -139,6 +139,13 @@ class Nodes {
   // The smoothed CONTROL round trip, from health pings only.
   virtual std::optional<std::chrono::milliseconds> latency(const identity::NodeId& node) const = 0;
   virtual std::map<identity::NodeId, std::chrono::milliseconds> latencies() const = 0;
+  // This node's clock offset to `node`, from the clock probes made each heartbeat (positive: the
+  // peer's clock is ahead); nothing before a probe has come back (the plan's item 6).
+  virtual std::optional<std::chrono::milliseconds> clock_offset(const identity::NodeId& node) const = 0;
+  // Whether this node's clock is within bounds: false while its offset is past
+  // NodeConfig::clock_offset_bound against more than half of the agreed roster, itself counted at
+  // zero, and then it issues no hybrid-clock stamp (hlc().now() throws ClockOutOfBounds).
+  virtual bool clock_in_bounds() const = 0;
   // Identity association resets: held, applied here (roster, telemetry,
   // routes), and propagated to every active peer, each asked within
   // `deadline`, their answers applied too.

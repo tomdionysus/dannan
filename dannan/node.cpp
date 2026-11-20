@@ -141,6 +141,8 @@ class Node::NodesNoun final : public Nodes {
   std::map<identity::NodeId, std::chrono::milliseconds> latencies() const override {
     return _node._net ? _node._net->peer_latencies() : decltype(latencies()){};
   }
+  std::optional<std::chrono::milliseconds> clock_offset(const identity::NodeId& node) const override { return _node._clock_offsets.offset(node); }
+  bool clock_in_bounds() const override { return _node._hlc->issuing(); }
   std::vector<membership::IdentityReset> identity_resets() const override { return _node._members.identity_resets(); }
   bool apply_identity_reset(const membership::IdentityReset& reset) override { return _node.apply_identity_reset(reset); }
   void refresh_public_connectivity(bool probe, bool force_probe, asio::any_io_executor executor,
@@ -981,6 +983,14 @@ net::Handled Node::handle(const NodeRecord& peer, sched::FrameType frame, net::M
   const auto type = request.type;
   _activity.note(frame, request.payload.size());
   if (type == m::ping) return net::Handled::processed();
+  if (type == m::clock_probe) {
+    try {
+      const auto sent = membership::decode_probe(request.payload);
+      return net::Handled::processed({m::clock_probe_reply, membership::encode_answer({sent, _config.wall->unix_ms()}), {}});
+    } catch (const net::DecodeError& error) {
+      return net::Handled::failed(400, "invalid_request", error.what());
+    }
+  }
   if (type == m::members) {
     // A pushed record (Nodes::advertise with a deadline): the sender's own, merged before
     // the answer, so the roster sent back shows whether it was taken. Empty: the plain
@@ -1581,7 +1591,60 @@ void Node::membership_next(const std::shared_ptr<MembershipPass>& pass) {
     _peers_active = pass->active;
     break;
   }
-  pass->done();
+  if (pass->stopped()) return pass->done();
+  probe_clocks(pass->on, std::move(pass->done));
+}
+
+void Node::probe_clocks(asio::any_io_executor on, std::function<void()> done) {
+  std::vector<NodeRecord> peers;
+  for (auto& node : _members.active())
+    if (node.id != _identity.id) peers.push_back(std::move(node));
+  struct Round {
+    std::atomic<size_t> left;
+    std::function<void()> done;
+  };
+  auto round = std::make_shared<Round>();
+  round->left = peers.size();
+  round->done = std::move(done);
+  const auto finish = [this, round] {
+    if (round->left.fetch_sub(1) != 1) return;
+    judge_clock();
+    round->done();
+  };
+  if (peers.empty()) {
+    judge_clock();
+    return round->done();
+  }
+  // Each probe is answered by the peer's fast pool; one that does not answer within the bound only
+  // misses this round.
+  const auto deadline = std::min(_config.heartbeat, std::chrono::milliseconds(2000));
+  for (const auto& peer : peers) {
+    const auto sent = _config.wall->unix_ms();
+    (void)place_call(peer, {peer.host, peer.port}, net::message::clock_probe, membership::encode_probe(sent), sched::FrameType::control, deadline, on,
+                     [this, id = peer.id, sent, finish](net::CallOutcome outcome) {
+                       if (outcome.reply && outcome.reply->type == net::message::clock_probe_reply) {
+                         try {
+                           const auto answer = membership::decode_answer(outcome.reply->payload);
+                           if (answer.sent == sent) _clock_offsets.record(id, sent, answer.answered, _config.wall->unix_ms());
+                         } catch (const net::DecodeError&) {
+                           // A peer that answers in another form gives no sample.
+                         }
+                       }
+                       finish();
+                     });
+  }
+}
+
+void Node::judge_clock() {
+  const auto out = _clock_offsets.out_of_bounds(_identity.id, _agreed.members(), _config.clock_offset_bound);
+  if (out == !_hlc->issuing()) return;
+  _hlc->set_out_of_bounds(out);
+  const status::ScopedLogger log(_config.log, "node");
+  if (out)
+    log.warn("this node's clock is more than " + std::to_string(_config.clock_offset_bound.count()) +
+             " ms off more than half of the agreed roster: it issues no hybrid-clock stamp until it is back");
+  else
+    log.info("this node's clock is back within bounds: it issues hybrid-clock stamps again");
 }
 
 void Node::telemetry_step(contract::TimePoint& last_gossip) {

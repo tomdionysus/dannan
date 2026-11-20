@@ -27,6 +27,11 @@ A new minor (TODO/2026-11-20-stack-plan.md, the first of three). Added:
 - `HlcClock::admit(stamp, peer)`, the one check a receiver makes of a peer's stamp, with an
   `AdmitVerdict` (admitted, ahead, self_out_of_bounds) and a reason; `issuing()` and
   `set_out_of_bounds()`, while which `now()` throws `ClockOutOfBounds` at once.
+- Clock probes (message types 27 and 115) on each heartbeat measure every peer's clock offset,
+  NTP-style. `Nodes::clock_offset(node)` reads it; `Nodes::clock_in_bounds()` is false while this
+  node's clock is past `NodeConfig::clock_offset_bound` (two seconds) against more than half of
+  the agreed roster, itself counted at zero, and then it issues no hybrid-clock stamp. A 0.9 node
+  answers a probe with an error and gives no sample.
 
 Changed:
 

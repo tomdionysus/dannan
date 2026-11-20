@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -41,14 +42,20 @@ class NodeClock final : public contract::TimeSource, public contract::WallClock 
   contract::TimePoint now() const noexcept override { return contract::TimePoint(std::chrono::milliseconds(local())); }
   std::chrono::milliseconds wake_within(std::chrono::milliseconds remaining) const noexcept override { return remaining; }
   uint64_t unix_ms() const noexcept override { return 1'790'000'000'000ull + local(); }
+  // Moves this node's clocks on by `by_ms`, at once, as a clock stepped by NTP or an operator.
+  // Forward only: the steady clock moves with the wall, and a steady clock must never go back.
+  void step(int64_t by_ms) noexcept {
+    if (by_ms > 0) _offset.fetch_add(by_ms, std::memory_order_relaxed);
+  }
 
  private:
   uint64_t local() const noexcept {
     const auto at = static_cast<int64_t>(_world.now_ms());
-    return static_cast<uint64_t>(at + at / 1'000'000 * _drift + (at % 1'000'000) * _drift / 1'000'000 + _offset);
+    return static_cast<uint64_t>(at + at / 1'000'000 * _drift + (at % 1'000'000) * _drift / 1'000'000 + _offset.load(std::memory_order_relaxed));
   }
   const World& _world;
-  int64_t _offset;
+  // Atomic: a node's own threads read it while a test steps it.
+  std::atomic<int64_t> _offset;
   int64_t _drift;
 };
 
@@ -362,6 +369,8 @@ class SimNodes {
   // Every node's id, known before any starts (a genesis set names them).
   const std::vector<identity::NodeId>& ids() const noexcept { return _ids; }
   SimNetwork& network() noexcept { return _network; }
+  // Steps node `i`'s clocks forward by `by_ms` (NodeClock::step).
+  void step_clock(size_t i, int64_t by_ms) { _clocks.at(i)->step(by_ms); }
 
   // What node `i` is configured with; a test may change it before a restart.
   NodeConfig config(size_t i) {
