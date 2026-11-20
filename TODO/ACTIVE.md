@@ -53,7 +53,9 @@ started from are never read for direction or edited.
      default), and each pending call's watchdog is one such wait. With thousands of calls and a
      frozen clock, that churn starved a shared io_context under TSan (Dagda's
      PromptReplication stalls, 2026-11-20). That is to be confirmed by Dagda's coarse
-     wake_within run.
+     wake_within run. In the next release, before that: `test::SteppedTime(poll = 5ms)` takes
+     its wake_within poll as an optional constructor argument, so a fixture with many waiters
+     can poll coarsely. Dagda wraps it meanwhile.
    - Dagda's ask: `NodeConfig::liveness_time`, a TimeSource for liveness probes and call
      watchdogs that defaults to `time`. Today a test stepping a node's clock by more than
      dead_after/3 also gives up its links (client.cpp's await_ping).
