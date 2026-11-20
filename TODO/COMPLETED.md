@@ -3,6 +3,41 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
+## 0.10.1, 2026-11-20: a node's stop waits for a scheduled step; MemoryStore::each_held
+
+A patch, with the ABI kept. What shipped is in CHANGELOG.md:
+- the scheduled-step race hosted CI's TSan found in 0.10.0;
+- Mimir's `each_held`;
+- `install-debs` keeping the caller's `DEB_BUILD_OPTIONS`.
+
+Main had been red since 0.10.0's TSan finding, which made this tier 1.
+
+The gate ran once, on the final tree (f32ccf3) or a predecessor that differs only in docs, a comment
+and the call-fault test's order.
+- The proof: Node.AStopWaitsForAScheduledStepAlreadyRunning failed at f8f6061, before the fix,
+  ("stop returned while a scheduled step was still running") and passes after.
+- check.
+- release, clang, ASan and the deb build: 1053 tests each. ASan: 35 __asan_ symbols in libdannan.
+- TSan:
+  - the first run passed 1052; Node.ACallFaultRefusesACallByPeerAndTypeBeforeTheWire failed;
+  - the cause was the test's order: its address call raced the node's first connection;
+  - fixed in f32ccf3;
+  - the rerun passed 1053, with 36 __tsan_ symbols; that test passed 20 of 20 under TSan.
+- package.
+- abi against 0.10.0, in a clean container: 0 removed, 0 changed, each_held the one addition.
+- fuzz: four targets, 60 s each, run at once.
+- install-debs in a clean container with DEB_BUILD_OPTIONS=parallel=1: built at -j1.
+
+Run on the build cluster; the logs are kept locally, outside the repository.
+
+Found on the way, kept for later:
+- fix/scheduler-marks: a request whose reply throws leaves its marks. Tests and fix are written,
+  not yet gated.
+- Dagda's PromptReplication stalls: most likely a frozen stepped clock's 5 ms polling starving a
+  shared io_context, not a lost request (ACTIVE.md, 0.11.0).
+- The stream carrier: its failing test and bus error were the test's own stopped io_context. Fixed
+  on feature/stream-carrier (945d287); it ships in 0.11.0.
+
 ## 0.10.0, 2026-11-20: the Cluster Stack's first minor
 
 What shipped is in CHANGELOG.md, with what a dependant can now delete or replace. The release

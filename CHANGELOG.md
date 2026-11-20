@@ -1,5 +1,26 @@
 # Current release
 
+## 0.10.1: a node's stop waits for a scheduled step; MemoryStore::each_held
+
+A patch: the ABI is 0.10.0's, so a host built against 0.10.0 loads it.
+
+Fixed: with a schedule (`NodeConfig::schedule`, the simulation's), a step that had passed its
+check before the node stopped ran on while the node was destroyed. Hosted CI's TSan on 0.10.0
+caught a roster step writing to a freed path. The stop now waits for a step already under way,
+once it has released what that step might wait on. A node without a schedule was not affected.
+
+Fixed: `tools/ci.sh install-debs` replaced the caller's `DEB_BUILD_OPTIONS` with `nocheck`, so a
+caller's `parallel=1` was lost and the build ran on every CPU (Mimir's container, 1.5 GB on one
+core, had its compiler killed). The caller's options are kept, with `nocheck` added.
+
+Added: `agree::MemoryStore::each_held(slot, after, visit)`, the names a slot holds a value for,
+in the order of their bytes, from strictly past `after`, until the visitor returns false (Mimir's
+ask). Pages by the last name given, so a name removed between pages skips no other.
+
+Adopting 0.10.1: a hosted system that keeps an in-memory acceptor store only to list what a
+slot holds can drop it for `MemoryStore`. A test that worked round a node's stop racing its
+scheduled steps can drop the workaround.
+
 ## 0.10.0: the Cluster Stack's first minor
 
 A new minor: the ABI changes, so move a pin from 0.9.2 to 0.10.0 in one step (TODO/2026-11-20-stack-plan.md,
