@@ -15,9 +15,22 @@ started from are never read for direction or edited.
   [`2026-11-03-macha-function-inventory.md`](2026-11-03-macha-function-inventory.md).
 - The live cluster is live-a and live-b (Pi 5, Debian 13), on Macha 0.94.2 and Dannan 0.5.3.
 
-## Resume here (2026-11-19, written for a context clear)
+## Resume here (2026-11-20)
 
-**The one job now.** the maintainer, 2026-11-18, to Macha, Dannan and Dagda: "work together and focus on the Macha move to
+**Planning the Cluster Stack's needs; code held.** the maintainer, 2026-11-20, after the duplication and
+special-roles audits: "You should start planning now"; on starting code, "Keep holding". The
+plan is [`2026-11-20-stack-plan.md`](2026-11-20-stack-plan.md): 31 items in three minors, every
+consumer's answer (what it uses today, what it needs, the proof), and the shapes reconciled.
+The placements were settled through Lir Development Cluster
+(`../lir-develop-cluster/TODO/2026-11-20-cluster-stack-placement.md`). the maintainer's rulings that day: HTTP
+and JSON into Dannan, register order by hlc, a DNS responder in Dannan, no automatic removal of
+absent nodes, the lower project keeps what two need, Macha injects a logger and the Context (no
+holders), no single-node special cases, squash commits onto develop, sanitizers at a feature's
+end. AthenaSIP is not part of the group. Next: draw the open shapes (paged transfer and
+catch-up first), send each consumer its shapes to confirm, and start code only at the maintainer's word.
+
+**Before 2026-11-20, the one job was the Macha move** (kept below for the record).
+the maintainer, 2026-11-18: the maintainer, 2026-11-18, to Macha, Dannan and Dagda: "work together and focus on the Macha move to
 Dagda. Work on nothing else until this is done. Work autonomously until you're ready to do the cutover on live-a
 and live-b." the maintainer, 2026-11-19, to Macha: do not begin the cutover; get ready for it. Dannan's part has three
 pieces:
