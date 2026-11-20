@@ -30,6 +30,7 @@ add_library(dannan SHARED
   membership/node_record.cpp
   membership/identity_reset.cpp
   membership/agreed_roster.cpp
+  membership/clock_offsets.cpp
   membership/membership.cpp
   net/assembler.cpp
   net/channel.cpp
