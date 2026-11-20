@@ -10,6 +10,7 @@
 # "dannan/<subsystem>/x.h".
 add_library(dannan SHARED
   config/config.cpp
+  encoding/base.cpp
   encoding/percent.cpp
   contract/completion.cpp
   contract/hlc.cpp

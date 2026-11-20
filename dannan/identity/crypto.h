@@ -18,6 +18,7 @@
 // The primitives the channel seals and authenticates with, over OpenSSL.
 // Every failure throws std::runtime_error; a failed open or verify is never
 // a value a caller could mistake for success.
+#include "dannan/encoding/base.h"
 #include "dannan/identity/secure_memory.h"
 
 namespace dannan::identity {
@@ -89,8 +90,10 @@ bool constant_time_equal(std::span<const uint8_t>, std::span<const uint8_t>);
 // Overwrites memory the optimiser may not elide.
 void cleanse(std::span<uint8_t>) noexcept;
 
-std::string hex(std::span<const uint8_t>);
-inline std::string hex(const Hash256& hash) { return hex(hash.bytes); }
-std::optional<Bytes> unhex(const std::string&);
+// hex and unhex live in dannan/encoding/base.h (the plan's item 9); these names forward to them
+// for one minor.
+using encoding::hex;
+using encoding::unhex;
+inline std::string hex(const Hash256& hash) { return encoding::hex(hash.bytes); }
 
 }  // namespace dannan::identity

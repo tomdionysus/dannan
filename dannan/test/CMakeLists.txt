@@ -34,6 +34,7 @@ add_executable(dannan_tests
   identity_sha1_test.cpp
   identity_signing_test.cpp
   listen_backoff_test.cpp
+  listen_prefix_test.cpp
   listen_test.cpp
   membership_agreed_test.cpp
   membership_test.cpp
@@ -43,6 +44,7 @@ add_executable(dannan_tests
   reach_upnp_test.cpp
   config_test.cpp
   encoding_percent_test.cpp
+  encoding_test.cpp
   net_assembler_test.cpp
   node_test.cpp
   net_channel_test.cpp
