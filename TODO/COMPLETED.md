@@ -3,6 +3,38 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
+## 0.10.0, 2026-11-20: the Cluster Stack's first minor
+
+What shipped is in CHANGELOG.md, with what a dependant can now delete or replace. The release
+fixed these on the way:
+- the history scrub collapsed two test addresses into one (62e70fc);
+- clang's -Wthread-safety refused the in-memory store's prepared() (e9aac3d);
+- test children inherited an ignored SIGINT (240b67f);
+- Mimir's two agreement lifetime faults: the leak, and the use-after-free into the freed node.
+
+The gate, once each, on the final tree or its predecessor in test code only:
+- check;
+- release and clang, 1048 tests each on e3e2553;
+- TSan, 1048, with libdannan carrying 36 __tsan_ symbols;
+- ASan: 1047 of 1048 at d3141db. The one failure was the node test's own wrong expectation, since
+  corrected; libdannan carries 35 __asan_ symbols;
+- package; abi (the first of its minor, no base);
+- fuzz: agree, handshake, level0 and records, 60 s each, all clean;
+- the deb build with its tests, 1048;
+- install-debs in a clean debian:trixie container, which installed libdannan0.10, libdannan-dev
+  and the dbgsym package.
+
+Proofs, each test failing first:
+- Agreement.OneThatGoesWithRequestsWaitingOnItsStoreLetsGoOfThem: "the store is held past its
+  Agreement".
+- Agreement.AKeepCompletedAfterItsAgreementHasGoneReachesNothingOfTheOwners: 1 advert and 1 answer
+  after the Agreement had gone, where 0 of each were expected.
+- Node.AStoreCompletionAfterItsNodeIsDestroyedReachesNothingOfIt: ASan's heap-use-after-free in
+  Membership::set_advert through Core::note, Mimir's stack, against the agreement as at 1fa08d4.
+
+Run on the build cluster's four nodes. The logs are kept locally, outside the repository.
+Moved to 0.11.0: the stream carrier and item 6.
+
 ## The Macha move to Dagda: Dannan's part, 2026-11-18 evening to 2026-11-19
 
 No code changed; `develop` is at `3bb372c` and CI's last run, on `9e4bdce`, is green (44202755089).
