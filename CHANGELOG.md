@@ -18,6 +18,8 @@ A new minor (TODO/2026-11-20-stack-plan.md, the first of three). Added:
 - `RetryPolicy::unbounded(initial, ceiling)`, a policy that never parks.
 - `identity::RandomId<Tag>`, a random 16-byte id, one type per kind.
 - `identity::sha1` and `hmac_sha1`, for Valkey script ids and TOTP only.
+- `identity::durable_create_directories` and `durable_sync_directory`; `durable_replace_file` and
+  `durable_create_file` take the mode of the directories they make (0700 by default, as before).
 - `encoding/base.h`: base64, base64url (padded or not), base32, exact decoders into any buffer
   (a secret into `SecureBuffer`), and `utf8_length`, `valid_utf8`, `printable`. `hex` and `unhex`
   move here; `identity::hex` and `identity::unhex` forward to them.

@@ -63,17 +63,24 @@ struct Directories {
   std::vector<storage::Path> made;
 };
 
-// Makes each missing directory owner-only (0700), as the file inside will be; existing ones are
-// left as they are.
-Directories directory_of(storage::FileSystem& fs, const storage::Path& path) {
-  Directories out{path.parent_path().empty() ? storage::Path(".") : path.parent_path(), {}};
+// Makes `directory` and each missing one above it with `mode`; existing ones are left as they are.
+Directories made_directories(storage::FileSystem& fs, const storage::Path& directory, unsigned mode) {
+  Directories out{directory.empty() ? storage::Path(".") : directory, {}};
   for (auto at = out.directory; !at.empty() && at != at.root_path(); at = at.parent_path()) {
     if (fs.stat(at)) break;
     out.made.push_back(at);
   }
-  const auto made = fs.make_directories(out.directory, 0700);
+  const auto made = fs.make_directories(out.directory, mode);
   if (!made) fail("cannot create durable state directory " + made.error().path.string(), made.error());
   return out;
+}
+
+// The file's directory, made as made_directories() makes it.
+Directories directory_of(storage::FileSystem& fs, const storage::Path& path, unsigned mode) { return made_directories(fs, path.parent_path(), mode); }
+
+// Each directory made synced into its parent, deepest first.
+void sync_made(storage::FileSystem& fs, const Directories& directories) {
+  for (const auto& made : directories.made) sync_directory(fs, made.parent_path().empty() ? storage::Path(".") : made.parent_path());
 }
 
 // The file's directory synced, then each directory made for it into its parent, deepest first:
@@ -81,13 +88,13 @@ Directories directory_of(storage::FileSystem& fs, const storage::Path& path) {
 // a new directory and the file in it.
 void sync_directories(storage::FileSystem& fs, const Directories& directories) {
   sync_directory(fs, directories.directory);
-  for (const auto& made : directories.made) sync_directory(fs, made.parent_path().empty() ? storage::Path(".") : made.parent_path());
+  sync_made(fs, directories);
 }
 
 }  // namespace
 
-void durable_replace_file(const std::filesystem::path& path, std::string_view contents, storage::FileSystem& fs) {
-  const auto directories = directory_of(fs, path);
+void durable_replace_file(const std::filesystem::path& path, std::string_view contents, storage::FileSystem& fs, unsigned directory_mode) {
+  const auto directories = directory_of(fs, path, directory_mode);
   const auto temp = written_temporary(fs, path, contents);
   try {
     must(fs.rename(temp, path), "cannot replace durable state " + path.string());
@@ -98,8 +105,8 @@ void durable_replace_file(const std::filesystem::path& path, std::string_view co
   }
 }
 
-void durable_create_file(const std::filesystem::path& path, std::string_view contents, storage::FileSystem& fs) {
-  const auto directories = directory_of(fs, path);
+void durable_create_file(const std::filesystem::path& path, std::string_view contents, storage::FileSystem& fs, unsigned directory_mode) {
+  const auto directories = directory_of(fs, path, directory_mode);
   const auto temp = written_temporary(fs, path, contents);
   // link() refuses an existing name atomically, where a check followed by a rename could not:
   // of two creators, exactly one wins.
@@ -112,5 +119,11 @@ void durable_create_file(const std::filesystem::path& path, std::string_view con
   (void)fs.remove(temp);
   sync_directories(fs, directories);
 }
+
+void durable_create_directories(const std::filesystem::path& directory, unsigned mode, storage::FileSystem& fs) {
+  sync_made(fs, made_directories(fs, directory, mode));
+}
+
+void durable_sync_directory(const std::filesystem::path& directory, storage::FileSystem& fs) { sync_directory(fs, directory); }
 
 }  // namespace dannan::identity
