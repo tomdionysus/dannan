@@ -934,3 +934,57 @@ Reconciled, and open:
   the stack's "replicated" gets Dagda's replicated; durable is never offered under the stack's
   names. Confirms the registered retire check, the fixtures forwarding for one minor and
   agreement.h's ABI held through the first minor. **The ack-level open question is closed.**
+
+## Shapes agreed while building the first minor
+
+### Item 17: a carrier under listen::Stream (Lir, Kvasir, Lugh)
+
+listen::Stream's byte operations go through a small type-erased Carrier: SocketCarrier (today's
+TCP and TLS, unchanged) and MemoryCarrier (one end of an in-memory pipe whose deliveries are posted
+to a given executor, the sim World's io_context in a simulation). Stream's public API is unchanged.
+- StreamListener::inject(executor, peer = 127.0.0.1) returns the client end of a pipe whose server
+  end reaches on_stream through the listener's own accept path and limits; peer() reports the
+  given address (Lugh: rate limits, back-off and X-Forwarded-For key on it); transport() "memory".
+- TLS over a memory pipe is real TLS with the listener's certificates; the client end may present
+  a client certificate (Lugh's RFC 8705 tests). start_tls and start_tls_unanswered behave as on a
+  socket (Kvasir). set_no_delay is a no-op on memory.
+- In-world dialling (Lir's lir::client): StreamConnector's in-world form uses a world directory
+  from endpoint to listener, filled as SimNodes' nodes start their listeners. A stopped node's
+  endpoint refuses at once; one cut off by SimNetwork times out on the world's clock under the
+  connector's deadline. A client may have an address in the world so partitions include it.
+- Faults on one connection: sever() (both ends reset, pending reads end in error), stall() (no
+  bytes either way, nothing closes), resume() (flow restarts in order). Stopping a node severs
+  every stream its listeners and connectors hold.
+- The World stays shared: SimNodes does not own it, so Dagda's nodes run in the same world.
+- Kvasir's fake Stream is the test driving the client end; its Transport seam can go.
+- Cost: one indirect call per read and write on real sockets, measured with dannan-bench before
+  and after; a direct path for SocketCarrier if it shows. Confirmed: Lir, Lugh; Kvasir to answer.
+- Not now: datagrams (with the DatagramListener).
+
+### Item 17: the fuzz export
+
+fuzz/fuzz.h is installed. The library dannan_testing (alias dannan::testing, built always: it
+needs no GoogleTest, so no option) holds the target registry and a callable smoke run over a
+target (its seeds, mutations, noise, the empty input) drawn from SplitMix64, as the sim's Random,
+so a seed replays alike on libc++ and libstdc++; and replay(argc, argv) and run_all(bytes) for a
+consumer's two-line fuzz binary. It links dannan and dannan_sim_checkers, which gains the alias
+dannan::sim_checkers in a fetched build (Louhi). The test fixtures' headers keep their paths
+(dannan/test/fixtures/...), as Dagda asked, rather than moving under include/dannan/testing/.
+
+### Item 24: the dashboards (Lir, Louhi, Mimir, Kvasir; the maintainer's instruction to the four)
+
+- Static files from a configurable root (default the service's install), from Lugh's static_site:
+  ETag and 304, bounded files and bytes; traversal refused (.., encoded slashes, symlinks out of
+  the root); fingerprinted assets (a configurable name pattern) Cache-Control immutable for a
+  year, index.html no-cache.
+- SPA fallback, configurable: a GET matching no route and no file serves index.html; API prefixes
+  (default /api/) never fall through.
+- OpenAPI: routes() exposes the route table; check_openapi(document, routes) reports routes the
+  document lacks and documented paths with no route, for a hand-written document (Louhi); an
+  emitter builds the document from the table and per-route fragments for those who prefer it.
+- Sign-in: password through item 11's credential helper (the service's own accounts), or Lugh
+  through lugh_client behind a pluggable authenticator (Lugh's CallerResolver shape). Sessions are
+  a stateless signed __Host- cookie (Secure, HttpOnly, SameSite=Strict): subject, scopes, expiry,
+  HMAC-SHA256 under a cluster-key subkey, so any node checks it with no session store; an hour by
+  default with sliding refresh; Bearer accepted for API calls; sign-in limited by item 10.
+- The React code stays each service's. Sent to the four and Lugh 2026-11-20; answers pending.
