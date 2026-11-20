@@ -616,13 +616,16 @@ TEST(Node, ACallFaultRefusesACallByPeerAndTypeBeforeTheWire) {
   pair.b->start();
   ASSERT_TRUE(eventually([&] { return record_of(*pair.b, a).has_value(); }));
   const auto record = *record_of(*pair.b, a);
+  // The passed type first: its call connects B's client to A, so A's address is one B has met.
+  // Made later, the address call raced the node's own first connection and could go out unknown
+  // (TSan in 0.10.1's gate on the build cluster).
+  const auto passed = pair.b->context().routes().call_and_wait(record, passed_type, {}, FrameType::control, 5s);
+  EXPECT_TRUE(passed.reply) << passed.failure;
   const auto refused = pair.b->context().routes().call_and_wait(record, faulted_type, {}, FrameType::control, 5s);
   EXPECT_FALSE(refused.reply);
   EXPECT_EQ(refused.failure, "link refused by the test");
   const auto by_address = pair.b->context().routes().call_and_wait(net::Endpoint{"127.0.0.1", pair.a->port()}, faulted_type, {}, FrameType::control, 5s);
   EXPECT_EQ(by_address.failure, "link refused by the test");
-  const auto passed = pair.b->context().routes().call_and_wait(record, passed_type, {}, FrameType::control, 5s);
-  EXPECT_TRUE(passed.reply) << passed.failure;
   EXPECT_EQ(handled.load(), 1);
   EXPECT_EQ(plan->taken.load(), 2);
 }
@@ -2593,6 +2596,39 @@ TEST(Node, WithAScheduleItsLoopsAndTimersRunWhenTheScheduleRunsThem) {
   (void)schedule.run();
   EXPECT_FALSE(schedule.booked(b_config.heartbeat));
   a.stop();
+}
+
+// A stop waits for a scheduled step already running (0.10.1: hosted CI's TSan found a roster
+// step writing while its node was destroyed, the step having passed its check before the stop).
+// A step held running on an io thread keeps stop() from returning until it ends.
+TEST(Node, AStopWaitsForAScheduledStepAlreadyRunning) {
+  Io io;
+  test::TempDir dir;
+  const auto key = cluster_key(dir.path());
+  HandSchedule schedule;
+  auto b_config = config(dir.path() / "b", key);
+  b_config.schedule = schedule.hook();
+  Node b(io.context, b_config);
+  b.start();
+  std::promise<void> running;
+  std::promise<void> release;
+  auto released = release.get_future().share();
+  std::atomic<bool> ended{false};
+  b.context().time().after(4321ms, [&running, released, &ended] {
+    running.set_value();
+    released.wait();
+    ended = true;
+  });
+  ASSERT_TRUE(schedule.booked(4321ms));
+  (void)schedule.run();
+  ASSERT_EQ(running.get_future().wait_for(10s), std::future_status::ready);
+  auto stopped = std::async(std::launch::async, [&b] { b.stop(); });
+  // While the step runs, the stop waits for it. The bound only gives a wrong stop the time to
+  // return; a right one never does while the step is held.
+  EXPECT_EQ(stopped.wait_for(200ms), std::future_status::timeout) << "stop returned while a scheduled step was still running";
+  release.set_value();
+  ASSERT_EQ(stopped.wait_for(10s), std::future_status::ready);
+  EXPECT_TRUE(ended.load()) << "stop returned before the step it waited for had ended";
 }
 
 }  // namespace

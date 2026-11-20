@@ -16,8 +16,11 @@
 #include <boost/asio/strand.hpp>
 #include <fstream>
 #include <future>
+#include <mutex>
 #include <set>
+#include <shared_mutex>
 #include <stdexcept>
+#include <type_traits>
 
 #include "dannan/agree/wire.h"
 #include "dannan/identity/durable_file.h"
@@ -113,6 +116,59 @@ sched::WorkerPoolConfig workers_of(const NodeConfig& config) {
   auto out = config.workers;
   if (config.schedule) out.schedule = config.schedule;
   return out;
+}
+
+// With a schedule, the steps' gate (0.10.1): closed once the node stops, so a step booked earlier
+// does nothing after, and held shared across each step that runs, so the stop waits for one
+// under way. Hosted CI's TSan on 0.10.0 found a roster step writing while its node was destroyed,
+// the step having passed its check before the stop. Shared with what the schedule holds, which
+// may outlive the node.
+//
+// node.h keeps `_scheduled`, a std::shared_ptr<std::atomic<bool>>, for the ABI: it points at
+// `open`, the first member of this standard-layout struct, and shares the gate's ownership, so the
+// gate is recovered from it.
+struct ScheduleGate {
+  std::atomic<bool> open{true};
+  std::shared_mutex running;
+
+  // Runs `step` if the gate is open, holding it shared. A step run from inside another of this
+  // node's steps, on the same thread, runs as part of it.
+  template <typename Step>
+  void run(Step&& step) {
+    if (current == this) {
+      if (open.load()) step();
+      return;
+    }
+    std::shared_lock lock(running);
+    if (!open.load()) return;
+    const auto* outer = current;
+    current = this;
+    struct Restore {
+      const ScheduleGate* outer;
+      ~Restore() { current = outer; }
+    } restore{outer};
+    step();
+  }
+  // No step starts after this, and one under way has ended when it returns. A stop from inside
+  // one of this node's steps cannot wait for itself, so there it only closes.
+  void close() {
+    open.store(false);
+    if (current == this) return;
+    std::unique_lock lock(running);
+  }
+  static thread_local const ScheduleGate* current;
+};
+thread_local const ScheduleGate* ScheduleGate::current = nullptr;
+static_assert(std::is_standard_layout_v<ScheduleGate>, "the gate is recovered from a pointer to its first member");
+
+std::shared_ptr<std::atomic<bool>> make_schedule_gate() {
+  auto gate = std::make_shared<ScheduleGate>();
+  return std::shared_ptr<std::atomic<bool>>(gate, &gate->open);
+}
+
+ScheduleGate& gate_of(const std::shared_ptr<std::atomic<bool>>& open) {
+  // Pointer-interconvertible: `open` is the first member of a standard-layout struct.
+  return *reinterpret_cast<ScheduleGate*>(open.get());
 }
 
 }  // namespace
@@ -564,6 +620,7 @@ Node::Node(asio::io_context& io, NodeConfig config)
       _faults(std::make_unique<FaultsNoun>(*this)),
       _time(std::make_unique<TimeNoun>(*this)),
       _telemetry_noun(std::make_unique<TelemetryNoun>(*this)) {
+  _scheduled = make_schedule_gate();
   if (_config.memory_warning) status::ScopedLogger(_config.log, "node").warn(*_config.memory_warning);
   if (!_inbound.load_error().empty()) status::ScopedLogger(_config.log, "node").warn("inbound resolution ignored: " + _inbound.load_error());
   if (!_telemetry.load_error().empty()) status::ScopedLogger(_config.log, "node").warn("persisted telemetry ignored: " + _telemetry.load_error());
@@ -863,6 +920,7 @@ void Node::request_stop() {
 
 void Node::stop() {
   if (!_started || _stopping.exchange(true)) return;
+  // No scheduled step starts from here.
   _scheduled->store(false);
   request_stop();
   // The transport goes first: a loop waiting on a call is released by it.
@@ -871,6 +929,9 @@ void Node::stop() {
   // After the calls: a task waiting on one is released, and what is queued is told it stopped.
   _workers.stop();
   if (_paths) _paths->stop();
+  // A scheduled step already under way has ended before anything it uses goes: waited for once
+  // what it might wait on has been released.
+  gate_of(_scheduled).close();
   std::vector<std::jthread> loops;
   {
     contract::Lock lock(_loops_mutex);
@@ -1401,11 +1462,9 @@ void Node::after(std::chrono::milliseconds delay, std::function<void()> task) {
   if (_config.schedule) {
     // Nothing booked runs once the node has stopped: the schedule may outlive the node (a world
     // that goes on after it), and a task here may use it.
-    return _config.schedule(delay, [alive = _scheduled, executor = _io.get_executor(), task = std::move(task)]() mutable {
-      if (!alive->load()) return;
-      asio::post(executor, [alive, task = std::move(task)] {
-        if (alive->load()) task();
-      });
+    return _config.schedule(delay, [gate = _scheduled, executor = _io.get_executor(), task = std::move(task)]() mutable {
+      if (!gate->load()) return;
+      asio::post(executor, [gate, task = std::move(task)] { gate_of(gate).run(task); });
     });
   }
   auto timer = std::make_shared<asio::steady_timer>(_io);
@@ -1424,47 +1483,37 @@ void Node::schedule_loops() {
   scheduled_connectivity(std::move(state));
 }
 
+// Each step runs inside the gate (after() puts it there), and so does each completion that books
+// the next: it reads the node's configuration, which a stop must not free under it.
 void Node::scheduled_membership() {
-  const auto alive = _scheduled;
-  if (!alive->load()) return;
-  membership_step([alive] { return !alive->load(); }, _io.get_executor(),
-                  [this, alive] {
-                    if (alive->load())
-                      after(_config.heartbeat, [this, alive] {
-                        if (alive->load()) scheduled_membership();
-                      });
-                  });
+  const auto gate = _scheduled;
+  if (!gate->load()) return;
+  membership_step([gate] { return !gate->load(); }, _io.get_executor(),
+                  [this, gate] { gate_of(gate).run([this] { after(_config.heartbeat, [this] { scheduled_membership(); }); }); });
 }
 
 void Node::scheduled_telemetry(contract::TimePoint last_gossip) {
-  const auto alive = _scheduled;
-  if (!alive->load()) return;
+  if (!_scheduled->load()) return;
   telemetry_step(last_gossip);
-  after(std::max(_config.telemetry_interval, std::chrono::milliseconds(250)), [this, alive, last_gossip] {
-    if (alive->load()) scheduled_telemetry(last_gossip);
-  });
+  after(std::max(_config.telemetry_interval, std::chrono::milliseconds(250)), [this, last_gossip] { scheduled_telemetry(last_gossip); });
 }
 
 void Node::scheduled_roster() {
-  const auto alive = _scheduled;
-  if (!alive->load()) return;
+  if (!_scheduled->load()) return;
   roster_step();
-  after(std::chrono::seconds(1), [this, alive] {
-    if (alive->load()) scheduled_roster();
-  });
+  after(std::chrono::seconds(1), [this] { scheduled_roster(); });
 }
 
 void Node::scheduled_connectivity(std::shared_ptr<ConnectivityState> state) {
-  const auto alive = _scheduled;
-  if (!alive->load()) return;
-  connectivity_step(state, _io.get_executor(), [this, alive, state] {
-    if (!alive->load()) return;
-    // At least every heartbeat, sooner for a probe or a classification due.
-    const auto now = _config.time->now();
-    auto due = std::min(state->automatic ? std::min(state->next, state->next_class) : state->next_class, now + _config.heartbeat);
-    const auto wait = std::max(std::chrono::ceil<std::chrono::milliseconds>(due - now), std::chrono::milliseconds(1));
-    after(wait, [this, alive, state] {
-      if (alive->load()) scheduled_connectivity(state);
+  const auto gate = _scheduled;
+  if (!gate->load()) return;
+  connectivity_step(state, _io.get_executor(), [this, gate, state] {
+    gate_of(gate).run([this, state] {
+      // At least every heartbeat, sooner for a probe or a classification due.
+      const auto now = _config.time->now();
+      auto due = std::min(state->automatic ? std::min(state->next, state->next_class) : state->next_class, now + _config.heartbeat);
+      const auto wait = std::max(std::chrono::ceil<std::chrono::milliseconds>(due - now), std::chrono::milliseconds(1));
+      after(wait, [this, state] { scheduled_connectivity(state); });
     });
   });
 }

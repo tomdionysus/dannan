@@ -7,12 +7,17 @@
 # CodeQL security analysis of the library and its tools, built as in CI.
 name: CodeQL
 
+# On main, which takes a release at a time, and weekly.
 on:
   push:
-    branches: [main, develop]
-  pull_request:
+    branches: [main]
+    paths-ignore: ["TODO/**", "docs/**", "**/*.md"]
   schedule:
     - cron: "23 4 * * 1"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read

@@ -37,6 +37,28 @@ started from are never read for direction or edited.
      - timed_out's text: "the outcome is unknown, and a write may yet land";
      - Dagda carries AckLevel's four names, plus `durable` as its own.
    - Whether a store may offer only some levels is Kvasir's ruling (Dagda asked).
+   - dannan-node follows docs/config.md:
+     - its flags are made from their keys, so `--port` becomes `--listen-port`;
+     - its variables take the project's prefix, so `DANNAN_NODE_...` becomes `DANNAN_...`, and
+       the README's example changes with them;
+     - it takes `log.level` and `log.format`, the stack's shared keys.
+     The flags are part of its interface, so the change waits for the minor.
+   - Ship `dannan/test/tsan-suppressions.txt` (Dagda's ask; Asio's executor count, a false
+     positive every TSan build on Asio can hit). Steps:
+     - libdannan-dev installs it;
+     - the CMake package sets `DANNAN_TSAN_SUPPRESSIONS` to its path, installed or fetched;
+     - docs/building.md tells every TSan run to pass it, so the stack keeps one list.
+   - A TimeSource that tells its waiters when it is stepped, so a stepped or frozen clock arms
+     no timer until it moves. Today every wait on it re-arms each `wake_within` (5 ms by
+     default), and each pending call's watchdog is one such wait. With thousands of calls and a
+     frozen clock, that churn starved a shared io_context under TSan (Dagda's
+     PromptReplication stalls, 2026-11-20). That is to be confirmed by Dagda's coarse
+     wake_within run. In the next release, before that: `test::SteppedTime(poll = 5ms)` takes
+     its wake_within poll as an optional constructor argument, so a fixture with many waiters
+     can poll coarsely. Dagda wraps it meanwhile.
+   - Dagda's ask: `NodeConfig::liveness_time`, a TimeSource for liveness probes and call
+     watchdogs that defaults to `time`. Today a test stepping a node's clock by more than
+     dead_after/3 also gives up its links (client.cpp's await_ping).
 3. **Raise with the maintainer:** `found()` gives each slot its own deadline, counted from when that
    slot's run starts, so with its node gone a founding's outcome takes a deadline per window of 16
    slots.
@@ -47,8 +69,8 @@ started from are never read for direction or edited.
 special-roles audits: "You should start planning now"; on starting code, "Keep holding". The
 plan is [`2026-11-20-stack-plan.md`](2026-11-20-stack-plan.md): 31 items in three minors, every
 consumer's answer (what it uses today, what it needs, the proof), and the shapes reconciled.
-The placements were settled through Lir Development Cluster
-(`../lir-develop-cluster/TODO/2026-11-20-cluster-stack-placement.md`). the maintainer's rulings that day: HTTP
+The placements were settled through the coordinating session, which keeps the stack's
+placement record. the maintainer's rulings that day: HTTP
 and JSON into Dannan, register order by hlc, a DNS responder in Dannan, no automatic removal of
 absent nodes, the lower project keeps what two need, Macha injects a logger and the Context (no
 holders), no single-node special cases, squash commits onto develop, sanitizers at a feature's

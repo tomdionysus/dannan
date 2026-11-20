@@ -63,6 +63,12 @@ class MemoryStore final : public AcceptorStore {
   std::optional<AcceptorState> state(Slot slot, const Name& name) const;
   // How many names it holds state for, every slot together.
   size_t size() const;
+  // The names `slot` holds a value for, with each one's state, in the order of the names' bytes:
+  // from the first strictly past `after` when given (held or not), until `visit` returns false.
+  // The store's lock is held across the walk, so `visit` must not call into the store. The order
+  // is stable while nothing is kept, so a caller pages by the last name it was given (0.10.1,
+  // Mimir's: a catching-up peer, and filling a view of the keyspace).
+  void each_held(Slot slot, const std::optional<Name>& after, const std::function<bool(const Name&, const AcceptorState&)>& visit) const;
 
  private:
   struct SlotHeld {

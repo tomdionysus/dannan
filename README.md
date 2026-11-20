@@ -134,7 +134,9 @@ the file, in the same shape, wins over the file, and each option has a
 `DANNAN_NODE_*` variable that wins over both. `--port 7437` is
 `listen: {port: 7437}` in the file and `DANNAN_NODE_LISTEN_PORT` in the
 environment. This is `dannan::config` (`dannan/config/config.h`), the one
-settings reader every node binary in the stack shares.
+settings reader every node binary in the stack shares;
+[`docs/config.md`](docs/config.md) has its layers and the naming rule every
+binary follows.
 
 ### Run a cluster on certificates
 

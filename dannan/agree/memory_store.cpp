@@ -153,4 +153,16 @@ size_t MemoryStore::size() const {
   return total;
 }
 
+void MemoryStore::each_held(Slot slot, const std::optional<Name>& after, const std::function<bool(const Name&, const AcceptorState&)>& visit) const {
+  contract::Lock lock(_mutex);
+  const auto found = _slots.find(slot);
+  if (found == _slots.end()) return;
+  const auto& names = found->second.names;
+  // The keys compare as unsigned bytes (char_traits<char>), so this is the names' bytes order.
+  for (auto it = after ? names.upper_bound(key_of(*after)) : names.begin(); it != names.end(); ++it) {
+    if (!it->second.has_value) continue;
+    if (!visit(Name(it->first.begin(), it->first.end()), it->second)) return;
+  }
+}
+
 }  // namespace dannan::agree
