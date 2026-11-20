@@ -17,6 +17,7 @@
 
 #include "dannan/contract/thread_safety.h"
 #include "dannan/identity/node_id.h"
+#include "dannan/net/codec.h"
 
 // Each peer's clock offset, from clock probes on the heartbeat (TODO/2026-11-20-stack-plan.md,
 // item 6), and the rule that takes this node out of bounds. A probe is NTP's: sent at t0 on this
@@ -51,5 +52,17 @@ class ClockOffsets {
   mutable contract::Mutex _mutex;
   std::map<identity::NodeId, std::deque<Sample>> _samples DANNAN_GUARDED_BY(_mutex);
 };
+
+// The clock probe on the wire (net::message::clock_probe and its reply): the request carries the
+// sender's wall at sending, eight bytes big-endian; the answer echoes it and adds the answerer's
+// wall at answering. Each decoder throws net::DecodeError for anything else.
+net::Bytes encode_probe(uint64_t sent);
+uint64_t decode_probe(std::span<const uint8_t> payload);
+struct ProbeAnswer {
+  uint64_t sent = 0;
+  uint64_t answered = 0;
+};
+net::Bytes encode_answer(const ProbeAnswer& answer);
+ProbeAnswer decode_answer(std::span<const uint8_t> payload);
 
 }  // namespace dannan::membership

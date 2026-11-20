@@ -108,6 +108,22 @@ TEST(ClockOffsets, AnOffsetAtTheBoundIsWithinIt) {
   EXPECT_FALSE(offsets.out_of_bounds(id(1), roster, 2s));
 }
 
+TEST(ClockProbe, RoundTripsOnTheWire) {
+  EXPECT_EQ(decode_probe(encode_probe(1'793'700'000'123ull)), 1'793'700'000'123ull);
+  const auto answer = decode_answer(encode_answer({5, 9}));
+  EXPECT_EQ(answer.sent, 5u);
+  EXPECT_EQ(answer.answered, 9u);
+  EXPECT_EQ(encode_probe(1).size(), 8u);
+  EXPECT_EQ(encode_answer({1, 2}).size(), 16u);
+}
+
+TEST(ClockProbe, AnythingElseIsADecodeError) {
+  EXPECT_THROW(decode_probe(net::Bytes(7)), net::DecodeError);
+  EXPECT_THROW(decode_probe(net::Bytes(9)), net::DecodeError);
+  EXPECT_THROW(decode_answer(net::Bytes(15)), net::DecodeError);
+  EXPECT_THROW(decode_answer(net::Bytes(17)), net::DecodeError);
+}
+
 TEST(ClockOffsets, ARoundTripThatEndsBeforeItBeganIsRefused) {
   ClockOffsets offsets;
   offsets.record(id(2), 1'000'000, 1'000'005, 999'990);

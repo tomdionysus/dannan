@@ -46,4 +46,33 @@ bool ClockOffsets::out_of_bounds(const identity::NodeId& self, const std::set<id
   return past > roster.size() / 2;
 }
 
+net::Bytes encode_probe(uint64_t sent) {
+  net::Writer writer;
+  writer.u64(sent);
+  return writer.take();
+}
+
+uint64_t decode_probe(std::span<const uint8_t> payload) {
+  net::Reader reader(payload);
+  const auto sent = reader.u64();
+  reader.finish();
+  return sent;
+}
+
+net::Bytes encode_answer(const ProbeAnswer& answer) {
+  net::Writer writer;
+  writer.u64(answer.sent);
+  writer.u64(answer.answered);
+  return writer.take();
+}
+
+ProbeAnswer decode_answer(std::span<const uint8_t> payload) {
+  net::Reader reader(payload);
+  ProbeAnswer out;
+  out.sent = reader.u64();
+  out.answered = reader.u64();
+  reader.finish();
+  return out;
+}
+
 }  // namespace dannan::membership
