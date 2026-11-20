@@ -27,7 +27,11 @@ std::optional<std::chrono::milliseconds> ClockOffsets::offset(const identity::No
   contract::Lock lock(_mutex);
   const auto found = _samples.find(peer);
   if (found == _samples.end() || found->second.empty()) return std::nullopt;
-  const auto best = std::min_element(found->second.begin(), found->second.end(), [](const Sample& a, const Sample& b) { return a.rtt_ms < b.rtt_ms; });
+  // The shortest round trip; of equal ones the newest, so a clock stepped since shows at the next
+  // probe when the path's delay is steady.
+  const Sample* best = nullptr;
+  for (const auto& sample : found->second)
+    if (!best || sample.rtt_ms <= best->rtt_ms) best = &sample;
   return std::chrono::milliseconds(best->offset_ms);
 }
 

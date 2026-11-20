@@ -52,6 +52,13 @@ TEST(ClockOffsets, TheShortestRoundTripOfTheRecentProbesIsBelieved) {
   EXPECT_EQ(*offsets.offset(id(2)), 50ms);
 }
 
+TEST(ClockOffsets, OfEqualRoundTripsTheNewestIsBelievedSoAStepShowsAtOnce) {
+  ClockOffsets offsets;
+  for (int i = 0; i < 5; ++i) probe(offsets, 2, 1'000'000 + static_cast<uint64_t>(i) * 1000, 0, 10);
+  probe(offsets, 2, 1'010'000, 60'000, 10);
+  EXPECT_EQ(*offsets.offset(id(2)), 60000ms);
+}
+
 TEST(ClockOffsets, OnlyTheRecentProbesAreKept) {
   ClockOffsets offsets;
   probe(offsets, 2, 1'000'000, 9'000, 1);  // quick, but old

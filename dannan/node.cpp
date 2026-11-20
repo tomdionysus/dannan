@@ -1596,9 +1596,11 @@ void Node::membership_next(const std::shared_ptr<MembershipPass>& pass) {
 }
 
 void Node::probe_clocks(asio::any_io_executor on, std::function<void()> done) {
+  // As the membership pass: a peer that takes no inbound connection and has no session open to it
+  // is not dialled for a probe, so a probe never asks level 0 for a path.
   std::vector<NodeRecord> peers;
   for (auto& node : _members.active())
-    if (node.id != _identity.id) peers.push_back(std::move(node));
+    if (node.id != _identity.id && (node.inbound_capable() || _net->has_route(node.id, net::Lane::control))) peers.push_back(std::move(node));
   struct Round {
     std::atomic<size_t> left;
     std::function<void()> done;

@@ -46,7 +46,8 @@ TEST(MembershipStamp, AChangeAfterTheWallStepsBackIsStillNewer) {
   ASSERT_TRUE(f.members.set_path_class(PathClass::relay_only));
   EXPECT_GT(f.stamp(), first);
   const auto second = f.stamp();
-  ASSERT_TRUE(f.members.set_inbound_capable(false));
+  // Whichever it is now, the other: a change.
+  ASSERT_TRUE(f.members.set_inbound_capable(!f.members.self().inbound_capable()));
   EXPECT_GT(f.stamp(), second);
   const auto third = f.stamp();
   ASSERT_TRUE(f.members.set_candidates({{"203.0.113.9", 40000, true, 2}}));
