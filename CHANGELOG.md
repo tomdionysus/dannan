@@ -82,7 +82,8 @@ Each is one home in the stack, so a copy kept elsewhere breaks the no-duplicatio
   node). Both lifetime faults are fixed, so a store may complete after the node has gone.
 
 Dependencies are unchanged: Boost 1.83 or later (Asio, headers only), OpenSSL 3 and yaml-cpp 0.7 or
-later. Nothing in their newer releases replaces code of Dannan's in this release.
+later, Debian 13's own versions. No dependency moved in this release; reading their newer releases
+against Dannan's code is planned work for the next.
 
 ## 0.9.2: an advert reaches a peer met after it was set
 
