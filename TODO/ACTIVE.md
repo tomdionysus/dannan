@@ -60,7 +60,14 @@ started from are never read for direction or edited.
    - Dagda's ask: `NodeConfig::liveness_time`, a TimeSource for liveness probes and call
      watchdogs that defaults to `time`. Today a test stepping a node's clock by more than
      dead_after/3 also gives up its links (client.cpp's await_ping).
-3. **Raise with the maintainer:** `found()` gives each slot its own deadline, counted from when that
+3. **Investigate, before 0.11.0's gate:** LevelZero.AChunkLostOnTheWayToTheFarEndEndsItWithinTheBound
+   failed once, in hosted CI's x86-64 ASan job on 0.10.2's release commit (run 44842230741).
+   - What failed: after the hub severed its data route to B mid-transfer, its data circuits did not
+     reach 0 within 20 s, and relay_ends_lost stayed 0.
+   - Where it passed: under ASan on a build node, under TSan, and in every other job.
+   - 0.10.2 touches no relay or circuit code.
+   - Find the mechanism, test first, before calling it timing.
+4. **Raise with the maintainer:** `found()` gives each slot its own deadline, counted from when that
    slot's run starts, so with its node gone a founding's outcome takes a deadline per window of 16
    slots.
 4. **Dependencies:** read Boost's, OpenSSL's and yaml-cpp's newer releases against Dannan's code
