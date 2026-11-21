@@ -52,8 +52,9 @@ started from are never read for direction or edited.
      no timer until it moves. Today every wait on it re-arms each `wake_within` (5 ms by
      default), and each pending call's watchdog is one such wait. With thousands of calls and a
      frozen clock, that churn starved a shared io_context under TSan (Dagda's
-     PromptReplication stalls, 2026-11-20). That is to be confirmed by Dagda's coarse
-     wake_within run. In the next release, before that: `test::SteppedTime(poll = 5ms)` takes
+     PromptReplication stalls, 2026-11-20). Confirmed as starvation, not loss: a stalled run
+     left going counted 1480 refusals at 150 s and 1789 at 300 s. Dagda wraps its clocks at
+     250 ms meanwhile. In the next release, before that: `test::SteppedTime(poll = 5ms)` takes
      its wake_within poll as an optional constructor argument, so a fixture with many waiters
      can poll coarsely. Dagda wraps it meanwhile.
    - Dagda's ask: `NodeConfig::liveness_time`, a TimeSource for liveness probes and call

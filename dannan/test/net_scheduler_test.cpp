@@ -712,5 +712,35 @@ TEST(Answer, MadeOutsideASchedulerIsGivenOnceAndRefusesWhenDropped) {
   EXPECT_EQ(refusal->status, 500);
 }
 
+// A request whose reply throws as it is sent leaves no mark behind (0.11.0; Dagda's hang): the
+// throw ends that worker's run and its supervisor restarts it, and the peer's ordered flow, and
+// the background classes' share of the workers, are free again for the next request. A mark
+// left set held every later request of its kind with every worker idle.
+Reply throwing() {
+  return Reply([](Message) { throw std::runtime_error("the reply could not be sent"); });
+}
+
+TEST(Scheduler, AReplyThatThrowsLeavesThePeersOrderedFlowFree) {
+  RequestScheduler scheduler(routes(), ServerLimits{},
+                             [](const membership::NodeRecord&, FrameType, const Message&, Answer&) { return Handled::processed({message::ok, {}, {}}); });
+  scheduler.submit(peer(1), Frame{1, FrameType::control, {put_commit, {}, {}}}, throwing());
+  auto next = ask(scheduler, peer(1), 3, put_commit, FrameType::control);
+  ASSERT_TRUE(answered_within(next, 5s)) << "the peer's next ordered request was held";
+  EXPECT_EQ(next.get().type, message::ok);
+}
+
+TEST(Scheduler, AReplyThatThrowsLeavesTheBackgroundShareFree) {
+  ServerLimits limits;
+  limits.data_workers = 2;
+  // One worker for background classes: a leaked mark would hold all of them.
+  limits.foreground_data_reserve = 1;
+  RequestScheduler scheduler(routes(), limits,
+                             [](const membership::NodeRecord&, FrameType, const Message&, Answer&) { return Handled::processed({message::ok, {}, {}}); });
+  scheduler.submit(peer(1), Frame{1, FrameType::loader, {put_object, {}, {}}}, throwing());
+  auto next = ask(scheduler, peer(2), 1, put_object, FrameType::loader);
+  ASSERT_TRUE(answered_within(next, 5s)) << "a background request was held";
+  EXPECT_EQ(next.get().type, message::ok);
+}
+
 }  // namespace
 }  // namespace dannan::net
