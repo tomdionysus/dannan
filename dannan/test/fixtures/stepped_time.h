@@ -7,7 +7,9 @@
 
 #pragma once
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 
 #include "dannan/contract/time_source.h"
@@ -16,8 +18,15 @@ namespace dannan::test {
 
 // A TimeSource that stands still until advance() moves it. It starts at the
 // steady clock's reading, so its time points compare with real ones.
+//
+// A waiter on it cannot know when it will move, so it looks again every `poll` of real time
+// (5 ms by default). A fixture with many waiters, thousands of calls each with its watchdog, gives
+// a coarser poll: at 5 ms a frozen clock's waiters can starve a shared io_context (Dagda's stalls
+// under TSan, gone at 250 ms). A step is then seen within `poll`.
 class SteppedTime final : public contract::TimeSource {
  public:
+  explicit SteppedTime(std::chrono::milliseconds poll = std::chrono::milliseconds(5)) noexcept : _poll(poll) {}
+
   // Precondition: by >= 0.
   void advance(contract::Clock::duration by) noexcept { _now.fetch_add(by.count()); }
   contract::TimePoint now() const noexcept override {
@@ -27,8 +36,10 @@ class SteppedTime final : public contract::TimeSource {
   // How many times now() has been read: a test waits for another thread to
   // have taken its reading before moving time on.
   uint64_t reads() const noexcept { return _reads.load(); }
+  std::chrono::milliseconds wake_within(std::chrono::milliseconds remaining) const noexcept override { return std::min(remaining, _poll); }
 
  private:
+  const std::chrono::milliseconds _poll;
   std::atomic<contract::Clock::rep> _now{contract::Clock::now().time_since_epoch().count()};
   mutable std::atomic<uint64_t> _reads{0};
 };

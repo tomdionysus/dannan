@@ -1,5 +1,21 @@
 # Current release
 
+## 0.10.2: a request whose reply throws leaves nothing held; SteppedTime takes a poll
+
+A patch: the ABI is 0.10.0's.
+
+Fixed: a request whose reply could not be sent, a throw past the scheduler's run, left its worker's
+mark set. The supervisor restarted the worker, but the peer's later ordered requests, or every
+background request once the background share was used up, waited with the workers idle. Each mark
+is now cleared however the run ends.
+
+Added: `test::SteppedTime(poll)`, the real time a waiter on it waits before looking again (5 ms, as
+before, by default). At 5 ms a frozen stepped clock with thousands of waiting calls, each with
+its watchdog, starved a shared io_context under TSan (Dagda's stalls). At 250 ms they were gone.
+
+Adopting 0.10.2: a fixture that wraps SteppedTime only to coarsen `wake_within` can drop the
+wrapper for `SteppedTime(std::chrono::milliseconds(250))`.
+
 ## 0.10.1: a node's stop waits for a scheduled step; MemoryStore::each_held
 
 A patch: the ABI is 0.10.0's, so a host built against 0.10.0 loads it.

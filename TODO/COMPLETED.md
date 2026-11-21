@@ -3,6 +3,29 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
+## 0.10.2, 2026-11-21: a request whose reply throws leaves nothing held; SteppedTime takes a poll
+
+A patch; the ABI is 0.10.1's (abidiff against 0.10.1 reports nothing). What shipped is in
+CHANGELOG.md.
+- The scheduler's marks are cleared however a run ends. The case was found while chasing Dagda's
+  stalls, which were not this.
+- `test::SteppedTime(poll)`. Dagda's test (3) showed it: at 250 ms its stress case passed 20 of 20;
+  at 5 ms every pinned run stalled.
+
+The gate ran once, on 911901d, the tree of the tag but for this record:
+- The proof: Scheduler.AReplyThatThrowsLeavesThePeersOrderedFlowFree and ...BackgroundShareFree
+  failed at 3c19e50, before the fix ("the peer's next ordered request was held"; "a background
+  request was held"), and pass after. SteppedTime's test cannot compile without its constructor.
+- check.
+- release, clang, ASan, TSan and the deb build: 1056 tests each. ASan: 35 __asan_ symbols. TSan:
+  36 __tsan_ symbols, no reports.
+- package.
+- abi against 0.10.1, in a clean container.
+- fuzz: four targets, 60 s each, at once.
+- install-debs in a clean container.
+
+Run on the build cluster; the logs are kept locally, outside the repository.
+
 ## 0.10.1, 2026-11-20: a node's stop waits for a scheduled step; MemoryStore::each_held
 
 A patch, with the ABI kept. What shipped is in CHANGELOG.md:

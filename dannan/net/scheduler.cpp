@@ -357,14 +357,22 @@ void RequestScheduler::ordered_loop(std::stop_token) {
       _ordered_bytes -= job.frame.message.payload.size();
       _ordered_active.insert(job.peer->id);
     }
-    const auto peer = job.peer->id;
+    // The peer's flow is freed however the run ends: a throw past run() (a reply that could not
+    // be sent) once left it marked, and every later ordered request from that peer waited with
+    // the workers idle.
+    struct Free {
+      RequestScheduler& scheduler;
+      identity::NodeId peer;
+      ~Free() {
+        {
+          contract::Lock lock(scheduler._mutex);
+          scheduler._ordered_active.erase(peer);
+        }
+        scheduler._changed.notify_all();
+      }
+    } free{*this, job.peer->id};
     run(std::move(job));
     cpu.tick();
-    {
-      contract::Lock lock(_mutex);
-      _ordered_active.erase(peer);
-    }
-    _changed.notify_all();
   }
 }
 
@@ -396,15 +404,23 @@ void RequestScheduler::data_loop(std::stop_token) {
       jobs.pop_front();
       _data_bytes -= job.frame.message.payload.size();
     }
+    // The background share is given back however the run ends: a throw past run() once kept it,
+    // and with the share used up every background request waited with the workers idle (Dagda's
+    // hang on a frozen test clock).
+    struct GiveBack {
+      RequestScheduler& scheduler;
+      bool held;
+      ~GiveBack() {
+        if (!held) return;
+        {
+          contract::Lock lock(scheduler._mutex);
+          --scheduler._nonforeground_active;
+        }
+        scheduler._changed.notify_all();
+      }
+    } give_back{*this, nonforeground};
     run(std::move(job));
     cpu.tick();
-    if (nonforeground) {
-      {
-        contract::Lock lock(_mutex);
-        --_nonforeground_active;
-      }
-      _changed.notify_all();
-    }
   }
 }
 
