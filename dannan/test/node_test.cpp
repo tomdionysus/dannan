@@ -137,17 +137,20 @@ TEST(Node, TwoNodesFormOneCluster) {
 TEST(Node, LargeTransfersGoRoundTheNodesBufferPool) {
   constexpr net::MessageType echo{1100};
   Pair pair({}, [&](Node& a) {
-    a.context().routes().add(
-        echo, {"echo", net::Lanes::data, net::Frames::not_control, false},
-        [](const NodeRecord&, sched::FrameType, const net::Message& request) { return net::Handled::processed({net::message::ok, request.payload, {}}); });
+    a.context().routes().add(echo, {"echo", net::Lanes::data, net::Frames::not_control, false},
+                             [](const membership::NodeRecord&, sched::FrameType, const net::Message& request) {
+                               return net::Handled::processed({net::message::ok, request.payload, {}});
+                             });
   });
+  // The caller knows the type's wire rules too: its lane is DATA.
+  pair.b->context().routes().add(echo, {"echo", net::Lanes::data, net::Frames::not_control, false}, {});
   pair.b->start();
   const auto a = pair.a->context().identity().id();
   ASSERT_TRUE(eventually([&] { return knows(*pair.b, a); }));
   const auto peer = [&] {
     for (const auto& node : pair.b->context().nodes().active())
       if (node.id == a) return node;
-    return NodeRecord{};
+    return membership::NodeRecord{};
   }();
   const net::Bytes payload(4 * 1024 * 1024, 0x42);
   for (int i = 0; i < 2; ++i) {
