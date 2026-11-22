@@ -43,6 +43,11 @@ started from are never read for direction or edited.
    - the stream carrier (feature/stream-carrier, for Lir): its memory-pipe write test fails, and a
      run ended in a bus error;
    - item 6 (feature/clock-rules), its fixes re-gated;
+   - JSON, the Boost.JSON half of item 24, moved here from the second minor (the maintainer,
+     2026-11-22, in Lir's session; HTTP stays in 0.12.0). Boost.JSON becomes a Dannan
+     dependency, its compiled unit carried once in Dannan. Lir builds objects of strings, int64
+     and uint64 kept distinct, booleans and arrays, serialised to bytes; it parses nothing yet
+     (later: HTTP publish bodies, its rules engine).
    - then the plan's second minor (2026-11-20-stack-plan.md).
    - Agreed with Dagda for its matching minor:
      - `Outcome<T>::failure(Fault, message, T evidence)` keeps the evidence beside the fault;
