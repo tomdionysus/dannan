@@ -947,6 +947,8 @@ std::string Paths::try_punch(const NodeRecord& self, const NodeRecord& peer, net
         ++_stats.punches_made;
         return {};
       }
+      // Which ports met: two punches that shared one would show it here.
+      why = "from local port " + std::to_string(port) + " to " + answer.at.host + ":" + std::to_string(answer.at.port) + ": " + why;
     } catch (const std::exception& error) {
       why = "broker " + to_string(broker.id) + ": " + error.what();
     }
