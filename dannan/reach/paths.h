@@ -109,6 +109,9 @@ inline constexpr uint64_t relay_credit_batch = 8;
 // How many of a circuit's chunks one hop hands its session at once: enough that
 // each hop is not one chunk's write behind the last.
 inline constexpr uint64_t relay_pipeline_chunks = 4;
+// How many punches through one broker a pair tries while each crosses (connects, then fails
+// its handshake) before it goes to the next broker.
+inline constexpr int punch_attempts = 3;
 
 net::Bytes encode(const PunchRequest&);
 net::Bytes encode(const PunchGo&);

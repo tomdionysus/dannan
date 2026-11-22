@@ -915,43 +915,51 @@ std::string Paths::try_punch(const NodeRecord& self, const NodeRecord& peer, net
   std::string why = "no broker";
   for (const auto& broker : _roster()) {
     if (broker.id == self.id || broker.id == peer.id || !broker.inbound_capable() || !_client.has_route(broker.id, net::Lane::control)) continue;
-    {
-      contract::Lock lock(_mutex);
-      ++_stats.punches_tried;
-    }
-    try {
-      const auto [port, seen] = observe_from(_io, _config.credentials, self, 0, {broker.host, broker.port}, broker.id, _config.connect_timeout);
-      const auto outcome = _caller(broker, m::punch_request, encode(PunchRequest{peer.id, lane, seen}), _config.connect_timeout * 3);
-      if (!outcome.reply || outcome.reply->type != m::punch_reply) {
-        why = "broker " + to_string(broker.id) + ": " + (outcome.reply ? "refused" : outcome.failure);
-        continue;
-      }
-      const auto answer = decode_punch_reply(outcome.reply->payload);
-      if (!answer.accepted) {
-        why = "broker " + to_string(broker.id) + ": " + answer.why;
-        continue;
-      }
-      auto opened = std::make_shared<std::promise<std::tuple<int, int, std::string>>>();
-      auto future = opened->get_future();
-      const auto target = _config.punch_target_hook ? _config.punch_target_hook(port, answer.at) : answer.at;
-      simultaneous_open(_io, port, target, _config.punch_window,
-                        [opened](int descriptor, int family, std::string reason) { opened->set_value({descriptor, family, std::move(reason)}); });
-      auto [descriptor, family, failure] = future.get();
-      if (descriptor < 0) {
-        why = failure;
-        continue;
-      }
-      const auto role = self.id < peer.id ? net::Role::dialler : net::Role::acceptor;
-      why = adopt_and_wait(descriptor, family, peer.id, lane, role, net::Purpose::punched, answer.token);
-      if (why.empty()) {
+    // An open that connected but whose handshake failed crossed: it met its own port, or
+    // another punch's (hosted CI saw both). That says nothing of whether the pair can be
+    // punched, so it is tried again from fresh ports; anything else goes to the next broker.
+    for (int attempt = 0; attempt < punch_attempts; ++attempt) {
+      bool crossed = false;
+      {
         contract::Lock lock(_mutex);
-        ++_stats.punches_made;
-        return {};
+        ++_stats.punches_tried;
       }
-      // Which ports met: two punches that shared one would show it here.
-      why = "from local port " + std::to_string(port) + " to " + target.host + ":" + std::to_string(target.port) + ": " + why;
-    } catch (const std::exception& error) {
-      why = "broker " + to_string(broker.id) + ": " + error.what();
+      try {
+        const auto [port, seen] = observe_from(_io, _config.credentials, self, 0, {broker.host, broker.port}, broker.id, _config.connect_timeout);
+        const auto outcome = _caller(broker, m::punch_request, encode(PunchRequest{peer.id, lane, seen}), _config.connect_timeout * 3);
+        if (!outcome.reply || outcome.reply->type != m::punch_reply) {
+          why = "broker " + to_string(broker.id) + ": " + (outcome.reply ? "refused" : outcome.failure);
+          break;
+        }
+        const auto answer = decode_punch_reply(outcome.reply->payload);
+        if (!answer.accepted) {
+          why = "broker " + to_string(broker.id) + ": " + answer.why;
+          break;
+        }
+        auto opened = std::make_shared<std::promise<std::tuple<int, int, std::string>>>();
+        auto future = opened->get_future();
+        const auto target = _config.punch_target_hook ? _config.punch_target_hook(port, answer.at) : answer.at;
+        simultaneous_open(_io, port, target, _config.punch_window,
+                          [opened](int descriptor, int family, std::string reason) { opened->set_value({descriptor, family, std::move(reason)}); });
+        auto [descriptor, family, failure] = future.get();
+        if (descriptor < 0) {
+          why = failure;
+          break;
+        }
+        const auto role = self.id < peer.id ? net::Role::dialler : net::Role::acceptor;
+        why = adopt_and_wait(descriptor, family, peer.id, lane, role, net::Purpose::punched, answer.token);
+        if (why.empty()) {
+          contract::Lock lock(_mutex);
+          ++_stats.punches_made;
+          return {};
+        }
+        crossed = true;
+        // Which ports met: two punches that shared one would show it here.
+        why = "from local port " + std::to_string(port) + " to " + target.host + ":" + std::to_string(target.port) + ": " + why;
+      } catch (const std::exception& error) {
+        why = "broker " + to_string(broker.id) + ": " + error.what();
+      }
+      if (!crossed) break;
     }
   }
   return why;
