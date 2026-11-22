@@ -546,6 +546,23 @@ TEST(LevelZero, ManyTransfersAtOnceCrossARelayIntact) {
   EXPECT_EQ(cluster.a->context().nodes().path(peer->id, net::Lane::data), net::Purpose::relayed);
 }
 
+// A punch that crosses is not the end of the punch: one whose open meets its own port (the
+// fault hosted x86-64 ASan met: its local port as its target, a self-connect whose handshake
+// times out or reads its own lane back) tries again with fresh ports through the broker, and
+// the call goes by punch.
+TEST(LevelZero, ACrossedPunchTriesAgainWithFreshPorts) {
+  std::atomic<int> opens{0};
+  const auto tune = [&](NodeConfig& config) {
+    config.punch_target_hook = [&](uint16_t local_port, const net::Endpoint& target) { return opens++ == 0 ? net::Endpoint{"127.0.0.1", local_port} : target; };
+  };
+  Cluster cluster(false, std::nullopt, std::nullopt, std::chrono::minutes(1), 32, 3s, tune);
+  ASSERT_TRUE(eventually([&] { return cluster.ready(); }));
+  const auto outcome = cluster.echo(*cluster.a, *cluster.b, false);
+  ASSERT_TRUE(outcome.reply) << outcome.failure;
+  EXPECT_GE(opens.load(), 2) << "the first punch crossed, so a second was opened";
+  EXPECT_EQ(cluster.a->context().nodes().path(cluster.b->context().identity().id(), net::Lane::control), net::Purpose::punched);
+}
+
 // A relayed pair whose relay-only end becomes punchable moves up: the lower
 // id punches, both ends keep the punched session over the relayed one, and
 // the relayed one retires. Calls keep working throughout.

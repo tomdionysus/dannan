@@ -933,7 +933,8 @@ std::string Paths::try_punch(const NodeRecord& self, const NodeRecord& peer, net
       }
       auto opened = std::make_shared<std::promise<std::tuple<int, int, std::string>>>();
       auto future = opened->get_future();
-      simultaneous_open(_io, port, answer.at, _config.punch_window,
+      const auto target = _config.punch_target_hook ? _config.punch_target_hook(port, answer.at) : answer.at;
+      simultaneous_open(_io, port, target, _config.punch_window,
                         [opened](int descriptor, int family, std::string reason) { opened->set_value({descriptor, family, std::move(reason)}); });
       auto [descriptor, family, failure] = future.get();
       if (descriptor < 0) {
@@ -948,7 +949,7 @@ std::string Paths::try_punch(const NodeRecord& self, const NodeRecord& peer, net
         return {};
       }
       // Which ports met: two punches that shared one would show it here.
-      why = "from local port " + std::to_string(port) + " to " + answer.at.host + ":" + std::to_string(answer.at.port) + ": " + why;
+      why = "from local port " + std::to_string(port) + " to " + target.host + ":" + std::to_string(target.port) + ": " + why;
     } catch (const std::exception& error) {
       why = "broker " + to_string(broker.id) + ": " + error.what();
     }

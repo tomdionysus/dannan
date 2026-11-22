@@ -173,6 +173,10 @@ struct PathsConfig {
   // false) or as it would forward it, as a session dying with it would; `toward_b` is the
   // chunk's way, to the end the circuit was opened to.
   std::function<bool(uint64_t sequence, bool forwarding, bool toward_b)> drop_hook;
+  // Tests only: where a punch this node asked for opens to, given its own punch port and the
+  // far end's endpoint the broker answered. A crossed punch (its own port as its target, the
+  // fault hosted CI met) is made on demand by answering the first with that port.
+  std::function<net::Endpoint(uint16_t local_port, const net::Endpoint& target)> punch_target_hook;
   // How long both ends keep trying a simultaneous open.
   std::chrono::milliseconds punch_window{3000};
   // Whether this node forwards circuits for others. CONTROL circuits are
