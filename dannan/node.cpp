@@ -826,6 +826,7 @@ void Node::start() {
     // Chunks that have not come within the liveness window are not coming.
     paths.finish_wait = _config.relay_finish_wait.value_or(_config.dead_after);
     paths.drop_hook = _config.relay_drop_hook;
+    paths.punch_target_hook = _config.punch_target_hook;
     _paths = std::make_unique<reach::Paths>(
         _io, paths, *_client, [this] { return _members.self(); }, [this] { return _members.active(); },
         [this](const NodeRecord& peer, net::MessageType type, net::Bytes payload, std::chrono::milliseconds deadline) {
