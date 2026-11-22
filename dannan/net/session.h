@@ -98,6 +98,9 @@ struct SessionHandlers {
 
 struct SessionOptions {
   sched::RetainedMemoryLedger* memory = nullptr;
+  // Where a frame's opened bytes and a joined message come from, and where an outbound
+  // payload goes once it is written; none, plain allocation.
+  std::shared_ptr<sched::BufferPool> buffers;
   std::shared_ptr<TransportTraffic> traffic;
   const contract::TimeSource* time = &contract::steady_time_source();
   // Where the session says why it failed; none, nowhere.

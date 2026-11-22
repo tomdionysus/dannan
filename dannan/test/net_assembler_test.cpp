@@ -61,6 +61,30 @@ TEST(Assembler, AFinishedMessageHoldsExactlyItsSize) {
   EXPECT_EQ(assembler.incomplete_bytes(), 0u);
 }
 
+// With the node's pool, a joined message's buffer comes from it and each fragment goes back to
+// it: a second message of the size of the first, its first given back, reuses its block.
+TEST(Assembler, WithAPoolTheJoinedBufferComesFromItAndTheFragmentsGoBack) {
+  const size_t piece = 256 * 1024;
+  auto pool = std::make_shared<sched::BufferPool>(64 * 1024 * 1024, 1024);
+  MessageAssembler assembler(4, 64 * 1024 * 1024, 64 * 1024 * 1024, nullptr, pool);
+  const auto deliver = [&](uint64_t id) {
+    std::optional<Frame> done;
+    for (size_t i = 0; i < 4; ++i) done = assembler.push(WireFragment{id, FrameType::loader, MessageType{1029}, i == 0, i == 3, Bytes(piece, 0x11)});
+    return done;
+  };
+  auto first = deliver(3);
+  ASSERT_TRUE(first);
+  EXPECT_EQ(first->message.payload.size(), 4 * piece);
+  // Its four fragments went back.
+  EXPECT_EQ(pool->stats().kept, 4u);
+  const auto* block = first->message.payload.data();
+  pool->give(std::move(first->message.payload));
+  auto second = deliver(5);
+  ASSERT_TRUE(second);
+  EXPECT_EQ(second->message.payload.data(), block);
+  EXPECT_EQ(second->message.payload, Bytes(4 * piece, 0x11));
+}
+
 TEST(Assembler, BoundsTheIncompleteMessagesTheirBytesAndEachMessage) {
   MessageAssembler assembler(2, 8, 16);
   EXPECT_FALSE(assembler.push(fragment(1, true, false, 3)));

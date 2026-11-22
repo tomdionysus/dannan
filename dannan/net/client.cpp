@@ -1189,6 +1189,7 @@ SessionHandlers Client::handlers_for(const membership::NodeRecord& peer) const {
 SessionOptions Client::session_options() const {
   SessionOptions options;
   options.memory = _options.memory;
+  options.buffers = _options.buffers;
   options.traffic = _options.traffic;
   options.time = liveness_time();
   options.log = _options.log;

@@ -131,6 +131,36 @@ TEST(Node, TwoNodesFormOneCluster) {
   EXPECT_TRUE(eventually([&] { return pair.b->context().nodes().latency(a).has_value(); }));
 }
 
+// Large transfers go round the node's pool (0.11.0): a request's fragments and joined payload
+// come from it and go back once the handler returns, and a reply goes back once written, so a
+// second transfer of the size reuses what the first took.
+TEST(Node, LargeTransfersGoRoundTheNodesBufferPool) {
+  constexpr net::MessageType echo{1100};
+  Pair pair({}, [&](Node& a) {
+    a.context().routes().add(
+        echo, {"echo", net::Lanes::data, net::Frames::not_control, false},
+        [](const NodeRecord&, sched::FrameType, const net::Message& request) { return net::Handled::processed({net::message::ok, request.payload, {}}); });
+  });
+  pair.b->start();
+  const auto a = pair.a->context().identity().id();
+  ASSERT_TRUE(eventually([&] { return knows(*pair.b, a); }));
+  const auto peer = [&] {
+    for (const auto& node : pair.b->context().nodes().active())
+      if (node.id == a) return node;
+    return NodeRecord{};
+  }();
+  const net::Bytes payload(4 * 1024 * 1024, 0x42);
+  for (int i = 0; i < 2; ++i) {
+    const auto outcome = pair.b->context().routes().call_and_wait(peer, echo, payload, sched::FrameType::foreground, 10s);
+    ASSERT_TRUE(outcome.reply) << outcome.failure;
+    EXPECT_EQ(outcome.reply->payload, payload);
+  }
+  const auto served = pair.a->context().buffers()->stats();
+  EXPECT_GT(served.kept, 0u);
+  EXPECT_GT(served.reused, 0u);
+  EXPECT_LE(served.held_bytes, NodeConfig{}.transfer_buffers_bound);
+}
+
 // A node with another agreement slot table (another count, or another genesis set) is refused
 // when it joins (the maintainer, 2026-11-16): the node it dials refuses the handshake and says why in its
 // journal, and neither node lists the other. A matching node joins (TwoNodesFormOneCluster).

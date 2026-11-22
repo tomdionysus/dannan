@@ -117,6 +117,8 @@ struct ClientOptions {
   size_t max_frame = 256 * 1024;
   std::shared_ptr<const RouteTable> routes;
   sched::RetainedMemoryLedger* memory = nullptr;
+  // The node's transfer buffers, for its sessions; none, plain allocation.
+  std::shared_ptr<sched::BufferPool> buffers;
   // Shared with the node's server: the node's whole cluster traffic.
   std::shared_ptr<TransportTraffic> traffic;
   const contract::TimeSource* time = &contract::steady_time_source();

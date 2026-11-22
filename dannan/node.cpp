@@ -296,9 +296,14 @@ class Node::RoutesNoun final : public Routes {
   }
   void bind(net::MessageType type, net::RequestHandler handler) override {
     if (!handler) return bind_deferred(type, {});
-    bind_deferred(type, [handler = std::move(handler)](const NodeRecord& peer, sched::FrameType frame, net::Message request, net::Answer&) {
-      return handler(peer, frame, request);
-    });
+    // A handler that answers by returning is done with the request when it returns: its buffer
+    // goes back to the node's pool.
+    bind_deferred(type,
+                  [handler = std::move(handler), buffers = _node._buffers](const NodeRecord& peer, sched::FrameType frame, net::Message request, net::Answer&) {
+                    auto handled = handler(peer, frame, request);
+                    buffers->give(std::move(request.payload));
+                    return handled;
+                  });
   }
   void bind_deferred(net::MessageType type, net::DeferringHandler handler) override {
     if (_node._table.is_core(type)) throw std::logic_error("message type " + std::to_string(static_cast<uint16_t>(type)) + " is one of Dannan's");
@@ -729,7 +734,10 @@ Node::Node(asio::io_context& io, NodeConfig config)
   for (const auto& reset : _members.identity_resets()) _telemetry.apply_identity_reset(reset);
 }
 
-Node::~Node() { stop(); }
+Node::~Node() {
+  stop();
+  _buffers->detach();
+}
 
 void Node::start() {
   // A cluster nobody could connect to is refused before anything listens.
@@ -763,6 +771,7 @@ void Node::start() {
     server_options.routes = _frozen;
     server_options.limits = _config.limits;
     server_options.memory = &_memory;
+    server_options.buffers = _buffers;
     server_options.traffic = _traffic;
     server_options.time = _config.time;
     server_options.log = _config.log;
@@ -784,6 +793,7 @@ void Node::start() {
     client_options.max_frame = _config.max_frame;
     client_options.routes = _frozen;
     client_options.memory = &_memory;
+    client_options.buffers = _buffers;
     client_options.traffic = _traffic;
     client_options.time = _config.time;
     client_options.liveness_time = _config.liveness_time;

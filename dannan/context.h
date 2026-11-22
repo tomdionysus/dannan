@@ -35,6 +35,7 @@
 #include "dannan/reach/connectivity.h"
 #include "dannan/reach/inbound.h"
 #include "dannan/reach/paths.h"
+#include "dannan/sched/buffer_pool.h"
 #include "dannan/sched/class_gate.h"
 #include "dannan/sched/retained_memory.h"
 #include "dannan/sched/work.h"
@@ -464,6 +465,13 @@ class Context {
   // The node's worker pool, on the gates, started with the node. A hosted system
   // may build a pool of its own beside it, on gates() and threads().
   virtual sched::WorkerPool& workers() = 0;
+  // The node's pool of large transfer buffers (0.11.0): take a buffer of an extent's size from
+  // it and give it back when done, so blocks are reused rather than freed through malloc, whose
+  // sliding mmap threshold keeps them in per-thread arenas. Dannan's sessions take and give the
+  // same way: a reply or request payload goes back once written, an inbound request's once its
+  // handler has returned. Held by shared_ptr, so a buffer may be given back from any thread,
+  // after the node has gone too. The default keeps nothing, for a Context of a test's own.
+  virtual std::shared_ptr<sched::BufferPool> buffers() { return std::make_shared<sched::BufferPool>(0, 0); }
   // Leaderless per-key agreement over the cluster (0.9.0, TODO/2026-11-15-agreement-
   // design.md): a hosted system serves its space's acceptors from a store of its own
   // and changes registers from any node. the maintainer, 2026-11-15: anything in the stack that

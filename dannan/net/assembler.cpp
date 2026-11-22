@@ -11,8 +11,9 @@
 
 namespace dannan::net {
 
-MessageAssembler::MessageAssembler(size_t max_incomplete_messages, size_t max_incomplete_bytes, size_t max_message_bytes, sched::RetainedMemoryLedger* memory)
-    : _max_messages(max_incomplete_messages), _max_bytes(max_incomplete_bytes), _max_message(max_message_bytes), _memory(memory) {
+MessageAssembler::MessageAssembler(size_t max_incomplete_messages, size_t max_incomplete_bytes, size_t max_message_bytes, sched::RetainedMemoryLedger* memory,
+                                   std::shared_ptr<sched::BufferPool> buffers)
+    : _max_messages(max_incomplete_messages), _max_bytes(max_incomplete_bytes), _max_message(max_message_bytes), _memory(memory), _buffers(std::move(buffers)) {
   if (!_max_messages || !_max_bytes || !_max_message) throw std::invalid_argument("reassembly bounds must be nonzero");
 }
 
@@ -52,14 +53,21 @@ std::optional<Frame> MessageAssembler::push(WireFragment fragment) {
   if (!fragment.last) return std::nullopt;
   // One buffer of exactly the message's size; each piece is let go as it is copied, so at
   // most one fragment more than the message is held while they are joined.
+  // With the node's pool, the buffer comes from it and each piece goes back to it.
   Bytes payload;
-  if (partial.pieces.size() == 1 && partial.pieces.front().capacity() == partial.size) {
+  if (partial.pieces.size() == 1 && (_buffers || partial.pieces.front().capacity() == partial.size)) {
     payload = std::move(partial.pieces.front());
   } else {
-    payload.reserve(partial.size);
+    if (_buffers)
+      payload = _buffers->take(partial.size);
+    else
+      payload.reserve(partial.size);
     for (auto& piece : partial.pieces) {
       payload.insert(payload.end(), piece.begin(), piece.end());
-      Bytes().swap(piece);
+      if (_buffers)
+        _buffers->give(std::move(piece));
+      else
+        Bytes().swap(piece);
     }
   }
   Frame out{fragment.request_id, partial.frame, {partial.type, std::move(payload), std::move(partial.memory)}};

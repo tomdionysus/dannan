@@ -169,6 +169,11 @@ struct NodeConfig {
   // Context, to the hosted system.
   std::shared_ptr<status::LogSink> log = std::make_shared<status::ConsoleSink>();
 
+  // The node's transfer-buffer pool (Context::buffers): what it holds at most, and the smallest
+  // buffer it keeps (a 256 KiB frame is kept, so fragments go round too).
+  size_t transfer_buffers_bound = 256ull * 1024 * 1024;
+  size_t transfer_buffers_floor = 128 * 1024;
+
   const contract::TimeSource* time = &contract::steady_time_source();
   // What the node's links judge liveness on (net::ClientOptions::liveness_time); none: `time`.
   // Dagda's ask: a test stepping `time` past dead_after/3 no longer gives up its links.
@@ -294,6 +299,7 @@ class Node final : public Context {
   supervise::SupervisedThreads& threads() override { return _threads; }
   sched::ClassGates& gates() override { return _gates; }
   sched::WorkerPool& workers() override { return _workers; }
+  std::shared_ptr<sched::BufferPool> buffers() override { return _buffers; }
   agree::Agreement& agreement() override { return *_agreement; }
   contract::HlcClock& hlc() override { return *_hlc; }
   Diagnostics diagnostics() const override;
@@ -430,6 +436,9 @@ class Node final : public Context {
   sched::WorkerPool _workers;
   sched::WaitGuard _wait_guard;
   sched::RetainedMemoryLedger _memory;
+  // After the ledger it charges; detached as the node goes, so a holder's late give frees.
+  const std::shared_ptr<sched::BufferPool> _buffers =
+      std::make_shared<sched::BufferPool>(_config.transfer_buffers_bound, _config.transfer_buffers_floor, &_memory);
   const std::shared_ptr<net::TransportTraffic> _traffic = std::make_shared<net::TransportTraffic>();
 
   // Hosted types' wire rules, written before start and read only after;

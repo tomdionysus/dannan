@@ -18,6 +18,7 @@
 #include <stdexcept>
 
 #include "dannan/net/message.h"
+#include "dannan/sched/buffer_pool.h"
 #include "dannan/sched/retained_memory.h"
 
 namespace dannan::net {
@@ -71,8 +72,10 @@ class OutboundQueue {
     std::span<const uint8_t> payload;
   };
 
-  // `memory` may be null; queued messages are charged to it as rpc frames.
-  explicit OutboundQueue(sched::RetainedMemoryLedger* memory = nullptr) : _memory(memory) {}
+  // `memory` may be null; queued messages are charged to it as rpc frames. `buffers`, if given,
+  // takes each message's payload back once it is written, or dropped as the session closes.
+  explicit OutboundQueue(sched::RetainedMemoryLedger* memory = nullptr, std::shared_ptr<sched::BufferPool> buffers = {})
+      : _memory(memory), _buffers(std::move(buffers)) {}
 
   // Queues a request (an odd or even id), a notification (id 0) or a reply.
   // A request or notification the queue or the memory ledger refuses throws
@@ -123,6 +126,7 @@ class OutboundQueue {
   void finish(Item& item, bool sent);
 
   sched::RetainedMemoryLedger* _memory;
+  std::shared_ptr<sched::BufferPool> _buffers;
   std::deque<Item> _queue;
   std::optional<Item> _in_flight;
   uint64_t _bytes = 0;

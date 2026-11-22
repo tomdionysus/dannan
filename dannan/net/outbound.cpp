@@ -160,6 +160,8 @@ void OutboundQueue::written() {
     _cancelled_outgoing.erase(item.request_id);
   }
   finish(item, true);
+  // Written: its buffer goes round again.
+  if (_buffers) _buffers->give(std::move(item.message.payload));
 }
 
 void OutboundQueue::finish(Item& item, bool sent) {
@@ -173,9 +175,13 @@ void OutboundQueue::finish(Item& item, bool sent) {
 void OutboundQueue::abandon() {
   if (_in_flight) {
     finish(*_in_flight, false);
+    if (_buffers) _buffers->give(std::move(_in_flight->message.payload));
     _in_flight.reset();
   }
-  for (auto& item : _queue) finish(item, false);
+  for (auto& item : _queue) {
+    finish(item, false);
+    if (_buffers) _buffers->give(std::move(item.message.payload));
+  }
   _queue.clear();
   _bytes = 0;
   _outgoing.clear();
