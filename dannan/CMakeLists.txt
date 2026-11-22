@@ -63,6 +63,7 @@ add_library(dannan SHARED
   listen/memory.cpp
   listen/listener.cpp
   listen/stream.cpp
+  sched/buffer_pool.cpp
   sched/class_gate.cpp
   sched/cpu_pacing.cpp
   sched/duty_share.cpp

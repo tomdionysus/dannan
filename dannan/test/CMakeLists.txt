@@ -63,6 +63,7 @@ add_executable(dannan_tests
   net_scheduler_test.cpp
   net_server_test.cpp
   net_session_test.cpp
+  sched_buffer_pool_test.cpp
   sched_duty_share_test.cpp
   sched_memory_test.cpp
   sched_retry_unbounded_test.cpp
