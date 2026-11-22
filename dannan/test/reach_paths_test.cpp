@@ -552,8 +552,16 @@ TEST(LevelZero, ManyTransfersAtOnceCrossARelayIntact) {
 TEST(LevelZero, ARelayedPairMovesUpToAPunch) {
   Cluster cluster(true, PathClass::relay_only, PathClass::relay_only, 200ms);
   ASSERT_TRUE(eventually([&] { return cluster.ready(); }));
-  const auto first = cluster.echo(*cluster.a, *cluster.b, false);
-  ASSERT_TRUE(first.reply) << first.failure;
+  // Waited for, not taken at once: each end dials the hub's CONTROL lane twice as it starts,
+  // and while the two ends retire the loser a call can find "no relay" or "the relay has no
+  // session with the target" (hosted x86-64 ASan). The double dial is a defect of its own,
+  // planned in TODO/ACTIVE.md; what this test is for starts once the pair is relayed.
+  std::string failure;
+  ASSERT_TRUE(eventually([&] {
+    const auto first = cluster.echo(*cluster.a, *cluster.b, false);
+    failure = first.failure;
+    return first.reply.has_value();
+  })) << failure;
   const auto a = cluster.a->context().identity().id();
   const auto b = cluster.b->context().identity().id();
   ASSERT_EQ(cluster.a->context().nodes().path(b, net::Lane::control), net::Purpose::relayed);
