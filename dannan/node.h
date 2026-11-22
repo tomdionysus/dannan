@@ -170,6 +170,9 @@ struct NodeConfig {
   std::shared_ptr<status::LogSink> log = std::make_shared<status::ConsoleSink>();
 
   const contract::TimeSource* time = &contract::steady_time_source();
+  // What the node's links judge liveness on (net::ClientOptions::liveness_time); none: `time`.
+  // Dagda's ask: a test stepping `time` past dead_after/3 no longer gives up its links.
+  const contract::TimeSource* liveness_time = nullptr;
   const contract::WallClock* wall = &contract::system_wall_clock();
 
   // Runs `task` once `after` has passed on `time` (the simulation harness's schedule, step 3

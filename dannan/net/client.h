@@ -120,6 +120,9 @@ struct ClientOptions {
   // Shared with the node's server: the node's whole cluster traffic.
   std::shared_ptr<TransportTraffic> traffic;
   const contract::TimeSource* time = &contract::steady_time_source();
+  // What liveness is judged on: the heartbeat's pings, a call's no-progress watch, a session's
+  // path progress. None: `time`. A test that steps `time` far ahead keeps its links on another.
+  const contract::TimeSource* liveness_time = nullptr;
   InboundHandlers inbound;
   // Bounds a dial (resolve, connect, handshake), and a call's wait for one.
   std::chrono::milliseconds connect_timeout{5000};
@@ -398,6 +401,8 @@ class Client {
   void observe_dial_locked(const std::string& key, bool success) DANNAN_REQUIRES(_mutex);
   size_t notify_routes(const Message& message, sched::FrameType frame, bool wait);
   std::vector<std::shared_ptr<Session>> control_routes_locked() const DANNAN_REQUIRES(_mutex);
+  // What liveness is judged on: liveness_time, else time. Backoff stays on time.
+  const contract::TimeSource* liveness_time() const noexcept { return _options.liveness_time ? _options.liveness_time : _options.time; }
   // The health loop, on its strand.
   void arm_heartbeat();
   void await_heartbeat();

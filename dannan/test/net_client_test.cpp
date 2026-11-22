@@ -587,6 +587,26 @@ TEST(Health, TheHeartbeatFollowsTheInjectedTime) {
   EXPECT_TRUE(eventually([&] { return a.client->peer_latency(b.self.id).has_value(); }));
 }
 
+// Liveness on a time of its own (Dagda's ask for 0.11.0): the client's time stepped an hour past
+// every budget gives up no link, while the pings, on liveness_time, go on being answered.
+TEST(Health, LivenessIsJudgedOnItsOwnTimeWhenGivenOne) {
+  Io io;
+  test::SteppedTime time;
+  ClientOptions tuning;
+  tuning.time = &time;
+  tuning.liveness_time = &contract::steady_time_source();
+  tuning.heartbeat = 100ms;
+  tuning.dead_after = 600ms;
+  Node a(io, tuning), b(io);
+  ASSERT_TRUE(call(a, b.self).reply);
+  ASSERT_TRUE(eventually([&] { return a.client->peer_latency(b.self.id).has_value(); }));
+  time.advance(1h);
+  // Several heartbeats and give-ups' worth of real time.
+  std::this_thread::sleep_for(1500ms);
+  EXPECT_TRUE(a.client->has_route(b.self.id, Lane::control));
+  EXPECT_TRUE(call(a, b.self).reply);
+}
+
 TEST(Health, ALivenessBudgetIsSpentInTheInjectedTime) {
   Io io;
   test::SteppedTime time;

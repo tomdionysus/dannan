@@ -786,6 +786,7 @@ void Node::start() {
     client_options.memory = &_memory;
     client_options.traffic = _traffic;
     client_options.time = _config.time;
+    client_options.liveness_time = _config.liveness_time;
     client_options.connect_timeout = _config.connect_timeout;
     client_options.control_no_progress = _config.control_no_progress;
     client_options.data_no_progress = _config.data_no_progress;
