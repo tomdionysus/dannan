@@ -693,10 +693,12 @@ TEST(LevelZero, AnEndThatClosesWithoutItsCarrierStillTellsTheRelay) {
   // A minute: no node gives up on an idle session or call before the relay's word arrives.
   Cluster cluster(true, PathClass::relay_only, PathClass::relay_only, std::chrono::minutes(1), 32, std::chrono::minutes(1), tune);
   Gate gate;
-  // B holds the request, so the relay has nothing to send B once it has it.
-  cluster.held = [&](const net::Message& request) {
+  // B holds the request, so the relay has nothing to send B once it has it. The handler
+  // keeps its own share of the gate's state: it may still be leaving wait_for when the
+  // gate is gone.
+  cluster.held = [&entered, opened = gate.opened](const net::Message& request) {
     entered = true;
-    (void)gate.opened.wait_for(30s);
+    (void)opened.wait_for(30s);
     return net::Handled::processed({net::message::ok, request.payload, {}});
   };
   ASSERT_TRUE(eventually([&] { return cluster.ready(); }));
