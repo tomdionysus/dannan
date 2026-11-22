@@ -1580,7 +1580,7 @@ TEST(StreamConnector, UpgradesAPlaintextStreamToTlsFromTheClientsSide) {
   EXPECT_EQ(ask(client.stream, "after upgrade"), "after upgrade");
   // Once in TLS, a second upgrade is refused.
   auto again = std::make_shared<std::promise<std::string>>();
-  connector.upgrade(client.stream, tls, 10s, [again](std::string why) { again->set_value(std::move(why)); });
+  connector.upgrade(client.stream, tls, 10s, [again](std::string refusal) { again->set_value(std::move(refusal)); });
   EXPECT_NE(again->get_future().get().find("already"), std::string::npos);
   listener.stop();
 }

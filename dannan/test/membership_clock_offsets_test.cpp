@@ -13,6 +13,7 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <initializer_list>
 #include <set>
 
 #include "dannan/membership/clock_offsets.h"
@@ -77,7 +78,7 @@ TEST(ClockOffsets, OutOfBoundsWhenPastTheBoundAgainstMoreThanHalfTheRoster) {
   ClockOffsets offsets;
   const std::set<identity::NodeId> roster{id(1), id(2), id(3), id(4), id(5)};
   // This node (1) is three seconds behind 2, 3 and 4.
-  for (uint8_t peer : {2, 3, 4}) probe(offsets, peer, 1'000'000, 3'000, 10);
+  for (const uint8_t peer : std::initializer_list<uint8_t>{2, 3, 4}) probe(offsets, peer, 1'000'000, 3'000, 10);
   probe(offsets, 5, 1'000'000, 0, 10);
   EXPECT_TRUE(offsets.out_of_bounds(id(1), roster, 2s));
 }
@@ -85,7 +86,7 @@ TEST(ClockOffsets, OutOfBoundsWhenPastTheBoundAgainstMoreThanHalfTheRoster) {
 TEST(ClockOffsets, NotOutOfBoundsWhenHalfOrFewerDisagree) {
   ClockOffsets offsets;
   const std::set<identity::NodeId> roster{id(1), id(2), id(3), id(4)};
-  for (uint8_t peer : {2, 3}) probe(offsets, peer, 1'000'000, -3'000, 10);
+  for (const uint8_t peer : std::initializer_list<uint8_t>{2, 3}) probe(offsets, peer, 1'000'000, -3'000, 10);
   probe(offsets, 4, 1'000'000, 0, 10);
   // Two of four is not more than half.
   EXPECT_FALSE(offsets.out_of_bounds(id(1), roster, 2s));
@@ -111,7 +112,7 @@ TEST(ClockOffsets, APeerNotYetProbedDoesNotCountAgainst) {
 TEST(ClockOffsets, AnOffsetAtTheBoundIsWithinIt) {
   ClockOffsets offsets;
   const std::set<identity::NodeId> roster{id(1), id(2), id(3)};
-  for (uint8_t peer : {2, 3}) probe(offsets, peer, 1'000'000, 2'000, 10);
+  for (const uint8_t peer : std::initializer_list<uint8_t>{2, 3}) probe(offsets, peer, 1'000'000, 2'000, 10);
   EXPECT_FALSE(offsets.out_of_bounds(id(1), roster, 2s));
 }
 

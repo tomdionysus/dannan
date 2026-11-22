@@ -89,7 +89,10 @@ class Pipe final : public MemoryLink, public std::enable_shared_from_this<Pipe> 
   }
 
   // --- One end's carrier --------------------------------------------------
-  asio::any_io_executor executor(End at) const { return _ends[index(at)].executor; }
+  asio::any_io_executor executor(End at) const {
+    contract::Lock lock(_mutex);
+    return _ends[index(at)].executor;
+  }
   const asio::ip::tcp::endpoint& address_of(End at) const { return at == End::client ? _options.client_address : _options.server_address; }
 
   void read(End at, asio::mutable_buffer into, Handler done) {
