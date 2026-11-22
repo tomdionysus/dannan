@@ -60,7 +60,20 @@ started from are never read for direction or edited.
      itself. Only nodes sharing a host meet it. Holding the port from observation to open
      (a placeholder socket, tried on feature/punch-flakes at 4b98d1b and taken back) would end
      it; the maintainer ruled the retry enough.
-4. **0.11.0:**
+4. **0.11.0** (the maintainer, 2026-11-22, on its scope). On develop: the stream carrier, item 6,
+   JSON, in-place AES-GCM, exact-size reassembly, the relay, punch and dial fixes. To do:
+   - The shared node settings (asked by Lir, Kvasir, Louhi, Mimir; the maintainer: yes, in
+     0.11.0, under cluster.*): dannan/config/node_settings.h, add_node_settings(Reader&,
+     prefix) and node_config(Settings), keys cluster.key, .bootstrap, .state, .name, .domain,
+     .relay, .listen.{address,port,advertise,inbound}, .heartbeat_ms, .path_class, .punch_ms,
+     .reprobe_ms, .custody.{passphrase_env,credential,credentials_dir},
+     .identity.{ca,certificate,revocations,no_cluster_key}. node_config requires nothing
+     present (a caller's rule, Mimir's cluster of one), refuses only inconsistent pairs.
+     dannan-node uses it, with DANNAN_ variables; its own keys stay its own.
+   - (a) the API agreed with Dagda (below); (b) ship the TSan suppressions; (c)
+     NodeConfig::liveness_time. Deferred to 0.12.0: the notifying TimeSource and deferred
+     requests bounded in bytes per peer.
+   - ChildProcess::fill reads once when a deadline under a millisecond is not yet past (Lir).
    - the stream carrier (feature/stream-carrier, for Lir): its memory-pipe write test fails, and a
      run ended in a bus error;
    - item 6 (feature/clock-rules), its fixes re-gated;
