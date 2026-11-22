@@ -74,6 +74,14 @@ started from are never read for direction or edited.
      NodeConfig::liveness_time. Deferred to 0.12.0: the notifying TimeSource and deferred
      requests bounded in bytes per peer.
    - ChildProcess::fill reads once when a deadline under a millisecond is not yet past (Lir).
+   - A pool of large transfer buffers (Dagda, with numbers; the maintainer: yes, in 0.11.0):
+     after exact-size reassembly glibc still held 400-620 MiB against 6 MiB in use on Dagda's
+     repair case, freed 16 MiB blocks raising glibc's mmap threshold so later ones land in the
+     per-thread arenas. sched::BufferPool, take(n) and give(Bytes), bounded in bytes held (default
+     256 MiB, floor 1 MiB), charged to the retained-memory ledger, one per node as
+     Context::buffers(); Dannan's frame opener and reassembly take from it, a payload goes back
+     when its handler returns. Gate: Dagda's case, glibc's holding near the pool's bound across
+     rounds.
    - the stream carrier (feature/stream-carrier, for Lir): its memory-pipe write test fails, and a
      run ended in a bus error;
    - item 6 (feature/clock-rules), its fixes re-gated;
