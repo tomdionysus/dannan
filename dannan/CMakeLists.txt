@@ -138,8 +138,14 @@ install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/fuzz/fuzz.h DESTINATION ${CMAKE_INSTAL
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/dannan/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/dannan FILES_MATCHING PATTERN "*.h")
 install(FILES ${PROJECT_BINARY_DIR}/generated/dannan/version.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/dannan)
 install(EXPORT dannanTargets NAMESPACE dannan:: DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/dannan)
+# The stack's one list of TSan suppressions (Asio's, which any TSan build on Asio can hit), for
+# every project's TSan runs: installed, and named by DANNAN_TSAN_SUPPRESSIONS whether Dannan was
+# found installed (dannanConfig.cmake) or fetched (here).
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/test/tsan-suppressions.txt DESTINATION ${CMAKE_INSTALL_DATADIR}/dannan)
+set(DANNAN_TSAN_SUPPRESSIONS "${CMAKE_CURRENT_SOURCE_DIR}/test/tsan-suppressions.txt" CACHE INTERNAL "The stack's TSan suppressions")
+set(DANNAN_TSAN_SUPPRESSIONS_INSTALLED ${CMAKE_INSTALL_DATADIR}/dannan/tsan-suppressions.txt)
 configure_package_config_file(${PROJECT_SOURCE_DIR}/cmake/dannanConfig.cmake.in ${PROJECT_BINARY_DIR}/dannanConfig.cmake
-                              INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/dannan)
+                              INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/dannan PATH_VARS DANNAN_TSAN_SUPPRESSIONS_INSTALLED)
 # As the SONAME: any later patch of the same minor is compatible.
 write_basic_package_version_file(${PROJECT_BINARY_DIR}/dannanConfigVersion.cmake COMPATIBILITY SameMinorVersion)
 install(FILES ${PROJECT_BINARY_DIR}/dannanConfig.cmake ${PROJECT_BINARY_DIR}/dannanConfigVersion.cmake DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/dannan)

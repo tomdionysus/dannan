@@ -1,5 +1,8 @@
-# ThreadSanitizer suppressions for the sanitizer runs before a release:
-#   TSAN_OPTIONS=suppressions=$PWD/dannan/test/tsan-suppressions.txt
+# ThreadSanitizer suppressions, the stack's one list: every TSan run on Dannan, or on a project
+# built on it, passes them. Installed with libdannan-dev; CMake names the path, installed or
+# fetched, as DANNAN_TSAN_SUPPRESSIONS:
+#   TSAN_OPTIONS=suppressions=${DANNAN_TSAN_SUPPRESSIONS}
+# Here: TSAN_OPTIONS=suppressions=$PWD/dannan/test/tsan-suppressions.txt
 #
 # Asio's kqueue reactor publishes a descriptor's state to the reactor thread
 # through kevent(2): the state is written, registered with the kernel, and

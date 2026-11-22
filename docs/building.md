@@ -59,3 +59,14 @@ nm -D --undefined-only build/dannan/libdannan.so.0.10.0 | grep -c __asan_    # o
 
 `tools/ci.sh asan` and `tools/ci.sh tsan` build through `DANNAN_SANITIZE` and make
 this check before they run the suite.
+
+Every TSan run, Dannan's or a dependant's, passes the stack's one list of suppressions
+(`dannan/test/tsan-suppressions.txt`: Asio's internals, which any TSan build on Asio can
+hit). `libdannan-dev` installs it, and CMake names its path as `DANNAN_TSAN_SUPPRESSIONS`,
+whether Dannan was found installed or fetched:
+
+```
+TSAN_OPTIONS="suppressions=${DANNAN_TSAN_SUPPRESSIONS}" ./my_tests
+```
+
+A project adds a suppression here, not a list of its own.
