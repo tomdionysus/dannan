@@ -393,10 +393,20 @@ void Client::call(Target target, Call call) {
       }
     } else {
       key = (target.id ? to_string(*target.id) : address_of(target.endpoint)) + "/" + lane_name(lane);
+      // One dial to one peer: a dial on its way to this address, by id or by address, is shared.
+      const auto at = address_of(target.endpoint) + "/" + lane_name(lane);
+      if (!_dials.contains(key))
+        if (const auto other = _dials_at.find(at); other != _dials_at.end()) key = other->second;
       auto [waiting, fresh] = _dials.try_emplace(key);
+      call.expect = target.id;
       waiting->second.push_back(std::move(call));
       first = fresh;
-      if (first) ++_stats.dials;
+      if (first) {
+        ++_stats.dials;
+        _dials_at[at] = key;
+      } else {
+        ++_stats.dials_joined;
+      }
     }
   }
   if (route) return place(route, std::move(call), target);
@@ -632,13 +642,14 @@ void Client::open_lanes() {
 void Client::ensure_lane(const membership::NodeRecord& peer, Lane lane) {
   const Target target{peer.id, {peer.host, peer.port}};
   const auto key = to_string(peer.id) + "/" + lane_name(lane);
+  const auto at = address_of(target.endpoint) + "/" + lane_name(lane);
   {
     contract::Lock lock(_mutex);
     if (_stopped || route_locked(peer.id, lane)) return;
-    if (const auto backoff = _backoff.find(address_of(target.endpoint) + "/" + lane_name(lane));
-        backoff != _backoff.end() && _options.time->now() < backoff->second.retry_after)
-      return;
-    if (!_dials.try_emplace(key).second) return;
+    if (const auto backoff = _backoff.find(at); backoff != _backoff.end() && _options.time->now() < backoff->second.retry_after) return;
+    // A dial already on its way to this peer, by its id or its address, will do.
+    if (_dials_at.contains(at) || !_dials.try_emplace(key).second) return;
+    _dials_at[at] = key;
     ++_stats.dials;
   }
   dial(target, lane, [this, key, target, lane](std::shared_ptr<Session> session, std::string why) {
@@ -970,6 +981,7 @@ void Client::dialled(const std::string& key, const Target& target, Lane lane, st
       waiting = std::move(found->second);
       _dials.erase(found);
     }
+    std::erase_if(_dials_at, [&](const auto& entry) { return entry.second == key; });
     stopped = _stopped;
     if (!session) ++_stats.dial_failures;
     observe_dial_locked(address_of(target.endpoint) + "/" + lane_name(lane), session != nullptr);
@@ -1014,6 +1026,11 @@ void Client::dialled(const std::string& key, const Target& target, Lane lane, st
     _log.info("node connection outbound peer=" + to_string(session->peer().id).substr(0, 12) + " lane=" + lane_name(lane) +
               " endpoint=" + address_of(target.endpoint));
   for (auto& call : waiting) {
+    // A call that named its node and joined a dial by address goes only to that node.
+    if (route && call.expect && *call.expect != route->peer().id) {
+      fail(call, "dial to " + address_of(target.endpoint) + " reached node " + to_string(route->peer().id) + ", not " + to_string(*call.expect));
+      continue;
+    }
     if (route)
       place(route, std::move(call), target);
     else

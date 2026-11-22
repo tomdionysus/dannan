@@ -168,6 +168,9 @@ struct ClientOptions {
 
 struct ClientStats {
   uint64_t dials = 0;
+  // Calls that waited on a dial already on its way to their peer, by its id or its address,
+  // rather than starting one.
+  uint64_t dials_joined = 0;
   // Dials that became sessions, counted once the peer's identity has been checked.
   uint64_t connections_created = 0;
   // Routes usable now, whichever end dialled them: a lane to a peer counts once.
@@ -332,6 +335,8 @@ class Client {
     int reroutes = 0;
     std::shared_ptr<CallHandle> handle;
     CallWatch watch{};
+    // The node the call named, if it did: a dial it joined by address may reach another.
+    std::optional<identity::NodeId> expect;
   };
   struct Target {
     std::optional<identity::NodeId> id;
@@ -449,6 +454,9 @@ class Client {
   // Dials in flight by peer (or address) and lane, with the calls waiting
   // on each.
   std::map<std::string, std::vector<Call>> _dials DANNAN_GUARDED_BY(_mutex);
+  // Each dial in flight under its address and lane too, to its key in _dials: a call by id
+  // and a bootstrap by address share one dial to one peer, whichever came first.
+  std::map<std::string, std::string> _dials_at DANNAN_GUARDED_BY(_mutex);
   // Calls a fault holds (ClientOptions::call_fault), by the order they came; one
   // that ended (its watch, a cancel) stays listed until released or stopped.
   std::map<uint64_t, std::shared_ptr<Stalled>> _stalled DANNAN_GUARDED_BY(_mutex);

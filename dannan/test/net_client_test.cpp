@@ -254,6 +254,86 @@ TEST(Client, ConcurrentColdCallersShareOneDial) {
   EXPECT_EQ(a.client->stats().dials, 1u);
 }
 
+// A dial held open: the first CONTROL dial waits in the hook until released, on the
+// caller's thread, so a second call is made while it is in flight, every time.
+struct HeldDial {
+  std::atomic<int> dials{0};
+  std::atomic<bool> entered{false};
+  std::promise<void> release;
+  std::shared_future<void> released = release.get_future().share();
+  bool open = false;
+  ClientOptions tuning() {
+    ClientOptions out;
+    out.dial_hook = [this](const Endpoint&, Lane lane) {
+      if (lane != Lane::control) return std::string();
+      if (dials++ == 0) {
+        entered = true;
+        (void)released.wait_for(10s);
+      }
+      return std::string();
+    };
+    return out;
+  }
+  void let_go() {
+    if (!std::exchange(open, true)) release.set_value();
+  }
+  ~HeldDial() { let_go(); }
+};
+
+// A bootstrap dials an address before it knows the node there; a call by that node's id
+// meanwhile joins the dial rather than starting another (a starting node dialled its seed's
+// CONTROL lane twice, and while the two ends retired the loser, a call found no route).
+TEST(Client, ACallByIdJoinsADialToItsAddressInFlight) {
+  Io io;
+  HeldDial held;
+  Node a(io, held.tuning()), b(io);
+  auto by_address = std::async(std::launch::async, [&] {
+    auto done = std::make_shared<std::promise<CallOutcome>>();
+    auto future = done->get_future();
+    a.client->call(b.endpoint(), message::members, {}, FrameType::control, io.context.get_executor(),
+                   [done](CallOutcome outcome) { done->set_value(std::move(outcome)); });
+    return future.wait_for(10s) == std::future_status::ready ? future.get() : CallOutcome{std::nullopt, "test timed out", {}};
+  });
+  ASSERT_TRUE(eventually([&] { return held.entered.load(); }));
+  auto by_id = std::async(std::launch::async, [&] { return call(a, b.self); });
+  // The second call has been made before the first goes on: a dial of its own, or joined.
+  ASSERT_TRUE(eventually([&] { return held.dials.load() >= 2 || a.client->stats().dials_joined >= 1; }));
+  held.let_go();
+  const auto first = by_address.get();
+  const auto second = by_id.get();
+  ASSERT_TRUE(first.reply) << first.failure;
+  ASSERT_TRUE(second.reply) << second.failure;
+  EXPECT_EQ(held.dials.load(), 1);
+  EXPECT_EQ(a.client->stats().dials, 1u);
+  EXPECT_EQ(b.server->sessions(), 1u);
+}
+
+// A call by id that joined a dial to its address is not placed on another node's session:
+// the node at that address is not the one the call named.
+TEST(Client, AJoinedCallIsRefusedWhenTheAddressAnswersAsAnotherNode) {
+  Io io;
+  HeldDial held;
+  Node a(io, held.tuning()), b(io);
+  auto by_address = std::async(std::launch::async, [&] {
+    auto done = std::make_shared<std::promise<CallOutcome>>();
+    auto future = done->get_future();
+    a.client->call(b.endpoint(), message::members, {}, FrameType::control, io.context.get_executor(),
+                   [done](CallOutcome outcome) { done->set_value(std::move(outcome)); });
+    return future.wait_for(10s) == std::future_status::ready ? future.get() : CallOutcome{std::nullopt, "test timed out", {}};
+  });
+  ASSERT_TRUE(eventually([&] { return held.entered.load(); }));
+  auto impostor = b.self;
+  impostor.id = identity::NodeId::random();
+  auto by_id = std::async(std::launch::async, [&] { return call(a, impostor); });
+  ASSERT_TRUE(eventually([&] { return held.dials.load() >= 2 || a.client->stats().dials_joined >= 1; }));
+  held.let_go();
+  EXPECT_TRUE(by_address.get().reply);
+  const auto second = by_id.get();
+  EXPECT_FALSE(second.reply);
+  EXPECT_NE(second.failure.find("reached node"), std::string::npos) << second.failure;
+  EXPECT_FALSE(a.client->has_route(impostor.id, Lane::control));
+}
+
 // A session works both ways: the node that was dialled answers back over it
 // and dials nothing.
 TEST(Client, CallsBackOverTheSessionThePeerOpened) {
