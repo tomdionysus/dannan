@@ -427,8 +427,11 @@ TEST(LevelZero, TwoNodesBehindNatMeetByAPunch) {
   // The other way rides the same sessions.
   const auto back = cluster.echo(*cluster.b, *cluster.a, false);
   ASSERT_TRUE(back.reply) << back.failure;
-  EXPECT_GE(cluster.hub->diagnostics().paths.punches_brokered, 2u);
-  EXPECT_GE(cluster.a->diagnostics().paths.punches_made, 2u);
+  // Counted when the adopting side's verdict is posted, after the session is installed and
+  // may already have carried the echo: waited for, not read at once (once seen in hosted
+  // x86-64 ASan at 1 of 2).
+  EXPECT_TRUE(eventually([&] { return cluster.hub->diagnostics().paths.punches_brokered >= 2u; })) << cluster.hub->diagnostics().paths.punches_brokered;
+  EXPECT_TRUE(eventually([&] { return cluster.a->diagnostics().paths.punches_made >= 2u; })) << cluster.a->diagnostics().paths.punches_made;
 }
 
 // One end's NAT cannot be punched: the pair meets through the relay, which
@@ -621,11 +624,15 @@ TEST(LevelZero, AChunkLostWithTheSendersSessionEndsTheCircuitWithinTheBound) {
   });
   ASSERT_TRUE(eventually([&] { return data_circuits(*cluster.hub) > 0 && cluster.hub->diagnostics().paths.relayed_bytes > 4 * 1024 * 1024; }));
   cluster.a->close_route(cluster.hub->context().identity().id(), net::Lane::data, "severed by the test");
-  (void)transfer.get();
-  EXPECT_TRUE(eventually([&] { return data_circuits(*cluster.hub) == 0; }, 20s));
-  EXPECT_TRUE(eventually([&] { return cluster.b->diagnostics().paths.ends <= ends_before; }, 20s));
+  const auto outcome = transfer.get();
+  const auto state = [&] {
+    return "transfer: " + (outcome.reply ? std::string("answered") : "failed: " + outcome.failure) + "\n" + paths_of("a", *cluster.a) +
+           paths_of("hub", *cluster.hub) + paths_of("b", *cluster.b);
+  };
+  EXPECT_TRUE(eventually([&] { return data_circuits(*cluster.hub) == 0; }, 20s)) << state();
+  EXPECT_TRUE(eventually([&] { return cluster.b->diagnostics().paths.ends <= ends_before; }, 20s)) << state();
   // The way (a) is for: A's failed send closed with its count unknown.
-  EXPECT_GT(cluster.a->diagnostics().paths.closes_unknown, 0u);
+  EXPECT_GT(cluster.a->diagnostics().paths.closes_unknown, 0u) << state();
 }
 
 // The relay's chunks to the far end and its close go by different sessions, and the one
