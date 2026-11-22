@@ -584,6 +584,19 @@ size_t data_circuits(Node& relay) {
     if (circuit.lane == net::Lane::data) ++out;
   return out;
 }
+
+// A node's level 0 counters and the circuits it relays, for a failure's message: a bound's test
+// that fails says which way out was not taken.
+std::string paths_of(const char* name, Node& node) {
+  const auto p = node.diagnostics().paths;
+  std::string out = std::string(name) + ": ends=" + std::to_string(p.ends) + " closes_unknown=" + std::to_string(p.closes_unknown) +
+                    " relay_ends_lost=" + std::to_string(p.relay_ends_lost) + " relay_closes_expired=" + std::to_string(p.relay_closes_expired) +
+                    " finishes_expired=" + std::to_string(p.finishes_expired) + " relayed_bytes=" + std::to_string(p.relayed_bytes) + " circuits=[";
+  for (const auto& circuit : p.circuits)
+    out += " {lane=" + std::string(net::lane_name(circuit.lane)) + " bytes=" + std::to_string(circuit.bytes) +
+           " carriers=" + net::lane_name(circuit.carrier_a) + "/" + net::lane_name(circuit.carrier_b) + "}";
+  return out + " ]\n";
+}
 }  // namespace
 
 // A chunk the sender's session took and never wrote dies with that session: the count
@@ -620,11 +633,18 @@ TEST(LevelZero, AChunkLostOnTheWayToTheFarEndEndsItWithinTheBound) {
   });
   ASSERT_TRUE(eventually([&] { return data_circuits(*cluster.hub) > 0 && cluster.hub->diagnostics().paths.relayed_bytes > 4 * 1024 * 1024; }));
   cluster.hub->close_route(cluster.b->context().identity().id(), net::Lane::data, "severed by the test");
-  (void)transfer.get();
-  EXPECT_TRUE(eventually([&] { return data_circuits(*cluster.hub) == 0; }, 20s));
-  EXPECT_TRUE(eventually([&] { return cluster.b->diagnostics().paths.ends <= ends_before; }, 20s));
+  const auto outcome = transfer.get();
+  // Once, in hosted x86-64 ASan on 0.10.2's release commit, the hub's circuit never went and no
+  // end was counted lost, and it has not reproduced on a build node: each way out is printed, so
+  // a failure says which one was not taken.
+  const auto state = [&] {
+    return "transfer: " + (outcome.reply ? std::string("answered") : "failed: " + outcome.failure) + "\n" + paths_of("a", *cluster.a) +
+           paths_of("hub", *cluster.hub) + paths_of("b", *cluster.b);
+  };
+  EXPECT_TRUE(eventually([&] { return data_circuits(*cluster.hub) == 0; }, 20s)) << state();
+  EXPECT_TRUE(eventually([&] { return cluster.b->diagnostics().paths.ends <= ends_before; }, 20s)) << state();
   // The way this one goes: the relay lost B's session and closed the circuit itself.
-  EXPECT_GT(cluster.hub->diagnostics().paths.relay_ends_lost, 0u);
+  EXPECT_GT(cluster.hub->diagnostics().paths.relay_ends_lost, 0u) << state();
 }
 
 namespace {
