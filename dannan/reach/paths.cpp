@@ -1080,7 +1080,14 @@ void Paths::shortly(std::function<void(Paths&)> f) {
 }
 
 void Paths::send_until_taken(identity::NodeId peer, net::Lane lane, net::Message message) {
-  const auto outcome = _client.send_paced(peer, lane, message, sched::FrameType::control, _io.get_executor(), {});
+  auto outcome = _client.send_paced(peer, lane, message, sched::FrameType::control, _io.get_executor(), {});
+  // The lane's session gone, CONTROL carries it: a close the relay never hears keeps its
+  // circuit and the other end for good, since the relay may have nothing of its own to
+  // send that would find the session gone. A close is ordered by its count, not its lane.
+  if (outcome == net::Client::Paced::gone && lane != net::Lane::control) {
+    lane = net::Lane::control;
+    outcome = _client.send_paced(peer, lane, message, sched::FrameType::control, _io.get_executor(), {});
+  }
   if (outcome == net::Client::Paced::full) shortly([peer, lane, message = std::move(message)](Paths& paths) { paths.send_until_taken(peer, lane, message); });
 }
 

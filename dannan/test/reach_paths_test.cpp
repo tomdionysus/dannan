@@ -20,11 +20,14 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <atomic>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <fstream>
+#include <functional>
 #include <future>
 #include <thread>
+#include <utility>
 
 #include "dannan/node.h"
 #include "dannan/reach/paths.h"
@@ -328,6 +331,8 @@ TEST(LevelZero, ASimultaneousOpenToNobodyGivesUp) {
 
 constexpr net::MessageType echo_control{1024};
 constexpr net::MessageType echo_data{1025};
+// Answered by the test's own handler, set before the first is sent.
+constexpr net::MessageType held_data{1026};
 
 net::Handled answer(const membership::NodeRecord&, sched::FrameType, const net::Message& request) {
   return net::Handled::processed({net::message::ok, request.payload, {}});
@@ -341,6 +346,7 @@ struct Cluster {
   identity::ClusterKey key;
   std::unique_ptr<Node> hub, a, b;
   bool forced_a, forced_b;
+  std::function<net::Handled(const net::Message&)> held;
 
   Cluster(bool relay, std::optional<PathClass> a_class, std::optional<PathClass> b_class, std::chrono::milliseconds upgrade_every = std::chrono::minutes(1),
           size_t relay_data_circuits = 32, std::chrono::milliseconds dead_after = 3s, const std::function<void(NodeConfig&)>& tune = {})
@@ -372,6 +378,8 @@ struct Cluster {
     for (auto* node : {a.get(), b.get()}) {
       node->context().routes().add(echo_control, {"echo_control", net::Lanes::control, net::Frames::any, false}, answer);
       node->context().routes().add(echo_data, {"echo_data", net::Lanes::data, net::Frames::not_control, false}, answer);
+      node->context().routes().add(held_data, {"held_data", net::Lanes::data, net::Frames::not_control, false},
+                                   [this](const membership::NodeRecord&, sched::FrameType, const net::Message& request) { return held(request); });
       node->start();
     }
   }
@@ -645,6 +653,69 @@ TEST(LevelZero, AChunkLostOnTheWayToTheFarEndEndsItWithinTheBound) {
   EXPECT_TRUE(eventually([&] { return cluster.b->diagnostics().paths.ends <= ends_before; }, 20s)) << state();
   // The way this one goes: the relay lost B's session and closed the circuit itself.
   EXPECT_GT(cluster.hub->diagnostics().paths.relay_ends_lost, 0u) << state();
+}
+
+// An end that closes while its session to the relay on the circuit's lane is gone still
+// tells the relay, by CONTROL: the relay has nothing of its own to send that end, so
+// it would never find the session gone, and the circuit and the other end would stay.
+// The way the far-end chunk-loss test above once failed in hosted CI: between the hub
+// cutting B's DATA session and B dialling it again, B's heartbeat to A found no carrier,
+// B's end closed, and its close went the same way; A's pings then went to the new session.
+TEST(LevelZero, AnEndThatClosesWithoutItsCarrierStillTellsTheRelay) {
+  std::atomic<bool> refuse_data{false};
+  std::atomic<bool> quiet{false};
+  std::atomic<bool> entered{false};
+  // Released before the cluster stops, however the test ends: the cluster is declared after it.
+  struct Gate {
+    std::promise<void> promise;
+    std::shared_future<void> opened = promise.get_future().share();
+    bool open = false;
+    void release() {
+      if (!std::exchange(open, true)) promise.set_value();
+    }
+    ~Gate() { release(); }
+  };
+  const auto tune = [&](NodeConfig& config) {
+    config.dial_hook = [&](const net::Endpoint&, net::Lane lane) {
+      return refuse_data && lane == net::Lane::data ? std::string("refused by the test") : std::string();
+    };
+    // Nothing of A's reaches the relay's queue toward B once the test starts: the relay's
+    // own send toward B would find B's session gone, and end the circuit that way instead.
+    config.relay_drop_hook = [&](uint64_t, bool, bool toward_b) { return quiet && toward_b; };
+  };
+  // A minute: no node gives up on an idle session or call before the relay's word arrives.
+  Cluster cluster(true, PathClass::relay_only, PathClass::relay_only, std::chrono::minutes(1), 32, std::chrono::minutes(1), tune);
+  Gate gate;
+  // B holds the request, so the relay has nothing to send B once it has it.
+  cluster.held = [&](const net::Message& request) {
+    entered = true;
+    (void)gate.opened.wait_for(30s);
+    return net::Handled::processed({net::message::ok, request.payload, {}});
+  };
+  ASSERT_TRUE(eventually([&] { return cluster.ready(); }));
+  const auto peer = cluster.record(*cluster.b, *cluster.a);
+  ASSERT_TRUE(peer.has_value());
+  const auto a_ends = cluster.a->diagnostics().paths.ends;
+  const auto b_ends = cluster.b->diagnostics().paths.ends;
+  auto call = std::async(std::launch::async, [&] {
+    return cluster.a->context().routes().call_and_wait(*peer, held_data, net::Bytes(64 * 1024, 7), sched::FrameType::foreground, 60s);
+  });
+  ASSERT_TRUE(eventually([&] { return entered.load(); }));
+  ASSERT_EQ(data_circuits(*cluster.hub), 1u);
+  // B loses its DATA session to the hub and cannot dial another, then its end closes.
+  quiet = true;
+  refuse_data = true;
+  const auto hub = cluster.hub->context().identity().id();
+  cluster.b->close_route(hub, net::Lane::data, "severed by the test");
+  cluster.b->close_route(cluster.a->context().identity().id(), net::Lane::data, "closed by the test");
+  ASSERT_TRUE(eventually([&] { return cluster.b->diagnostics().paths.ends <= b_ends; }));
+  const auto state = [&] { return paths_of("a", *cluster.a) + paths_of("hub", *cluster.hub) + paths_of("b", *cluster.b); };
+  EXPECT_TRUE(eventually([&] { return data_circuits(*cluster.hub) == 0; }, 10s)) << state();
+  EXPECT_TRUE(eventually([&] { return cluster.a->diagnostics().paths.ends <= a_ends; }, 10s)) << state();
+  EXPECT_EQ(cluster.hub->diagnostics().paths.relay_ends_lost, 0u) << "the relay found it by its own failed send, not by the end's close\n" << state();
+  gate.release();
+  const auto outcome = call.get();
+  EXPECT_FALSE(outcome.reply);
 }
 
 namespace {

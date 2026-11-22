@@ -323,8 +323,9 @@ class Paths {
   // The session toward one end is gone: the other end is told, after what
   // it is still owed.
   void lost(uint64_t circuit, bool toward_b);
-  // A control notification that must arrive: waits out a full queue, and gives
-  // up only when the route is gone.
+  // A control notification that must arrive: waits out a full queue, goes by CONTROL
+  // when `lane`'s route is gone, and gives up only when that is gone too (the relay's
+  // sweep then ends the circuit).
   void send_until_taken(identity::NodeId peer, net::Lane lane, net::Message message);
   // The lane a circuit's bytes take to `peer`: the one the circuit is for, so
   // bulk never waits in front of CONTROL's pings, or CONTROL with no route on it.
