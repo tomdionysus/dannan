@@ -57,6 +57,18 @@ started from are never read for direction or edited.
      250 ms meanwhile. In the next release, before that: `test::SteppedTime(poll = 5ms)` takes
      its wake_within poll as an optional constructor argument, so a fixture with many waiters
      can poll coarsely. Dagda wraps it meanwhile.
+   - Deferred requests bounded in bytes. This is the likely Dannan side of Macha's live-a OOM after
+     the cutover, 2026-11-21 and 2026-11-22: about 6 GB against a 768 MB budget, right after Dagda
+     DATA device-pressure onsets, with live-b repairing.
+     - Today `ServerLimits::max_deferred` is a count (4096 per work class, every peer together),
+       and a deferred Answer keeps only its request's bytes charged.
+     - A deferring handler that holds a reply-sized buffer while it waits is then charged nothing,
+       up to 4096 × the reply: 16 GiB at 4 MiB extents.
+     - The change: charge a deferred request its expected reply (or bound max_deferred in bytes
+       per class), and give each peer a share of a class's allowance.
+     - `ServerLimits` is in NodeConfig's layout, so it is a minor.
+     - Awaiting Macha's episode data to confirm. Macha's mitigation: a lower
+       `NodeConfig::limits.max_deferred` on live-a.
    - Dagda's ask: `NodeConfig::liveness_time`, a TimeSource for liveness probes and call
      watchdogs that defaults to `time`. Today a test stepping a node's clock by more than
      dead_after/3 also gives up its links (client.cpp's await_ping).
