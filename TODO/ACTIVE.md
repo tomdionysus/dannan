@@ -67,8 +67,9 @@ started from are never read for direction or edited.
      - The change: charge a deferred request its expected reply (or bound max_deferred in bytes
        per class), and give each peer a share of a class's allowance.
      - `ServerLimits` is in NodeConfig's layout, so it is a minor.
-     - Awaiting Macha's episode data to confirm. Macha's mitigation: a lower
-       `NodeConfig::limits.max_deferred` on live-a.
+     - Not live-a's cause, as the code stands: neither Dagda nor Macha binds a deferred handler,
+       and the node's ledger is enforced on its server and client. The gap is real for any
+       future deferring handler, so it stays planned.
    - Dagda's ask: `NodeConfig::liveness_time`, a TimeSource for liveness probes and call
      watchdogs that defaults to `time`. Today a test stepping a node's clock by more than
      dead_after/3 also gives up its links (client.cpp's await_ping).
