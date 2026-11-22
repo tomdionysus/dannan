@@ -52,11 +52,14 @@ started from are never read for direction or edited.
    with the target". Find why the dials are not one (by endpoint and by id, say), prove it with
    a test, and make it one. The move-up test waits its first echo out meanwhile; that wait goes
    when the dial is one.
-   - Also before the release: a punch's port is free between its observation and its open, and
-     another punch on the host can be given it; both opens then share it and one connects to
-     itself (every crossed punch in the hosted runs showed its own port as its target's). The
-     fix (feature/punch-flakes, 4b98d1b: a placeholder holds the port) waits for a test that
-     shows the port taken in that gap without it, every time.
+   - Done (develop 719933d): a crossed punch is tried again from fresh ports, proven by
+     LevelZero.ACrossedPunchTriesAgainWithFreshPorts through PathsConfig::punch_target_hook.
+     Its cause, caught by strace in hosted x86-64 (2026-11-22): a punch's port is free between
+     its observation and its open, and 5 ms after one observation closed, the other node's
+     bind(0) was given the same port (39421); both opens then bound it and one connected to
+     itself. Only nodes sharing a host meet it. Holding the port from observation to open
+     (a placeholder socket, tried on feature/punch-flakes at 4b98d1b and taken back) would end
+     it; the maintainer ruled the retry enough.
 4. **0.11.0:**
    - the stream carrier (feature/stream-carrier, for Lir): its memory-pipe write test fails, and a
      run ended in a bus error;
