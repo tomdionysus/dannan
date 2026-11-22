@@ -26,7 +26,20 @@ started from are never read for direction or edited.
    - the store's lock is held across the walk, so a visitor never calls back into the store;
    - order is stable while nothing is kept;
    - first test: a name removed between two pages is never skipped.
-2. **0.11.0:**
+2. **0.10.3, a patch, ABI kept (Dagda, 2026-11-22), ahead of 0.11.0:** in-place AES-GCM, so
+   Dagda serves and stores an object in one buffer (its live-a memory: glibc holding freed
+   16 MiB transfer buffers; the maintainer ruled out an allocator setting).
+   - `void aes_gcm_open_into(key, nonce, tag, ciphertext, std::span<uint8_t> out, associated = {})`:
+     out the size of ciphertext, may be exactly it; partial overlap refused; a bad tag throws as
+     aes_gcm_open does and zeroes out.
+   - `struct GcmSeal { nonce; tag; }`; `GcmSeal aes_gcm_seal_into(key, plaintext, out, associated = {})`
+     and the overload under a given nonce; out the size of plaintext, may be exactly it.
+   - Tests first: in and out of place agree with aes_gcm_seal and aes_gcm_open byte for byte; a
+     bad tag zeroes out; a size mismatch or partial overlap is refused.
+   - Reads into a caller's span are already `storage::File::read_at(offset, span)`.
+   - A pool of extent-sized buffers under Context::budget(): not now; only if a second project
+     needs it after Dagda measures the single-buffer paths.
+3. **0.11.0:**
    - the stream carrier (feature/stream-carrier, for Lir): its memory-pipe write test fails, and a
      run ended in a bus error;
    - item 6 (feature/clock-rules), its fixes re-gated;
