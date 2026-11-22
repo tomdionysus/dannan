@@ -346,11 +346,12 @@ struct Cluster {
   identity::ClusterKey key;
   std::unique_ptr<Node> hub, a, b;
   bool forced_a, forced_b;
+  bool hub_relays;
   std::function<net::Handled(const net::Message&)> held;
 
   Cluster(bool relay, std::optional<PathClass> a_class, std::optional<PathClass> b_class, std::chrono::milliseconds upgrade_every = std::chrono::minutes(1),
           size_t relay_data_circuits = 32, std::chrono::milliseconds dead_after = 3s, const std::function<void(NodeConfig&)>& tune = {})
-      : forced_a(a_class.has_value()), forced_b(b_class.has_value()) {
+      : forced_a(a_class.has_value()), forced_b(b_class.has_value()), hub_relays(relay) {
     std::ofstream(dir.path() / "k") << "level zero";
     key = identity::load_cluster_key(dir.path() / "k");
     auto hub_config = config(dir.path() / "hub", key, {}, Inbound::yes);
@@ -399,7 +400,13 @@ struct Cluster {
     const auto ab = record(*b, *a);
     const auto ba = record(*a, *b);
     const auto learnt = [](Node& node, bool forced) { return forced || !node.context().nodes().self().candidates.empty(); };
-    return ab && ba && learnt(*a, forced_a) && learnt(*b, forced_b);
+    // A relaying hub is known as one by both, or a first call finds "no relay" (the move-up
+    // test, hosted x86-64 ASan).
+    const auto relay_known = [&](Node& node) {
+      const auto seen = record(*hub, node);
+      return !hub_relays || (seen && seen->relays());
+    };
+    return ab && ba && learnt(*a, forced_a) && learnt(*b, forced_b) && relay_known(*a) && relay_known(*b);
   }
   net::CallOutcome echo(Node& from, Node& to, bool data) {
     const auto peer = record(to, from);
