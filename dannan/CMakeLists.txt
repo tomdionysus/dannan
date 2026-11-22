@@ -27,6 +27,7 @@ add_library(dannan SHARED
   identity/revocations.cpp
   identity/secure_memory.cpp
   identity/signing.cpp
+  json/json.cpp
   membership/node_record.cpp
   membership/identity_reset.cpp
   membership/agreed_roster.cpp

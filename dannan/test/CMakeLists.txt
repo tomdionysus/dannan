@@ -21,6 +21,7 @@ add_executable(dannan_tests
   contract_completion_test.cpp
   contract_test.cpp
   custody_tool_test.cpp
+  json_test.cpp
   fixtures_test.cpp
   fuzz_harness_test.cpp
   fuzz_smoke_test.cpp
