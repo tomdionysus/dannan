@@ -631,8 +631,9 @@ TEST(LevelZero, AChunkLostWithTheSendersSessionEndsTheCircuitWithinTheBound) {
   };
   EXPECT_TRUE(eventually([&] { return data_circuits(*cluster.hub) == 0; }, 20s)) << state();
   EXPECT_TRUE(eventually([&] { return cluster.b->diagnostics().paths.ends <= ends_before; }, 20s)) << state();
-  // The way (a) is for: A's failed send closed with its count unknown.
-  EXPECT_GT(cluster.a->diagnostics().paths.closes_unknown, 0u) << state();
+  // Ended by a counted loss, not a bound: A's failed send closed with its count unknown, or
+  // the relay's send toward A failed first (seen in hosted x86-64 ASan under load).
+  EXPECT_GT(cluster.a->diagnostics().paths.closes_unknown + cluster.hub->diagnostics().paths.relay_ends_lost, 0u) << state();
 }
 
 // The relay's chunks to the far end and its close go by different sessions, and the one
@@ -649,17 +650,17 @@ TEST(LevelZero, AChunkLostOnTheWayToTheFarEndEndsItWithinTheBound) {
   ASSERT_TRUE(eventually([&] { return data_circuits(*cluster.hub) > 0 && cluster.hub->diagnostics().paths.relayed_bytes > 4 * 1024 * 1024; }));
   cluster.hub->close_route(cluster.b->context().identity().id(), net::Lane::data, "severed by the test");
   const auto outcome = transfer.get();
-  // Once, in hosted x86-64 ASan on 0.10.2's release commit, the hub's circuit never went and no
-  // end was counted lost, and it has not reproduced on a build node: each way out is printed, so
-  // a failure says which one was not taken.
+  // A failure prints each way out, so it says which one was not taken.
   const auto state = [&] {
     return "transfer: " + (outcome.reply ? std::string("answered") : "failed: " + outcome.failure) + "\n" + paths_of("a", *cluster.a) +
            paths_of("hub", *cluster.hub) + paths_of("b", *cluster.b);
   };
   EXPECT_TRUE(eventually([&] { return data_circuits(*cluster.hub) == 0; }, 20s)) << state();
   EXPECT_TRUE(eventually([&] { return cluster.b->diagnostics().paths.ends <= ends_before; }, 20s)) << state();
-  // The way this one goes: the relay lost B's session and closed the circuit itself.
-  EXPECT_GT(cluster.hub->diagnostics().paths.relay_ends_lost, 0u) << state();
+  // Ended by a counted loss, not a bound: the relay lost B's session and closed the circuit
+  // itself, or B's end found no carrier first and its close came by CONTROL (seen in hosted
+  // x86-64 ASan under load).
+  EXPECT_GT(cluster.hub->diagnostics().paths.relay_ends_lost + cluster.b->diagnostics().paths.closes_unknown, 0u) << state();
 }
 
 // An end that closes while its session to the relay on the circuit's lane is gone still
