@@ -545,7 +545,8 @@ TEST(LevelZero, ManyTransfersAtOnceCrossARelayIntact) {
 TEST(LevelZero, ARelayedPairMovesUpToAPunch) {
   Cluster cluster(true, PathClass::relay_only, PathClass::relay_only, 200ms);
   ASSERT_TRUE(eventually([&] { return cluster.ready(); }));
-  ASSERT_TRUE(cluster.echo(*cluster.a, *cluster.b, false).reply);
+  const auto first = cluster.echo(*cluster.a, *cluster.b, false);
+  ASSERT_TRUE(first.reply) << first.failure;
   const auto a = cluster.a->context().identity().id();
   const auto b = cluster.b->context().identity().id();
   ASSERT_EQ(cluster.a->context().nodes().path(b, net::Lane::control), net::Purpose::relayed);
@@ -609,18 +610,27 @@ std::string paths_of(const char* name, Node& node) {
   return out + " ]\n";
 }
 
-// After a session under an upload of `upload` bytes is cut: what was lost is accounted for
-// by one of the ways out, or nothing of the upload was lost. Which way comes first is the
-// scheduler's (hosted x86-64 ASan under load took each): a send that failed closing its end
-// with the count unknown, the relay's send toward an end failing, or a count that waited
-// out its bound at the relay or the far end. The upload may also have finished before the
-// cut: B answers only after the whole request, so the relay carried at least all of it.
-bool loss_accounted(Cluster& cluster, size_t upload) {
+// After a DATA session under a circuit is cut and not dialled again: the loss is accounted
+// for by one of the ways out. Which comes first is the scheduler's (hosted x86-64 ASan under
+// load took each): a send that found no carrier closing its end with the count unknown, the
+// relay's send toward an end failing, or a count that waited out its bound at the relay or
+// the far end.
+bool loss_accounted(Cluster& cluster) {
   const auto a = cluster.a->diagnostics().paths;
   const auto hub = cluster.hub->diagnostics().paths;
   const auto b = cluster.b->diagnostics().paths;
-  const auto counted = a.closes_unknown + b.closes_unknown + hub.relay_ends_lost + hub.relay_closes_expired + a.finishes_expired + b.finishes_expired;
-  return counted > 0 || hub.relayed_bytes >= upload;
+  return a.closes_unknown + b.closes_unknown + hub.relay_ends_lost + hub.relay_closes_expired + a.finishes_expired + b.finishes_expired > 0;
+}
+
+// DATA dials refused once `refused` is set: a cut DATA session stays cut. Let one come back
+// and the cut may lose nothing (the upload already through, or nothing on the wire), and the
+// circuit rightly stays with its sessions.
+std::function<void(NodeConfig&)> refusing_data(std::atomic<bool>& refused) {
+  return [&refused](NodeConfig& config) {
+    config.dial_hook = [&refused](const net::Endpoint&, net::Lane lane) {
+      return refused && lane == net::Lane::data ? std::string("refused by the test") : std::string();
+    };
+  };
 }
 }  // namespace
 
@@ -628,7 +638,8 @@ bool loss_accounted(Cluster& cluster, size_t upload) {
 // on the close cannot be honoured, and nothing waits for it. The relay lets the circuit
 // go and the far end closes, within the bound (Macha's review of 7e35338).
 TEST(LevelZero, AChunkLostWithTheSendersSessionEndsTheCircuitWithinTheBound) {
-  Cluster cluster(true, PathClass::relay_only, PathClass::relay_only);
+  std::atomic<bool> refused{false};
+  Cluster cluster(true, PathClass::relay_only, PathClass::relay_only, std::chrono::minutes(1), 32, 3s, refusing_data(refused));
   ASSERT_TRUE(eventually([&] { return cluster.ready(); }));
   const auto peer = cluster.record(*cluster.b, *cluster.a);
   ASSERT_TRUE(peer.has_value());
@@ -637,6 +648,7 @@ TEST(LevelZero, AChunkLostWithTheSendersSessionEndsTheCircuitWithinTheBound) {
     return cluster.a->context().routes().call_and_wait(*peer, echo_data, net::Bytes(32 * 1024 * 1024, 7), sched::FrameType::foreground, 60s);
   });
   ASSERT_TRUE(eventually([&] { return data_circuits(*cluster.hub) > 0 && cluster.hub->diagnostics().paths.relayed_bytes > 4 * 1024 * 1024; }));
+  refused = true;
   cluster.a->close_route(cluster.hub->context().identity().id(), net::Lane::data, "severed by the test");
   const auto outcome = transfer.get();
   const auto state = [&] {
@@ -645,13 +657,14 @@ TEST(LevelZero, AChunkLostWithTheSendersSessionEndsTheCircuitWithinTheBound) {
   };
   EXPECT_TRUE(eventually([&] { return data_circuits(*cluster.hub) == 0; }, 20s)) << state();
   EXPECT_TRUE(eventually([&] { return cluster.b->diagnostics().paths.ends <= ends_before; }, 20s)) << state();
-  EXPECT_TRUE(loss_accounted(cluster, 32 * 1024 * 1024)) << state();
+  EXPECT_TRUE(loss_accounted(cluster)) << state();
 }
 
 // The relay's chunks to the far end and its close go by different sessions, and the one
 // with chunks dies: the far end stops waiting for them within the bound and leaves.
 TEST(LevelZero, AChunkLostOnTheWayToTheFarEndEndsItWithinTheBound) {
-  Cluster cluster(true, PathClass::relay_only, PathClass::relay_only);
+  std::atomic<bool> refused{false};
+  Cluster cluster(true, PathClass::relay_only, PathClass::relay_only, std::chrono::minutes(1), 32, 3s, refusing_data(refused));
   ASSERT_TRUE(eventually([&] { return cluster.ready(); }));
   const auto peer = cluster.record(*cluster.b, *cluster.a);
   ASSERT_TRUE(peer.has_value());
@@ -660,6 +673,7 @@ TEST(LevelZero, AChunkLostOnTheWayToTheFarEndEndsItWithinTheBound) {
     return cluster.a->context().routes().call_and_wait(*peer, echo_data, net::Bytes(32 * 1024 * 1024, 7), sched::FrameType::foreground, 60s);
   });
   ASSERT_TRUE(eventually([&] { return data_circuits(*cluster.hub) > 0 && cluster.hub->diagnostics().paths.relayed_bytes > 4 * 1024 * 1024; }));
+  refused = true;
   cluster.hub->close_route(cluster.b->context().identity().id(), net::Lane::data, "severed by the test");
   const auto outcome = transfer.get();
   // A failure prints each way out, so it says which one was not taken.
@@ -669,7 +683,7 @@ TEST(LevelZero, AChunkLostOnTheWayToTheFarEndEndsItWithinTheBound) {
   };
   EXPECT_TRUE(eventually([&] { return data_circuits(*cluster.hub) == 0; }, 20s)) << state();
   EXPECT_TRUE(eventually([&] { return cluster.b->diagnostics().paths.ends <= ends_before; }, 20s)) << state();
-  EXPECT_TRUE(loss_accounted(cluster, 32 * 1024 * 1024)) << state();
+  EXPECT_TRUE(loss_accounted(cluster)) << state();
 }
 
 // An end that closes while its session to the relay on the circuit's lane is gone still
