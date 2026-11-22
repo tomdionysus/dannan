@@ -69,8 +69,21 @@ the first of three). Added:
   build never links an uninstrumented Dannan. `tools/ci.sh asan` and `tsan` build through it and
   check the library carries the runtime's symbols. `docs/building.md` has every option.
 
+- `HlcClock::admit(stamp, peer)`, the one check a receiver makes of a peer's stamp, with an
+  `AdmitVerdict` (admitted, ahead, self_out_of_bounds) and a reason; `issuing()` and
+  `set_out_of_bounds()`, while which `now()` throws `ClockOutOfBounds` at once.
+- Clock probes (message types 27 and 115) on each heartbeat measure every peer's clock offset,
+  NTP-style. `Nodes::clock_offset(node)` reads it; `Nodes::clock_in_bounds()` is false while this
+  node's clock is past `NodeConfig::clock_offset_bound` (two seconds) against more than half of
+  the agreed roster, itself counted at zero, and then it issues no hybrid-clock stamp. A 0.9 node
+  answers a probe with an error and gives no sample.
+
 Changed:
 
+- The hybrid clock's `max_ahead` defaults to five seconds, from one minute (`NodeConfig::
+  hlc_max_ahead` too): a stamp more than five seconds past this node's wall is not merged.
+- A change to a node's own record (endpoint, capabilities, path class, candidates) is stamped
+  past the last change, as adverts were, so a wall clock stepped back no longer hides it from peers.
 - `listen::Prefix::parse` refuses host bits set past the length ("10.0.0.1/8" is now an error
   naming it, where it was read as 10.0.0.0/8 before) and a length that is not plain digits; an
   IPv4-mapped prefix or bare address is read as the IPv4 one, which `contains()` could never

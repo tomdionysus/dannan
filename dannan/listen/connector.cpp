@@ -14,11 +14,13 @@
 
 #include <atomic>
 #include <boost/asio/connect.hpp>
+#include <boost/asio/dispatch.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
 #include <cstdlib>
 #include <stdexcept>
+#include <tuple>
 
 #include "dannan/listen/detail.h"
 
@@ -222,10 +224,7 @@ void StreamConnector::connect(asio::any_io_executor executor, std::string host, 
   std::string name;
   if (tls) {
     try {
-      if (!tls->trust) throw std::invalid_argument(_config.name + ": TLS out needs its trust");
-      const auto material = tls->certificate ? tls->certificate->current() : nullptr;
-      context = detail::client_tls(tls->trust->store(), tls->minimum, tls->alpn, material.get(), _config.name);
-      name = tls->server_name.empty() ? attempt->host : tls->server_name;
+      std::tie(context, name) = client_tls(*tls, attempt->host);
     } catch (const std::exception& error) {
       asio::post(attempt->executor, [attempt, why = std::string(error.what())] { attempt->fail(why); });
       return;
@@ -237,10 +236,11 @@ void StreamConnector::connect(asio::any_io_executor executor, std::string host, 
     _attempts->pending.push_back(attempt);
   }
   const auto resolve = _config.resolve;
+  const auto dial = _config.dial;
   // The time source outlives every attempt; held by pointer, not a reference to a local
   // (Lir's review).
   const contract::TimeSource* time = _shared->time;
-  asio::post(attempt->executor, [attempt, context, name, resolve, deadline, time] {
+  asio::post(attempt->executor, [attempt, context, name, resolve, dial, deadline, time] {
     // One deadline over every step; a resolver that never answers is not waited for
     // (Lugh's review: getaddrinfo cannot be cancelled), and its late answer is dropped.
     // The deadline holds the attempt until it is told, whatever a step lets go of (a
@@ -266,28 +266,104 @@ void StreamConnector::connect(asio::any_io_executor executor, std::string host, 
           }
           boost::system::error_code ignored;
           attempt->socket.set_option(tcp::no_delay(true), ignored);
-          auto stream = std::make_shared<Stream>(Stream::Private{}, std::move(attempt->socket), attempt->shared);
-          {
-            contract::Lock lock(attempt->shared->mutex);
-            ++attempt->shared->counters.open;
-            std::erase_if(attempt->shared->open, [](const std::weak_ptr<Stream>& each) { return each.expired(); });
-            attempt->shared->open.push_back(stream);
-          }
-          if (!context) return attempt->succeed(std::move(stream));
-          attempt->step = "complete the TLS handshake";
-          attempt->stream = stream;
-          stream->client_handshake(context, name, [attempt, stream](const std::string& why) {
-            if (!why.empty()) return attempt->fail(attempt->where() + ": " + why);
-            attempt->succeed(stream);
-          });
+          hand_over(attempt, socket_carrier(std::move(attempt->socket)), context, name);
         });
       });
     };
-    if (resolve) {
+    if (dial) {
+      attempt->step = "connect";
+      dial(attempt->host, attempt->port, attempt->executor, [attempt, context, name](std::unique_ptr<Carrier> carrier, std::string why) {
+        asio::post(attempt->executor, [attempt, context, name, carrier = std::move(carrier), why = std::move(why)]() mutable {
+          if (attempt->finished.load()) return;
+          if (!carrier) {
+            attempt->count(&ListenerCounters::refused_rate);
+            return attempt->fail(attempt->where() + ": did not connect: " + why);
+          }
+          hand_over(attempt, std::move(carrier), context, name);
+        });
+      });
+    } else if (resolve) {
       resolve(attempt->host, std::to_string(attempt->port), resolved);
     } else {
       attempt->resolver.async_resolve(attempt->host, std::to_string(attempt->port), resolved);
     }
+  });
+}
+
+std::pair<std::shared_ptr<detail::ServerTls>, std::string> StreamConnector::client_tls(const ClientTls& tls, const std::string& host) const {
+  if (!tls.trust) throw std::invalid_argument(_config.name + ": TLS out needs its trust");
+  const auto material = tls.certificate ? tls.certificate->current() : nullptr;
+  return {detail::client_tls(tls.trust->store(), tls.minimum, tls.alpn, material.get(), _config.name), tls.server_name.empty() ? host : tls.server_name};
+}
+
+void StreamConnector::hand_over(const std::shared_ptr<Attempt>& attempt, std::unique_ptr<Carrier> carrier, std::shared_ptr<detail::ServerTls> context,
+                                const std::string& name) {
+  auto stream = std::make_shared<Stream>(Stream::Private{}, std::move(carrier), attempt->shared);
+  {
+    contract::Lock lock(attempt->shared->mutex);
+    ++attempt->shared->counters.open;
+    std::erase_if(attempt->shared->open, [](const std::weak_ptr<Stream>& each) { return each.expired(); });
+    attempt->shared->open.push_back(stream);
+  }
+  if (!context) return attempt->succeed(std::move(stream));
+  attempt->step = "complete the TLS handshake";
+  attempt->stream = stream;
+  stream->client_handshake(std::move(context), name, [attempt, stream](const std::string& why) {
+    if (!why.empty()) return attempt->fail(attempt->where() + ": " + why);
+    attempt->succeed(stream);
+  });
+}
+
+void StreamConnector::adopt(asio::any_io_executor executor, std::unique_ptr<Carrier> carrier, std::optional<ClientTls> tls, std::chrono::milliseconds deadline,
+                            Connected done) {
+  const auto on = carrier->get_executor();
+  boost::system::error_code ignored;
+  const auto peer = carrier->remote_endpoint(ignored);
+  auto attempt = std::make_shared<Attempt>(on, std::move(executor), _shared, peer.address().to_string(), peer.port(), std::move(done));
+  attempt->count(&ListenerCounters::refused_caller);
+  std::shared_ptr<detail::ServerTls> context;
+  std::string name;
+  if (tls) {
+    try {
+      std::tie(context, name) = client_tls(*tls, attempt->host);
+    } catch (const std::exception& error) {
+      asio::post(attempt->executor, [attempt, why = std::string(error.what())] { attempt->fail(why); });
+      return;
+    }
+  }
+  const contract::TimeSource* time = _shared->time;
+  asio::post(attempt->executor, [attempt, carrier = std::move(carrier), context, name, deadline, time]() mutable {
+    detail::when_time_reaches(attempt->timer, *time, time->now() + deadline, [attempt] {
+      if (attempt->finished.load()) return;
+      attempt->count(&ListenerCounters::refused_address);
+      attempt->fail(attempt->where() + ": did not " + attempt->step + " within the deadline");
+    });
+    attempt->step = "complete the TLS handshake";
+    hand_over(attempt, std::move(carrier), context, name);
+  });
+}
+
+void StreamConnector::upgrade(std::shared_ptr<Stream> stream, ClientTls tls, std::chrono::milliseconds deadline, std::function<void(std::string)> done) {
+  std::shared_ptr<detail::ServerTls> context;
+  std::string name;
+  try {
+    std::tie(context, name) = client_tls(tls, stream->peer().address().to_string());
+  } catch (const std::exception& error) {
+    asio::post(stream->get_executor(), [done = std::move(done), why = std::string(error.what())] { done(why); });
+    return;
+  }
+  const contract::TimeSource* time = _shared->time;
+  asio::dispatch(stream->get_executor(), [stream, context, name, deadline, time, done = std::move(done)]() mutable {
+    if (stream->is_tls()) return asio::post(stream->get_executor(), [done = std::move(done)] { done("TLS is already started"); });
+    auto timer = std::make_shared<asio::steady_timer>(stream->get_executor());
+    std::weak_ptr<Stream> weak = stream;
+    detail::when_time_reaches(timer, *time, time->now() + deadline, [weak] {
+      if (auto held = weak.lock()) held->abort();
+    });
+    stream->client_handshake(context, name, [timer, done = std::move(done)](const std::string& why) {
+      timer->cancel();
+      done(why);
+    });
   });
 }
 

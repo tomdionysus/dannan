@@ -64,6 +64,7 @@ void HybridClock::allow(uint64_t unix_ms, bool on_loop) {
 }
 
 HlcStamp HybridClock::now() {
+  if (_out_of_bounds.load()) throw ClockOutOfBounds("this node's clock is out of bounds against its peers: it issues no stamp until it is back");
   for (;;) {
     auto previous = _last.load();
     const HlcStamp last{previous};
@@ -83,7 +84,8 @@ HlcReceipt HybridClock::merge(HlcStamp remote) {
   const auto offset = std::chrono::milliseconds(static_cast<int64_t>(remote.unix_ms()) - static_cast<int64_t>(wall));
   if (remote.unix_ms() > wall + static_cast<uint64_t>(_max_ahead.count())) {
     ++_not_merged;
-    return HlcReceipt{now(), false, offset};
+    // Out of bounds, this node issues nothing, so the receipt carries the last stamp it made.
+    return HlcReceipt{_out_of_bounds.load() ? HlcStamp{_last.load()} : now(), false, offset};
   }
   for (;;) {
     auto previous = _last.load();
@@ -116,6 +118,32 @@ HlcReceipt HybridClock::receive(HlcStamp remote, std::string_view peer) {
   if (receipt.offset.count() > 0) found->second.ahead = std::max(found->second.ahead, receipt.offset);
   if (receipt.offset.count() < 0) found->second.behind = std::max(found->second.behind, -receipt.offset);
   return receipt;
+}
+
+const char* admit_verdict_name(AdmitVerdict verdict) noexcept {
+  switch (verdict) {
+    case AdmitVerdict::admitted:
+      return "admitted";
+    case AdmitVerdict::ahead:
+      return "ahead";
+    case AdmitVerdict::self_out_of_bounds:
+      return "self_out_of_bounds";
+  }
+  return "unknown";
+}
+
+Admission HybridClock::admit(HlcStamp remote, std::string_view peer) {
+  if (_out_of_bounds.load()) {
+    const auto wall = _wall.unix_ms();
+    const auto offset = std::chrono::milliseconds(static_cast<int64_t>(remote.unix_ms()) - static_cast<int64_t>(wall));
+    return Admission{HlcReceipt{HlcStamp{_last.load()}, false, offset}, AdmitVerdict::self_out_of_bounds,
+                     "this node's clock is out of bounds against its peers, so it judges no stamp now"};
+  }
+  const auto receipt = receive(remote, peer);
+  if (receipt.merged) return Admission{receipt, AdmitVerdict::admitted, {}};
+  return Admission{receipt, AdmitVerdict::ahead,
+                   "the clock of " + std::string(peer) + " is " + std::to_string(receipt.offset.count()) + " ms ahead of this node's, past the " +
+                       std::to_string(_max_ahead.count()) + " ms allowed"};
 }
 
 HlcStats HybridClock::stats() const {

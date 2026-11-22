@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -41,14 +42,20 @@ class NodeClock final : public contract::TimeSource, public contract::WallClock 
   contract::TimePoint now() const noexcept override { return contract::TimePoint(std::chrono::milliseconds(local())); }
   std::chrono::milliseconds wake_within(std::chrono::milliseconds remaining) const noexcept override { return remaining; }
   uint64_t unix_ms() const noexcept override { return 1'790'000'000'000ull + local(); }
+  // Moves this node's clocks on by `by_ms`, at once, as a clock stepped by NTP or an operator.
+  // Forward only: the steady clock moves with the wall, and a steady clock must never go back.
+  void step(int64_t by_ms) noexcept {
+    if (by_ms > 0) _offset.fetch_add(by_ms, std::memory_order_relaxed);
+  }
 
  private:
   uint64_t local() const noexcept {
     const auto at = static_cast<int64_t>(_world.now_ms());
-    return static_cast<uint64_t>(at + at / 1'000'000 * _drift + (at % 1'000'000) * _drift / 1'000'000 + _offset);
+    return static_cast<uint64_t>(at + at / 1'000'000 * _drift + (at % 1'000'000) * _drift / 1'000'000 + _offset.load(std::memory_order_relaxed));
   }
   const World& _world;
-  int64_t _offset;
+  // Atomic: a node's own threads read it while a test steps it.
+  std::atomic<int64_t> _offset;
   int64_t _drift;
 };
 
@@ -179,6 +186,9 @@ class SimNetwork {
   std::shared_ptr<SimTransport> at(size_t index) const { return index < _transports.size() ? _transports[index].lock() : nullptr; }
   size_t size() const noexcept { return _transports.size(); }
   bool lost(size_t from, size_t to) { return _blocked.contains({from, to}) || _world.random.one_in(_faults.drop_one_in); }
+  // Whether `from` is cut off from `to` by a block or a partition: no random draw, so asking
+  // leaves the seed's sequence as it was.
+  bool blocked(size_t from, size_t to) const { return _blocked.contains({from, to}); }
   uint64_t delay() { return 1 + _world.random.below(_faults.max_delay_ms); }
   int copies() { return _world.random.one_in(_faults.duplicate_one_in) ? 2 : 1; }
 
@@ -362,6 +372,8 @@ class SimNodes {
   // Every node's id, known before any starts (a genesis set names them).
   const std::vector<identity::NodeId>& ids() const noexcept { return _ids; }
   SimNetwork& network() noexcept { return _network; }
+  // Steps node `i`'s clocks forward by `by_ms` (NodeClock::step).
+  void step_clock(size_t i, int64_t by_ms) { _clocks.at(i)->step(by_ms); }
 
   // What node `i` is configured with; a test may change it before a restart.
   NodeConfig config(size_t i) {
@@ -422,12 +434,17 @@ class SimNodes {
   // goes with it. A call it had in flight is never answered.
   void stop(size_t i) {
     if (!_nodes.at(i)) return;
+    for (const auto& hook : stopping) hook(i);
     _nodes.at(i)->stop();
     _world.io.restart();
     while (_world.io.poll_one() > 0) {
     }
     _nodes.at(i).reset();
   }
+  // Told before node `i` stops: what a test or a fixture holds of it ends with it (the stream
+  // directory severs its streams).
+  std::vector<std::function<void(size_t)>> stopping;
+
   // Back as Wipe says.
   void restart(size_t i, Wipe wipe = Wipe::nothing) {
     stop(i);

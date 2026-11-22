@@ -30,6 +30,7 @@ add_library(dannan SHARED
   membership/node_record.cpp
   membership/identity_reset.cpp
   membership/agreed_roster.cpp
+  membership/clock_offsets.cpp
   membership/membership.cpp
   net/assembler.cpp
   net/channel.cpp
@@ -53,9 +54,11 @@ add_library(dannan SHARED
   agree/caspaxos.cpp
   agree/memory_store.cpp
   agree/wire.cpp
+  listen/carrier.cpp
   listen/certificates.cpp
   listen/connector.cpp
   listen/limits.cpp
+  listen/memory.cpp
   listen/listener.cpp
   listen/stream.cpp
   sched/class_gate.cpp

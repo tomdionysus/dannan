@@ -113,20 +113,26 @@ void StreamListener::accept(const std::shared_ptr<ListenerShared>& shared) {
   const auto executor = shared->config.strand_per_stream ? asio::any_io_executor(asio::make_strand(shared->executor)) : shared->executor;
   shared->acceptor.async_accept(executor, [shared](const boost::system::error_code& error, tcp::socket socket) {
     if (!shared->acceptor.is_open()) return;
-    if (!error) served(shared, std::move(socket));
+    if (!error) {
+      // Every public protocol's small packets go out at once (Lir: Nagle behind the
+      // peer's delayed ACK cost an MQTT PUBACK about 40 ms); Stream::set_no_delay undoes it.
+      boost::system::error_code ignored;
+      socket.set_option(tcp::no_delay(true), ignored);
+      served(shared, socket_carrier(std::move(socket)));
+    }
     // A failed accept (a descriptor short, say) is that connection's alone.
     accept(shared);
   });
 }
 
-void StreamListener::served(const std::shared_ptr<ListenerShared>& shared, tcp::socket socket) {
+void StreamListener::served(const std::shared_ptr<ListenerShared>& shared, std::unique_ptr<Carrier> carrier) {
   boost::system::error_code ignored;
   // Accepted before the acceptor's close ran, after stop_accepting() returned.
   if (gate_shut(*shared)) {
-    socket.close(ignored);
+    carrier->close(ignored);
     return;
   }
-  const auto peer = socket.remote_endpoint(ignored);
+  const auto peer = carrier->remote_endpoint(ignored);
   const auto& settings = shared->config;
   // What refuses at accept closes at once: a hosted system that answers its own
   // "busy" sets these only as a backstop above its own.
@@ -135,18 +141,18 @@ void StreamListener::served(const std::shared_ptr<ListenerShared>& shared, tcp::
       contract::Lock lock(shared->mutex);
       ++(shared->counters.*counter);
     }
-    socket.close(ignored);
+    carrier->close(ignored);
   };
   {
     contract::Lock lock(shared->mutex);
     if (settings.max_connections && shared->counters.open >= *settings.max_connections) {
       ++shared->counters.refused_cap;
-      socket.close(ignored);
+      carrier->close(ignored);
       return;
     }
     if (shared->accept_bucket && !shared->accept_bucket->take(shared->time->now())) {
       ++shared->counters.refused_rate;
-      socket.close(ignored);
+      carrier->close(ignored);
       return;
     }
   }
@@ -160,10 +166,7 @@ void StreamListener::served(const std::shared_ptr<ListenerShared>& shared, tcp::
         return refuse(&ListenerCounters::refused_caller);
     }
   }
-  // Every public protocol's small packets go out at once (Lir: Nagle behind the
-  // peer's delayed ACK cost an MQTT PUBACK about 40 ms); Stream::set_no_delay undoes it.
-  socket.set_option(tcp::no_delay(true), ignored);
-  auto stream = std::make_shared<Stream>(Stream::Private{}, std::move(socket), shared);
+  auto stream = std::make_shared<Stream>(Stream::Private{}, std::move(carrier), shared);
   {
     contract::Lock lock(shared->mutex);
     ++shared->counters.accepted;
@@ -184,6 +187,15 @@ void StreamListener::served(const std::shared_ptr<ListenerShared>& shared, tcp::
   } else {
     asio::post(stream->get_executor(), hand_up);
   }
+}
+
+StreamListener::Injected StreamListener::inject(asio::any_io_executor client, MemoryOptions options) {
+  if (!_accepting.load()) throw std::logic_error("listener " + _shared->config.name + ": inject before start() or after stop_accepting()");
+  const auto server = _shared->config.strand_per_stream ? asio::any_io_executor(asio::make_strand(_shared->executor)) : _shared->executor;
+  auto pair = memory_pair(std::move(client), server, std::move(options));
+  // Served on the accept loop's strand, as an accepted socket is.
+  asio::post(_shared->acceptor.get_executor(), [shared = _shared, server_end = std::move(pair.server)]() mutable { served(shared, std::move(server_end)); });
+  return Injected{std::move(pair.client), std::move(pair.link)};
 }
 
 void StreamListener::stop_accepting() {

@@ -1281,6 +1281,8 @@ net::Handled Paths::relay_data(const NodeRecord& from, const net::Message& reque
   } catch (const net::DecodeError& error) {
     return net::Handled::failed(400, "invalid_request", error.what());
   }
+  // Held apart from `data`, which a relaying leg takes by move below.
+  const auto circuit_id = data.circuit;
   std::shared_ptr<Pump> end;
   std::optional<bool> toward_b;
   bool broke_window = false;
@@ -1312,10 +1314,10 @@ net::Handled Paths::relay_data(const NodeRecord& from, const net::Message& reque
   }
   if (toward_b) _client.note_path_progress(from.id, net::Lane::data);
   if (broke_window) {
-    lost(data.circuit, *toward_b);
+    lost(circuit_id, *toward_b);
     return net::Handled::processed();
   }
-  if (toward_b) advance(data.circuit, *toward_b);
+  if (toward_b) advance(circuit_id, *toward_b);
   return net::Handled::processed();
 }
 
