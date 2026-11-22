@@ -35,7 +35,7 @@ std::optional<Frame> MessageAssembler::push(WireFragment fragment) {
   if (fragment.first) {
     if (found != _partial.end()) throw FrameRefused("duplicate first fragment");
     if (_partial.size() >= _max_messages) throw FrameRefused("too many incomplete messages");
-    found = _partial.emplace(fragment.request_id, Partial{fragment.frame, fragment.type, {}, {}}).first;
+    found = _partial.emplace(fragment.request_id, Partial{fragment.frame, fragment.type, {}, 0, {}}).first;
   } else if (found == _partial.end()) {
     throw FrameRefused("continuation without a first fragment");
   }
@@ -43,14 +43,27 @@ std::optional<Frame> MessageAssembler::push(WireFragment fragment) {
   if (partial.type != fragment.type) throw FrameRefused("message type changed during transfer");
   if (sched::frame_priority(fragment.frame) > sched::frame_priority(partial.frame)) throw FrameRefused("frame class was demoted during transfer");
   partial.frame = more_urgent(fragment.frame, partial.frame);
-  if (partial.payload.size() > _max_message || fragment.payload.size() > _max_message - partial.payload.size()) throw FrameRefused("message too large");
+  if (partial.size > _max_message || fragment.payload.size() > _max_message - partial.size) throw FrameRefused("message too large");
   if (_partial_bytes > _max_bytes || fragment.payload.size() > _max_bytes - _partial_bytes) throw FrameRefused("incomplete reassembly budget exceeded");
   charge(partial.memory, partial.frame, fragment.payload.size());
-  partial.payload.insert(partial.payload.end(), fragment.payload.begin(), fragment.payload.end());
+  partial.size += fragment.payload.size();
   _partial_bytes += fragment.payload.size();
+  partial.pieces.push_back(std::move(fragment.payload));
   if (!fragment.last) return std::nullopt;
-  Frame out{fragment.request_id, partial.frame, {partial.type, std::move(partial.payload), std::move(partial.memory)}};
-  _partial_bytes -= out.message.payload.size();
+  // One buffer of exactly the message's size; each piece is let go as it is copied, so at
+  // most one fragment more than the message is held while they are joined.
+  Bytes payload;
+  if (partial.pieces.size() == 1 && partial.pieces.front().capacity() == partial.size) {
+    payload = std::move(partial.pieces.front());
+  } else {
+    payload.reserve(partial.size);
+    for (auto& piece : partial.pieces) {
+      payload.insert(payload.end(), piece.begin(), piece.end());
+      Bytes().swap(piece);
+    }
+  }
+  Frame out{fragment.request_id, partial.frame, {partial.type, std::move(payload), std::move(partial.memory)}};
+  _partial_bytes -= partial.size;
   _partial.erase(found);
   return out;
 }
@@ -63,7 +76,7 @@ void MessageAssembler::promote(uint64_t request_id, sched::FrameType frame) {
 void MessageAssembler::discard(uint64_t request_id) {
   const auto found = _partial.find(request_id);
   if (found == _partial.end()) return;
-  _partial_bytes -= found->second.payload.size();
+  _partial_bytes -= found->second.size;
   _partial.erase(found);
 }
 

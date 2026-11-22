@@ -45,7 +45,10 @@ class MessageAssembler {
   struct Partial {
     sched::FrameType frame = sched::FrameType::control;
     MessageType type{};
-    Bytes payload;
+    // The fragments as they came, joined once when the last arrives: no fragment says how
+    // large the whole will be, and growing one buffer would leave it up to twice the size.
+    std::vector<Bytes> pieces;
+    size_t size = 0;
     MemoryHold memory;
   };
 
