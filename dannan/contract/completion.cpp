@@ -31,6 +31,8 @@ const char* fault_name(Fault fault) noexcept {
       return "timed_out";
     case Fault::failed:
       return "failed";
+    case Fault::cancelled:
+      return "cancelled";
   }
   return "unknown";
 }
