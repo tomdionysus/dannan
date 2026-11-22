@@ -50,9 +50,13 @@ TEST(SimClock, EachNodeMeasuresEveryPeersOffset) {
   ASSERT_TRUE(world.run_until([&] { return joined(nodes) && all_measured(nodes); }, 2'000'000));
   // The skew drawn is within 300 ms each way, so any two clocks are within 600 ms; a probe on the
   // world's network reads them within its round trip.
-  for (size_t i = 0; i < 3; ++i)
-    for (size_t j = 0; j < 3; ++j)
-      if (i != j) EXPECT_LE(std::llabs(nodes.node(i).context().nodes().clock_offset(nodes.id(j))->count()), 700) << i << " to " << j;
+  for (size_t i = 0; i < 3; ++i) {
+    for (size_t j = 0; j < 3; ++j) {
+      if (i != j) {
+        EXPECT_LE(std::llabs(nodes.node(i).context().nodes().clock_offset(nodes.id(j))->count()), 700) << i << " to " << j;
+      }
+    }
+  }
   for (size_t i = 0; i < 3; ++i) EXPECT_TRUE(in_bounds(nodes, i));
 }
 
