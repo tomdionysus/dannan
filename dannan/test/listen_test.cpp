@@ -1298,6 +1298,8 @@ TEST(StreamListener, BeastsHttpAndWebSocketRunOverAStream) {
       beast::flat_buffer buffer;
       http::request<http::string_body> request;
       std::unique_ptr<websocket::stream<Stream&>> socket;
+      // What the server answers, alive until its write completes.
+      std::string pong = "pong";
     };
     auto session = std::make_shared<Session>();
     session->stream = stream;
@@ -1312,7 +1314,7 @@ TEST(StreamListener, BeastsHttpAndWebSocketRunOverAStream) {
         session->socket->async_read(session->buffer, [&, session](beast::error_code read, std::size_t) {
           if (read) return message.set_value("read: " + read.message());
           message.set_value(beast::buffers_to_string(session->buffer.data()));
-          session->socket->async_write(asio::buffer(std::string("pong")), [&, session](beast::error_code written, std::size_t) {
+          session->socket->async_write(asio::buffer(session->pong), [&, session](beast::error_code written, std::size_t) {
             if (written) return closed.set_value(written);
             session->buffer.consume(session->buffer.size());
             // The client's close frame ends this read; Beast tears down by our close.

@@ -309,7 +309,8 @@ std::shared_ptr<CallHandle> Client::call(const membership::NodeRecord& peer, Mes
   note_peer(peer);
   auto handle = std::shared_ptr<CallHandle>(new CallHandle(_options.time));
   auto completion = once(*handle, executor, std::move(done));
-  call(Target{peer.id, {peer.host, peer.port}}, Call{type, std::move(payload), frame, std::move(executor), std::move(completion), 0, handle, watch});
+  call(Target{peer.id, {peer.host, peer.port}},
+       Call{type, std::move(payload), frame, std::move(executor), std::move(completion), 0, handle, watch, std::nullopt});
   return handle;
 }
 
@@ -317,7 +318,7 @@ std::shared_ptr<CallHandle> Client::call(const Endpoint& endpoint, MessageType t
                                          Done done, CallWatch watch) {
   auto handle = std::shared_ptr<CallHandle>(new CallHandle(_options.time));
   auto completion = once(*handle, executor, std::move(done));
-  call(Target{std::nullopt, endpoint}, Call{type, std::move(payload), frame, std::move(executor), std::move(completion), 0, handle, watch});
+  call(Target{std::nullopt, endpoint}, Call{type, std::move(payload), frame, std::move(executor), std::move(completion), 0, handle, watch, std::nullopt});
   return handle;
 }
 

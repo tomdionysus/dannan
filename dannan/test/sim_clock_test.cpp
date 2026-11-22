@@ -67,7 +67,10 @@ TEST(SimClock, ANodeFarAheadOfTheMajorityStopsIssuingStampsAndComesBack) {
   EXPECT_TRUE(in_bounds(nodes, 0));
   EXPECT_TRUE(in_bounds(nodes, 1));
   EXPECT_NO_THROW((void)nodes.node(0).context().hlc().now());
-  EXPECT_GE(nodes.node(0).context().nodes().clock_offset(nodes.id(2))->count(), 59'000);
+  // Node 2 judged itself from its own probes; node 0 sees the step at its own next probe of node
+  // 2, which may come later (hosted TSan read the offset from before the step: 2 ms).
+  ASSERT_TRUE(world.run_until([&] { return nodes.node(0).context().nodes().clock_offset(nodes.id(2))->count() >= 59'000; }, 2'000'000));
+  EXPECT_TRUE(in_bounds(nodes, 0));
   // The others catch up: node 2 is back within bounds and issues again.
   nodes.step_clock(0, 60'000);
   nodes.step_clock(1, 60'000);
