@@ -111,22 +111,6 @@ asio::ip::tcp::endpoint any_on(const asio::ip::tcp::endpoint& to, uint16_t port)
   return {to.protocol() == asio::ip::tcp::v6() ? asio::ip::address(asio::ip::address_v6::any()) : asio::ip::address(asio::ip::address_v4::any()), port};
 }
 
-// A punch port, held from before its observation until its open has ended. The observation's
-// own socket closes once it has its answer, and the open binds the port again only later: in
-// that gap the port is free, another punch's observation on this host can be given it, and
-// both opens then share it (reuse() lets them), one connecting to itself. Hosted CI's level 0
-// punch tests met this. Bound, never listening, so the open's own sockets take what arrives.
-std::shared_ptr<asio::ip::tcp::socket> hold_port(asio::io_context& io, const net::Endpoint& toward) {
-  const auto remote = resolve(io, toward);
-  auto held = std::make_shared<asio::ip::tcp::socket>(io);
-  boost::system::error_code error;
-  held->open(remote.protocol(), error);
-  if (!error) reuse(held->native_handle());
-  if (!error) held->bind(any_on(remote, 0), error);
-  if (error) throw std::runtime_error("cannot hold a punch port: " + error.message());
-  return held;
-}
-
 net::Handled reply(net::MessageType type, net::Bytes payload) { return net::Handled::processed({type, std::move(payload), {}}); }
 
 net::Handled punch_refused(const std::string& why) { return reply(m::punch_reply, encode(PunchReply{false, why, {}, {}})); }
@@ -936,9 +920,7 @@ std::string Paths::try_punch(const NodeRecord& self, const NodeRecord& peer, net
       ++_stats.punches_tried;
     }
     try {
-      const net::Endpoint at{broker.host, broker.port};
-      const auto held = hold_port(_io, at);
-      const auto [port, seen] = observe_from(_io, _config.credentials, self, held->local_endpoint().port(), at, broker.id, _config.connect_timeout);
+      const auto [port, seen] = observe_from(_io, _config.credentials, self, 0, {broker.host, broker.port}, broker.id, _config.connect_timeout);
       const auto outcome = _caller(broker, m::punch_request, encode(PunchRequest{peer.id, lane, seen}), _config.connect_timeout * 3);
       if (!outcome.reply || outcome.reply->type != m::punch_reply) {
         why = "broker " + to_string(broker.id) + ": " + (outcome.reply ? "refused" : outcome.failure);
@@ -1168,11 +1150,8 @@ net::Handled Paths::punch_go(const NodeRecord& from, const net::Message& request
     if (_stopped) return punch_refused("the node is stopping");
   }
   std::pair<uint16_t, net::Endpoint> observed;
-  std::shared_ptr<asio::ip::tcp::socket> held;
   try {
-    const net::Endpoint at{from.host, from.port};
-    held = hold_port(_io, at);
-    observed = observe_from(_io, _config.credentials, self, held->local_endpoint().port(), at, from.id, _config.connect_timeout);
+    observed = observe_from(_io, _config.credentials, self, 0, {from.host, from.port}, from.id, _config.connect_timeout);
   } catch (const std::exception& error) {
     return punch_refused(std::string("cannot observe this node's punch port: ") + error.what());
   }
@@ -1180,24 +1159,21 @@ net::Handled Paths::punch_go(const NodeRecord& from, const net::Message& request
   const auto lane = go.lane;
   const auto token = go.token;
   const auto role = self.id < peer ? net::Role::dialler : net::Role::acceptor;
-  simultaneous_open(_io, observed.first, go.at, _config.punch_window,
-                    [owner = _owner, peer, lane, token, role, held](int descriptor, int family, std::string) mutable {
-                      // The open has ended: the port is the connection's now, or no one's.
-                      held.reset();
-                      if (descriptor < 0) return;
-                      bool adopted = false;
-                      with(owner, [&](Paths& paths) {
-                        adopted = true;
-                        paths._client.adopt(descriptor, family, peer, lane, role, net::Purpose::punched, token, [owner](std::string why) {
-                          if (!why.empty()) return;
-                          with(owner, [](Paths& counted) {
-                            contract::Lock lock(counted._mutex);
-                            ++counted._stats.punches_made;
-                          });
-                        });
-                      });
-                      if (!adopted) ::close(descriptor);
-                    });
+  simultaneous_open(_io, observed.first, go.at, _config.punch_window, [owner = _owner, peer, lane, token, role](int descriptor, int family, std::string) {
+    if (descriptor < 0) return;
+    bool adopted = false;
+    with(owner, [&](Paths& paths) {
+      adopted = true;
+      paths._client.adopt(descriptor, family, peer, lane, role, net::Purpose::punched, token, [owner](std::string why) {
+        if (!why.empty()) return;
+        with(owner, [](Paths& counted) {
+          contract::Lock lock(counted._mutex);
+          ++counted._stats.punches_made;
+        });
+      });
+    });
+    if (!adopted) ::close(descriptor);
+  });
   return reply(m::punch_reply, encode(PunchReply{true, {}, observed.second, {}}));
 }
 
