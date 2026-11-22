@@ -10,12 +10,11 @@
 // by docs/config.md's rule under each project's prefix, read into a NodeConfig in the reader's
 // words, so no binary keeps a copy.
 
-#include "dannan/config/node_settings.h"
-
 #include <gtest/gtest.h>
 
 #include <fstream>
 
+#include "dannan/config/node_settings.h"
 #include "dannan/test/fixtures/temp_dir.h"
 
 namespace dannan::config {
@@ -35,10 +34,26 @@ const Setting* setting(const Reader& reader, const std::string& key) {
 TEST(NodeSettings, EachKeyIsUnderClusterWithItsFlagAndTheProjectsVariable) {
   Reader reader;
   add_node_settings(reader, "LIR");
-  for (const auto* key : {"cluster.key", "cluster.bootstrap", "cluster.state", "cluster.name", "cluster.domain", "cluster.relay", "cluster.listen.address",
-                          "cluster.listen.port", "cluster.listen.advertise", "cluster.listen.inbound", "cluster.heartbeat_ms", "cluster.path_class",
-                          "cluster.punch_ms", "cluster.reprobe_ms", "cluster.custody.passphrase_env", "cluster.custody.credential",
-                          "cluster.custody.credentials_dir", "cluster.identity.ca", "cluster.identity.certificate", "cluster.identity.revocations",
+  for (const auto* key : {"cluster.key",
+                          "cluster.bootstrap",
+                          "cluster.state",
+                          "cluster.name",
+                          "cluster.domain",
+                          "cluster.relay",
+                          "cluster.listen.address",
+                          "cluster.listen.port",
+                          "cluster.listen.advertise",
+                          "cluster.listen.inbound",
+                          "cluster.heartbeat_ms",
+                          "cluster.path_class",
+                          "cluster.punch_ms",
+                          "cluster.reprobe_ms",
+                          "cluster.custody.passphrase_env",
+                          "cluster.custody.credential",
+                          "cluster.custody.credentials_dir",
+                          "cluster.identity.ca",
+                          "cluster.identity.certificate",
+                          "cluster.identity.revocations",
                           "cluster.identity.no_cluster_key"})
     EXPECT_NE(setting(reader, key), nullptr) << key;
   EXPECT_EQ(reader.settings.size(), 21u);
@@ -73,11 +88,35 @@ TEST(NodeSettings, TheyFillANodeConfig) {
   add_node_settings(reader, "KVASIR");
   NoEnvironment none;
   reader.environment = &none;
-  const auto settings = reader.read({"--cluster-key", (dir.path() / "k").string(), "--cluster-state", (dir.path() / "state").string(), "--cluster-bootstrap",
-                                     "192.0.2.10:7437", "--cluster-bootstrap", "192.0.2.11:7438", "--cluster-name", "n1", "--cluster-domain", "rack-2",
-                                     "--cluster-relay", "--cluster-listen-address", "127.0.0.1", "--cluster-listen-port", "7600", "--cluster-listen-advertise",
-                                     "192.0.2.20", "--cluster-listen-inbound", "no", "--cluster-heartbeat-ms", "500", "--cluster-path-class", "punchable",
-                                     "--cluster-punch-ms", "4000", "--cluster-reprobe-ms", "9000"});
+  const auto settings = reader.read({"--cluster-key",
+                                     (dir.path() / "k").string(),
+                                     "--cluster-state",
+                                     (dir.path() / "state").string(),
+                                     "--cluster-bootstrap",
+                                     "192.0.2.10:7437",
+                                     "--cluster-bootstrap",
+                                     "192.0.2.11:7438",
+                                     "--cluster-name",
+                                     "n1",
+                                     "--cluster-domain",
+                                     "rack-2",
+                                     "--cluster-relay",
+                                     "--cluster-listen-address",
+                                     "127.0.0.1",
+                                     "--cluster-listen-port",
+                                     "7600",
+                                     "--cluster-listen-advertise",
+                                     "192.0.2.20",
+                                     "--cluster-listen-inbound",
+                                     "no",
+                                     "--cluster-heartbeat-ms",
+                                     "500",
+                                     "--cluster-path-class",
+                                     "punchable",
+                                     "--cluster-punch-ms",
+                                     "4000",
+                                     "--cluster-reprobe-ms",
+                                     "9000"});
   const auto config = node_config(settings);
   EXPECT_EQ(config.state_path, dir.path() / "state");
   EXPECT_EQ(config.key.auth, identity::load_cluster_key(dir.path() / "k").auth);
