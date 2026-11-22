@@ -1,5 +1,67 @@
 # Current release
 
+## 0.11.0: transfer buffers, node settings, streams, JSON and the clock rules
+
+A new minor: the ABI changes, so move a pin from 0.10.x to 0.11.0 in one step. The library
+package is libdannan0.11.
+
+Added:
+
+- `sched::BufferPool`, the node's pool of large transfer buffers, as `Context::buffers()`
+  (`std::shared_ptr`, safe to give back to from any thread, after the node has gone too). A
+  block of an extent's size is reused rather than freed: glibc's mmap threshold slides past the
+  first large free, and every later block stayed in a per-thread arena (Dagda's repair case held
+  400-620 MiB against 6 MiB in use). Bounded (`NodeConfig::transfer_buffers_bound`, 256 MiB) and
+  charged to the ledger as `MemoryOwner::transfer_buffers`. Dannan's sessions take from it and
+  give back: a frame's opened bytes, a joined message, a written payload, a served request's
+  payload once a handler that answers by returning has returned.
+- `dannan/config/node_settings.h`: the node settings every node binary takes, under `cluster.*`
+  (key, bootstrap, state, name, domain, relay, listen.*, heartbeat_ms, path_class, punch_ms,
+  reprobe_ms, custody.*, identity.*): `add_node_settings(reader, prefix)`, `node_config(settings)`
+  and `node_revocations(settings)`. docs/config.md lists them.
+- The stream carrier (for Lir): a Stream's bytes go through a `Carrier`, a socket or an in-memory
+  pipe that behaves as a TCP connection (`listen::memory_pair`, with stall, resume and sever);
+  `StreamListener::inject` serves an injected connection through its own accept path;
+  `test/fixtures/sim/streams.h` dials inside the simulation.
+- `dannan/json/json.h`: JSON through Boost.JSON, its compiled part carried once in libdannan;
+  `to_bytes` and `parse`, int64 and uint64 kept apart (Lir).
+- The clock rules (item 6): each node measures every peer's clock offset on the heartbeat
+  (message types 27 and 115), and one past the bound against more than half of the agreed roster
+  stops issuing hybrid-clock stamps (`ClockOutOfBounds`) until it is back.
+- `identity::aes_gcm_seal_into` and `aes_gcm_open_into`, in place or apart, a bad tag zeroing the
+  output (Dagda's single-buffer object paths).
+- `Outcome<T>::failure(fault, message, evidence)`; `Fault::cancelled`, after `failed`.
+- `NodeConfig::liveness_time`: what a node's links judge liveness on, so a test may step `time`.
+- The TSan suppressions are installed with libdannan-dev, and `DANNAN_TSAN_SUPPRESSIONS` names
+  their path, installed or fetched.
+- `ClientStats::dials_joined`.
+
+Changed:
+
+- dannan-node takes the shared node settings: `--cluster-key`, `--cluster-state`,
+  `--cluster-listen-port` and so on, as `DANNAN_CLUSTER_*` variables, its file named by
+  `DANNAN_CONFIG`. Its own `--status-ms`, `--echo-ms`, `--seconds`, `--init-custody` and
+  `--show-identity` are as they were.
+- A reassembled message holds exactly its size (a 16 MiB + 36 B message held 32 MiB).
+- `timed_out` reads "the outcome is unknown, and a write may yet land".
+
+Fixed:
+
+- A relay circuit end that closed while its session to the relay was gone dropped its close, and
+  the circuit and the far end stayed: the close now goes by CONTROL.
+- A punch that crossed (connected to its own port, seen where nodes share a host) was final; it is
+  tried again from fresh ports, up to three times through one broker.
+- A starting node dialled a peer's CONTROL lane twice, by address and by id, and a call could find
+  no route while the loser was retired: one dial is shared.
+- A child process's deadline under a millisecond away read nothing (test fixture).
+
+Adopting 0.11.0:
+- A `switch` over `Fault` needs a case for `cancelled`.
+- A node binary drops its own reading of the node settings for `add_node_settings` and
+  `node_config`, its operators renaming keys to `cluster.*`.
+- A hosted system with large buffers takes and gives them through `Context::buffers()`.
+- A TSan run passes `suppressions=${DANNAN_TSAN_SUPPRESSIONS}`.
+
 ## 0.10.2: a request whose reply throws leaves nothing held; SteppedTime takes a poll
 
 A patch: the ABI is 0.10.0's.
