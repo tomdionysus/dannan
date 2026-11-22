@@ -26,9 +26,15 @@ started from are never read for direction or edited.
    - the store's lock is held across the walk, so a visitor never calls back into the store;
    - order is stable while nothing is kept;
    - first test: a name removed between two pages is never skipped.
-2. **0.10.3, a patch, ABI kept (Dagda, 2026-11-22), ahead of 0.11.0:** in-place AES-GCM, so
+   **The maintainer's rulings, 2026-11-22:** no patch release now: everything waits for 0.11.0
+   ("no pointless patch release"). Every fix is proven by a test that fails without it every
+   time: a run of thousands, or dozens, is no proof ("rethink this"). The doubled CONTROL dial
+   (3, below) is fixed before the release. Boost's template instances stay out of the ABI
+   comparison, as the standard library's are.
+2. **In 0.11.0, not a patch (Dagda, 2026-11-22):** in-place AES-GCM, so
    Dagda serves and stores an object in one buffer (its live-a memory: glibc holding freed
-   16 MiB transfer buffers; the maintainer ruled out an allocator setting).
+   16 MiB transfer buffers; the maintainer ruled out an allocator setting). Done on
+   feature/gcm-in-place (7861e10), red against stubs then green.
    - `void aes_gcm_open_into(key, nonce, tag, ciphertext, std::span<uint8_t> out, associated = {})`:
      out the size of ciphertext, may be exactly it; partial overlap refused; a bad tag throws as
      aes_gcm_open does and zeroes out.
@@ -44,7 +50,13 @@ started from are never read for direction or edited.
    Both ends keep the same one of the pair, but while one end retires the loser the other can
    be left a moment with no route, so a call then finds "no relay" or "the relay has no session
    with the target". Find why the dials are not one (by endpoint and by id, say), prove it with
-   a test, and make it one. The move-up test waits its first echo out meanwhile.
+   a test, and make it one. The move-up test waits its first echo out meanwhile; that wait goes
+   when the dial is one.
+   - Also before the release: a punch's port is free between its observation and its open, and
+     another punch on the host can be given it; both opens then share it and one connects to
+     itself (every crossed punch in the hosted runs showed its own port as its target's). The
+     fix (feature/punch-flakes, 4b98d1b: a placeholder holds the port) waits for a test that
+     shows the port taken in that gap without it, every time.
 4. **0.11.0:**
    - the stream carrier (feature/stream-carrier, for Lir): its memory-pipe write test fails, and a
      run ended in a bus error;
