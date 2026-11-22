@@ -316,8 +316,10 @@ class ChildProcess {
   // closed pipe, or a terminal whose other side closed) or the deadline.
   bool fill(std::chrono::steady_clock::time_point deadline) {
     if (_out < 0) return false;
-    const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
-    if (left <= 0) return false;
+    const auto remaining = deadline - std::chrono::steady_clock::now();
+    if (remaining <= std::chrono::steady_clock::duration::zero()) return false;
+    // Rounded up: a deadline under a millisecond away still looks once.
+    const auto left = std::chrono::ceil<std::chrono::milliseconds>(remaining).count();
     pollfd ready{_out, POLLIN, 0};
     if (::poll(&ready, 1, static_cast<int>(left)) <= 0) return false;
     char chunk[4096];
