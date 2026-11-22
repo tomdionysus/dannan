@@ -55,10 +55,30 @@ These keys mean the same in every binary:
 
 A setting that two binaries both need is added here, so it is named once for the stack.
 
-## dannan-node today
+## Node settings
 
-dannan-node does not follow the rule yet, in two ways:
-- it has its own short flags for some keys, such as `--port` for `listen.port`;
-- its variables carry the binary's prefix, `DANNAN_NODE_...`, where the rule gives `DANNAN_...`.
+Every binary that runs a Dannan node takes the same node settings, read by one piece of code
+(`dannan/config/node_settings.h`, from 0.11.0): `add_node_settings(reader, "LIR")` adds them to
+the binary's reader, and `node_config(settings)` makes the `dannan::NodeConfig`. They live under
+`cluster.*`, a section no hosted system uses for its own listener (the maintainer, 2026-11-22),
+so a binary's own `listen.*` or `mqtt.*` never meets them:
 
-Both are part of its interface, so both move to the rule's names in 0.11.0, the next minor.
+| Key | Values |
+|---|---|
+| `cluster.key` | the cluster key file |
+| `cluster.bootstrap` | a list of `HOST:PORT` seeds |
+| `cluster.state` | the state directory |
+| `cluster.name`, `cluster.domain` | the node's name and failure domain |
+| `cluster.relay` | toggle: forward circuits for others |
+| `cluster.listen.address`, `.port`, `.advertise` | where it listens, and the host peers dial |
+| `cluster.listen.inbound` | `yes`, `no` or `auto` |
+| `cluster.heartbeat_ms` | the heartbeat; liveness is six of them |
+| `cluster.path_class` | `public`, `punchable` or `relay_only`; none: classified |
+| `cluster.punch_ms`, `cluster.reprobe_ms` | a punch's window; the reprobe while incapable |
+| `cluster.custody.passphrase_env`, `.credential`, `.credentials_dir` | the key custody's source |
+| `cluster.identity.ca`, `.certificate`, `.revocations`, `.no_cluster_key` | certificates |
+
+Flags and variables follow the rule above: `--cluster-listen-port` and `LIR_CLUSTER_LISTEN_PORT`.
+Nothing is required by the reader itself: whether a state or a key must be given is the
+binary's rule. dannan-node takes them under `DANNAN_`, with its own `status_ms`, `echo_ms`,
+`seconds`, `init_custody` and `show_identity` beside them.

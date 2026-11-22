@@ -20,6 +20,7 @@ add_executable(dannan_tests
   agree_memory_store_test.cpp
   contract_completion_test.cpp
   contract_test.cpp
+  config_node_settings_test.cpp
   custody_tool_test.cpp
   json_test.cpp
   fixtures_test.cpp

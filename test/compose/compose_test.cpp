@@ -454,9 +454,9 @@ TEST(ComposeBed, CertificatesAloneThroughRealNats) {
   std::map<std::string, std::string> ids;
   for (const auto& node : all_nodes()) {
     const auto state = (identities.path() / node).string();
-    run({DANNAN_NODE_BINARY, "--state", state, "--init-custody", "--custody-passphrase-env", "DANNAN_CUSTODY_PASSPHRASE"}, {passphrase}, log);
-    const auto shown =
-        run({DANNAN_NODE_BINARY, "--state", state, "--show-identity", "--custody-passphrase-env", "DANNAN_CUSTODY_PASSPHRASE"}, {passphrase}, log);
+    run({DANNAN_NODE_BINARY, "--cluster-state", state, "--init-custody", "--cluster-custody-passphrase-env", "DANNAN_CUSTODY_PASSPHRASE"}, {passphrase}, log);
+    const auto shown = run({DANNAN_NODE_BINARY, "--cluster-state", state, "--show-identity", "--cluster-custody-passphrase-env", "DANNAN_CUSTODY_PASSPHRASE"},
+                           {passphrase}, log);
     ids[node] = field(shown, "id");
     ASSERT_FALSE(ids[node].empty()) << shown;
     const auto pem = run({DANNAN_CA_BINARY, "issue", "--dir", (authority.path() / "ca").string(), "--passphrase-env", "DANNAN_CUSTODY_PASSPHRASE", "--node",
