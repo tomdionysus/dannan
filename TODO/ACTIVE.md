@@ -39,7 +39,13 @@ started from are never read for direction or edited.
    - Reads into a caller's span are already `storage::File::read_at(offset, span)`.
    - A pool of extent-sized buffers under Context::budget(): not now; only if a second project
      needs it after Dagda measures the single-buffer paths.
-3. **0.11.0:**
+3. **Defect, found 2026-11-22 (level 0 hunts in hosted x86-64 ASan):** a starting node dials
+   a peer's CONTROL lane twice (the test logs show two "outbound ... lane=control" per node).
+   Both ends keep the same one of the pair, but while one end retires the loser the other can
+   be left a moment with no route, so a call then finds "no relay" or "the relay has no session
+   with the target". Find why the dials are not one (by endpoint and by id, say), prove it with
+   a test, and make it one. The move-up test waits its first echo out meanwhile.
+4. **0.11.0:**
    - the stream carrier (feature/stream-carrier, for Lir): its memory-pipe write test fails, and a
      run ended in a bus error;
    - item 6 (feature/clock-rules), its fixes re-gated;
