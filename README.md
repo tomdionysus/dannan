@@ -136,8 +136,8 @@ the file, in the same shape, wins over the file, and each option has a
 environment. This is `dannan::config` (`dannan/config/config.h`), the one
 settings reader every node binary in the stack shares;
 [`docs/config.md`](docs/config.md) has its layers and the naming rule every
-binary follows, and [`docs/running.md`](docs/running.md) the settings every node
-binary's unit carries, such as the allocator's.
+binary follows, and [`docs/running.md`](docs/running.md) what bounds a node's
+memory.
 
 ### Run a cluster on certificates
 
