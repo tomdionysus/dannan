@@ -80,6 +80,18 @@ started from are never read for direction or edited.
    - Where it passed: under ASan on a build node, under TSan, and in every other job.
    - 0.10.2 touches no relay or circuit code.
    - Find the mechanism, test first, before calling it timing.
+   - Done so far, 2026-11-22:
+     - not reproduced in 90 ASan runs on a build node, idle, pinned to one core, and two
+       copies sharing one core;
+     - on GitHub the transfer ended in about 3 s and the circuit then held for the whole 20 s;
+       on a build node the test takes 350 ms.
+   - Ruled out by reading the code:
+     - a held close is re-looked at every finish_wait (watch_close);
+     - sweep() needs a CONTROL route gone, and the test keeps it;
+     - a session that closes tells every in-flight and queued chunk "not sent" (abandon), so a
+       leg cannot stick at its pipeline limit that way.
+   - f2b6608 makes a failure print every node's level 0 counters, its circuits and the
+     transfer's outcome. The next failure names the way out that was not taken.
 4. **Raise with the maintainer:** `found()` gives each slot its own deadline, counted from when that
    slot's run starts, so with its node gone a founding's outcome takes a deadline per window of 16
    slots.
