@@ -60,6 +60,10 @@ class BufferPool {
   void detach();
 
   BufferPoolStats stats() const;
+  // The most it holds, and the least size it keeps (0.11.1; for a host sizing its own windows to
+  // fit, as Dagda's repair does). Inline: no symbol, so a patch's ABI is unchanged.
+  size_t bound() const { return _bound; }
+  size_t floor() const { return _floor; }
 
  private:
   struct Held {

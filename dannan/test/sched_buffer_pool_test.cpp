@@ -28,6 +28,14 @@ Bytes filled(size_t n) {
   return out;
 }
 
+// A host sizes its own windows to fit inside the pool (Dagda's repair, 0.11.1), so it reads the
+// pool's bound and floor rather than restating the node's defaults.
+TEST(BufferPool, ItsBoundAndFloorAreReadable) {
+  const BufferPool pool(64 * mib, mib);
+  EXPECT_EQ(pool.bound(), 64 * mib);
+  EXPECT_EQ(pool.floor(), mib);
+}
+
 TEST(BufferPool, ABufferGivenBackIsTakenAgain) {
   BufferPool pool(64 * mib, mib);
   auto first = pool.take(16 * mib);

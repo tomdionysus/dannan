@@ -20,6 +20,10 @@ cancelled, one cancelled while partly written, and a reply or notification a clo
 would not send. Each 16 MiB one stayed in a glibc arena, about one a round in Dagda's repair
 case (its trace of 0.11.0). They all go back to the pool now.
 
+Added: `sched::BufferPool::bound()` and `floor()`, inline, so a host sizes its own windows to
+fit inside the node's pool (`Context::buffers()`): Dagda keeps its repair window under the
+bound, so what it gives back is kept, not freed.
+
 Adopting 0.11.1: open a channel with `Delivery::ordered` where messages from one origin must
 arrive in the order published and a lost one may be lost; a simulation of a live session sets
 `faults.in_order`.
