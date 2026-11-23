@@ -3,6 +3,27 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
+## 0.11.1, 2026-11-23: an ordered channel delivery; dropped payloads back to the pool
+
+A patch; the ABI is 0.11.0's (abidiff: 0 removed, 0 changed, 0 added). What shipped is in
+CHANGELOG.md. Each change was run red then green on the build cluster.
+- Lir: `Delivery::ordered`, at most once and in order per origin, a late message dropped (MQTT
+  5.0 ordered QoS 0). Red with the receiver treating it as notify: the late message delivered
+  (1, 3, 4, 2, 5) and the simulation's deliveries out of order. `NetworkFaults::in_order` for a
+  simulated session's order; off, every seed replays as before.
+- Dagda's memory: every payload the outbound queue or a closed session drops goes back to the
+  pool (Dagda's trace of 0.11.0: 16 MiB replies freed from OutboundQueue::push). Red with the old
+  queue and session: none of six dropped payloads kept. Dagda's repair case, 20 rounds: glibc's
+  holding beyond the pools from 232 MiB and rising to 57 MiB, level; with Dagda's repair window
+  under the pool's bound, 24 MiB, flat. `BufferPool::bound()` and `floor()`, inline, for that.
+
+The gate:
+- Hosted CI on f3c80aa, every job green, abi against 0.11.0 included.
+- TSan on arm64 on the build cluster, on 03e4d7e (f3c80aa adds two inline getters and their
+  test, run under TSan in hosted CI): 1151 tests, one skipped as root, no reports.
+- fuzz: four targets, 60 s each, two at a time, all clean.
+- install-debs in a clean debian:trixie container: libdannan0.11 and libdannan-dev 0.11.1.
+
 ## 0.11.0, 2026-11-23: transfer buffers, node settings, streams, JSON and the clock rules
 
 A new minor; the ABI changes (libdannan0.11). What shipped is in CHANGELOG.md. Each fix and

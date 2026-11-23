@@ -46,8 +46,8 @@ Build-Depends: libdannan-dev (>= 0.11.0), libdannan-dev (<< 0.12~)
 Depends: ${shlibs:Depends}          # gives libdannan0.11 (>= 0.11.0)
 ```
 
-and in CMake `find_package(dannan 0.11.0 CONFIG REQUIRED)`, or with FetchContent
-`GIT_TAG 0.11.0`. A pin always names one full release, never a minor alone.
+and in CMake `find_package(dannan 0.11.1 CONFIG REQUIRED)`, or with FetchContent
+`GIT_TAG 0.11.1`. A pin always names one full release, never a minor alone.
 
 The promise starts at 0.6.0, under a SONAME no earlier release used. 0.5.0 to
 0.5.5 were all `libdannan.so.0.5`, yet 0.5.4 changed their ABI: against 0.5.3 it

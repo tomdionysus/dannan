@@ -45,7 +45,7 @@ release keeps the ABI, so any later patch of the same minor is accepted and
 loads:
 
 ```cmake
-find_package(dannan 0.11.0 CONFIG REQUIRED)
+find_package(dannan 0.11.1 CONFIG REQUIRED)
 target_link_libraries(my_system PRIVATE dannan::dannan)
 ```
 
