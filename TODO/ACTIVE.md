@@ -9,7 +9,8 @@ direction or edited.
 
 ## Resume here (2026-11-23)
 
-**0.11.1 is the last release** (tag on main's merge fe57fa9; every release from 0.5.6 to 0.11.1 is on
+**0.12.0 is the last release** (2026-11-24: COMPLETED.md; item 1 below is done). Before it,
+**0.11.1** (tag on main's merge fe57fa9; every release from 0.5.6 to 0.11.1 is on
 the apt repository, checked against the live Packages files). Lir, Dagda and Lugh are moving to it;
 Mimir pins 0.10.1 until its 0.2.0. AthenaSIP becomes a direct consumer (the maintainer, 2026-11-23: a
 dagda:// datastore and a dannan:// event system, one Dannan per node).
