@@ -1,315 +1,80 @@
 # Dannan - Active Work
 
-Last updated: 2026-11-20 evening, at 0.10.0's release. Dannan is written in this repository as its own library, Macha's code at `00861dd` being the source of
-truth, and Macha is ported onto it (the maintainer, 2026-11-03: "here first"). `COMPLETED.md` is the record; move items across
-as they land, with what shipped and the gate counts.
-
-The design is the maintainer's, 2026-11-02, in [`2026-11-02-dannan-plan.md`](2026-11-02-dannan-plan.md) (the library; it wins
-where the two differ) and [`2026-11-02-macha-core-extraction-plan.md`](2026-11-02-macha-core-extraction-plan.md)
-(the seams, read as port steps). These copies are the masters (the maintainer, 2026-11-04). The Claude Docs the projects
-started from are never read for direction or edited.
-- The port's seams: [`2026-11-03-macha-extraction.md`](2026-11-03-macha-extraction.md), with a note at its head on
-  how to read it.
-- What Macha does that must survive:
-  [`2026-11-03-macha-function-inventory.md`](2026-11-03-macha-function-inventory.md).
-- The live cluster is live-a and live-b (Pi 5, Debian 13), on Macha 0.94.2 and Dannan 0.5.3.
+Last updated: 2026-11-23, after 0.11.1's release. `COMPLETED.md` is the record; move items across as
+they land, with what shipped and the gate counts. The Cluster Stack's items are numbered as in
+[`2026-11-20-stack-plan.md`](2026-11-20-stack-plan.md); the library's design is the maintainer's,
+2026-11-02, in [`2026-11-02-dannan-plan.md`](2026-11-02-dannan-plan.md). These copies are the
+masters (the maintainer, 2026-11-04); the Claude Docs the projects started from are never read for
+direction or edited.
 
 ## Resume here (2026-11-23)
 
-**0.11.1 is released** (COMPLETED.md): Lir's ordered delivery, Dagda's dropped payloads back to
-the pool, BufferPool::bound() and floor(). Lir and Dagda pin it. Items 1 to 4 below are done.
-Queued for 0.12.0 (each changes the ABI, so none can go in a patch):
-- `WallClock::unix_us()` (Kvasir, 2026-11-23, for MySQL's NOW(6) and DATETIME(6)): microseconds
-  since the Unix epoch, a virtual beside unix_ms() with a default of unix_ms() * 1000 so
-  existing clocks still build; SystemWallClock reads the system clock in microseconds; the
-  stepped test wall clock steps in microseconds. Not urgent: Kvasir uses unix_ms meanwhile.
-- The notifying TimeSource and deferred requests bounded in bytes per peer (4, below).
+**0.11.1 is the last release** (tag on main's merge fe57fa9; every release from 0.5.6 to 0.11.1 is on
+the apt repository, checked against the live Packages files). Lir, Dagda and Lugh are moving to it;
+Mimir pins 0.10.1 until its 0.2.0. AthenaSIP becomes a direct consumer (the maintainer, 2026-11-23: a
+dagda:// datastore and a dannan:// event system, one Dannan per node).
 
-The earlier plan, kept for its record (2026-11-20 evening): **0.10.0 is released**. In order:
-1. **0.10.1, a patch, ABI kept:** `agree::MemoryStore::each_held`, agreed with Mimir so it can drop
-   its own store:
-   `void each_held(Slot, const std::optional<Name>& after, const std::function<bool(const Name&, const AcceptorState&)>& visit) const;`
-   - the walk resumes strictly past `after`, by the name's bytes, whether or not that name is
-     still held;
-   - the visitor returns false to stop;
-   - the store's lock is held across the walk, so a visitor never calls back into the store;
-   - order is stable while nothing is kept;
-   - first test: a name removed between two pages is never skipped.
-   **The maintainer's rulings, 2026-11-22:** no patch release now: everything waits for 0.11.0
-   ("no pointless patch release"). Every fix is proven by a test that fails without it every
-   time: a run of thousands, or dozens, is no proof ("rethink this"). The doubled CONTROL dial
-   (3, below) is fixed before the release. Boost's template instances stay out of the ABI
-   comparison, as the standard library's are.
-2. **In 0.11.0, not a patch (Dagda, 2026-11-22):** in-place AES-GCM, so
-   Dagda serves and stores an object in one buffer (its live-a memory: glibc holding freed
-   16 MiB transfer buffers; the maintainer ruled out an allocator setting). Done on
-   feature/gcm-in-place (7861e10), red against stubs then green.
-   - `void aes_gcm_open_into(key, nonce, tag, ciphertext, std::span<uint8_t> out, associated = {})`:
-     out the size of ciphertext, may be exactly it; partial overlap refused; a bad tag throws as
-     aes_gcm_open does and zeroes out.
-   - `struct GcmSeal { nonce; tag; }`; `GcmSeal aes_gcm_seal_into(key, plaintext, out, associated = {})`
-     and the overload under a given nonce; out the size of plaintext, may be exactly it.
-   - Tests first: in and out of place agree with aes_gcm_seal and aes_gcm_open byte for byte; a
-     bad tag zeroes out; a size mismatch or partial overlap is refused.
-   - Reads into a caller's span are already `storage::File::read_at(offset, span)`.
-   - A pool of extent-sized buffers under Context::budget(): not now; only if a second project
-     needs it after Dagda measures the single-buffer paths.
-3. **Defect, found 2026-11-22 (level 0 hunts in hosted x86-64 ASan):** a starting node dials
-   a peer's CONTROL lane twice (the test logs show two "outbound ... lane=control" per node).
-   Both ends keep the same one of the pair, but while one end retires the loser the other can
-   be left a moment with no route, so a call then finds "no relay" or "the relay has no session
-   with the target". Find why the dials are not one (by endpoint and by id, say), prove it with
-   a test, and make it one. The move-up test waits its first echo out meanwhile; that wait goes
-   when the dial is one.
-   - Done (develop 719933d): a crossed punch is tried again from fresh ports, proven by
-     LevelZero.ACrossedPunchTriesAgainWithFreshPorts through PathsConfig::punch_target_hook.
-     Its cause, caught by strace in hosted x86-64 (2026-11-22): a punch's port is free between
-     its observation and its open, and 5 ms after one observation closed, the other node's
-     bind(0) was given the same port (39421); both opens then bound it and one connected to
-     itself. Only nodes sharing a host meet it. Holding the port from observation to open
-     (a placeholder socket, tried on feature/punch-flakes at 4b98d1b and taken back) would end
-     it; the maintainer ruled the retry enough.
-4. **0.11.0** (the maintainer, 2026-11-22, on its scope). On develop: the stream carrier, item 6,
-   JSON, in-place AES-GCM, exact-size reassembly, the relay, punch and dial fixes. To do:
-   - The shared node settings (asked by Lir, Kvasir, Louhi, Mimir; the maintainer: yes, in
-     0.11.0, under cluster.*): dannan/config/node_settings.h, add_node_settings(Reader&,
-     prefix) and node_config(Settings), keys cluster.key, .bootstrap, .state, .name, .domain,
-     .relay, .listen.{address,port,advertise,inbound}, .heartbeat_ms, .path_class, .punch_ms,
-     .reprobe_ms, .custody.{passphrase_env,credential,credentials_dir},
-     .identity.{ca,certificate,revocations,no_cluster_key}. node_config requires nothing
-     present (a caller's rule, Mimir's cluster of one), refuses only inconsistent pairs.
-     dannan-node uses it, with DANNAN_ variables; its own keys stay its own.
-   - (a) the API agreed with Dagda (below); (b) ship the TSan suppressions; (c)
-     NodeConfig::liveness_time. Deferred to 0.12.0: the notifying TimeSource and deferred
-     requests bounded in bytes per peer.
-   - ChildProcess::fill reads once when a deadline under a millisecond is not yet past (Lir).
-   - A pool of large transfer buffers (Dagda, with numbers; the maintainer: yes, in 0.11.0):
-     after exact-size reassembly glibc still held 400-620 MiB against 6 MiB in use on Dagda's
-     repair case, freed 16 MiB blocks raising glibc's mmap threshold so later ones land in the
-     per-thread arenas. sched::BufferPool, take(n) and give(Bytes), bounded in bytes held (default
-     256 MiB, floor 1 MiB), charged to the retained-memory ledger, one per node as
-     Context::buffers(); Dannan's frame opener and reassembly take from it, a payload goes back
-     when its handler returns. Gate: Dagda's case, glibc's holding near the pool's bound across
-     rounds.
-   - the stream carrier (feature/stream-carrier, for Lir): its memory-pipe write test fails, and a
-     run ended in a bus error;
-   - item 6 (feature/clock-rules), its fixes re-gated;
-   - JSON, the Boost.JSON half of item 24, moved here from the second minor (the maintainer,
-     2026-11-22, in Lir's session; HTTP stays in 0.12.0). Boost.JSON becomes a Dannan
-     dependency, its compiled unit carried once in Dannan. Lir builds objects of strings, int64
-     and uint64 kept distinct, booleans and arrays, serialised to bytes; it parses nothing yet
-     (later: HTTP publish bodies, its rules engine).
-   - then the plan's second minor (2026-11-20-stack-plan.md).
-   - Agreed with Dagda for its matching minor:
-     - `Outcome<T>::failure(Fault, message, T evidence)` keeps the evidence beside the fault;
-     - `Fault::cancelled`, added last;
-     - timed_out's text: "the outcome is unknown, and a write may yet land";
-     - Dagda carries AckLevel's four names, plus `durable` as its own.
-   - Whether a store may offer only some levels is Kvasir's ruling (Dagda asked).
-   - dannan-node follows docs/config.md:
-     - its flags are made from their keys, so `--port` becomes `--listen-port`;
-     - its variables take the project's prefix, so `DANNAN_NODE_...` becomes `DANNAN_...`, and
-       the README's example changes with them;
-     - it takes `log.level` and `log.format`, the stack's shared keys.
-     The flags are part of its interface, so the change waits for the minor.
-   - Ship `dannan/test/tsan-suppressions.txt` (Dagda's ask; Asio's executor count, a false
-     positive every TSan build on Asio can hit). Steps:
-     - libdannan-dev installs it;
-     - the CMake package sets `DANNAN_TSAN_SUPPRESSIONS` to its path, installed or fetched;
-     - docs/building.md tells every TSan run to pass it, so the stack keeps one list.
-   - A TimeSource that tells its waiters when it is stepped, so a stepped or frozen clock arms
-     no timer until it moves. Today every wait on it re-arms each `wake_within` (5 ms by
-     default), and each pending call's watchdog is one such wait. With thousands of calls and a
-     frozen clock, that churn starved a shared io_context under TSan (Dagda's
-     PromptReplication stalls, 2026-11-20). Confirmed as starvation, not loss: a stalled run
-     left going counted 1480 refusals at 150 s and 1789 at 300 s. Dagda wraps its clocks at
-     250 ms meanwhile. In the next release, before that: `test::SteppedTime(poll = 5ms)` takes
-     its wake_within poll as an optional constructor argument, so a fixture with many waiters
-     can poll coarsely. Dagda wraps it meanwhile.
-   - Deferred requests bounded in bytes. This is the likely Dannan side of Macha's live-a OOM after
-     the cutover, 2026-11-21 and 2026-11-22: about 6 GB against a 768 MB budget, right after Dagda
-     DATA device-pressure onsets, with live-b repairing.
-     - Today `ServerLimits::max_deferred` is a count (4096 per work class, every peer together),
-       and a deferred Answer keeps only its request's bytes charged.
-     - A deferring handler that holds a reply-sized buffer while it waits is then charged nothing,
-       up to 4096 × the reply: 16 GiB at 4 MiB extents.
-     - The change: charge a deferred request its expected reply (or bound max_deferred in bytes
-       per class), and give each peer a share of a class's allowance.
-     - `ServerLimits` is in NodeConfig's layout, so it is a minor.
-     - Not live-a's cause, as the code stands: neither Dagda nor Macha binds a deferred handler,
-       and the node's ledger is enforced on its server and client. The gap is real for any
-       future deferring handler, so it stays planned.
-   - Dagda's ask: `NodeConfig::liveness_time`, a TimeSource for liveness probes and call
-     watchdogs that defaults to `time`. Today a test stepping a node's clock by more than
-     dead_after/3 also gives up its links (client.cpp's await_ping).
-3. **Investigate, before 0.11.0's gate:** LevelZero.AChunkLostOnTheWayToTheFarEndEndsItWithinTheBound
-   failed once, in hosted CI's x86-64 ASan job on 0.10.2's release commit (run 44842230741).
-   - What failed: after the hub severed its data route to B mid-transfer, its data circuits did not
-     reach 0 within 20 s, and relay_ends_lost stayed 0.
-   - Where it passed: under ASan on a build node, under TSan, and in every other job.
-   - 0.10.2 touches no relay or circuit code.
-   - Find the mechanism, test first, before calling it timing.
-   - Done so far, 2026-11-22:
-     - not reproduced in 90 ASan runs on a build node, idle, pinned to one core, and two
-       copies sharing one core;
-     - on GitHub the transfer ended in about 3 s and the circuit then held for the whole 20 s;
-       on a build node the test takes 350 ms.
-   - Ruled out by reading the code:
-     - a held close is re-looked at every finish_wait (watch_close);
-     - sweep() needs a CONTROL route gone, and the test keeps it;
-     - a session that closes tells every in-flight and queued chunk "not sent" (abandon), so a
-       leg cannot stick at its pipeline limit that way.
-   - f2b6608 makes a failure print every node's level 0 counters, its circuits and the
-     transfer's outcome. The next failure names the way out that was not taken.
-4. **Raise with the maintainer:** `found()` gives each slot its own deadline, counted from when that
-   slot's run starts, so with its node gone a founding's outcome takes a deadline per window of 16
-   slots.
-4. **Dependencies:** read Boost's, OpenSSL's and yaml-cpp's newer releases against Dannan's code
-   (the maintainer, 2026-11-20).
+Shipped since the stack plan, so no longer to do: items 1, 6, 9, 12, 13, 15, 16, 17 (the fuzz
+export, the stream carrier), 19, 28, 24's JSON half, the shared node settings under cluster.*, the
+transfer-buffer pool, in-place AES-GCM, liveness_time, SteppedTime(poll) (0.10.2), the TSan
+suppressions, Delivery::ordered (0.11.1).
 
-**Earlier on 2026-11-20: planning the Cluster Stack's needs; code held.** the maintainer, 2026-11-20, after the duplication and
-special-roles audits: "You should start planning now"; on starting code, "Keep holding". The
-plan is [`2026-11-20-stack-plan.md`](2026-11-20-stack-plan.md): 31 items in three minors, every
-consumer's answer (what it uses today, what it needs, the proof), and the shapes reconciled.
-The placements were settled through the coordinating session, which keeps the stack's
-placement record. the maintainer's rulings that day: HTTP
-and JSON into Dannan, register order by hlc, a DNS responder in Dannan, no automatic removal of
-absent nodes, the lower project keeps what two need, Macha injects a logger and the Context (no
-holders), no single-node special cases, squash commits onto develop, sanitizers at a feature's
-end. AthenaSIP is not part of the group. Next: draw the open shapes (paged transfer and
-catch-up first), send each consumer its shapes to confirm, and start code only at the maintainer's word.
+**The order** (the coordinator's survey, 2026-11-23, of who waits on what; most-waited first,
+then what the next one builds on). Each minor changes the ABI; within one, only additions.
 
-**Before 2026-11-20, the one job was the Macha move** (kept below for the record).
-the maintainer, 2026-11-18, to Macha, Dannan and Dagda: "work together and focus on the Macha move to
-Dagda. Work on nothing else until this is done. Work autonomously until you're ready to do the cutover on live-a
-and live-b." the maintainer, 2026-11-19, to Macha: do not begin the cutover; get ready for it. Dannan's part has three
-pieces:
-- answer Macha Server and Dagda;
-- take first any port failure whose cause is in Dannan: prove its mechanism, write the failing test first, then fix;
-- start nothing else, 0.10.0 included.
+1. **0.12.0, target 2026-11-28:**
+   - Readiness and health (7): Lugh, Louhi, Macha, Kvasir, Dagda's store health; HTTP's health
+     route and the node-program helper's drain build on it, so it goes first.
+   - Keyed limits (10) and the Argon2id credential (11): Lugh, Mimir, Kvasir, Macha, Louhi's
+     password sign-in. Small and independent.
+   - The node-program helper (14): Lugh P8.1, Mimir, Kvasir, Louhi; over the node settings and 7.
+   - The process runner (23): Louhi, Macha; from Louhi's command.h.
+   - Small, riding with it: the notifying TimeSource (Dagda's TSan stalls); deferred requests
+     bounded in bytes per peer (Macha); `WallClock::unix_us()` with a default of unix_ms() * 1000
+     and a stepped wall clock in microseconds (Kvasir's NOW(6)); a `prepare(i, node)` hook in
+     SimNodes::start before each node starts, so a hosted system registers its routes (Mimir,
+     2026-11-23); the hybrid clock's ceiling written only for stamps issued (the approved 0.9.3
+     fix, never shipped: `keep_ahead()` still follows the wall, hlc.cpp:159).
+2. **0.13.0, target 2026-12-05:**
+   - The HTTP core (24): Lir, Louhi, Kvasir and Mimir's dashboards, and Lugh; the health route
+     behind 7.
+   - The register layer (2): Lugh P8.6, Mimir, Louhi, Kvasir.
+   - Slow peers (8): Lir, Dagda's joiner survey.
+3. **0.14.0, target mid-December:** atomic commit across replica sets (26): Kvasir step 3 and
+   every multi-key write in Mimir. Its intents live in register values, so it needs 2. Its design
+   (Mimir's proposal with Kvasir's corrections) is drawn and sent to both during 0.13.0, so code
+   starts the day 2 lands; earlier than the plan's "after 3".
+4. **Then:** DNS (25: Lir, Kvasir, Lugh, Mimir), selective channel interest (31: Lir), and the
+   stack plan's third minor (3, 4, 5, 22). After those, the earlier list, unless a waiting
+   project says one blocks it: DTLS and UDP for `dannan::listen`; the peer-witnessed high-water
+   mark (it also covers the hybrid clock's restore without custody); loader promotion at the peer
+   (its design to Macha first); and Kvasir's sync-free current read (needs its simulator run of
+   crashes between the read's promise and a lower-ballot accept).
 
-**On a fresh start:** check the claim board and `ListAgents` for peers' messages. Read `../macha/TODO/ACTIVE.md`'s
-"Resume here" and `../macha/TODO/2026-11-18-cutover-runbook.md` for where the move stands. Nothing of Dannan's is in
-flight. Once the cutover is done, the next Dannan work is 0.9.3 (below); nothing else starts first.
+The split of the plan's second minor into 0.12.0 and 0.13.0 is a recommendation to the maintainer
+(sooner pins for the most-waited items, at one more repin for each consumer); the order of work is
+the same either way.
 
-**Where the move stands (2026-11-19, about 03:30Z; no news from Macha or Dagda since).**
-- **Macha's port is green.** `../macha` `port/dannan-dagda` at `fe74e9b`, the 0.95.0 release commit, pushed and
-  untagged: 545 of 545 on Dannan 0.9.2 with Dagda `053ee6e`. No open failure has a Dannan cause.
-- **Dagda 0.3.0**, the read fix included, is in its release gate on node-b and node-c, against Dannan 0.9.2.
-- **Macha's remaining steps toward readiness** (its "Resume here"):
-  - the Dagda 0.3.0 tag;
-  - the deploy tarball;
-  - the two-version smoke test (Macha 0.94.2 on Dannan 0.5.3 against 0.95.0 on 0.9.2, on two build Pis);
-  - then the maintainer's decisions, each asked with a recommendation.
-- **The cutover deploys Dannan 0.9.2** (Macha's decision, 2026-11-18). 0.8.5 has the ledger use-after-free
-  (`79dfa2e`) and the unsynced new directory (`ef3b212`).
-- **The mixed-version window, answered and checked** (`COMPLETED.md`, 2026-11-19).
-  - Dannan 0.5.3 and 0.9.2 form one cluster when live-b keeps the cluster key, custody or not.
-  - With a certificate alone they are two islands.
-  - Lane and class rules are checked on replies too, at both ends. A refusal ends the session, which bears on five
-    store types whose rules differ between Macha 0.94.2 and Dagda.
-  - Macha's smoke test covers what node-a's check did not: telemetry contents, advert pushes, and Macha's and
-    Dagda's own types.
-- **Dagda's own directory-sync gap** (directories it makes before `durable_replace_file`): Dagda's, to fix with its
-  move onto `storage::FileSystem`.
-- **Custody, as given to Macha.** dannan-custody(1) is the procedure.
-  - With the node stopped, run `dannan-custody init --state <state> --credential dannan-root`, piped straight into
-    `systemd-creds encrypt --name=dannan-root - /etc/credstore.encrypted/dannan-root`. Init keeps the existing
-    `node-id`.
-  - The unit gets `LoadCredentialEncrypted=dannan-root`, and `macha.yaml`'s `custody.credential` names
-    `dannan-root`.
-  - Prove the seal with `systemd-run --wait --pipe -p LoadCredentialEncrypted=dannan-root dannan-custody show ...`.
-  - The Pis have no TPM. The off-node backup is three files kept together: the sealed credential, that host's
-    `/var/lib/systemd/credential.secret`, and `identity/custody`. The root is never kept in clear (an earlier
-    message saying to `tee` it was corrected the same day).
-- **`dannan-import-macha --dry-run <state>`** is only a check at this cutover. The live nodes have run Dannan's
-  transport since Macha 0.94.0 (Dannan 0.5.3).
-  - Expect "already" or "absent" for all three files. An "imported" comes to Dannan.
-  - The formats (`DNNMEM01`, `DNNINB01`, `DNNTEL01`) are unchanged from 0.5.3 to 0.9.2.
-- **The state files Dannan writes under `state_path`**, as given to Macha:
-  - `.dannan.lock`, `node-id`;
-  - `membership/known-nodes.bin`, `membership/agreed-nodes.bin`;
-  - `telemetry/last-known.bin`, `connectivity/inbound.bin`, `observation/`;
-  - `identity/custody`, `identity/counters` (with custody), `identity/revocations` (with certificates);
-  - `clock/hlc-ceiling` (since 0.9.0, only without custody).
+**Outcomes of earlier open items:**
+- LevelZero.AChunkLostOnTheWayToTheFarEndEndsItWithinTheBound (hosted ASan, 0.10.2): found and
+  fixed in 0.11.0. A circuit end's close sent while its session to the relay was gone was dropped;
+  it now goes by CONTROL (CHANGELOG 0.11.0, "Fixed").
+- `found()`'s deadline per slot (with its node gone, a founding's outcome takes one deadline per
+  window of 16 slots): still to be put to the maintainer, with the recommendation that one deadline
+  bounds the whole founding.
+- Still open, unseen since: LevelZero.AChunkLostWithTheSendersSessionEndsTheCircuitWithinTheBound
+  (once, CI run 43900791401) and ChildProcess.ChildrenStartOnManyThreadsAtOnce's TSan hang (once,
+  CI run 44116803795). Each is pinned before anything is changed; the process runner (23) replaces
+  the fixture the second runs on.
+- Two Dependabot pull requests (actions/checkout 4 to 7, codecov-action 5 to 7), held.
 
-**Dannan's own state.**
-- **0.9.2 is the last release** (`main` and tag at `36d6ded`). `develop` holds only records past it; its last pushed
-  commit, `6eaa5fc`, is green in CI (44534666674) and CodeQL. The plan commits after it are local until the maintainer says
-  push. Nothing is in flight.
-- **Worktrees.** `build/wt-feature` is on `develop`, and `build/wt-main` on `main`. The main checkout sits on the
-  merged `feature/advert-push` because `develop` is checked out in the worktree. Every local `feature/*` branch is
-  merged into `develop`.
-- **Every release from 0.5.6 to 0.9.2 is on the apt repository** (the maintainer published them, 2026-11-19). Each version has
-  its 5 packages on arm64 and amd64, all 120 files download, and `InRelease` verifies. the maintainer runs `publish.sh` and the
-  upload himself; the rsync never has `--delete` (the maintainer, 2026-11-19; `../tomcully-apt/README` corrected to match).
-  Check a publish against the live `dists/trixie/main/binary-<arch>/Packages` and `reprepro list trixie`.
-- Lir is on 0.9.2 (361 of 361).
+**Boost:** Dannan builds against Debian 13's Boost 1.83 (the floor, `DANNAN_BOOST_MINIMUM`), and its
+packages are built with it. `dannan/json/json.h` is public and is Boost.JSON's own types: a consumer
+uses the Boost headers Dannan was built with and links Boost.JSON's compiled part only from
+libdannan, never its own copy (told to AthenaSIP, 2026-11-23).
 
-**Gates.**
-- The last full suite, on node-a for 0.9.2, ran 942 tests: 941 passed and 1 skipped (skipped when run as root).
-- **No macOS build or test without asking the maintainer first** (the maintainer, 2026-11-17, the macOS gate included; 0.9.2's gate was
-  his one exception). If he allows one, the setup is in `COMPLETED.md`'s 0.9.x entries: `build/macos` in the main
-  checkout, configured against `build/wt-feature`.
-- **Sanitizers run locally only for a release or a named bug.**
-- **Builds go to the Pi cluster.** The Pis were wiped to bare OS on 2026-11-18 and rebuilt. Dannan has no tree on
-  them now: `/root/dannan-vlp` is gone, and its logs are in `build/pi-logs-2026-11-18/`. Check that a tool is
-  present before relying on it. node-a, node-b and node-c have 16 GB; node-d has 4 GB, so sanitizer builds
-  there use -j1. All four run a 4K-page 48-bit kernel, so ASan, UBSan and TSan work on all of them. node-a has
-  ninja since the rebuild. Claim cores first and release them after. Copy the tree with
-  `git ls-files -z --cached --others --exclude-standard | tar ... | ssh root@<ip> 'tar -xm -C /root/dannan-vlp'`.
-  `-m` matters: without it a file keeps its Mac edit time, and one shipped after a build can be
-  older than the objects built from it, so ninja keeps a stale object (2026-11-17: a test object
-  with the old `NodeConfig` beside a library with the new one, a segfault).
-
-**After the cutover: 0.9.3, the hybrid clock's ceiling written only for stamps issued** (the maintainer, 2026-11-19: "after
-the cutover"). Lir's cluster found every node rewriting the ceiling once a second, idle or not: about 5 to 6 disk
-writes a second, each a temp file, an fsync, a rename and a directory fsync. With custody it is `identity/counters`
-at the same rate.
-- The cause: `keep_ahead()` (`hlc.cpp:131`, from `node.cpp:1504`) raises the ceiling to max(last issued, wall) + 2 s.
-  The wall moves 1 s each pass, so every pass writes. Dannan issues no stamps itself, and neither Macha nor Dagda
-  uses the clock (no hits in either), so an idle node pays the write to protect stamps nobody issued.
-- The fix, as put to the maintainer:
-  - the ceiling follows the last stamp issued, never the wall, so an idle node writes nothing;
-  - the first stamp after an idle spell raises it once on the write path, counted on Status as `raises_off_loop`;
-  - while stamping, it is raised to issued + 30 s when within 2 s, one write each 28 s; a crash restart may then
-    start up to 30 s ahead of the wall, half the default `max_ahead`;
-  - a clean stop writes the ceiling down to the last stamp, so a planned restart starts at the wall;
-  - the directory fsync stays, because the replace is by rename.
-  - the constructor's write at start goes too: a node that never stamps never touches the file.
-- The design's revision is in `2026-11-15-hlc-design.md`, "Revised (2026-11-19)". The contract text in `hlc.h`
-  (`HlcClock`, `keep_ahead`, `reserve`) and `context.h`'s `hlc()` describe the 0.9.2 behaviour and change with the
-  code.
-- Tests first, from the design: an idle node writes nothing over a stepped minute; the restart rules hold; a crash
-  just after a raise starts above every stamp; a clean stop's lowered ceiling is still past every stamp issued.
-- The change is invisible to Macha: it keeps the ABI, and the state file format is unchanged. Lir and the maintainer have the
-  plan. Lir repins once the maintainer approves the rollout. Its time cost is about a day.
-
-**Waiting on the maintainer:**
-- the word for the cutover on live-a and live-b, once Macha and Dagda are ready (asked by Macha).
-
-**Waiting on others:**
-- Macha Server: its two-version smoke test, and any failure with a Dannan cause.
-- Dagda: 0.3.0's gate and tag; after the move, its disk paths through `storage::FileSystem`. Real Dagda then runs
-  above `test::sim::Disk`, which is also step 3's part 6, `SimDisk`.
-- Miach: whether it builds the adapter it asked about (answered 2026-11-18; not part of the one job).
-
-**A hang, open:** `ChildProcess.ChildrenStartOnManyThreadsAtOnce` (`fixtures_test.cpp:205`) hung
-TSan x86-64 in CI run 44116803795 (`feature/sim-workers`, `eb2342c`) from 15:44 until the job's
-60-minute limit; every other job was green. Each child has a 20 s deadline, so something waited
-without one; the likely mechanism, unproven, is a child forked from the threaded test process
-stuck in TSan's runtime before its exec, with a destructor's wait on it unbounded. First seen;
-the test and the reaper have passed TSan in CI since 0.6.0. Reproduce before changing anything.
-
-**A flake recurred, open:** `LevelZero.AChunkLostWithTheSendersSessionEndsTheCircuitWithinTheBound`
-(`reach_paths_test.cpp:592`).
-- It failed in develop's CI run 43900791401 (asan arm64, on `ba153ea`, a commit that touched only the plan), at
-  lines 604, 605 and 607. After A closed its data route to the hub, the hub's circuit did not end within 20 s, B did
-  not leave, and A counted no close with an unknown count.
-- The next run, on `6ab20b8`, was green.
-- It was seen once before, locally under clang at 0.5.x, and never in CI since.
-- Not investigated yet. It is to be pinned (did the close reach a live route, and did the transfer end before it?)
-  before anything is changed.
+**Dependencies:** read Boost's, OpenSSL's and yaml-cpp's newer releases against Dannan's code (the
+maintainer, 2026-11-20); AthenaSIP's Boost 1.89 is the first case.
 
 **Release mechanics learned 2026-11-16:**
 - The `.deb`s CI builds before the tag exists come out versioned `<last>+gitN`. After pushing the tag, re-run
@@ -317,50 +82,11 @@ the test and the reaper have passed TSan in CI since 0.6.0. Reproduce before cha
   download that attempt's artifacts by id.
 - A release's local gate is release, ASan and TSan on a Pi; the macOS gate only if the maintainer allows it.
 
-**0.10.0, after the move to Dagda and not before** (0.9.0's scope moved these out: no stack project needed them,
-`COMPLETED.md`). The wire additions are designed and reviewed first.
-1. DTLS and UDP for `dannan::listen`.
-2. The peer-witnessed high-water mark. It also covers the hybrid clock's restore without custody (the maintainer's ruling: see
-   `2026-11-15-hlc-design.md`, "As built").
-3. Loader promotion at the peer. Its design goes to Macha first.
-4. Atomic commit across replica sets. Mimir needs it for ruling 22's multi-slot commands now that a change names one
-   slot. Mimir's proposal is `../mimir/TODO/2026-11-15-cross-slot-commit-proposal.md` (Proposed, not yet put to the maintainer):
-   - `transact(space, parts, f, deadline)`, with intents inside register values and one transaction-record register
-     as the commit point;
-   - older wins;
-   - three questions for Dannan at its end.
-
-   Kvasir's corrections (2026-11-16):
-   - commits of known values (its buffered SQL writes);
-   - intents at the hosted system's granularity, laid, found and resolved by the hosted system, with Dannan owning
-     the record, the decide and the finishing;
-   - a pluggable conflict rule (the maintainer ruled that a decided or replicated commit wins over an undecided one);
-   - a commit stamp by the hybrid clock at decide.
-
-   A change naming several names in one slot also goes through it (Mimir and Kvasir agreed); until then `change()`
-   takes one name.
-5. **Export the fuzz harness** (Kvasir's ask, 2026-11-15; Mimir wants it too), so hosted systems link it rather than
-   copy it (the stack's rule 3): `fuzz/fuzz.h`'s Target and Registration, `targets()`, the replay driver, and
-   `fuzz_smoke_test.cpp`'s mutate and seeds-then-mutations-then-noise loop as a callable, installed header-only with
-   the test fixtures. A hosted system then runs its targets in its own test binary with no clang, which no build Pi
-   has.
-
-**Later still** (asked, agreed, deliberately later):
-- A sync-free current read (Kvasir): a read-only prepare that is not kept, returning only when every answer matches,
-  and otherwise starting again with a kept prepare. Option (b) as first stated is unsafe through its fallback accept.
-  It needs Kvasir's simulator run: crashes between the read's promise and a lower-ballot accept.
-
 **Standing, from the maintainer's rulings (2026-11-15):**
 - Anything that can use agreement waits for it: no stack project builds its own consensus meanwhile.
 - Lugh's TOTP, recovery codes and key rotation use agreement registers on 0.9.0 (relayed by Lugh).
 - The `ack_level` names are standard: ephemeral, persisted, decided, replicated (relayed by Kvasir).
 - The sim harness is built once, in Dannan (relayed by Kvasir).
-
-**Peers' open threads:**
-- Mimir and Kvasir accepted the final `AcceptorStore` and `change_deltas` (2026-11-16), and 0.9.0 is tagged for them.
-- Lir is on 0.9.2. Its NodeRecord TSan reports (0.8.3, 0.8.5) are attributed to the ledger double free fixed at
-  `79dfa2e`, and reopen only if one appears on a build with the fix (`COMPLETED.md`). It waits for 0.9.3's ceiling
-  fix.
 
 **Where things are built and tested** (the maintainer, 2026-11-14: "STOP all builds on the Mac now. Use the RPi cluster only."):
 - No builds or tests on the Mac without asking the maintainer first (2026-11-17, the macOS gate included). Editing, git, gh,
