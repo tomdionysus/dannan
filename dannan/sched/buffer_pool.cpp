@@ -46,17 +46,22 @@ void BufferPool::give(Bytes buffer) {
   const auto capacity = buffer.capacity();
   std::optional<RetainedMemoryLedger::Lease> lease;
   contract::Lock lock(_mutex);
-  // Freed as `buffer` goes, after the lock.
-  const auto freed = [&](uint64_t BufferPoolStats::* why) {
+  // Why it is freed, if it is: freed as `buffer` goes, after the lock.
+  uint64_t BufferPoolStats::* why = nullptr;
+  if (_detached) {
+    why = &BufferPoolStats::freed_detached;
+  } else if (capacity < _floor) {
+    why = &BufferPoolStats::freed_small;
+  } else if (_stats.held_bytes + capacity > _bound) {
+    why = &BufferPoolStats::freed_bound;
+  } else if (_ledger) {
+    lease = _ledger->try_acquire(WorkClass::speculative, MemoryOwner::transfer_buffers, capacity);
+    if (!lease) why = &BufferPoolStats::freed_ledger;
+  }
+  if (why) {
     ++_stats.freed;
     ++(_stats.*why);
-  };
-  if (_detached) return freed(&BufferPoolStats::freed_detached);
-  if (capacity < _floor) return freed(&BufferPoolStats::freed_small);
-  if (_stats.held_bytes + capacity > _bound) return freed(&BufferPoolStats::freed_bound);
-  if (_ledger) {
-    lease = _ledger->try_acquire(WorkClass::speculative, MemoryOwner::transfer_buffers, capacity);
-    if (!lease) return freed(&BufferPoolStats::freed_ledger);
+    return;
   }
   _held.emplace(capacity, Held{std::move(buffer), lease ? std::move(*lease) : RetainedMemoryLedger::Lease{}});
   _stats.held_bytes += capacity;
