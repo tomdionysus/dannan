@@ -43,267 +43,362 @@
 #include "dannan/status/thread_cpu.h"
 #include "dannan/supervise/supervised.h"
 
+/// @file
+/// Dannan's node and its configuration.
+
 namespace dannan {
 
+/// Everything a Node is built with. Every field has a working default but the state path and a key
+/// (or a certificate); config::node_config() makes one from the shared cluster.* settings.
 struct NodeConfig {
-  // State: the lock, the node id, the roster, telemetry, the inbound answer.
+  /// The node's state directory: the lock, the node id, the roster, telemetry, the inbound answer.
   std::filesystem::path state_path;
+  /// The cluster key every node shares (version 1 of the wire).
   identity::ClusterKey key;
+  /// The address to listen on.
   std::string listen_host = "0.0.0.0";
-  // What peers dial; the advertised endpoint may move with UPnP or the
-  // external address.
+  /// What peers dial; the advertised endpoint may move with UPnP or the external address.
   std::string advertise_host;
-  // Zero: any; the bound port is advertised.
+  /// The port to listen on. Zero: any, and the bound port is advertised.
   uint16_t port = 7437;
+  /// The node's failure domain: placement spreads copies across domains first. Empty: its host.
   std::string failure_domain;
+  /// A name for people; ids are what nodes go by.
   std::string node_name;
-  // Seeds, not masters: exchanged with every heartbeat.
+  /// Seeds, not masters: exchanged with every heartbeat.
   std::vector<net::Endpoint> bootstrap;
+  /// Whether the node accepts inbound connections: yes, no, or found out by dial-back.
   reach::Inbound inbound = reach::Inbound::automatic;
-  // The node's key custody (identity/key_custody.h), opened at start; it
-  // must have been made (KeyCustody::create). Nothing: no node key.
+  /// The node's key custody (identity/key_custody.h), opened at start; it must have been made
+  /// (KeyCustody::create). Nothing: no node key.
   std::optional<identity::KeySource> custody;
-  // Certificates (wire version 2, TODO/2026-11-04-identity.md): the
-  // cluster's CA and this node's certificate, issued over its custody key
-  // and naming its node id; the node then proves itself by certificate.
-  // With `use_cluster_key` too it also speaks version 1 with `key`, while a
-  // cluster moves; without, by certificate alone. Checked at construction.
+  /// The cluster's CA certificate (wire version 2). With certificate, the node proves itself by
+  /// certificate. Checked at construction.
   std::optional<identity::Certificate> ca_certificate;
+  /// This node's certificate, issued over its custody key and naming its node id.
   std::optional<identity::Certificate> certificate;
+  /// With certificates, whether the node also speaks version 1 with `key`, while a cluster moves;
+  /// false: by certificate alone.
   bool use_cluster_key = true;
-  // Whether this node forwards circuits for others (the relay capability).
+  /// Whether this node forwards circuits for others (the relay capability).
   bool relay = false;
-  // Level 0: a forced path class (tests, the compose bed); nothing:
-  // classified from what peers observe. How long both ends of a punch keep
-  // trying.
+  /// Level 0: a forced path class (tests, the compose bed). Nothing: classified from what peers
+  /// observe.
   std::optional<membership::PathClass> path_class;
+  /// How long both ends of a punch keep trying.
   std::chrono::milliseconds punch_window{3000};
-  // How often a relayed pair tries to move up to a punched path.
+  /// How often a relayed pair tries to move up to a punched path.
   std::chrono::milliseconds path_upgrade_every{60000};
-  // As a relay: DATA circuits at once (CONTROL circuits are unconditional).
+  /// As a relay: DATA circuits at once (CONTROL circuits are unconditional).
   size_t relay_data_circuits = 32;
-  // What recovers before the node is ready, by name.
+  /// What recovers before the node is ready, by name (status::Readiness's planes).
   std::vector<std::string> planes;
-  // What a hosted system adds to the inbound change's journal line, after
-  // inbound_capable=, for the capability it is told: " hosts_extents=true".
+  /// What a hosted system adds to the inbound change's journal line, after inbound_capable=, for the
+  /// capability it is told: " hosts_extents=true".
   std::function<std::string(bool)> inbound_journal_fields;
+  /// The hosted system's version, in telemetry and Status.
   std::string version;
-  // Agreement's slot table (agree/agreement.h), fixed for the cluster's life and the same
-  // on every node: the slot count, and the genesis members, which serve a slot no acceptor
-  // has recorded, as version 0. None: no slot can be founded, nor changed until a set
-  // recorded elsewhere serves it.
+  /// Agreement's slot count (agree/agreement.h), fixed for the cluster's life and the same on every
+  /// node.
   uint32_t agreement_slots = agree::default_slots;
+  /// Agreement's genesis members, which serve a slot no acceptor has recorded, as version 0. None:
+  /// no slot can be founded, nor changed until a set recorded elsewhere serves it.
   std::vector<identity::NodeId> agreement_genesis;
 
+  /// How often the node exchanges rosters with its peers.
   std::chrono::milliseconds heartbeat{5000};
+  /// A peer not heard of for this long leaves the active roster.
   std::chrono::milliseconds dead_after{30000};
-  // Never under twice dead_after.
+  /// A node not heard of for this long is forgotten. Never under twice dead_after.
   std::chrono::milliseconds forget_after = std::chrono::hours(24 * 30);
+  /// How often telemetry is sampled; gossiped at most once a second.
   std::chrono::milliseconds telemetry_interval{10000};
+  /// How long a dial may take.
   std::chrono::milliseconds connect_timeout{2500};
-  // A node watches no call unless asked: a hosted system names these per call
-  // (net::CallWatch) or per type (net::Registration), since a long call is often
-  // meant to be long. These are for one that wants every call on a lane watched.
+  /// A no-progress deadline for every CONTROL call. A node watches no call unless asked: a hosted
+  /// system names these per call (net::CallWatch) or per type (net::Registration), since a long call
+  /// is often meant to be long. Zero: none.
   std::chrono::milliseconds control_no_progress{0};
+  /// The same for DATA calls.
   std::chrono::milliseconds data_no_progress{0};
+  /// A stall notice for every CONTROL call; zero: none.
   std::chrono::milliseconds control_stall_notice{0};
+  /// The same for DATA calls.
   std::chrono::milliseconds data_stall_notice{0};
-  // The node's own exchanges with a peer (membership, dial-back): a loaded peer
-  // is given this long before it counts as not having answered.
+  /// The node's own exchanges with a peer (membership, dial-back): a loaded peer is given this long
+  /// before it counts as not having answered.
   std::chrono::milliseconds exchange_budget{30000};
-  // Refuses a dial by naming why, for tests that fail links; see
-  // net::ClientOptions::dial_hook.
+  /// Tests only: refuses a dial by naming why (net::ClientOptions::dial_hook).
   std::function<std::string(const net::Endpoint&, net::Lane)> dial_hook;
-  // The owners' test seam (P6): refuses or stalls one call by peer and type,
-  // the node's own calls included; see net::CallFault. Tests only.
+  /// Tests only: refuses or stalls one call by peer and type, the node's own calls included
+  /// (net::CallFault).
   std::function<net::CallFault(const std::optional<identity::NodeId>& peer, const net::Endpoint& endpoint, net::MessageType type)> call_fault;
-  // reach::PathsConfig's: how long a relayed circuit waits for chunks that may have died
-  // with a session (none: dead_after), and, tests only, the chunks a relay drops.
+  /// How long a relayed circuit waits for chunks that may have died with a session; none:
+  /// dead_after.
   std::optional<std::chrono::milliseconds> relay_finish_wait;
+  /// Tests only: the chunks a relay drops (reach::PathsConfig).
   std::function<bool(uint64_t sequence, bool forwarding, bool toward_b)> relay_drop_hook;
-  // Tests only: reach::PathsConfig's punch_target_hook.
+  /// Tests only: reach::PathsConfig's punch_target_hook.
   std::function<net::Endpoint(uint16_t local_port, const net::Endpoint& target)> punch_target_hook;
+  /// The least time between two dial-back probes.
   std::chrono::milliseconds dial_back_min_interval{10000};
+  /// How often inbound capability is probed again while the node is capable.
   std::chrono::milliseconds reprobe_while_capable = std::chrono::hours(1);
+  /// The same while it is not.
   std::chrono::milliseconds reprobe_while_incapable = std::chrono::minutes(10);
+  /// The largest frame on the wire; larger messages are fragmented.
   size_t max_frame = 256 * 1024;
+  /// The server's workers and bounds.
   net::ServerLimits limits;
+  /// Public connectivity: UPnP, the external address lookup, the self-probe.
   reach::ConnectivityConfig connectivity;
-  // The node's worker pool and the gates its loader and speculative work run
-  // through (P4); a hosted system sets its classes' caps and bounds here.
+  /// The node's worker pool (P4); a hosted system sets its classes' caps and bounds here.
   sched::WorkerPoolConfig workers;
+  /// The gate loader work runs through.
   sched::GateConfig loader_gate;
+  /// The gate speculative work runs through.
   sched::GateConfig speculative_gate;
-  // The gates' own time and process CPU, apart from the node's, so a hosted
-  // system's pacing tests step them while the node runs on real time (Macha's
-  // review). Null: `time` below, and the process's real CPU.
+  /// The gates' own time, apart from the node's, so a hosted system's pacing tests step them while
+  /// the node runs on real time (Macha's review). Null: `time` below.
   const contract::TimeSource* gate_time = nullptr;
+  /// The gates' own process CPU reading. Empty: the process's real CPU.
   sched::ProcessCpu gate_process_cpu;
-  // The node's retained-memory budget and its reserves.
+  /// The node's retained-memory budget.
   uint64_t memory_bytes = 768ull << 20;
+  /// The headroom only control may use (law 1).
   uint64_t control_reserve_bytes = 64ull << 20;
+  /// The headroom kept for foreground (law 2).
   uint64_t foreground_reserve_bytes = 192ull << 20;
+  /// The headroom kept for loader (law 3).
   uint64_t loader_reserve_bytes = 64ull << 20;
+  /// Inbound reassembly's own reserve.
   uint64_t reassembly_reserve_bytes = 32ull << 20;
-  // A ceiling on all of the node's memory, hosted parts included; zero for none.
-  // Over it every part shrinks by the same fraction and the node starts, warning
-  // once. See fit_memory_limit.
+  /// A ceiling on all of the node's memory, hosted parts included; zero for none. Over it every part
+  /// shrinks by the same fraction and the node starts, warning once (fit_memory_limit()).
   uint64_t memory_limit_bytes = 0;
-  // Set by fit_memory_limit: what the node logs when it is built.
+  /// Set by fit_memory_limit(): what the node logs when it is built.
   std::optional<std::string> memory_warning;
+  /// Set by fit_memory_limit(): it has run.
   bool memory_fitted = false;
-  // Windows of the observations, written to observation/observations.jsonl
-  // under the state path, from before anything else starts; zero for none.
+  /// Windows of the observations, written to observation/observations.jsonl under the state path,
+  /// from before anything else starts; zero for none.
   std::chrono::milliseconds observation_interval{60000};
+  /// The most the observation log keeps.
   uint64_t observation_max_bytes = 64ull << 20;
+  /// The hosted system's own gauges, read at each observation window.
   std::function<std::map<std::string, uint64_t>()> observation_gauges;
-  // The hosted system's own telemetry fields, added to each local record.
+  /// The hosted system's own telemetry fields, added to each local record.
   std::function<void(status::Telemetry&)> telemetry_fields;
+  /// The order telemetry's fields are written in, the named ones first.
   std::vector<uint16_t> telemetry_layout;
-  // Null: UPnP not built, the lookup and the self-probe their defaults.
+  /// The UPnP gateway; null: UPnP not built.
   std::shared_ptr<reach::Gateway> gateway;
+  /// How the external address is looked up; default: the built-in lookup.
   reach::ExternalIpLookup external_ip;
+  /// How the node probes itself from outside; default: the built-in probe.
   reach::SelfProbe self_probe;
 
-  // The node's one log sink, handed to every component and, through the
-  // Context, to the hosted system.
+  /// The node's one log sink, handed to every component and, through the Context, to the hosted
+  /// system.
   std::shared_ptr<status::LogSink> log = std::make_shared<status::ConsoleSink>();
 
-  // The node's transfer-buffer pool (Context::buffers): what it holds at most, and the smallest
-  // buffer it keeps (a 256 KiB frame is kept, so fragments go round too).
+  /// The transfer-buffer pool's bound (Context::buffers()): what it holds at most.
   size_t transfer_buffers_bound = 256ull * 1024 * 1024;
+  /// The smallest buffer it keeps: a 256 KiB frame is kept, so fragments go round too.
   size_t transfer_buffers_floor = 128 * 1024;
 
+  /// The steady time the node decides by; a test hands in a stepped one.
   const contract::TimeSource* time = &contract::steady_time_source();
-  // What the node's links judge liveness on (net::ClientOptions::liveness_time); none: `time`.
-  // Dagda's ask: a test stepping `time` past dead_after/3 no longer gives up its links.
+  /// What the node's links judge liveness on (net::ClientOptions::liveness_time); none: `time`. So a
+  /// test stepping `time` past dead_after/3 does not give up its links (Dagda's ask).
   const contract::TimeSource* liveness_time = nullptr;
+  /// The wall time the node records by; a test hands in a stepped one.
   const contract::WallClock* wall = &contract::system_wall_clock();
 
-  // Runs `task` once `after` has passed on `time` (the simulation harness's schedule, step 3
-  // part 4, reviewed by Mimir and Kvasir). Set, the node starts no loop threads: each loop's
-  // step runs from it on the io context, the next booked when one ends, and Time::after() and
-  // agreement's waits go through it too, so a world run on one thread orders all of them. Empty:
-  // the loops are threads, as always.
+  /// Runs `task` once `after` has passed on `time` (the simulation harness's schedule). Set, the node
+  /// starts no loop threads: each loop's step runs from it on the io context, the next booked when
+  /// one ends, and Time::after() and agreement's waits go through it too, so a world run on one
+  /// thread orders all of them. Empty: the loops are threads, as always.
   std::function<void(std::chrono::milliseconds after, std::function<void()> task)> schedule;
-  // Draws the ids fresh on each start (the durability epoch, telemetry's boot id), which seed
-  // agreement's backoff among others: the simulation harness draws them from its seed so a run
-  // replays exactly. Empty: random.
+  /// Draws the ids fresh on each start (the durability epoch, telemetry's boot id), which seed
+  /// agreement's backoff among others: the simulation harness draws them from its seed so a run
+  /// replays exactly. Empty: random.
   std::function<identity::NodeId()> fresh_id;
-  // How far ahead of this node's wall time a received hybrid-clock stamp may be and still be
-  // merged: five seconds, past the two-second offset bound a ready node keeps (the plan's item 6).
+  /// How far ahead of this node's wall time a received hybrid-clock stamp may be and still be
+  /// merged: five seconds, past the two-second offset bound a ready node keeps.
   std::chrono::milliseconds hlc_max_ahead = std::chrono::seconds(5);
-  // How far this node's clock may be from a peer's before that peer counts against it; past it
-  // against more than half of the agreed roster, the node issues no hybrid-clock stamp (item 6).
+  /// How far this node's clock may be from a peer's before that peer counts against it; past it
+  /// against more than half of the agreed roster, the node issues no hybrid-clock stamp.
   std::chrono::milliseconds clock_offset_bound = std::chrono::seconds(2);
-  // The network as the harness gives it (the transport seam, piece 2b): set, the node builds no
-  // client, server or level 0 paths, and calls, sends and serves through what this returns,
-  // given the node's hooks. Empty: sockets, as always.
+  /// How long a worse health must hold before this node's record advertises it (0.12.0): a check
+  /// that flaps does not move placement. Draining, and any change back towards ready, is advertised
+  /// at once.
+  std::chrono::milliseconds health_hold = std::chrono::seconds(10);
+  /// The network as the simulation harness gives it: set, the node builds no client, server or
+  /// level 0 paths, and calls, sends and serves through what this returns, given the node's hooks.
+  /// Empty: sockets, as always.
   std::function<std::shared_ptr<net::Transport>(net::TransportHooks)> transport;
 };
 
-// Dannan's node: the control plane assembled. The identity under a locked
-// state path, the roster, public connectivity and the inbound answer,
-// telemetry, the transport's client and server, the control routes
-// (ping, members, telemetry, identity_resets, dial_request,
-// dial_back, punch and relay), and three loops: membership (exchange with seeds and
-// known peers every heartbeat, forget at the horizon), telemetry (refresh,
-// gossip at most once a second), connectivity (the advertised endpoint and
-// the inbound answer by dial-back). The node is reachable before it is
-// ready. It is the hosted system's Context.
-//
-// Fits a node's memory under config.memory_limit_bytes: Dannan's retained total
-// and reserves, and `hosted`, the parts only the hosted system knows of (its
-// caches), which shrink with them. A hosted system with such parts calls this
-// first, before building anything sized from them; without any, the node calls
-// it for itself. The node logs the warning.
+/// Fits a node's memory under config.memory_limit_bytes: Dannan's retained total and reserves, and
+/// `hosted`, the parts only the hosted system knows of (its caches), which shrink with them. A hosted
+/// system with such parts calls this first, before building anything sized from them; without any,
+/// the node calls it for itself. The node logs the warning.
 void fit_memory_limit(NodeConfig& config, std::vector<sched::MemoryPart>& hosted);
 
-// The io context is the caller's, run on its threads; the loops have their
-// own. Stop the node while its io runs: stopping closes sessions on it.
-// Once stopped, the node may be destroyed after the io has stopped. Thread-safe. Lock order: the client's route table before the
-// roster's (the client calls `local` with its table held).
+/// Dannan's node: the control plane assembled, and the hosted system's Context.
+///
+/// The identity under a locked state path, the roster, public connectivity and the inbound answer,
+/// telemetry, the transport's client and server, the control routes (ping, members, telemetry,
+/// identity resets, dial request, dial-back, punch and relay), and three loops: membership (exchange
+/// with seeds and known peers every heartbeat, forget at the horizon), telemetry (refresh, gossip
+/// at most once a second, health), and connectivity (the advertised endpoint and the inbound answer
+/// by dial-back). The node is reachable before it is ready.
+///
+/// The io context is the caller's, run on its threads; the loops have their own. Stop the node while
+/// its io runs: stopping closes sessions on it. Once stopped, it may be destroyed after the io has
+/// stopped. Thread-safe. Lock order: the client's route table before the roster's.
+///
+/// A node binary need not build one itself: supervise::run_node_program() does.
+///
+/// @code
+/// boost::asio::io_context io;
+/// dannan::NodeConfig config;
+/// config.state_path = state_directory;
+/// config.key = dannan::identity::load_cluster_key(key_file);
+/// config.bootstrap = {{"127.0.0.1", 7437}};
+/// dannan::Node node(io, config);
+/// node.context().routes().add(my_type, my_registration, my_handler);  // before start
+/// node.start();
+/// // ... run io on its threads; at the end:
+/// node.stop();
+/// @endcode
 class Node final : public Context {
  public:
-  // Takes the state lock and reads the node's state; throws if the path is
-  // in use or a state file is corrupt.
+  /// Takes the state lock and reads the node's state.
+  /// @throws std::runtime_error if the path is in use or a state file is corrupt.
+  /// @throws std::invalid_argument for a configuration that cannot run (a certificate without its CA
+  ///   or custody, one not over this node's key, or revoked).
   Node(boost::asio::io_context& io, NodeConfig config);
+  /// Stops, if not stopped.
   ~Node() override;
+  /// Not copyable.
   Node(const Node&) = delete;
+  /// Not copyable.
   Node& operator=(const Node&) = delete;
 
-  // Refuses a cluster nobody could reach, then listens and starts the
-  // loops. Hosted routes are frozen from here.
+  /// Refuses a cluster nobody could reach, then listens and starts the loops. Hosted routes are
+  /// frozen from here.
   void start();
-  // Asks the node's loops to stop and returns: what a signal handler or a stopping
-  // system calls before the work it depends on goes. stop() still joins them.
+  /// Asks the node's loops to stop and returns: what a signal handler or a stopping system calls
+  /// before the work it depends on goes. stop() still joins them.
   void request_stop();
-  // Stops the loops, the server and the client; pending calls fail at once.
+  /// Stops the loops, the server and the client; pending calls fail at once.
   void stop();
-  // Closes the route to `peer` on `lane`, as a failed link would; the next call makes
-  // another. Its sessions' calls fail at once.
+  /// Closes the route to `peer` on `lane`, as a failed link would; the next call makes another. Its
+  /// sessions' calls fail at once.
   void close_route(const identity::NodeId& peer, net::Lane lane, const std::string& why);
 
+  /// The port the node listens on (the one bound, when configured as zero).
   uint16_t port() const noexcept { return _bound_port.load(); }
+  /// The node as its hosted system sees it.
   Context& context() noexcept { return *this; }
+  /// The same, to read.
   const Context& context() const noexcept { return *this; }
 
-  // Fails every outbound call at once and admits no more, so a worker
-  // blocked in one can be joined; the rest of the node runs on until stop().
+  /// Fails every outbound call at once and admits no more, so a worker blocked in one can be joined;
+  /// the rest of the node runs on until stop().
   void cancel_outbound_calls();
 
-  // Tests only, with NodeConfig::call_fault: fails the calls it stalled to
-  // `peer` (every peer when none) as "stall released"; how many. And how many
-  // it holds now.
+  /// Tests only, with NodeConfig::call_fault: fails the calls it stalled to `peer` (every peer when
+  /// none) as "stall released".
+  /// @return how many.
   size_t release_stalled_calls(const std::optional<identity::NodeId>& peer = std::nullopt);
+  /// Tests only: how many calls are held stalled now.
   size_t stalled_calls() const;
 
-  // Beneath the Context, for the hosted system's facade.
+  /// The roster beneath the Context, for a hosted system's facade.
   membership::Membership& membership() noexcept { return _members; }
+  /// Telemetry's store beneath the Context.
   status::TelemetryStore& telemetry_store() noexcept { return _telemetry; }
+  /// The inbound answer.
   reach::InboundResolver& inbound() noexcept { return _inbound; }
+  /// The inbound answer, to read.
   const reach::InboundResolver& inbound() const noexcept { return _inbound; }
+  /// The public connectivity status, when known.
   std::optional<reach::PublicConnectivityStatus> connectivity() const;
+  /// The client's counts, when it runs.
   std::optional<net::ClientStats> client_stats() const;
+  /// The server's queues and timings, when it runs.
   std::optional<net::WorkStats> work_stats() const;
+  /// The node's retained-memory ledger.
   sched::RetainedMemoryLedger& memory() noexcept { return _memory; }
-  // The node's traffic by frame class, client and server together.
+  /// The node's traffic by frame class, client and server together.
   status::TrafficTotals traffic() const;
 
-  // Applies a reset everywhere it matters here; propagate also sends it to
-  // every active peer and applies what they answer with.
+  /// As Nodes::apply_identity_reset().
   bool apply_identity_reset(const membership::IdentityReset& reset);
+  /// As Nodes::propagate_identity_reset().
   void propagate_identity_reset(const membership::IdentityReset& reset, std::chrono::milliseconds deadline);
-  // Asks for a telemetry refresh now (a readiness change, say).
+  /// Asks for a telemetry refresh now (a readiness change, say).
   void signal_telemetry();
 
-  // Context.
+  /// As Context::version().
   uint32_t version() const noexcept override { return context_version; }
+  /// As Context::nodes().
   Nodes& nodes() override;
+  /// As Context::nodes().
   const Nodes& nodes() const override;
+  /// As Context::routes().
   Routes& routes() override;
+  /// As Context::channels().
   Channels& channels() override;
+  /// As Context::identity().
   Identity& identity() override;
+  /// As Context::identity().
   const Identity& identity() const override;
+  /// As Context::budget().
   Budget& budget() override;
+  /// As Context::faults().
   Faults& faults() override;
+  /// As Context::time().
   Time& time() override;
+  /// As Context::telemetry().
   Telemetry& telemetry() override;
+  /// As Context::status().
   status::Surface& status() override { return _surface; }
+  /// As Context::logger().
   status::ScopedLogger logger(std::string scope) const override { return {_config.log, std::move(scope)}; }
+  /// As Context::events().
   status::NodeEvents& events() override { return _events; }
+  /// As Context::readiness().
   status::Readiness& readiness() override { return _readiness; }
+  /// As Context::readiness().
+  const status::Readiness& readiness() const override { return _readiness; }
+  /// As Context::activity().
   status::ActivityClocks& activity() override { return _activity; }
+  /// As Context::observations().
   status::Observations& observations() override { return _observations; }
+  /// As Context::wait_guard().
   sched::WaitGuard& wait_guard() override { return _wait_guard; }
+  /// As Context::threads().
   supervise::SupervisedThreads& threads() override { return _threads; }
+  /// As Context::threads().
+  const supervise::SupervisedThreads& threads() const override { return _threads; }
+  /// As Context::gates().
   sched::ClassGates& gates() override { return _gates; }
+  /// As Context::workers().
   sched::WorkerPool& workers() override { return _workers; }
+  /// As Context::buffers().
   std::shared_ptr<sched::BufferPool> buffers() override { return _buffers; }
+  /// As Context::agreement().
   agree::Agreement& agreement() override { return *_agreement; }
+  /// As Context::hlc().
   contract::HlcClock& hlc() override { return *_hlc; }
+  /// As Context::diagnostics().
   Diagnostics diagnostics() const override;
 
+  /// @cond internal
  private:
   class NodesNoun;
   class RoutesNoun;
@@ -356,6 +451,9 @@ class Node final : public Context {
   void exchange_revocations(std::optional<membership::NodeRecord> peer, const net::Endpoint& endpoint, std::chrono::milliseconds deadline,
                             boost::asio::any_io_executor on, std::function<void()> done);
   void telemetry_step(contract::TimePoint& last_gossip);
+  // Dannan's own checks, then the advert of this node's health on its record after the hold (item
+  // 7). Run by the telemetry step.
+  void health_step();
   void roster_step();
   // Refreshes asked for, the path class when due, the circuits' sweep, and the dial-back probe
   // when due.
@@ -428,6 +526,10 @@ class Node final : public Context {
   status::NodeEvents _events;
   status::Surface _surface;
   status::Readiness _readiness;
+  // The health this node's record advertises, and since when a worse one has waited out
+  // health_hold: the telemetry step's own, which runs one at a time.
+  status::Health _advertised_health = status::Health::ready;
+  std::optional<contract::TimePoint> _worse_since;
   status::ActivityClocks _activity;
   status::Observations _observations;
   supervise::SupervisedThreads _threads;
@@ -552,6 +654,7 @@ class Node final : public Context {
   std::unique_ptr<FaultsNoun> _faults;
   std::unique_ptr<TimeNoun> _time;
   std::unique_ptr<TelemetryNoun> _telemetry_noun;
+  /// @endcond
 };
 
 }  // namespace dannan

@@ -49,6 +49,17 @@ TEST(Argon2id, IsDeterministicPerSaltAndCosts) {
   EXPECT_THROW(argon2id(password.reveal(), std::span<const uint8_t>(salt.data(), 4), light), std::invalid_argument);
 }
 
+// An empty password is a password (RFC 9106: length 0 allowed): a sign-in that submits nothing is
+// verified and refused, never thrown at (found by item 11's tests, 2026-11-23).
+TEST(Argon2id, AnEmptyPasswordIsAPassword) {
+  const std::array<uint8_t, 16> salt{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
+  const auto empty = argon2id({}, salt, light);
+  EXPECT_EQ(empty.size(), 32u);
+  EXPECT_TRUE(empty == argon2id(std::span<const uint8_t>(), salt, light));
+  const std::array<uint8_t, 1> zero{0};
+  EXPECT_FALSE(empty == argon2id(zero, salt, light));
+}
+
 // RFC 9106's test vector for Argon2id, so the parameters mean what they
 // say everywhere they are used.
 TEST(Argon2id, MatchesRfc9106) {

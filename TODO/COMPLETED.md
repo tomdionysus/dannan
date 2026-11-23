@@ -3,6 +3,36 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
+## 0.12.0, 2026-11-24: readiness and health, the node-program helper, limits, passwords, a process runner, and documentation
+
+A new minor; the ABI changes (libdannan0.12). The first release under the documentation gate. What
+shipped is in CHANGELOG.md. Each change was run red then green on the build cluster:
+- Readiness and health (item 7), confirmed by Dagda, Louhi, Kvasir, Lugh and Macha; the gates
+  check dropped (the class gates pace, never refuse).
+- Keyed limits and the hard Backoff bound (item 10): red with the old Backoff, a flood evicting.
+- The stored password (item 11); its tests found argon2id throwing on an empty password, fixed,
+  red with the old argon2id.
+- The process runner (item 23): red without the group kill at the leader's exit (a straggler held
+  the run 30 s) and without closefrom (a held descriptor reached the child).
+- The node-program helper (item 14), confirmed by the four; its drain-deadline test found the
+  deadline's timer dropped by a step that never called done, fixed.
+- found()'s one deadline: red, the old one answered after 4000 ms against its 1000.
+- The idle hybrid clock: red, the old one wrote its ceiling 61 times in an idle minute.
+- The notifying TimeSource and TimeWait; unix_us; SimNodes::prepare; Answer::hold and the
+  per-peer share.
+- The documentation gate: Doxygen with warnings as errors, shown to fail on an undocumented
+  function; twenty headers under it (0.12.0's and the backfill's first part), seven concept
+  guides, seven examples built and run with the tests.
+
+The gate, on e3af6de:
+- Hosted CI, every job green: check, release (both), clang, ASan (both), TSan (x86-64), package
+  (both), coverage, abi (the first 0.12 release), deb (both), docs.
+- The ASan suite on the build cluster: 1229 passed, one skipped as root.
+- TSan on arm64, a fresh clone on the build cluster: 1229 passed, one skipped as root, 36 __tsan_
+  symbols, no reports.
+- fuzz: four targets, 60 s each, two at a time, all clean.
+- install-debs in a clean debian:trixie container: libdannan0.12 and libdannan-dev 0.12.0.
+
 ## 0.11.1, 2026-11-23: an ordered channel delivery; dropped payloads back to the pool
 
 A patch; the ABI is 0.11.0's (abidiff: 0 removed, 0 changed, 0 added). What shipped is in

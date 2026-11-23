@@ -7,6 +7,9 @@
 
 #pragma once
 
+/// @file
+/// Failed sign-ins answered with a growing wait rather than a lock.
+
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
@@ -15,35 +18,59 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 #include "dannan/contract/thread_safety.h"
 #include "dannan/contract/time_source.h"
 
 namespace dannan::listen {
 
-// Failed sign-ins, keyed as the hosted system chooses (per principal, per source address),
-// answered with a growing wait rather than a lock, so someone who knows a user's name cannot
-// lock them out on purpose: the most they can do is make each guess slower, theirs included.
-// Ask before any costly check (Kvasir: before hashing). Held in memory, per node; summing it
-// across a cluster is the hosted system's. Lugh's, moved here so Lugh and Kvasir link one copy
-// (Kvasir's ask, 2026-11-16). Time is injected. Thread-safe.
+/// Failed sign-ins, answered with a growing wait rather than a lock (Lugh's, moved here so Lugh and
+/// Kvasir link one copy).
+///
+/// Why a wait and not a lock: someone who knows a user's name must not be able to lock them out on
+/// purpose. The most they can do is make each guess slower, theirs included.
+///
+/// Keyed as the hosted system chooses: per principal, per source address, or both. Ask wait()
+/// before any costly check (before hashing a password, Kvasir), and report the result with
+/// failed() or succeeded(). Held in memory, per node; summing across a cluster is the hosted
+/// system's. Time is injected. Thread-safe; waits on nothing but its own lock.
+///
+/// The bound (0.12.0): callers choose the keys, so a stream of made-up names must not grow the
+/// map. It holds at most `max_keys`. At the bound, forgotten keys go first, then those with the
+/// fewest failures, the oldest of them first: a flood of names that each fail once never evicts a
+/// name under a real attack, which has failed many times.
+///
+/// @code
+/// listen::Backoff backoff(listen::Backoff::Rules{});
+/// const auto key = account + "|" + address;
+/// if (const auto wait = backoff.wait(key, time.now())) return refuse_for(*wait);
+/// if (identity::verify_password(given, stored)) backoff.succeeded(key);
+/// else backoff.failed(key, time.now());
+/// @endcode
 class Backoff {
  public:
+  /// How the wait grows.
   struct Rules {
-    // Failures before any wait.
+    /// Failures before any wait.
     std::uint32_t free_failures = 5;
-    // The first wait, doubled at each failure after it, up to `longest`.
+    /// The first wait, doubled at each failure after it, up to `longest`.
     std::chrono::seconds first{1};
+    /// The longest wait.
     std::chrono::seconds longest{std::chrono::minutes(15)};
-    // A key with no failure for this long starts again.
+    /// A key with no failure for this long starts again from nothing.
     std::chrono::seconds forget_after{std::chrono::hours(1)};
   };
 
-  // Above this many keys, forgotten ones are dropped: callers choose the keys, and a stream
-  // of made-up names must not grow the map without bound.
-  explicit Backoff(Rules rules, std::size_t prune_above = 100000) : _rules(rules), _prune_above(prune_above) {}
+  /// @param rules how the wait grows.
+  /// @param max_keys the most keys held at once, at least one.
+  explicit Backoff(Rules rules, std::size_t max_keys = 100000) : _rules(rules), _max_keys(std::max<std::size_t>(max_keys, 1)) {}
 
-  // How long until `key` may try again; nothing when it may now.
+  /// How long until `key` may try again.
+  /// @param key the key, as failed() was given it.
+  /// @param now the time, from the caller's TimeSource.
+  /// @return nothing when it may try now; otherwise the wait, at least one second.
   std::optional<std::chrono::seconds> wait(const std::string& key, contract::TimePoint now) const {
     contract::Lock lock(_mutex);
     const auto found = _keys.find(key);
@@ -53,20 +80,24 @@ class Backoff {
     return std::max(std::chrono::seconds(1), std::chrono::ceil<std::chrono::seconds>(until - now));
   }
 
+  /// Counts a failure for `key` at `now`; a key forgotten (no failure for forget_after) starts
+  /// again from nothing.
   void failed(const std::string& key, contract::TimePoint now) {
     contract::Lock lock(_mutex);
-    if (_keys.size() > _prune_above) prune(now);
+    if (!_keys.contains(key) && _keys.size() >= _max_keys) make_room(now);
     auto& state = _keys[key];
     if (forgotten(state, now)) state.failures = 0;
     ++state.failures;
     state.last = now;
   }
 
+  /// Forgets `key`'s failures: a success clears its wait.
   void succeeded(const std::string& key) {
     contract::Lock lock(_mutex);
     _keys.erase(key);
   }
 
+  /// How many keys are held now: at most the bound.
   std::size_t size() const {
     contract::Lock lock(_mutex);
     return _keys.size();
@@ -87,12 +118,26 @@ class Backoff {
     return std::min(out, _rules.longest);
   }
 
-  void prune(contract::TimePoint now) DANNAN_REQUIRES(_mutex) {
+  // An eighth of the bound freed at a time, so a flood costs a sweep per eighth, not per key.
+  void make_room(contract::TimePoint now) DANNAN_REQUIRES(_mutex) {
+    const std::size_t target = _max_keys - std::max<std::size_t>(_max_keys / 8, 1);
     for (auto it = _keys.begin(); it != _keys.end();) it = forgotten(it->second, now) ? _keys.erase(it) : std::next(it);
+    if (_keys.size() <= target) return;
+    std::vector<std::pair<const State*, const std::string*>> order;
+    order.reserve(_keys.size());
+    for (const auto& [name, state] : _keys) order.emplace_back(&state, &name);
+    const auto evict = _keys.size() - target;
+    std::nth_element(order.begin(), order.begin() + static_cast<std::ptrdiff_t>(evict - 1), order.end(), [](const auto& a, const auto& b) {
+      return a.first->failures != b.first->failures ? a.first->failures < b.first->failures : a.first->last < b.first->last;
+    });
+    std::vector<std::string> gone;
+    gone.reserve(evict);
+    for (std::size_t i = 0; i < evict; ++i) gone.push_back(*order[i].second);
+    for (const auto& name : gone) _keys.erase(name);
   }
 
   const Rules _rules;
-  const std::size_t _prune_above;
+  const std::size_t _max_keys;
   mutable contract::Mutex _mutex;
   std::unordered_map<std::string, State> _keys DANNAN_GUARDED_BY(_mutex);
 };

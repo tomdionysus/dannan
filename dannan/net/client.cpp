@@ -20,6 +20,7 @@
 #include <boost/asio/strand.hpp>
 #include <cmath>
 
+#include "dannan/contract/time_wait.h"
 #include "dannan/net/server.h"
 
 namespace dannan::net {
@@ -37,13 +38,33 @@ struct Stall {
   std::string why;  // written before `stalled` is set
 };
 
-// Watches one call for progress: every quarter of the deadline it asks how
-// long the call has gone without a byte of its reply (nothing: no longer
-// pending), and cancels it once that reaches the deadline. For a placed call
-// both go to its session; for one a fault holds, to the client's hold.
+struct Watchdog;
+
+// Where a call's completion finds its watchdog to stop it: set once the watchdog exists, which
+// may be after the call has already finished.
+struct WatchdogSlot {
+  contract::Mutex mutex;
+  std::weak_ptr<Watchdog> dog DANNAN_GUARDED_BY(mutex);
+  void set(const std::shared_ptr<Watchdog>& watchdog) {
+    contract::Lock lock(mutex);
+    dog = watchdog;
+  }
+  void stop();
+};
+
+// Watches one call for progress: when its deadline or its next stall notice could be reached,
+// it asks how long the call has gone without a byte of its reply (nothing: no longer pending),
+// and cancels it once that reaches the deadline. Progress only makes the quiet shorter, so a
+// check is due no sooner than that; it waits for it on the call's injected time (0.12.0:
+// contract::TimeWait, so a stepped clock arms no timer while it stands, Dagda's stalls). For a
+// placed call both go to its session; for one a fault holds, to the client's hold. A finished
+// call stops it at once.
 struct Watchdog : std::enable_shared_from_this<Watchdog> {
   using Idle = std::function<std::optional<contract::Clock::duration>()>;
-  asio::steady_timer timer;
+  asio::any_io_executor executor;
+  contract::Mutex mutex;
+  std::shared_ptr<contract::TimeWait> wait DANNAN_GUARDED_BY(mutex);
+  bool stopped DANNAN_GUARDED_BY(mutex) = false;
   Idle idle;
   std::function<void()> cancel;
   std::chrono::milliseconds deadline;
@@ -59,7 +80,7 @@ struct Watchdog : std::enable_shared_from_this<Watchdog> {
   Watchdog(asio::io_context& io, Idle idle_of, std::function<void()> cancel_it, std::chrono::milliseconds limit, std::shared_ptr<Stall> stalls,
            std::shared_ptr<std::atomic<bool>> done, std::chrono::milliseconds every, status::ScopedLogger logger, std::string name,
            const contract::TimeSource* clock)
-      : timer(io),
+      : executor(io.get_executor()),
         idle(std::move(idle_of)),
         cancel(std::move(cancel_it)),
         deadline(limit),
@@ -74,12 +95,27 @@ struct Watchdog : std::enable_shared_from_this<Watchdog> {
 
   std::string age() const { return std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(time->now() - placed).count()); }
 
-  void arm() {
-    const auto shortest = deadline.count() <= 0 ? notice : notice.count() <= 0 ? deadline : std::min(deadline, notice);
-    timer.expires_after(std::clamp(shortest / 4, std::chrono::milliseconds(5), std::chrono::milliseconds(250)));
-    timer.async_wait([self = shared_from_this()](const boost::system::error_code& error) {
-      if (!error) self->check();
-    });
+  // Waits until, with `quiet` gone already, the deadline or the next notice could be reached.
+  void arm(std::chrono::milliseconds quiet = std::chrono::milliseconds(0)) {
+    auto remaining = std::chrono::milliseconds::max();
+    if (deadline.count() > 0) remaining = std::min(remaining, deadline - quiet);
+    if (notice.count() > 0) remaining = std::min(remaining, next_notice - quiet);
+    remaining = std::max(remaining, std::chrono::milliseconds(1));
+    contract::Lock lock(mutex);
+    if (stopped || finished->load()) return;
+    // The wait holds the watchdog until it fires or is cancelled, as a timer's handler would.
+    wait = contract::TimeWait::start(executor, *time, time->now() + remaining, [self = shared_from_this()] { self->check(); });
+  }
+
+  // The call has finished: no check is waited for again.
+  void stop() {
+    std::shared_ptr<contract::TimeWait> waiting;
+    {
+      contract::Lock lock(mutex);
+      stopped = true;
+      waiting = std::move(wait);
+    }
+    if (waiting) waiting->cancel();
   }
 
   void check() {
@@ -95,7 +131,7 @@ struct Watchdog : std::enable_shared_from_this<Watchdog> {
                   (deadline.count() > 0 ? "; deadline_ms=" + std::to_string(deadline.count()) : "; request remains active while peer health is monitored"));
         next_notice = quiet + notice;
       }
-      return arm();
+      return arm(quiet);
     }
     // The caller is told what the journal says.
     stall->why = "RPC made no progress for " + std::to_string(quiet.count()) + " ms " + described + " age_ms=" + age() + "; cancelled for retry";
@@ -104,6 +140,15 @@ struct Watchdog : std::enable_shared_from_this<Watchdog> {
     cancel();
   }
 };
+
+void WatchdogSlot::stop() {
+  std::shared_ptr<Watchdog> watchdog;
+  {
+    contract::Lock lock(mutex);
+    watchdog = dog.lock();
+  }
+  if (watchdog) watchdog->stop();
+}
 
 // A session's call, as a watchdog reads and cancels it.
 Watchdog::Idle idle_on(std::weak_ptr<Session> session, uint64_t request_id) {
@@ -723,12 +768,15 @@ void Client::place(const std::shared_ptr<Session>& session, Call call, const Tar
   // Moved from only once admitted: a refusal by a retiring session leaves it
   // to be routed again.
   if (_options.place_hook) _options.place_hook(*session);
-  const auto admitted = session->call(call.type, std::move(call.payload), call.frame, call.executor, [stall, finished, done, handle](CallOutcome outcome) {
-    finished->store(true);
-    if (handle) handle->finished();
-    if (!outcome.reply && stall->stalled.load()) outcome.failure = stall->why;
-    (*done)(std::move(outcome));
-  });
+  const auto watching = std::make_shared<WatchdogSlot>();
+  const auto admitted =
+      session->call(call.type, std::move(call.payload), call.frame, call.executor, [stall, finished, done, handle, watching](CallOutcome outcome) {
+        finished->store(true);
+        watching->stop();
+        if (handle) handle->finished();
+        if (!outcome.reply && stall->stalled.load()) outcome.failure = stall->why;
+        (*done)(std::move(outcome));
+      });
   if (!admitted.refused.empty()) {
     const bool gone = admitted.refused == "peer channel is retiring" || admitted.refused == "peer channel is closed";
     if (gone && call.reroutes < 3) {
@@ -755,6 +803,7 @@ void Client::place(const std::shared_ptr<Session>& session, Call call, const Tar
       },
       deadline, stall, finished, notice, _log,
       std::string("(") + sched::frame_type_name(frame) + ") peer=" + to_string(session->peer().id).substr(0, 12) + " message=" + name, liveness_time());
+  watching->set(watchdog);
   watchdog->arm();
 }
 

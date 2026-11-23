@@ -1146,6 +1146,37 @@ TEST(Node, ThePhaseFollowsTheDeclaredPlanes) {
   EXPECT_TRUE(eventually([&] { return pair.b->context().telemetry().local()->phase() == status::Phase::ready; }));
 }
 
+// Item 7: the node's record advertises its health. Draining at once; a worse health only once it
+// has held for health_hold; back to ready at once, the advert gone. Its peer reads it.
+TEST(Node, ItsRecordAdvertisesItsHealthAfterTheHold) {
+  Pair pair([](NodeConfig& c) {
+    c.health_hold = 300ms;
+    c.telemetry_interval = 250ms;
+  });
+  pair.b->start();
+  const auto advertised = [&](status::Health health) {
+    return eventually([&] {
+      const auto self = pair.b->context().nodes().self();
+      return status::health_of(self) == health;
+    });
+  };
+  auto& readiness = pair.b->context().readiness();
+  ASSERT_TRUE(advertised(status::Health::ready));
+  readiness.drain(true, "retiring");
+  EXPECT_TRUE(advertised(status::Health::draining));
+  readiness.drain(false);
+  EXPECT_TRUE(advertised(status::Health::ready));
+  readiness.set("test.store", status::Health::not_ready, "not caught up");
+  EXPECT_EQ(readiness.health(), status::Health::not_ready);
+  EXPECT_TRUE(advertised(status::Health::not_ready));
+  const auto checks = readiness.checks();
+  EXPECT_TRUE(
+      std::any_of(checks.begin(), checks.end(), [](const auto& check) { return check.name == "dannan.clock" && check.health == status::Health::ready; }));
+  readiness.clear("test.store");
+  EXPECT_TRUE(advertised(status::Health::ready));
+  EXPECT_FALSE(pair.b->context().nodes().self().adverts.contains(status::health_advert));
+}
+
 // A hosted system declares its own planes through the Context before the
 // node starts, beside those NodeConfig lists; once started, the planes are
 // fixed (Dagda asked, 2026-11-04).

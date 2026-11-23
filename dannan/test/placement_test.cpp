@@ -24,6 +24,8 @@
 #include <random>
 #include <set>
 
+#include "dannan/status/readiness.h"
+
 namespace dannan::placement {
 namespace {
 
@@ -50,6 +52,72 @@ std::set<identity::NodeId> ids(const std::vector<NodeRecord>& nodes, size_t coun
   std::set<identity::NodeId> out;
   for (size_t i = 0; i < count && i < nodes.size(); ++i) out.insert(nodes[i].id);
   return out;
+}
+
+// Item 7 (agreed with Dagda, Louhi, Kvasir): a node advertising draining or not_ready is demoted,
+// never removed. The preferred owners come from the ready and degraded nodes while there are
+// enough of them; draining nodes then not_ready ones follow as fallbacks, so a placement always
+// fills and a node that comes back takes its own shards back.
+NodeRecord with_health(NodeRecord record, status::Health health) {
+  status::set_health_advert(record, health);
+  return record;
+}
+
+TEST(Placement, ByCapacityDemotesDrainingThenNotReadyNodes) {
+  std::vector<NodeRecord> nodes;
+  for (uint8_t n = 1; n <= 6; ++n) nodes.push_back(node(n, 100, std::string(1, static_cast<char>('a' + n))));
+  nodes[1] = with_health(nodes[1], status::Health::not_ready);
+  nodes[3] = with_health(nodes[3], status::Health::draining);
+  nodes[4] = with_health(nodes[4], status::Health::degraded);
+  for (uint32_t k = 0; k < 300; ++k) {
+    const auto out = by_capacity(key_of(k), nodes, 3, scheme);
+    ASSERT_EQ(out.size(), 6u);
+    for (size_t i = 0; i < 4; ++i) {
+      EXPECT_NE(status::health_of(out[i]), status::Health::draining) << k << " " << i;
+      EXPECT_NE(status::health_of(out[i]), status::Health::not_ready) << k << " " << i;
+    }
+    EXPECT_EQ(status::health_of(out[4]), status::Health::draining) << k;
+    EXPECT_EQ(status::health_of(out[5]), status::Health::not_ready) << k;
+  }
+}
+
+TEST(Placement, HealthIsIgnoredWhenAskedOrWhenTooFewNodesAreHealthy) {
+  std::vector<NodeRecord> nodes{node(1), node(2), node(3)};
+  const auto key = key_of(7);
+  const auto plain = by_capacity(key, nodes, 3, scheme);
+  for (auto& record : nodes) record = with_health(record, status::Health::not_ready);
+  // None healthy: the placement is as it would be without health.
+  EXPECT_EQ(ids(by_capacity(key, nodes, 3, scheme), 3), ids(plain, 3));
+  nodes = {node(1), node(2), node(3)};
+  const auto first = plain.front().id;
+  for (auto& record : nodes)
+    if (record.id == first) record = with_health(record, status::Health::draining);
+  auto ignoring = scheme;
+  ignoring.ignore_health = true;
+  EXPECT_EQ(by_capacity(key, nodes, 3, ignoring).front().id, first);
+  EXPECT_NE(by_capacity(key, nodes, 1, scheme).front().id, first);
+}
+
+TEST(Placement, ANodeBackToReadyTakesItsOwnShardsBack) {
+  std::vector<NodeRecord> nodes{node(1, 100, "a"), node(2, 100, "b"), node(3, 100, "c"), node(4, 100, "d")};
+  std::vector<std::set<identity::NodeId>> before;
+  for (uint32_t k = 0; k < 100; ++k) before.push_back(ids(by_capacity(key_of(k), nodes, 2, scheme), 2));
+  nodes[2] = with_health(nodes[2], status::Health::not_ready);
+  for (uint32_t k = 0; k < 100; ++k) EXPECT_FALSE(ids(by_capacity(key_of(k), nodes, 2, scheme), 2).contains(nodes[2].id)) << k;
+  nodes[2] = with_health(nodes[2], status::Health::ready);
+  for (uint32_t k = 0; k < 100; ++k) EXPECT_EQ(ids(by_capacity(key_of(k), nodes, 2, scheme), 2), before[k]) << k;
+}
+
+TEST(Placement, RendezvousPassesOverUnhealthyNodesWhileEnoughAreHealthy) {
+  std::vector<NodeRecord> nodes{node(1), node(2), node(3), node(4)};
+  nodes[0] = with_health(nodes[0], status::Health::draining);
+  nodes[1] = with_health(nodes[1], status::Health::not_ready);
+  for (uint32_t k = 0; k < 100; ++k) {
+    const auto out = rendezvous(key_of(k), nodes, 2);
+    EXPECT_EQ(ids(out, 2), (std::set<identity::NodeId>{nodes[2].id, nodes[3].id})) << k;
+    EXPECT_EQ(rendezvous(key_of(k), nodes, 3).size(), 3u);
+    EXPECT_EQ(ids(rendezvous(key_of(k), nodes, 2, true), 2), ids(rendezvous(key_of(k), {node(1), node(2), node(3), node(4)}, 2), 2));
+  }
 }
 
 TEST(Placement, RendezvousIsDeterministicAndPrefersDistinctDomains) {

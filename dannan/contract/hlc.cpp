@@ -48,9 +48,8 @@ HybridClock::HybridClock(const WallClock& wall, HlcCeiling& ceiling, std::chrono
   const auto persisted = ceiling.load();
   const auto start = persisted >= wall.unix_ms() ? persisted + 1 : wall.unix_ms();
   _last.store(HlcStamp::of(start, 0).value);
-  const auto raised = start + static_cast<uint64_t>(reserve.count());
-  _store.raise(raised);
-  _ceiling.store(raised);
+  // Nothing written: the first stamp is past `start`, and allow() raises the ceiling past it first.
+  _ceiling.store(persisted);
 }
 
 void HybridClock::allow(uint64_t unix_ms, bool on_loop) {
@@ -74,6 +73,7 @@ HlcStamp HybridClock::now() {
     const auto stamp = HlcStamp::of(next.physical, static_cast<uint16_t>(next.logical));
     if (_last.compare_exchange_weak(previous, stamp.value)) {
       if (next.overflowed) ++_overflows;
+      _issued.store(true);
       return stamp;
     }
   }
@@ -103,6 +103,7 @@ HlcReceipt HybridClock::merge(HlcStamp remote) {
     const auto stamp = HlcStamp::of(next.physical, static_cast<uint16_t>(next.logical));
     if (_last.compare_exchange_weak(previous, stamp.value)) {
       if (next.overflowed) ++_overflows;
+      _issued.store(true);
       return HlcReceipt{stamp, true, offset};
     }
   }
@@ -157,7 +158,8 @@ HlcStats HybridClock::stats() const {
 }
 
 void HybridClock::keep_ahead() {
-  const auto issued = std::max(HlcStamp{_last.load()}.unix_ms(), _wall.unix_ms());
+  if (!_issued.load()) return;
+  const auto issued = HlcStamp{_last.load()}.unix_ms();
   if (_ceiling.load() >= issued + static_cast<uint64_t>(reserve.count())) return;
   Lock lock(_raising);
   const auto raised = issued + static_cast<uint64_t>(reserve.count());

@@ -19,9 +19,6 @@ answers fill the "Needs" and "Proof" lines below. Nothing here is built.
   if one already depends on the other, the lower one keeps it.
 - Q1: HTTP and JSON move into Dannan; Boost.JSON becomes a Dannan dependency.
 - Q2: register maps order by (hlc stamp, node id), safe only with the stamp bounded (item 6).
-- Q3: a hand-written authoritative DNS responder on every public node, in Dannan. This changes
-  the design text "Dannan has no namespace and no resolver; bind9 serves"
-  (`2026-11-02-dannan-plan.md`, "DNS"); the revision is part of item 24.
 - Q4: an absent node never leaves the majority count without an operator; retire is one
   cluster-wide command from any node.
 - Workflow: features on branches, one squash commit onto develop; all builds and tests on the
@@ -35,7 +32,7 @@ Three minors, so dependants can pin early. 19 only if Macha asks.
 
 - **First minor:** 13, 1, 17, 6; small between them: 15, 9, 12, 16, 18 (store tests), 20.
 - **Second minor:** 2, 7, 8, 10, 11, 14, 23, 24 (HTTP and JSON).
-- **Third minor:** 3, 4, 5, 22, 25 (DNS), the rest of 18. These depend on 2 and 7 and get the
+- **Third minor:** 3, 4, 5, 22, the rest of 18. These depend on 2 and 7 and get the
   simulator first.
 - After: the earlier 0.10.0 list (DTLS and UDP for listen, the peer-witnessed high-water mark,
   loader promotion, Mimir's cross-slot commit), unless a waiting project says one blocks it.
@@ -82,7 +79,7 @@ consumers' answers.
 - Users: every project; Lugh's double-founding worry; Dagda's lowest-id formation goes.
 - Shape: one explicit, once-only act any node can carry out, writing the genesis record. A
   double founding is refused loudly (the table fingerprint already refuses another cluster's
-  requests) with a Status line naming the other cluster. Join by a name (item 25).
+  requests) with a Status line naming the other cluster.
 - Open: what the genesis record holds, and how a node learns it on join.
 
 ### 5. Retire as one cluster act (third minor)
@@ -198,16 +195,6 @@ consumers' answers.
   starting from Lugh's. JSON through Boost.JSON, its compiled unit carried once, in Dannan.
 - Open: Lugh's starting files and bounds; whether Unix-socket streams come too (Louhi's
   local_http). The design text's "HTTP is the hosted system's" line is revised with this item.
-
-### 25. DNS answered by every node (third minor; the maintainer said yes)
-- Users: Lir, Kvasir, Lugh, Mimir (a client address that survives a node), every project
-  (joining by name, item 4).
-- Shape: a hand-written authoritative responder on each public node for one service zone,
-  answering A, AAAA and SRV from its own roster (active nodes advertising the service's
-  capability), with a short TTL; the operator delegates the zone once to several nodes. Nodes
-  behind NAT are not returned. No store and no zone primary.
-- Open: the record types and TTL each consumer needs; the design text's DNS section is
-  rewritten with this item.
 
 ## Requirements request (sent 2026-11-20)
 
@@ -473,8 +460,6 @@ Needs, by item:
   the installed package.
 - 18: ready() false in a real node; per-operation progress under faults.
 - 20: certificate expiry, through the node helper.
-- 25 (DNS): registers the MySQL service. Proof: a client resolving the service name reaches a
-  ready node after any one node stops.
 - 22: one register per table (its ranges) and one per range, so ranges are names in agreement.
   Ranges split near 64 MiB (not ruled): 1 TB is about 16,000 ranges, 2 to 4 times that with
   indexes; at 10 to 50 TB, hundreds to over a thousand a slot. Splits can come many times an hour
@@ -563,7 +548,7 @@ Needs, by item:
 - 16: TaskId and RequestId.
 - 13: runtime/driver.h's Completion, Result, Error, Deadline, Done; **a typed error kind
   (unavailable, refused, not_found, timed_out, malformed)** that Louhi branches on.
-- 15: two callers. 6: nothing Louhi-specific. 25: later, for its service discovery (step 10).
+- 15: two callers. 6: nothing Louhi-specific.
 
 Constraints: one io_context on several threads, a strand per component; completions posted;
 nothing blocks an io thread. API writes 5 to 30 s; agreement changes within the API call's
@@ -895,8 +880,6 @@ Needs, by item:
 - 24: routing, body limits, a streaming SSE response with backpressure, a WebSocket upgrade
   handed over as a Stream, the client address behind proxies, keyed limits, Boost.JSON. Proof:
   the claim board's three endpoints.
-- 25: A and AAAA for the ready nodes advertising lir.endpoints, TTL about 5 s; SRV _mqtt._tcp and
-  _secure-mqtt._tcp optional (common MQTT clients do not resolve SRV).
 - 7, 10, 13, 14, 16 as in Lir's file.
 - Not on the list: **selective interest at scale.** At 50,000 filters a node every interest
   advert coarsens to the empty prefix (fanout.h:73-76), so every publish reaches every node:
@@ -920,8 +903,7 @@ Reconciled, and open:
   the same world.
 - 8: subscribe takes the per-peer bound; Pushed names slow peers separately from missed ones.
 - 24 gains SSE with backpressure and a WebSocket upgrade handed over as a Stream.
-- 25: A and AAAA required, SRV optional, TTL configurable (Lir 5 s).
-- Lir (2026-11-20): confirms 31, 17, 8, 24 and 25 as recorded. 31 in the third minor is fine;
+- Lir (2026-11-20): confirms 31, 17, 8 and 24 as recorded. 31 in the third minor is fine;
   Lir's harness tests run at tens of filters. Keep: Pushed computed from the interest exchange
   still says which peers hold a just-added filter (the SUBACK hold rests on it). 17's in-world
   client Stream with Dagda's nodes in the same world unblocks Lir's step 2 and is the item Lir

@@ -134,10 +134,15 @@ TEST(Hlc, AReceiveFarAheadThenACrashBeforeTheLoopRaisesIsStillAfter) {
 }
 
 // The roster loop keeps the ceiling ahead, so the write path never raises in the steady state.
+// From 0.12.0 the first stamp raises once on the write path (the constructor writes nothing);
+// after it, none.
 TEST(Hlc, TheLoopKeepsTheCeilingAheadSoTheWritePathNeverWaits) {
   SteppedWall wall(t0);
   MemoryCeiling ceiling;
   HybridClock clock(wall, ceiling);
+  (void)clock.now();
+  EXPECT_EQ(clock.stats().raises_off_loop, 1u);
+  clock.keep_ahead();
   for (int second = 0; second < 30; ++second) {
     for (int i = 0; i < 100; ++i) {
       wall.step(10);
@@ -146,8 +151,55 @@ TEST(Hlc, TheLoopKeepsTheCeilingAheadSoTheWritePathNeverWaits) {
     clock.keep_ahead();
     EXPECT_GE(clock.ceiling(), wall.unix_ms() + 2000);
   }
-  EXPECT_EQ(clock.stats().raises_off_loop, 0u);
+  EXPECT_EQ(clock.stats().raises_off_loop, 1u);
   EXPECT_EQ(ceiling.value, clock.ceiling());
+}
+
+// Lir's finding (2026-11-19): every node rewrote its ceiling once a second, idle or not. A clock
+// that issues nothing writes nothing: not at start, and not over a minute of the roster loop
+// with the wall moving.
+TEST(Hlc, AnIdleClockWritesNothing) {
+  SteppedWall wall(t0);
+  MemoryCeiling ceiling;
+  HybridClock clock(wall, ceiling);
+  for (int second = 0; second < 60; ++second) {
+    wall.step(1000);
+    clock.keep_ahead();
+  }
+  EXPECT_EQ(ceiling.raises, 0);
+  // The first stamp after the idle minute raises once, before it is issued, past itself.
+  const auto stamp = clock.now();
+  EXPECT_EQ(ceiling.raises, 1);
+  EXPECT_GE(ceiling.value, stamp.unix_ms());
+  EXPECT_EQ(clock.stats().raises_off_loop, 1u);
+  // Then idle again: nothing more.
+  for (int second = 0; second < 60; ++second) {
+    wall.step(1000);
+    clock.keep_ahead();
+  }
+  EXPECT_EQ(ceiling.raises, 1);
+}
+
+// A restart that issued nothing leaves the ceiling as the run before left it, and still begins
+// after every stamp that run issued.
+TEST(Hlc, ARestartThatIssuesNothingLeavesTheCeilingAndStaysAfter) {
+  SteppedWall wall(t0);
+  MemoryCeiling ceiling;
+  HlcStamp before;
+  {
+    HybridClock clock(wall, ceiling);
+    before = clock.now();
+  }
+  const auto left = ceiling.value;
+  const auto raises = ceiling.raises;
+  {
+    HybridClock idle(wall, ceiling);
+  }
+  EXPECT_EQ(ceiling.value, left);
+  EXPECT_EQ(ceiling.raises, raises);
+  wall.step(-60'000);
+  HybridClock again(wall, ceiling);
+  EXPECT_GT(again.now(), before);
 }
 
 // A ceiling that cannot be raised: the stamp that needed it is not issued.

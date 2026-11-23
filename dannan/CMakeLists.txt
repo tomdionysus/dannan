@@ -16,6 +16,7 @@ add_library(dannan SHARED
   contract/completion.cpp
   contract/hlc.cpp
   contract/thread_safety.cpp
+  contract/time_wait.cpp
   identity/argon2.cpp
   identity/certificate.cpp
   identity/cluster_key.cpp
@@ -24,6 +25,7 @@ add_library(dannan SHARED
   identity/key_custody.cpp
   identity/node_id.cpp
   identity/node_identity.cpp
+  identity/password.cpp
   identity/sealed_counters.cpp
   identity/revocations.cpp
   identity/secure_memory.cpp
@@ -62,6 +64,7 @@ add_library(dannan SHARED
   listen/limits.cpp
   listen/memory.cpp
   listen/listener.cpp
+  listen/rate_limiter.cpp
   listen/stream.cpp
   sched/buffer_pool.cpp
   sched/class_gate.cpp
@@ -81,6 +84,8 @@ add_library(dannan SHARED
   status/telemetry.cpp
   status/thread_cpu.cpp
   storage/file_system.cpp
+  supervise/command.cpp
+  supervise/node_program.cpp
   supervise/startup.cpp
   supervise/supervised.cpp
   supervise/supervisor.cpp

@@ -16,6 +16,8 @@
 #   tools/ci.sh package    install, then build and run a consumer (test/package)
 #   tools/ci.sh coverage   a coverage build's tests; lcov report build-ci/coverage.info
 #   tools/ci.sh abi        the library against the minor's last release, by abidiff
+#   tools/ci.sh docs       the API reference and guides by Doxygen, warnings as errors: an
+#                          undocumented public declaration in a gated header fails it
 #   tools/ci.sh install-debs <tag>
 #                          for a dependant's CI: builds the tag's libdannan<major.minor>
 #                          and libdannan-dev with tools/build-deb.sh (tests skipped) and
@@ -24,7 +26,7 @@
 #
 # Builds go under build-ci/ (DANNAN_CI_OUT to move it). Needs g++ cmake
 # ninja-build libboost-dev libssl-dev libyaml-cpp-dev libgtest-dev libgmock-dev,
-# and for its step clang, clang-format, lcov, or abigail-tools (abi; the tags fetched).
+# and for its step clang, clang-format, lcov, abigail-tools (abi; the tags fetched), or doxygen.
 
 set -eu
 
@@ -177,6 +179,11 @@ case "$step" in
       exit 1
     fi
     ;;
+  docs)
+    rm -rf "$out/docs"
+    cmake -S "$top" -B "$out/docs" -G Ninja -DDANNAN_BUILD_DOCS=ON -DDANNAN_BUILD_TOOLS=OFF
+    cmake --build "$out/docs" --target docs
+    ;;
   install-debs)
     # One step every dependant's CI shares (Lir, Lugh, Louhi, Mimir, Kvasir, Dagda), so none
     # builds Dannan's packages its own way. The tag's own packaging builds them, so a dependant
@@ -198,7 +205,7 @@ case "$step" in
     dpkg-query -W -f='${Package} ${Version}\n' 'libdannan*'
     ;;
   *)
-    echo "usage: tools/ci.sh check|release|clang|asan|tsan|package|coverage|abi|install-debs <tag>" >&2
+    echo "usage: tools/ci.sh check|release|clang|asan|tsan|package|coverage|abi|docs|install-debs <tag>" >&2
     exit 2
     ;;
 esac

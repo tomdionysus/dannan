@@ -42,7 +42,7 @@ A project that fetches Dannan sets it before the fetch, from its own option:
 
 ```cmake
 set(DANNAN_SANITIZE address)   # or thread; a plain variable wins over the cache entry (CMP0126)
-FetchContent_Declare(dannan GIT_REPOSITORY https://github.com/tomdionysus/dannan.git GIT_TAG 0.11.1)
+FetchContent_Declare(dannan GIT_REPOSITORY https://github.com/tomdionysus/dannan.git GIT_TAG 0.12.0)
 FetchContent_MakeAvailable(dannan)
 ```
 
@@ -54,7 +54,7 @@ To check that a build is instrumented, look for the runtime's symbols among the
 library's undefined ones:
 
 ```
-nm -D --undefined-only build/dannan/libdannan.so.0.11.1 | grep -c __asan_    # or __tsan_
+nm -D --undefined-only build/dannan/libdannan.so.0.12.0 | grep -c __asan_    # or __tsan_
 ```
 
 `tools/ci.sh asan` and `tools/ci.sh tsan` build through `DANNAN_SANITIZE` and make

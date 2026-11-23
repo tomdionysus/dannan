@@ -121,6 +121,9 @@ TEST(Scheduler, ADeferredRequestHoldsNoWorker) {
 TEST(Scheduler, DeferredWorkIsBoundedPerClass) {
   ServerLimits limits;
   limits.max_deferred = 4;
+  // The class's bound is what is under test: one peer may take all of it here (0.12.0's per-peer
+  // share would otherwise stop it at one; its own test is below).
+  limits.max_deferred_per_peer = 4;
   // Each kept answer by its request's tag (the payload's one byte): workers
   // run side by side, so the order they are kept in is any order.
   std::mutex mutex;
@@ -160,6 +163,74 @@ TEST(Scheduler, DeferredWorkIsBoundedPerClass) {
   for (size_t i = 1; i < held.size(); ++i) EXPECT_TRUE(answered_within(held[i], 2s));
   EXPECT_TRUE(answered_within(foreground, 2s));
   EXPECT_TRUE(answered_within(next, 2s));
+}
+
+// 0.12.0 (Macha): one peer holds at most its share of a class's deferred work, a quarter of the
+// class's bound by default, so it cannot take the whole allowance; another peer still gets in.
+TEST(Scheduler, APeerHoldsAtMostItsShareOfAClass) {
+  ServerLimits limits;
+  limits.max_deferred = 8;
+  Kept kept;
+  RequestScheduler scheduler(routes(), limits, [&](const membership::NodeRecord&, FrameType, const Message&, Answer& answer) {
+    std::lock_guard lock(kept.mutex);
+    kept.answers.push_back(std::move(answer));
+    return Handled::deferred();
+  });
+  std::vector<std::future<Message>> held;
+  for (uint8_t i = 0; i < 2; ++i) held.push_back(ask(scheduler, peer(1), 2 * i + 1, put_object, FrameType::loader, Bytes{i}));
+  ASSERT_TRUE(waits_for([&] { return kept.size() == 2; }, 2s));
+  auto refused = ask(scheduler, peer(1), 101, put_object, FrameType::loader, Bytes{50});
+  ASSERT_TRUE(answered_within(refused, 1s));
+  EXPECT_EQ(refused.get().type, message::error);
+  auto other = ask(scheduler, peer(2), 201, put_object, FrameType::loader, Bytes{60});
+  EXPECT_TRUE(waits_for([&] { return kept.size() == 3; }, 2s)) << "another peer is not held by the first's share";
+  for (auto& answer : kept.take()) answer(Message{message::ok, {}, {}});
+  for (auto& future : held) EXPECT_TRUE(answered_within(future, 2s));
+  EXPECT_TRUE(answered_within(other, 2s));
+  // Answered, the first peer has its share back.
+  auto again = ask(scheduler, peer(1), 103, put_object, FrameType::loader, Bytes{70});
+  EXPECT_TRUE(waits_for([&] { return kept.size() == 1; }, 2s));
+  for (auto& answer : kept.take()) answer(Message{message::ok, {}, {}});
+  EXPECT_TRUE(answered_within(again, 2s));
+}
+
+// 0.12.0 (Macha): what a deferring handler holds for its answer is charged to the ledger, under
+// its own owner, until the answer goes; a hold the ledger refuses answers 503 at once.
+TEST(Scheduler, WhatADeferredAnswerHoldsIsChargedUntilItIsGiven) {
+  sched::RetainedMemoryLedger memory(1 << 20, 64 << 10, 256 << 10, 64 << 10, 64 << 10);
+  Kept kept;
+  std::atomic<int> refusals{0};
+  RequestScheduler scheduler(
+      routes(), ServerLimits{},
+      [&](const membership::NodeRecord&, FrameType, const Message& request, Answer& answer) {
+        if (!answer.hold(request.payload.at(0) == 1 ? (100u << 10) : (64u << 20))) {
+          ++refusals;
+          return Handled::deferred();
+        }
+        std::lock_guard lock(kept.mutex);
+        kept.answers.push_back(std::move(answer));
+        return Handled::deferred();
+      },
+      &memory);
+  const auto held = [&] {
+    const auto stats = memory.stats();
+    const auto found = stats.owner_bytes.find(sched::MemoryOwner::deferred_reply);
+    return found == stats.owner_bytes.end() ? uint64_t{0} : found->second;
+  };
+  auto answer = ask(scheduler, peer(1), 1, put_object, FrameType::loader, Bytes{1});
+  ASSERT_TRUE(waits_for([&] { return kept.size() == 1; }, 2s));
+  EXPECT_EQ(held(), 100u << 10);
+  for (auto& kept_answer : kept.take()) kept_answer(Message{message::ok, {}, {}});
+  ASSERT_TRUE(answered_within(answer, 2s));
+  EXPECT_EQ(answer.get().type, message::ok);
+  EXPECT_EQ(held(), 0u);
+  auto too_much = ask(scheduler, peer(1), 3, put_object, FrameType::loader, Bytes{2});
+  ASSERT_TRUE(answered_within(too_much, 2s));
+  const auto refusal = too_much.get();
+  ASSERT_TRUE(refusal_of(refusal));
+  EXPECT_EQ(refusal_of(refusal)->status, 503);
+  EXPECT_EQ(refusals.load(), 1);
+  EXPECT_EQ(held(), 0u);
 }
 
 // An answer dropped without being given refuses the call, so a caller never

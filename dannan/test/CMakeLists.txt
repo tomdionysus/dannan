@@ -32,6 +32,7 @@ add_executable(dannan_tests
   identity_durable_file_test.cpp
   identity_key_custody_test.cpp
   identity_node_identity_test.cpp
+  identity_password_test.cpp
   identity_sealed_counters_test.cpp
   identity_random_id_test.cpp
   identity_secure_memory_test.cpp
@@ -40,6 +41,7 @@ add_executable(dannan_tests
   listen_backoff_test.cpp
   listen_memory_test.cpp
   listen_prefix_test.cpp
+  listen_rate_limiter_test.cpp
   listen_test.cpp
   membership_agreed_test.cpp
   membership_clock_offsets_test.cpp
@@ -89,6 +91,11 @@ add_executable(dannan_tests
   sched_class_waits_test.cpp
   status_readiness_test.cpp
   status_thread_cpu_test.cpp
+  contract_time_wait_test.cpp
+  examples_test.cpp
+  contract_wall_clock_test.cpp
+  supervise_command_test.cpp
+  supervise_node_program_test.cpp
   supervise_test.cpp
   two_process_test.cpp
   version_test.cpp
@@ -121,3 +128,10 @@ set_target_properties(dannan_tests PROPERTIES ENABLE_EXPORTS ON)
 target_compile_definitions(dannan_tests PRIVATE DANNAN_NODE_BINARY="$<TARGET_FILE:dannan-node>" DANNAN_CA_BINARY="$<TARGET_FILE:dannan-ca>"
                                                 DANNAN_CUSTODY_BINARY="$<TARGET_FILE:dannan-custody>")
 add_dependencies(dannan_tests dannan-node dannan-ca dannan-custody)
+
+# The node-program helper's probe (item 14): a node binary made of the helper alone, run as a
+# child by supervise_node_program_test.cpp.
+add_executable(dannan_program_probe program_probe.cpp)
+target_link_libraries(dannan_program_probe PRIVATE dannan dannan_warnings)
+target_compile_definitions(dannan_tests PRIVATE DANNAN_PROGRAM_PROBE="$<TARGET_FILE:dannan_program_probe>")
+add_dependencies(dannan_tests dannan_program_probe)
