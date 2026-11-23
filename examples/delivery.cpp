@@ -102,9 +102,9 @@ int main(int argc, char** argv) {
       std::promise<dannan::membership::Pushed> pushed;
       subscriber.context().channels().subscribe(
           channel, "example/", strand,
-          [&, channel = channel](dannan::net::ChannelMessage message) {
+          [&, name = channel](dannan::net::ChannelMessage message) {
             std::lock_guard lock(mutex);
-            got[channel].push_back(message.topic + "=" + std::string(message.payload.begin(), message.payload.end()));
+            got[name].push_back(message.topic + "=" + std::string(message.payload.begin(), message.payload.end()));
           },
           5s, io.get_executor(), [&](dannan::membership::Pushed out) { pushed.set_value(std::move(out)); });
       const auto holds = pushed.get_future().get();

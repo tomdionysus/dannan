@@ -47,7 +47,7 @@ INSTANTIATE_TEST_SUITE_P(Guides, Examples,
                                            std::make_pair(std::string("deadlines"), std::vector<std::string>{}),
                                            std::make_pair(std::string("hosted_node"), std::vector<std::string>{"--node-seconds", "1"}),
                                            std::make_pair(std::string("simulated_test"), std::vector<std::string>{})),
-                         [](const auto& info) { return info.param.first; });
+                         [](const auto& example) { return example.param.first; });
 
 }  // namespace
 }  // namespace dannan
