@@ -85,3 +85,53 @@ listener's own, as today.
   with your drain as an on_drain step: right?
 - **Louhi:** does this replace louhi_node.cpp's scaffolding?
 - **Mimir:** anything your node binary needs that this lacks?
+
+## Answers (2026-11-23) and the shape they make
+
+Louhi, Mimir and Kvasir confirmed the drawing; Lugh's answer is awaited. Their asks, merged:
+
+- **A default configuration file** (Louhi): `ProgramSpec::default_config`, read when it exists
+  and no file is named (/etc/louhi/config.yaml, LOUHI_DEFAULT_CONFIG from the package).
+- **A pre-start hook** (Mimir; needed to move at all): `prepare(Node&)`, called after the node
+  is built and before it starts, where a hosted system registers its message types before the
+  routes freeze. As SimNodes::prepare.
+- **One-shot work instead of the node** (Louhi's --retire until item 5, Mimir's --init-state,
+  Kvasir's hash-password):
+  - `before_start(const Settings&, NodeConfig&) -> std::optional<int>`, run after the read and
+    configure: an exit code ends the program without starting the node;
+  - `commands`, a map of positional names to `int(const Settings&)`, run the same way; an
+    unknown positional is refused, exit 2.
+- **A run that ends by itself, and a stop the host can ask for** (Louhi's and Mimir's
+  --seconds; Mimir's SHUTDOWN): `node.seconds` (0, the default: until a signal), and
+  `Program::stop()`, safe from any thread and posted, starting the same drain a first signal
+  does.
+- **The status line** (Louhi): `on_status(void(json::object&))` adds fields to the helper's
+  `node.status` line; a program may instead leave node.status_ms at 0 and keep its own timer.
+- **No requirements of its own** (Mimir's throwaway cluster of one): the helper refuses no
+  missing cluster.key or state; whether one is needed is the program's rule, in configure,
+  which may also set them (a fresh key, a temporary state directory).
+- **Two stop steps** (Kvasir's rollback before the node stops; Mimir's directory removal after
+  it): `on_stop` runs after the drain and before node.stop(); `on_exit` runs after node.stop(),
+  last. A drain step that has not called done by node.drain_ms is left: the helper goes on to
+  on_stop and node.stop() regardless (Kvasir rolls back what is still open in on_stop).
+- **Events** (Mimir: listening, founded, caught_up and stopped are a program's own): the helper
+  prints nothing on stdout but `{"event":"node.status",...}` when node.status_ms is set. Every
+  other line is the program's, through say().
+- **Listener settings** (Kvasir): `add_listener_settings(reader, name, default_port)`, `.tls.ca`
+  optional. Louhi renames api.* onto it, Kvasir listen.* and tls.* onto `mysql`, each with
+  cluster.* in the minor it adopts the helper.
+- Kvasir moves onto the helper when it joins the cluster, not at 0.12.0's tag.
+
+## Lugh's answer (2026-11-23): the shape is complete
+
+Lugh confirmed (P8.1: settings, listener paths for HTTPS, LDAP, LDAPS and the OAuth mTLS port, each
+by its own prefix; the drain; on_stop for its hashing and blocking pools; custody; line output;
+the --version form, which its package and process tests will read). Two additions:
+- **Reload on SIGHUP** (lugh.service's ExecReload=kill -HUP, a certificate renewal's hook): SIGHUP
+  is never a stop. `Program::on_reload(step)` runs each step posted to the io context, and the
+  helper's own listeners reread their CertificatePaths.
+- **Command words** (as Kvasir's): `lugh-node init [--passphrase]` until founding (item 4) comes.
+  `ProgramSpec::commands` names each, run with the settings read and before any node starts; an
+  unknown word exits 2. When founding lands, Lugh's init becomes its hook.
+
+All four consumers have answered; code starts on this shape.

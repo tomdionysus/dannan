@@ -13,14 +13,14 @@
 # on the nodes stay by hand.
 name: CI
 
-# develop and main only: a feature branch's gate runs on the build cluster. Notes and docs build
-# nothing; no test reads them.
+# develop and main only: a feature branch's gate runs on the build cluster. The notes and the
+# top-level Markdown build nothing; the guides under docs/ are the docs step's, so they run it.
 on:
   push:
     branches: [develop, main]
-    paths-ignore: ["TODO/**", "docs/**", "**/*.md"]
+    paths-ignore: ["TODO/**", "*.md"]
   pull_request:
-    paths-ignore: ["TODO/**", "docs/**", "**/*.md"]
+    paths-ignore: ["TODO/**", "*.md"]
 
 # A newer push to the same ref replaces the run in progress.
 concurrency:
@@ -48,6 +48,8 @@ jobs:
           - { step: tsan, arch: x86-64, runner: ubuntu-24.04 }
           - { step: package, arch: x86-64, runner: ubuntu-24.04 }
           - { step: package, arch: arm64, runner: ubuntu-24.04-arm }
+          # The documentation gate (the maintainer, 2026-11-23): Doxygen, warnings as errors.
+          - { step: docs, arch: x86-64, runner: ubuntu-24.04 }
     container:
       image: debian:trixie
       # LeakSanitizer needs ptrace to stop the process's threads.
@@ -57,7 +59,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            g++ clang clang-format cmake ninja-build git ca-certificates openssl \
+            g++ clang clang-format cmake ninja-build git ca-certificates openssl doxygen \
             libboost-dev libssl-dev libyaml-cpp-dev libgtest-dev libgmock-dev
 
       - uses: actions/checkout@v4

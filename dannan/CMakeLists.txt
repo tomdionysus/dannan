@@ -16,6 +16,7 @@ add_library(dannan SHARED
   contract/completion.cpp
   contract/hlc.cpp
   contract/thread_safety.cpp
+  contract/time_wait.cpp
   identity/argon2.cpp
   identity/certificate.cpp
   identity/cluster_key.cpp
@@ -84,6 +85,7 @@ add_library(dannan SHARED
   status/thread_cpu.cpp
   storage/file_system.cpp
   supervise/command.cpp
+  supervise/node_program.cpp
   supervise/startup.cpp
   supervise/supervised.cpp
   supervise/supervisor.cpp

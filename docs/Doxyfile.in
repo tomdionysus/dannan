@@ -1,0 +1,55 @@
+#
+# Dannan - The Distributed Substrate
+#
+# Copyright (C) 2026 Tom Cully <mail@tomcully.com>
+# Licensed under the GNU GPLv3 - see <https://www.gnu.org/licenses/gpl-3.0.html>
+#
+# The API reference (the maintainer's ruling, 2026-11-23): every public declaration of the headers
+# held to the gate is documented, and an undocumented one fails the build (WARN_AS_ERROR). CMake
+# fills the input from DANNAN_DOC_HEADERS (docs/CMakeLists.txt), which grows as the backfill
+# reaches each header. The concept guides are Markdown pages beside it; the examples are quoted
+# from examples/, which CI builds and runs.
+
+PROJECT_NAME           = "Dannan"
+PROJECT_NUMBER         = @PROJECT_VERSION@
+PROJECT_BRIEF          = "The distributed substrate: the network layer a cluster's hosted systems run on"
+OUTPUT_DIRECTORY       = @DANNAN_DOC_OUTPUT@
+INPUT                  = @DANNAN_DOC_INPUT@
+FILE_PATTERNS          = *.h *.md *.dox
+RECURSIVE              = NO
+STRIP_FROM_PATH        = @PROJECT_SOURCE_DIR@
+STRIP_FROM_INC_PATH    = @PROJECT_SOURCE_DIR@
+USE_MDFILE_AS_MAINPAGE = @PROJECT_SOURCE_DIR@/docs/guide/index.md
+EXAMPLE_PATH           = @PROJECT_SOURCE_DIR@/examples
+EXAMPLE_PATTERNS       = *.cpp
+MARKDOWN_SUPPORT       = YES
+AUTOLINK_SUPPORT       = YES
+JAVADOC_AUTOBRIEF      = YES
+QT_AUTOBRIEF           = NO
+BUILTIN_STL_SUPPORT    = YES
+EXTRACT_ALL            = NO
+EXTRACT_PRIVATE        = NO
+EXTRACT_STATIC         = YES
+EXTRACT_LOCAL_CLASSES  = NO
+HIDE_UNDOC_MEMBERS     = NO
+HIDE_UNDOC_CLASSES     = NO
+EXCLUDE_SYMBOLS        = *::detail::* detail
+ENABLE_PREPROCESSING   = YES
+MACRO_EXPANSION        = YES
+EXPAND_ONLY_PREDEF     = NO
+SEARCH_INCLUDES        = YES
+# contract/thread_safety.h read as a compiler other than clang reads it: every annotation is
+# nothing.
+INCLUDE_PATH           = @PROJECT_SOURCE_DIR@ @PROJECT_BINARY_DIR@/generated
+QUIET                  = YES
+WARNINGS               = YES
+WARN_IF_UNDOCUMENTED   = YES
+WARN_IF_DOC_ERROR      = YES
+WARN_IF_INCOMPLETE_DOC = NO
+WARN_NO_PARAMDOC       = NO
+WARN_AS_ERROR          = FAIL_ON_WARNINGS
+GENERATE_HTML          = YES
+GENERATE_LATEX         = NO
+GENERATE_TREEVIEW      = YES
+SOURCE_BROWSER         = NO
+HAVE_DOT               = NO

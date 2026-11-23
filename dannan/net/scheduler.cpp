@@ -31,19 +31,57 @@ uint64_t micros(contract::Clock::duration duration) {
 
 }  // namespace
 
+void RequestScheduler::Answering::begin(const identity::NodeId& peer, size_t work) {
+  by_class[work].fetch_add(1, std::memory_order_acq_rel);
+  contract::Lock lock(mutex);
+  ++by_peer[peer][work];
+}
+
+void RequestScheduler::Answering::end(const identity::NodeId& peer, size_t work) {
+  by_class[work].fetch_sub(1, std::memory_order_acq_rel);
+  contract::Lock lock(mutex);
+  const auto found = by_peer.find(peer);
+  if (found == by_peer.end()) return;
+  --found->second[work];
+  if (std::all_of(found->second.begin(), found->second.end(), [](size_t n) { return n == 0; })) by_peer.erase(found);
+}
+
+size_t RequestScheduler::Answering::of(const identity::NodeId& peer, size_t work) {
+  contract::Lock lock(mutex);
+  const auto found = by_peer.find(peer);
+  return found == by_peer.end() ? 0 : found->second[work];
+}
+
 struct Answer::State {
   Reply reply;
   sched::RetainedMemoryLedger::Lease memory;
-  std::shared_ptr<std::array<std::atomic<size_t>, 4>> answering;
+  // What the handler holds for its answer (hold()), and the ledger that charges it.
+  std::vector<sched::RetainedMemoryLedger::Lease> held;
+  sched::RetainedMemoryLedger* ledger = nullptr;
+  std::shared_ptr<RequestScheduler::Answering> answering;
+  identity::NodeId peer;
   size_t work = 0;
-  // Gives back the class's place and the request's bytes, once.
+  // Gives back the class's and the peer's place, the request's bytes and what was held, once.
   void release() noexcept {
     memory.reset();
-    if (answering) (*answering)[work].fetch_sub(1, std::memory_order_acq_rel);
+    held.clear();
+    if (answering) answering->end(peer, work);
     answering.reset();
   }
   ~State() { release(); }
 };
+
+bool Answer::hold(size_t bytes) {
+  if (!_state) return false;
+  if (!_state->ledger || bytes == 0) return true;
+  auto lease = _state->ledger->try_acquire(static_cast<sched::WorkClass>(_state->work), sched::MemoryOwner::deferred_reply, bytes);
+  if (!lease) {
+    fail(503, "transport_busy", "the node's memory cannot hold this request's answer now; try later");
+    return false;
+  }
+  _state->held.push_back(std::move(*lease));
+  return true;
+}
 
 Answer::Answer() noexcept = default;
 Answer::Answer(std::unique_ptr<State> state) noexcept : _state(std::move(state)) {}
@@ -211,7 +249,10 @@ void RequestScheduler::submit(std::shared_ptr<const membership::NodeRecord> peer
     // A class's requests running or answered later are bounded too: a handler
     // that defers holds no worker, so the workers no longer bound them.
     const auto work = static_cast<size_t>(sched::work_class(frame.frame));
-    if (!refused) refused = (*_answering)[work].load(std::memory_order_acquire) >= _limits.max_deferred;
+    if (!refused) refused = _answering->by_class[work].load(std::memory_order_acquire) >= _limits.max_deferred;
+    // And each peer's share of them, so no one peer holds the class's whole allowance.
+    const auto share = _limits.max_deferred_per_peer ? _limits.max_deferred_per_peer : std::max<size_t>(_limits.max_deferred / 4, 1);
+    if (!refused) refused = _answering->of(peer->id, work) >= share;
     if (refused) {
       ++(which == Queue::ordered ? _ordered_rejected : _rejected);
     } else {
@@ -266,7 +307,9 @@ void RequestScheduler::run(Job job) {
   state->reply = std::move(job.reply);
   state->memory = std::move(job.memory);
   state->work = static_cast<size_t>(sched::work_class(job.frame.frame));
-  (*_answering)[state->work].fetch_add(1, std::memory_order_acq_rel);
+  state->peer = job.peer->id;
+  state->ledger = _memory;
+  _answering->begin(state->peer, state->work);
   state->answering = _answering;
   Answer answer(std::move(state));
   const auto type = job.frame.message.type;

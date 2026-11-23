@@ -23,6 +23,7 @@
 #include <type_traits>
 
 #include "dannan/agree/wire.h"
+#include "dannan/contract/time_wait.h"
 #include "dannan/identity/durable_file.h"
 #include "dannan/reach/external_ip.h"
 
@@ -32,17 +33,6 @@ namespace asio = boost::asio;
 using membership::NodeRecord;
 
 namespace {
-
-// Runs `fn` once `time` reaches `at`, on the timer's executor, unless the timer
-// is cancelled first. In the node's injected time, so a test can move it.
-void when_time_reaches(const std::shared_ptr<asio::steady_timer>& timer, const contract::TimeSource& time, contract::TimePoint at, std::function<void()> fn) {
-  timer->expires_after(time.wake_within(std::max(std::chrono::ceil<std::chrono::milliseconds>(at - time.now()), std::chrono::milliseconds(0))));
-  timer->async_wait([timer, &time, at, fn = std::move(fn)](const boost::system::error_code& error) mutable {
-    if (error) return;
-    if (time.now() < at) return when_time_reaches(timer, time, at, std::move(fn));
-    fn();
-  });
-}
 
 NodeRecord initial_self(const NodeConfig& config, const identity::NodeId& id, const identity::NodeId& incarnation, bool capable) {
   NodeRecord self;
@@ -1412,8 +1402,8 @@ std::shared_ptr<net::CallHandle> Node::place_call(std::optional<NodeRecord> peer
     return state->handle;
   }
   auto strand = asio::make_strand(_io);
-  auto timer = std::make_shared<asio::steady_timer>(strand);
-  when_time_reaches(timer, *_config.time, _config.time->now() + deadline, [state, executor, deadline] {
+  // On the node's injected time; a stepped clock arms nothing while it stands (0.12.0).
+  const auto wait = contract::TimeWait::start(strand, *_config.time, _config.time->now() + deadline, [state, executor, deadline] {
     state->expired = true;
     // The deadline is claimed before the cancel, whose own "cancelled"
     // answer would otherwise race it to the caller.
@@ -1424,8 +1414,8 @@ std::shared_ptr<net::CallHandle> Node::place_call(std::optional<NodeRecord> peer
       state->done(net::CallOutcome{std::nullopt, "deadline of " + std::to_string(deadline.count()) + " ms passed before an answer", {}});
     });
   });
-  auto finish = [state, timer, strand](net::CallOutcome outcome) {
-    asio::post(strand, [timer] { timer->cancel(); });
+  auto finish = [state, wait](net::CallOutcome outcome) {
+    wait->cancel();
     if (state->finished.exchange(true)) return;
     state->done(std::move(outcome));
   };
@@ -1489,8 +1479,7 @@ void Node::after(std::chrono::milliseconds delay, std::function<void()> task) {
       asio::post(executor, [gate, task = std::move(task)] { gate_of(gate).run(task); });
     });
   }
-  auto timer = std::make_shared<asio::steady_timer>(_io);
-  when_time_reaches(timer, *_config.time, _config.time->now() + delay, std::move(task));
+  (void)contract::TimeWait::start(_io.get_executor(), *_config.time, _config.time->now() + delay, std::move(task));
 }
 
 void Node::schedule_loops() {

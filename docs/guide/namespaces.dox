@@ -1,0 +1,40 @@
+/*
+ * Dannan - The Distributed Substrate
+ *
+ * Copyright (C) 2026 Tom Cully <mail@tomcully.com>
+ * Licensed under the GNU GPLv3 - see <https://www.gnu.org/licenses/gpl-3.0.html>
+ */
+
+/// @namespace dannan
+/// Dannan: the network layer a cluster's hosted systems run on. dannan::Node is a node, and
+/// dannan::Context what a hosted system sees of it.
+
+/// @namespace dannan::contract
+/// The stack's shared vocabulary: the clocks (TimeSource, WallClock), waits on them (TimeWait),
+/// completions, Outcome and Fault, and the thread-safety annotations.
+
+/// @namespace dannan::identity
+/// Who a node is and what it holds secret: node ids, keys and custody, certificates, and the
+/// cryptographic helpers every project shares (Argon2id, stored passwords, AES-GCM).
+
+/// @namespace dannan::net
+/// The transport: sessions and lanes, calls and replies, the request scheduler, and channels
+/// (Fanout) with their delivery kinds.
+
+/// @namespace dannan::listen
+/// The public side: listeners for a hosted system's own clients, their TLS, and the limits on
+/// callers (RateLimiter, Backoff).
+
+/// @namespace dannan::sched
+/// Scheduling work and memory by class: the retained-memory ledger, the class gates, the worker
+/// pool, and the transfer-buffer pool.
+
+/// @namespace dannan::status
+/// What a node says about itself: logging, telemetry, readiness and health.
+
+/// @namespace dannan::supervise
+/// Running things: supervised threads, the process runner, and the node-program helper a node
+/// binary's main is made of.
+
+/// @namespace dannan::config
+/// The configuration reader every node binary shares, and the node settings under cluster.*.

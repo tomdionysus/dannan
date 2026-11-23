@@ -1,5 +1,75 @@
 # Current release
 
+## 0.12.0: readiness and health, the node-program helper, limits, passwords, a process runner, and documentation
+
+A new minor: the ABI changes, so move a pin from 0.11.x to 0.12.0 in one step. The library
+package is libdannan0.12. The first release under the documentation gate: everything it adds or
+changes is documented in the API reference (`-DDANNAN_BUILD_DOCS=ON`, the `docs` target) and the
+guides in docs/guide/.
+
+Added:
+- Readiness and health (item 7): `status::Readiness` gains a node's health after startup, the
+  worst of the operator's drain and every check a hosted system pushes (`set`, with an optional
+  valid time after which a silent check reads not ready), `checks()` ordered by name, and
+  `on_change` posted. The node checks its clock, its ledger's headroom and its certificate's
+  expiry, and its record advertises its health (`dannan.health`) once a worse one has held for
+  `NodeConfig::health_hold` (10 s); draining and recovery at once. `status::health_of` reads a
+  peer's. Placement demotes draining, then not ready, nodes behind the healthy ones while there
+  are enough of those (`Scheme::ignore_health`, or rendezvous's argument, turns it off).
+- The node-program helper (item 14): `supervise::run_node_program`, a node binary's main: one
+  reader for `cluster.*`, `log.*`, `node.*` and the program's own settings, a default file,
+  `--help`, `--version` and command words, configure, before_start and prepare hooks, io threads,
+  the drain on SIGTERM or SIGINT within `node.drain_ms`, a second signal stopping at once, SIGHUP
+  reloading, `Program::stop()` and `node.seconds`, `node.status` lines, and the stack's exit codes.
+  `add_listener_settings` and `listener_settings` name a listener's address, port and TLS paths
+  alike in every program.
+- Keyed limits (item 10): `listen::RateLimiter`, token buckets keyed by a caller's string with a
+  wait for Retry-After and a hard bound on the keys.
+- The stored password (item 11): `identity::make_password`, `verify_password`, `verify_decoy`,
+  `needs_rehash`, and the PHC string (`to_phc`, `from_phc`): Argon2id, a 16-byte salt and a
+  32-byte hash, costs out of bounds refused before any work.
+- A process runner (item 23): `supervise::ProcessCommands`: no shell, a fixed environment, output
+  bounded or to a file, a nice value, each run its own process group killed whole at its
+  deadline, on cancel, on stop and as its leader exits; one posted Outcome.
+- `contract::TimeWait`, and `TimeSource::watch` and `unwatch`: a source that says when it moves,
+  so a wait on a stepped clock arms no timer while it stands (Dagda's stalls under TSan). A node's
+  per-call deadline, its `after()` and each call's watchdog wait this way; `test::SteppedTime`
+  watches.
+- `WallClock::unix_us()` (Kvasir, for NOW(6)), defaulting to `unix_ms() * 1000`; the system clock
+  and `test::SteppedWall` give real microseconds.
+- `net::Answer::hold(bytes)`: what a deferring handler holds for its answer, charged to the ledger
+  as `MemoryOwner::deferred_reply`; refused, a 503. `ServerLimits::max_deferred_per_peer`, a quarter
+  of `max_deferred` by default (Macha).
+- `SimNodes::prepare`, called on each node before it starts, so a hosted system registers its types
+  in the simulation as on a real node (Mimir).
+- Context's `readiness()` and `threads()` gain const overloads (Macha).
+- The API reference by Doxygen, warnings as errors, and its CI job; the concept guides in
+  docs/guide/; the examples in examples/, built and run with the tests.
+
+Changed:
+- `listen::Backoff`'s bound is hard: forgotten keys first, then the fewest failures, oldest first,
+  so a flood of made-up names never evicts a real name's penalty.
+- `agree::Agreement::found` has one deadline for the whole founding (the maintainer's ruling): with
+  its genesis majority out of reach, a founding of 64 slots took a deadline per window of 16.
+- An idle hybrid clock writes nothing: the constructor writes no ceiling, and `keep_ahead` follows
+  the last stamp issued, never the wall (Lir's finding: every node rewrote it once a second). The
+  first stamp after an idle spell raises the ceiling once on the write path.
+- A call's watchdog checks when its deadline or next stall notice could be reached, rather than
+  every quarter of it, and a finished call stops its watchdog at once.
+
+Fixed:
+- `identity::argon2id` derives from an empty password instead of throwing, so a sign-in that
+  submits nothing is refused rather than thrown at (found by item 11's tests).
+
+Adopting 0.12.0:
+- Push your health as checks on Context::readiness() (`set` with a valid time on your status
+  loop), and read a peer's with `status::health_of`. Placement now demotes draining and not ready
+  nodes; set `Scheme::ignore_health` if you judge health yourself.
+- A node binary's main becomes `supervise::run_node_program` and your root; drop your own reader,
+  signals and drain.
+- Replace your own rate limiter, password hashing and process runner with Dannan's.
+- A test fixture's stepped clocks now notify: waits on them arm no timers.
+
 ## 0.11.1: an ordered channel delivery
 
 A patch: the ABI is 0.11.0's.

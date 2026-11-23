@@ -35,16 +35,59 @@ then what the next one builds on). Each minor changes the ABI; within one, only 
      SimNodes::start before each node starts, so a hosted system registers its routes (Mimir,
      2026-11-23); the hybrid clock's ceiling written only for stamps issued (the approved 0.9.3
      fix, never shipped: `keep_ahead()` still follows the wall, hlc.cpp:159).
-2. **0.13.0, target 2026-12-05:**
+2. **0.13.0, target 2026-12-05** (with Manannan's four small asks, 2026-11-23, relayed by the
+   coordinating session; Manannan's 0.5.0 waits on 0.13.0's HTTP server anyway, and depends on
+   nothing it does not ask for here):
+   - Named-slot placement: a pure function filling N named slots (ns1 to ns4) from a candidate
+     set, distinct nodes, each slot moving only when its own node leaves the set; recomputed on
+     Nodes::watch.
+   - A true-time interval for signing (RRSIG windows): the wall time with the bound the node's
+     clock is held to, empty while the node is out of bounds.
+   - Revocations watched: Identity gains a watch that tells each revocation applied here.
+   - The external address per family: IPv4 and IPv6 each with when it was observed, beside the
+     one external address PublicConnectivityStatus has now.
    - The HTTP core (24): Lir, Louhi, Kvasir and Mimir's dashboards, and Lugh; the health route
      behind 7.
    - The register layer (2): Lugh P8.6, Mimir, Louhi, Kvasir.
+   - A DNS client (the maintainer, 2026-11-23), beside the HTTP client, which needs it: asynchronous
+     on the caller's executor with a deadline (getaddrinfo blocks a thread), A, AAAA, SRV and TXT,
+     its answers cached by TTL, servers from the system's resolv.conf or named, over UDP with TCP
+     on truncation. It works with any DNS servers and never relies on Manannan. Every project on
+     Dannan gets it, and Dannan's own name lookups move onto it: seeds named by host, the stream
+     connector's dials, and the HTTP client. The shape goes to the consumers first. Their answers
+     (2026-11-23):
+     - Lir: none of its own; the connector's dials must look up within the dial's own deadline,
+       and try a name's several A and AAAA answers within it, interleaved as RFC 8305 does, so a
+       dead first address does not fail the attempt. resolv.conf's servers are enough.
+     - Kvasir: a reverse lookup (PTR) and its forward confirmation, for MySQL's host-named
+       accounts; a lookup that failed or timed out told apart from "no such name" (not_found
+       against unavailable or timed_out), since MySQL then falls back to the address.
+     - Louhi: A and AAAA with a deadline now (its CLI's HTTPS client); later, SRV and A against
+       servers named per call (one VPC's), TTL honoured, waiting on the maintainer's design.
+     - Macha: nothing; its libcurl does its own lookups.
+     - Mimir: nothing direct; the connector (MIGRATE's target, a name a client typed) and the
+       node's seeds and advertised address on the client, the lookup inside the connect's one
+       timeout, A and AAAA tried as the connect tries addresses, and a name that does not resolve
+       ending the connect at once with its reason.
+     - AthenaSIP: moves its own resolver onto Dannan's once it covers NAPTR, so NAPTR joins the
+       types (order, preference, flags, service, regexp, replacement), with SRV's priority, weight,
+       port and target; empty told apart from failed; negative answers cached (RFC 2308); RFC
+       5452's checks (a fresh port per query, a reply only from the server asked with the id
+       sent). It keeps a query-by-name-and-type call, so its RFC 3263 locator moves over unchanged.
+       Its resolver (athenasip/src/dns/: each server in turn twice round as resolv.conf(5) does,
+       TCP on truncation, the wire format with a fuzz target) is read for what it does, not copied.
+     - Lugh: nothing direct once Dannan's HTTPS client takes its issuer lookups (A and AAAA, each
+       address tried in turn within the caller's deadline). For outbound posts to an app's host
+       (back-channel logout), a filter that sees the addresses after resolution and before the
+       dial, so loopback, link-local and private ranges the operator has not allowed are refused
+       (a request to the inside is refused, never made). Negative answers cached briefly (the
+       SOA minimum, capped).
    - Slow peers (8): Lir, Dagda's joiner survey.
 3. **0.14.0, target mid-December:** atomic commit across replica sets (26): Kvasir step 3 and
    every multi-key write in Mimir. Its intents live in register values, so it needs 2. Its design
    (Mimir's proposal with Kvasir's corrections) is drawn and sent to both during 0.13.0, so code
    starts the day 2 lands; earlier than the plan's "after 3".
-4. **Then:** DNS (25: Lir, Kvasir, Lugh, Mimir), selective channel interest (31: Lir), and the
+4. **Then:** selective channel interest (31: Lir), and the
    stack plan's third minor (3, 4, 5, 22). After those, the earlier list, unless a waiting
    project says one blocks it: DTLS and UDP for `dannan::listen`; the peer-witnessed high-water
    mark (it also covers the hybrid clock's restore without custody); loader promotion at the peer
@@ -54,6 +97,33 @@ then what the next one builds on). Each minor changes the ABI; within one, only 
 The split of the plan's second minor into 0.12.0 and 0.13.0 is the maintainer's ruling
 (2026-11-23, through the coordinating session): sooner pins for the most-waited items, at one more
 repin for each consumer.
+
+**Documentation: a gate and a backfill** (the maintainer's ruling, 2026-11-23, through the
+coordinating session). From 0.12.0 no release is tagged without documentation for everything it
+adds or changes; in parallel the existing public API is backfilled, most used first. 0.12.0 may
+slip about a day for it. The form: Doxygen comments on every public declaration (what it does,
+parameters, return, errors and Outcome cases, threading, ownership and lifetime, deadlines),
+rendered by a `docs` target (Doxygen a build tool only, never a library dependency), built in
+hosted CI with warnings as errors so an undocumented public symbol fails it; Markdown concept
+guides in docs/ with the why as well as the what; real programs under examples/, built in CI
+and run as tests, quoted by the guides. No identifying data in any example. The order:
+1. The machinery: docs/Doxyfile.in, `-DDANNAN_BUILD_DOCS=ON` and a `docs` target, `tools/ci.sh
+   docs` and its CI job, examples/ with `-DDANNAN_BUILD_EXAMPLES=ON`, each example run by a test.
+   The Doxygen input is the list of headers held to the gate, growing with the backfill, so the
+   gate is whole for what it covers from the first day. Target 2026-11-24.
+2. 0.12.0's own additions, under the gate: readiness and health, RateLimiter and Backoff, the
+   stored password, ProcessCommands, the node-program helper, TimeWait and TimeSource::watch,
+   unix_us, Answer::hold and the per-peer share, placement's health, BufferPool's bound, and
+   Delivery::ordered. 0.12.0 is tagged once these pass, about 2026-11-29.
+3. The backfill, first part (target 2026-11-26): node.h and NodeConfig, context.h; config, the
+   node settings and docs/config.md; contract/ (Outcome, Fault, Completion); net/ fanout,
+   routes and Delivery; the clocks and TimeSource; BufferPool; the HLC.
+4. The concept guides, with the first part: the model (nodes and identity, membership and the
+   agreed roster, founding, the clocks, the delivery kinds, settings, faults and evidence).
+5. The examples, with the guides: founding a cluster of three, routes and message types, each
+   delivery kind, a hosted system on Context, settings, deadlines and Outcome, the simulated
+   nodes in a test.
+6. The rest of the public API, header by header, each joining the gate's input as it is done.
 
 **Outcomes of earlier open items:**
 - LevelZero.AChunkLostOnTheWayToTheFarEndEndsItWithinTheBound (hosted ASan, 0.10.2): found and
@@ -256,8 +326,10 @@ words, so a session does not re-derive it.
   gossip. The event system's broker is built on top, not in.
 - (2026-11-02, design) **CONTROL relay is unconditional, DATA relay is
   budgeted**; a path change is a reconnect under the same identity.
-- (2026-11-02, design) **Dannan has no namespace and no resolver**; bind9
-  serves; a zone is a store head with a DNS-tolerant merge.
+- (2026-11-02, design; the maintainer, 2026-11-23) **Dannan serves no DNS.** Manannan is a full
+  cluster DNS server, its own project; no project depends on it. Dannan does get a **DNS client**,
+  better than the system's lookup calls, that works with any DNS servers (the system's configured
+  ones by default, or servers named) and never relies on Manannan.
 - (2026-11-02, design) **The hosted-system ABI is the C++ ABI with a build
   identity check**, as both repositories do today. No C ABI is promised.
 - (2026-11-02, design) **One wire protocol number for the whole cluster**,
@@ -511,6 +583,14 @@ changes nothing it does not have to.
 
 ### Workflow
 
+- **No preferred node** (the maintainer, 2026-11-23, through the coordinating session). A job takes
+  whichever Pi has the cores free now, never queues for one because it holds a warm build tree or
+  an earlier build: rsync the tree there and build from scratch. A missing build tool, compiler
+  or -dev package is installed there (one core claimed, `nice -n 19 apt-get install -y`, a board
+  note naming the package and the Pi). Wait only when no machine has the cores, naming every
+  machine (`claim-board wait --any`). The one exception is a job that must run on one machine (a
+  service or instance that lives there, or jupiter for TSan with clang 19), said in the claim's
+  job text.
 - **Two kinds of session.** A *build session* takes one step here, on
   `feature/<step>` off this repository's `develop`, writes the tests from
   the inventory rows and the design first, watches them fail, builds the

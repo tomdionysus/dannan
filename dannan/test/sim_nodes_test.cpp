@@ -88,6 +88,40 @@ TEST(SimNodes, AnOrderedChannelDeliversInOrderAtMostOnce) {
   EXPECT_EQ(ordered_across(true), all);
 }
 
+// A hosted system's message types, registered in prepare before each node starts, as on a real
+// node (0.12.0; Mimir's ask): a call of one is answered, where after start the routes are frozen.
+TEST(SimNodes, AHostedTypeRegisteredInPrepareIsServed) {
+  World world(3);
+  SimNodes nodes(world, 2, {}, 0, 0, false);
+  constexpr net::MessageType notice{2000};
+  nodes.prepare = [&](size_t, Node& node) {
+    node.context().routes().add(notice, {"notice", net::Lanes::control, net::Frames::any, false},
+                                [](const membership::NodeRecord&, sched::FrameType, const net::Message& request) {
+                                  return net::Handled::processed({net::message::ok, request.payload, {}});
+                                });
+  };
+  bool frozen = false;
+  nodes.host = [&](size_t, Node& node, bool) {
+    try {
+      node.context().routes().add(net::MessageType{2001}, {"late", net::Lanes::control, net::Frames::any, false});
+    } catch (const std::logic_error&) {
+      frozen = true;
+    }
+  };
+  nodes.start_all();
+  EXPECT_TRUE(frozen);
+  ASSERT_TRUE(world.run_until([&] { return everyone_knows_everyone(nodes); }, 2'000'000));
+  std::optional<net::CallOutcome> answer;
+  membership::NodeRecord peer;
+  for (const auto& record : nodes.node(1).context().nodes().active())
+    if (record.id == nodes.id(0)) peer = record;
+  (void)nodes.node(1).context().routes().call(peer, notice, net::Bytes{7}, sched::FrameType::control, 5s, world.io.get_executor(),
+                                              [&](net::CallOutcome outcome) { answer = std::move(outcome); });
+  ASSERT_TRUE(world.run_until([&] { return answer.has_value(); }, 2'000'000));
+  ASSERT_TRUE(answer->reply) << answer->failure;
+  EXPECT_EQ(answer->reply->payload, net::Bytes{7});
+}
+
 // The world's time at which everyone first knows everyone: the same for the same seed.
 uint64_t joined_at(uint64_t seed) {
   World world(seed);

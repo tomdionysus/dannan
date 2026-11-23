@@ -24,6 +24,8 @@ option(DANNAN_BUILD_TESTING "Build dannan_tests (GoogleTest)" OFF)
 option(DANNAN_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 option(DANNAN_BUILD_COMPOSE_TESTS "Build dannan_compose_tests, the Docker NAT bed's driver (needs DANNAN_BUILD_TESTING)" OFF)
 option(DANNAN_BUILD_FUZZING "Build each fuzz target as its own binary (libFuzzer where the compiler has it)" OFF)
+# The API reference and guides, by Doxygen, a build tool only (docs/CMakeLists.txt).
+option(DANNAN_BUILD_DOCS "Add the docs target: the API reference and guides, warnings as errors" OFF)
 # Off for a project that fetches Dannan for the library alone (Lugh's client library).
 option(DANNAN_BUILD_TOOLS "Build and install the tools: dannan-node, dannan-ca, dannan-bench, dannan-import-macha, dannan-version" ON)
 if(DANNAN_BUILD_TESTING AND NOT DANNAN_BUILD_TOOLS)
@@ -87,9 +89,18 @@ if(DANNAN_BUILD_TESTING OR DANNAN_BUILD_FUZZING)
   add_subdirectory(dannan/fuzz)
 endif()
 
+if(DANNAN_BUILD_DOCS)
+  add_subdirectory(docs)
+endif()
+
 if(DANNAN_BUILD_TESTING)
   find_package(GTest 1.14 CONFIG REQUIRED)
   add_subdirectory(dannan/test)
+  # The examples the guides quote, run by dannan_tests (examples/CMakeLists.txt).
+  add_subdirectory(examples)
+  target_compile_definitions(dannan_tests PRIVATE DANNAN_EXAMPLES_DIR="${PROJECT_BINARY_DIR}/examples")
+  add_dependencies(dannan_tests example_founding_three example_routes example_delivery example_settings example_deadlines example_hosted_node
+                   example_simulated_test)
   if(DANNAN_BUILD_COMPOSE_TESTS)
     add_subdirectory(test/compose)
   endif()
