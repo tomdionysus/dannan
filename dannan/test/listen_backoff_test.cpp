@@ -74,5 +74,31 @@ TEST(Backoff, MadeUpKeysDoNotGrowWithoutBound) {
   EXPECT_LE(backoff.size(), 152u);
 }
 
+// The bound is hard (item 10; Kvasir's proof): a flood of made-up names that are all fresh, so
+// none is forgotten, still never holds more than the bound, and a real name under attack keeps
+// its penalty: the keys with fewest failures go first.
+TEST(Backoff, AFloodOfFreshNamesStaysBoundedAndARealPenaltyStays) {
+  Backoff backoff(Backoff::Rules{}, 100);
+  for (int i = 0; i < 12; ++i) backoff.failed("real", start);
+  const auto penalty = backoff.wait("real", start);
+  ASSERT_TRUE(penalty);
+  for (int i = 0; i < 10000; ++i) {
+    backoff.failed("made-up-" + std::to_string(i), start + std::chrono::milliseconds(i));
+    ASSERT_LE(backoff.size(), 100u) << i;
+  }
+  EXPECT_EQ(backoff.wait("real", start), penalty);
+}
+
+// Among keys with as many failures, the one failed longest ago goes first.
+TEST(Backoff, AtTheBoundTheOldestOfTheFewestFailuresGoesFirst) {
+  Backoff backoff(Backoff::Rules{.free_failures = 0}, 8);
+  backoff.failed("oldest", start);
+  for (int i = 0; i < 7; ++i) backoff.failed("k" + std::to_string(i), start + std::chrono::seconds(1 + i));
+  backoff.failed("newest", start + 10s);
+  EXPECT_LE(backoff.size(), 8u);
+  EXPECT_FALSE(backoff.wait("oldest", start + 10s));
+  EXPECT_TRUE(backoff.wait("newest", start + 10s));
+}
+
 }  // namespace
 }  // namespace dannan::listen
