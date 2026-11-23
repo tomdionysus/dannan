@@ -45,7 +45,7 @@ release keeps the ABI, so any later patch of the same minor is accepted and
 loads:
 
 ```cmake
-find_package(dannan 0.10.0 CONFIG REQUIRED)
+find_package(dannan 0.11.0 CONFIG REQUIRED)
 target_link_libraries(my_system PRIVATE dannan::dannan)
 ```
 
@@ -227,7 +227,7 @@ Dannan and, where they share state, share it through Dagda.
 
 ## Status
 
-Version 0.10.0. The library, wire versions 1 and 2, reachability, identity and
+Version 0.11.0. The library, wire versions 1 and 2, reachability, identity and
 agreement are complete and tested. Within a minor the ABI is kept; interfaces
 may change between minors while the hosted systems are built on them.
 
