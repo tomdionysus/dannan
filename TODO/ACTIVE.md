@@ -51,17 +51,18 @@ then what the next one builds on). Each minor changes the ABI; within one, only 
    (its design to Macha first); and Kvasir's sync-free current read (needs its simulator run of
    crashes between the read's promise and a lower-ballot accept).
 
-The split of the plan's second minor into 0.12.0 and 0.13.0 is a recommendation to the maintainer
-(sooner pins for the most-waited items, at one more repin for each consumer); the order of work is
-the same either way.
+The split of the plan's second minor into 0.12.0 and 0.13.0 is the maintainer's ruling
+(2026-11-23, through the coordinating session): sooner pins for the most-waited items, at one more
+repin for each consumer.
 
 **Outcomes of earlier open items:**
 - LevelZero.AChunkLostOnTheWayToTheFarEndEndsItWithinTheBound (hosted ASan, 0.10.2): found and
   fixed in 0.11.0. A circuit end's close sent while its session to the relay was gone was dropped;
   it now goes by CONTROL (CHANGELOG 0.11.0, "Fixed").
-- `found()`'s deadline per slot (with its node gone, a founding's outcome takes one deadline per
-  window of 16 slots): still to be put to the maintainer, with the recommendation that one deadline
-  bounds the whole founding.
+- `found()`'s deadline per slot (with its node gone, a founding's outcome took one deadline per
+  window of 16 slots): the maintainer ruled one deadline for the whole founding (2026-11-23). It
+  rides with 0.12.0: a test that a founding whose node is gone ends by its one deadline, then the
+  change.
 - Still open, unseen since: LevelZero.AChunkLostWithTheSendersSessionEndsTheCircuitWithinTheBound
   (once, CI run 43900791401) and ChildProcess.ChildrenStartOnManyThreadsAtOnce's TSan hang (once,
   CI run 44116803795). Each is pinned before anything is changed; the process runner (23) replaces
