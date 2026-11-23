@@ -91,7 +91,9 @@ TEST(Backoff, AFloodOfFreshNamesStaysBoundedAndARealPenaltyStays) {
 
 // Among keys with as many failures, the one failed longest ago goes first.
 TEST(Backoff, AtTheBoundTheOldestOfTheFewestFailuresGoesFirst) {
-  Backoff backoff(Backoff::Rules{.free_failures = 0}, 8);
+  Backoff::Rules rules;
+  rules.free_failures = 0;
+  Backoff backoff(rules, 8);
   backoff.failed("oldest", start);
   for (int i = 0; i < 7; ++i) backoff.failed("k" + std::to_string(i), start + std::chrono::seconds(1 + i));
   backoff.failed("newest", start + 10s);

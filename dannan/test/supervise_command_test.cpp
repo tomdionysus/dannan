@@ -42,7 +42,15 @@ struct Runner {
   }
 };
 
-Invocation shell(const std::string& script, std::string input = {}) { return Invocation{{"sh", "-c", script}, std::move(input)}; }
+// Field by field: GCC's -Wmissing-field-initializers refuses a braced one that leaves any out.
+Invocation invocation(std::vector<std::string> argv, std::string input = {}) {
+  Invocation out;
+  out.argv = std::move(argv);
+  out.input = std::move(input);
+  return out;
+}
+
+Invocation shell(const std::string& script, std::string input = {}) { return invocation({"sh", "-c", script}, std::move(input)); }
 
 // A process gone, or a zombie no one has reaped yet: either way it runs no more. Bounded: a
 // SIGKILL takes effect when the process is next scheduled.
@@ -70,7 +78,7 @@ TEST(Command, ItsOutputAndExitCode) {
 
 TEST(Command, ItsInputIsWrittenToItsStdin) {
   Runner runner;
-  const auto out = runner.run(Invocation{{"cat"}, "hello\nthere"});
+  const auto out = runner.run(invocation({"cat"}, "hello\nthere"));
   ASSERT_TRUE(out.ok()) << out.message;
   EXPECT_EQ(out.value.output, "hello\nthere");
 }
@@ -84,18 +92,18 @@ TEST(Command, OneKilledBySignalExitsWith128AndTheSignal) {
 
 TEST(Command, AProgramNotFoundIsUnavailableAndNamed) {
   Runner runner;
-  const auto out = runner.run(Invocation{{"no-such-program-dannan"}});
+  const auto out = runner.run(invocation({"no-such-program-dannan"}));
   EXPECT_EQ(out.fault, contract::Fault::unavailable);
   EXPECT_NE(out.message.find("no-such-program-dannan"), std::string::npos) << out.message;
   // A path is taken as it is, never searched.
-  EXPECT_EQ(runner.run(Invocation{{"./sh"}}).fault, contract::Fault::unavailable);
+  EXPECT_EQ(runner.run(invocation({"./sh"})).fault, contract::Fault::unavailable);
 }
 
 TEST(Command, AnEmptyArgumentListOrABadNiceIsRefused) {
   Runner runner;
   const auto ignore = [](CommandOutcome) {};
   EXPECT_THROW(runner.commands.run(Invocation{}, 1s, runner.io.get_executor(), ignore), std::invalid_argument);
-  EXPECT_THROW(runner.commands.run(Invocation{{""}}, 1s, runner.io.get_executor(), ignore), std::invalid_argument);
+  EXPECT_THROW(runner.commands.run(invocation({""}), 1s, runner.io.get_executor(), ignore), std::invalid_argument);
   auto negative = shell("true");
   negative.nice = -1;
   EXPECT_THROW(runner.commands.run(negative, 1s, runner.io.get_executor(), ignore), std::invalid_argument);
@@ -117,7 +125,7 @@ TEST(Command, ItsOutputIsBoundedAndTheCutSaid) {
 
 TEST(Command, ItsEnvironmentIsThePathAndTheLocaleOnly) {
   Runner runner;
-  const auto out = runner.run(Invocation{{"env"}});
+  const auto out = runner.run(invocation({"env"}));
   ASSERT_TRUE(out.ok()) << out.message;
   EXPECT_EQ(out.value.output, "PATH=/usr/sbin:/usr/bin:/sbin:/bin\nLC_ALL=C\n");
 }
@@ -147,7 +155,7 @@ TEST(Command, ALeadersExitKillsWhatItLeft) {
 TEST(Command, ACancelKillsItAndFailsItCancelled) {
   Runner runner;
   std::optional<CommandOutcome> out;
-  const auto id = runner.commands.run(Invocation{{"sleep", "30"}}, 20s, runner.io.get_executor(), [&](CommandOutcome outcome) { out = outcome; });
+  const auto id = runner.commands.run(invocation({"sleep", "30"}), 20s, runner.io.get_executor(), [&](CommandOutcome outcome) { out = outcome; });
   runner.commands.cancel(id);
   runner.commands.cancel(id + 1000);
   runner.io.run();
@@ -159,9 +167,9 @@ TEST(Command, AStopCancelsEveryRunAndEveryLaterOne) {
   Runner runner;
   std::vector<CommandOutcome> outs;
   for (int i = 0; i < 2; ++i)
-    (void)runner.commands.run(Invocation{{"sleep", "30"}}, 20s, runner.io.get_executor(), [&](CommandOutcome outcome) { outs.push_back(outcome); });
+    (void)runner.commands.run(invocation({"sleep", "30"}), 20s, runner.io.get_executor(), [&](CommandOutcome outcome) { outs.push_back(outcome); });
   runner.commands.stop();
-  (void)runner.commands.run(Invocation{{"true"}}, 20s, runner.io.get_executor(), [&](CommandOutcome outcome) { outs.push_back(outcome); });
+  (void)runner.commands.run(invocation({"true"}), 20s, runner.io.get_executor(), [&](CommandOutcome outcome) { outs.push_back(outcome); });
   runner.io.run();
   ASSERT_EQ(outs.size(), 3u);
   for (const auto& out : outs) EXPECT_EQ(out.fault, contract::Fault::cancelled) << out.message;
