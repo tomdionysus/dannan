@@ -1,5 +1,33 @@
 # Current release
 
+## 0.11.1: an ordered channel delivery
+
+A patch: the ABI is 0.11.0's.
+
+Added: `net::Delivery::ordered`, at most once and in order per origin (Lir's MQTT 5.0 ordered
+QoS 0, MQTT-4.6.0-6). Each origin's messages to each destination are numbered as a stream's;
+the receiver delivers one only if it is newer than the last it delivered from that origin on
+that channel, and drops a late one: nothing is held, refilled or asked for, and no replay
+buffer is kept (open it with `replay_bytes` 0). Sent best effort, as notify is. A node on 0.11.0
+refuses a publish of this kind.
+
+Added: `test::sim::NetworkFaults::in_order`, links that delay without overtaking, as one
+session does. Off by default; off, every seed replays as before.
+
+Fixed: a payload the outbound queue dropped went to malloc, not back to the node's pool: a reply
+to a cancelled request, a refused reply (its 503 sent instead), a refused request, a queued one
+cancelled, one cancelled while partly written, and a reply or notification a closed session
+would not send. Each 16 MiB one stayed in a glibc arena, about one a round in Dagda's repair
+case (its trace of 0.11.0). They all go back to the pool now.
+
+Added: `sched::BufferPool::bound()` and `floor()`, inline, so a host sizes its own windows to
+fit inside the node's pool (`Context::buffers()`): Dagda keeps its repair window under the
+bound, so what it gives back is kept, not freed.
+
+Adopting 0.11.1: open a channel with `Delivery::ordered` where messages from one origin must
+arrive in the order published and a lost one may be lost; a simulation of a live session sets
+`faults.in_order`.
+
 ## 0.11.0: transfer buffers, node settings, streams, JSON and the clock rules
 
 A new minor: the ABI changes, so move a pin from 0.10.x to 0.11.0 in one step. The library

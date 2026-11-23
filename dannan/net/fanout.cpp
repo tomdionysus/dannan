@@ -46,6 +46,8 @@ const char* delivery_name(Delivery delivery) noexcept {
       return "stream";
     case Delivery::bulk:
       return "bulk";
+    case Delivery::ordered:
+      return "ordered";
   }
   return "unknown";
 }
@@ -187,6 +189,12 @@ void Fanout::deliver_locally(ChannelMessage message) {
   for (auto& [executor, handler] : targets) asio::post(executor, [handler, message] { handler(message); });
 }
 
+void Fanout::deliver_locally_locked(const ChannelMessage& message) {
+  for (const auto& [_, subscription] : _subscriptions)
+    if (subscription.channel == message.channel && under(message.topic, subscription.prefix))
+      asio::post(subscription.executor, [handler = subscription.handler, message] { handler(message); });
+}
+
 Published Fanout::publish(const std::string& channel, std::string topic, Bytes payload) {
   if (topic.size() > max_topic) throw std::invalid_argument("a topic is at most 4096 bytes");
   Delivery delivery;
@@ -203,7 +211,13 @@ Published Fanout::publish(const std::string& channel, std::string topic, Bytes p
   const auto self = _hooks.self();
   for (const auto& peer : destinations(channel, topic)) {
     uint64_t sequence = 0;
-    if (delivery == Delivery::stream) {
+    if (delivery == Delivery::ordered) {
+      // Numbered as a stream's, and nothing kept: a late one is the receiver's to drop.
+      contract::Lock lock(_mutex);
+      auto& next = _channels.at(channel).next[peer.id];
+      if (!next) next = 1;
+      sequence = next++;
+    } else if (delivery == Delivery::stream) {
       // Sequenced and buffered whether or not it goes now: a gap the peer
       // sees later is refilled from here.
       contract::Lock lock(_mutex);
@@ -219,7 +233,7 @@ Published Fanout::publish(const std::string& channel, std::string topic, Bytes p
       }
     }
     const Message message{message::channel_publish, encode_publish(channel, topic, delivery, _hooks.incarnation, sequence, payload), {}};
-    if (_hooks.send(peer.id, message, sched::FrameType::control, delivery == Delivery::notify)) {
+    if (_hooks.send(peer.id, message, sched::FrameType::control, delivery == Delivery::notify || delivery == Delivery::ordered)) {
       out.to.push_back(peer.id);
       continue;
     }
@@ -319,7 +333,7 @@ Handled Fanout::on_publish(const NodeRecord& from, const Message& message) {
     received.channel = reader.string(max_channel_name);
     received.topic = reader.string(max_topic);
     const auto kind = reader.u8();
-    if (kind < 1 || kind > 3) throw DecodeError("bad delivery");
+    if (kind < 1 || kind > 4) throw DecodeError("bad delivery");
     delivery = static_cast<Delivery>(kind);
     received.incarnation.bytes = reader.fixed<16>();
     received.sequence = reader.u64();
@@ -329,6 +343,17 @@ Handled Fanout::on_publish(const NodeRecord& from, const Message& message) {
     return Handled::failed(400, "invalid_request", error.what());
   }
   received.origin = from.id;
+  if (delivery == Delivery::ordered && received.sequence) {
+    // Taken only if newer than the last delivered from this origin, and posted under the lock,
+    // so what is taken is posted in the order it was taken.
+    contract::Lock lock(_mutex);
+    auto& inbound = _inbound[{from.id, received.channel}];
+    if (inbound.incarnation != received.incarnation) inbound = Inbound{received.incarnation, 1, {}, false};
+    if (received.sequence < inbound.expected) return Handled::processed();
+    inbound.expected = received.sequence + 1;
+    deliver_locally_locked(received);
+    return Handled::processed();
+  }
   if (delivery != Delivery::stream || !received.sequence) {
     deliver_locally(std::move(received));
     return Handled::processed();

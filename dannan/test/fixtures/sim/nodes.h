@@ -190,6 +190,17 @@ class SimNetwork {
   // leaves the seed's sequence as it was.
   bool blocked(size_t from, size_t to) const { return _blocked.contains({from, to}); }
   uint64_t delay() { return 1 + _world.random.below(_faults.max_delay_ms); }
+  // The delay on the link `from` to `to`: with NetworkFaults::in_order, never so short that this
+  // message arrives before one sent earlier on the link (the world runs events due at one time
+  // in the order they were scheduled).
+  uint64_t delay(size_t from, size_t to) {
+    const auto drawn = delay();
+    if (!_faults.in_order) return drawn;
+    const auto now = _world.now_ms();
+    auto& last = _due[{from, to}];
+    last = std::max(last, now + drawn);
+    return last - now;
+  }
   int copies() { return _world.random.one_in(_faults.duplicate_one_in) ? 2 : 1; }
 
  private:
@@ -197,6 +208,8 @@ class SimNetwork {
   NetworkFaults _faults;
   std::vector<std::weak_ptr<SimTransport>> _transports;
   std::set<std::pair<size_t, size_t>> _blocked;
+  // in_order: when the last message on each link is due.
+  std::map<std::pair<size_t, size_t>, uint64_t> _due;
 };
 
 inline void SimTransport::listen() { _serving = true; }
@@ -248,12 +261,12 @@ inline std::shared_ptr<net::CallHandle> SimTransport::place(std::optional<size_t
   const int copies = network.copies();
   for (int copy = 0; copy < copies; ++copy) {
     if (network.lost(from, *to)) continue;
-    network.world().after(network.delay(), [&network, from, to = *to, sender, type, payload, frame, executor, done, once, self] {
+    network.world().after(network.delay(from, *to), [&network, from, to = *to, sender, type, payload, frame, executor, done, once, self] {
       const auto server = network.at(to);
       if (!server || !server->serving()) return;
       server->serve(sender, frame, net::Message{type, payload, {}}, [&network, from, to, executor, done, once, self](net::Message reply) {
         if (network.lost(to, from)) return;
-        network.world().after(network.delay(), [&network, from, to, executor, done, once, self, reply = std::move(reply)]() mutable {
+        network.world().after(network.delay(to, from), [&network, from, to, executor, done, once, self, reply = std::move(reply)]() mutable {
           const auto caller = self.lock();
           const auto answerer = network.at(to);
           if (!caller || !caller->calling() || *once) return;
@@ -304,7 +317,7 @@ inline bool SimTransport::send(const identity::NodeId& peer, net::Lane, const ne
   const int copies = network.copies();
   for (int copy = 0; copy < copies; ++copy) {
     if (network.lost(from, *to)) continue;
-    network.world().after(network.delay(), [&network, to = *to, sender, frame, message] {
+    network.world().after(network.delay(from, *to), [&network, to = *to, sender, frame, message] {
       if (const auto server = network.at(to); server && server->serving()) server->serve(sender, frame, message, {});
     });
   }

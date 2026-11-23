@@ -229,6 +229,10 @@ struct NetworkFaults {
   uint64_t duplicate_one_in = 0;
   // Each message takes 1 to this many milliseconds, so messages overtake each other.
   uint64_t max_delay_ms = 20;
+  // Each link keeps its order: a message is delayed as above but never arrives before one sent
+  // earlier on the same link, as on one session. Off: they overtake (the default). Whole nodes'
+  // network (SimNetwork) keeps it.
+  bool in_order = false;
 };
 
 class Cluster {

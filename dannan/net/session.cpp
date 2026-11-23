@@ -204,7 +204,11 @@ void Session::queue_reply(uint64_t request_id, sched::FrameType frame, Message m
   bool overflow = false;
   {
     contract::Lock lock(_mutex);
-    if (_closed) return;
+    if (_closed) {
+      // Not sent: its buffer goes back, as a written one's does.
+      if (_options.buffers) _options.buffers->give(std::move(message.payload));
+      return;
+    }
     try {
       (void)_queue.push(request_id, frame, std::move(message), true);
     } catch (const OutboundRefused&) {
@@ -254,6 +258,7 @@ void Session::notify(Message message, sched::FrameType frame, asio::any_io_execu
   {
     contract::Lock lock(_mutex);
     if (_closed) {
+      if (_options.buffers) _options.buffers->give(std::move(message.payload));
       if (sent) asio::post(executor, [sent] { sent(false); });
       return;
     }

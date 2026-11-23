@@ -19,6 +19,12 @@ constexpr const char* memory_refusal = "process retained-memory RPC admission sa
 
 Message reply_not_sent(const char* why) { return error_reply(503, "transport_busy", std::string("reply not sent: ") + why); }
 
+// A payload the queue drops goes back to the node's pool, as a written one does: freed instead,
+// a 16 MiB reply went straight to glibc and stayed in its arena (Dagda's trace of 0.11.0).
+void give_back(const std::shared_ptr<sched::BufferPool>& buffers, Bytes& payload) {
+  if (buffers) buffers->give(std::move(payload));
+}
+
 }  // namespace
 
 const char* outbound_refusal(size_t queued, size_t queued_bytes, size_t payload) noexcept {
@@ -34,6 +40,7 @@ bool OutboundQueue::push(uint64_t request_id, sched::FrameType frame, Message me
   if (reply) {
     if (_cancelled_inbound.erase(request_id)) {
       _inbound.erase(request_id);
+      give_back(_buffers, message.payload);
       return false;
     }
     if (const auto found = _inbound.find(request_id); found != _inbound.end()) frame = more_urgent(found->second, frame);
@@ -46,6 +53,7 @@ bool OutboundQueue::push(uint64_t request_id, sched::FrameType frame, Message me
   }
   if (!refused) refused = outbound_refusal(size(), _bytes, message.payload.size());
   if (refused) {
+    give_back(_buffers, message.payload);
     if (!reply) throw OutboundRefused(refused);
     if (size() >= max_outbound_with_refusals) throw OutboundRefused("peer outbound queue full of refusals");
     message = reply_not_sent(refused);
@@ -83,6 +91,7 @@ void OutboundQueue::cancel_inbound(uint64_t request_id) {
   std::erase_if(_queue, [&](Item& item) {
     if (!item.reply || item.request_id != request_id) return false;
     _bytes -= item.message.payload.size();
+    give_back(_buffers, item.message.payload);
     return true;
   });
 }
@@ -98,6 +107,7 @@ void OutboundQueue::cancel_outgoing(uint64_t request_id) {
   std::erase_if(_queue, [&](Item& item) {
     if (item.reply || item.request_id != request_id) return false;
     _bytes -= item.message.payload.size();
+    give_back(_buffers, item.message.payload);
     return true;
   });
   _outgoing.erase(request_id);
@@ -144,6 +154,7 @@ void OutboundQueue::written() {
         _outgoing.erase(item.request_id);
       }
       _bytes -= item.message.payload.size();
+      give_back(_buffers, item.message.payload);
       return;
     }
     const auto& classes = item.reply ? _inbound : _outgoing;
