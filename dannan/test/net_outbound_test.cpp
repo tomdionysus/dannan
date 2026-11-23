@@ -52,6 +52,41 @@ TEST(Outbound, AWrittenPayloadGoesBackToThePool) {
   EXPECT_EQ(pool->stats().kept, 3u);
 }
 
+// Every payload the queue drops goes back to the pool too, never to malloc (Dagda's trace of
+// 0.11.0: 16 MiB replies freed from push, each left in a glibc arena): a reply to a cancelled
+// request, a refused reply (its 503 sent instead) and a refused request, a queued reply or
+// request cancelled, and a request cancelled while partly written.
+TEST(Outbound, EveryDroppedPayloadGoesBackToThePool) {
+  auto pool = std::make_shared<sched::BufferPool>(1024 * 1024 * 1024, 1024);
+  OutboundQueue queue(nullptr, pool);
+  const auto kept = [&] { return pool->stats().kept; };
+  // A reply to a request cancelled before it came.
+  queue.register_inbound(2, FrameType::loader);
+  queue.cancel_inbound(2);
+  EXPECT_FALSE(queue.push(2, FrameType::loader, msg(64 * 1024), true));
+  EXPECT_EQ(kept(), 1u);
+  // A reply cancelled while queued, and a request.
+  queue.register_inbound(4, FrameType::loader);
+  ASSERT_TRUE(queue.push(4, FrameType::loader, msg(64 * 1024), true));
+  queue.cancel_inbound(4);
+  EXPECT_EQ(kept(), 2u);
+  ASSERT_TRUE(queue.push(5, FrameType::loader, msg(64 * 1024), false));
+  queue.cancel_outgoing(5);
+  EXPECT_EQ(kept(), 3u);
+  // A request cancelled after its first fragment went.
+  ASSERT_TRUE(queue.push(7, FrameType::loader, msg(64 * 1024), false));
+  ASSERT_TRUE(queue.next(16 * 1024));
+  queue.cancel_outgoing(7);
+  queue.written();
+  EXPECT_EQ(kept(), 4u);
+  // Refused for size: a request throws, a reply is answered 503; both payloads go back.
+  EXPECT_THROW(queue.push(9, FrameType::loader, msg(max_outbound_bytes + 1), false), OutboundRefused);
+  EXPECT_EQ(kept(), 5u);
+  queue.register_inbound(10, FrameType::loader);
+  ASSERT_TRUE(queue.push(10, FrameType::loader, msg(max_outbound_bytes + 1), true));
+  EXPECT_EQ(kept(), 6u);
+}
+
 TEST(OutboundRefusal, AnEmptyQueueTakesEither) {
   EXPECT_EQ(outbound_refusal(0, 0, 1), nullptr);
   EXPECT_EQ(outbound_refusal(0, 0, small_message + 1), nullptr);
