@@ -14,9 +14,18 @@ started from are never read for direction or edited.
   [`2026-11-03-macha-function-inventory.md`](2026-11-03-macha-function-inventory.md).
 - The live cluster is live-a and live-b (Pi 5, Debian 13), on Macha 0.94.2 and Dannan 0.5.3.
 
-## Resume here (2026-11-20 evening)
+## Resume here (2026-11-23)
 
-**0.10.0 is released** (COMPLETED.md). In order, next:
+**0.11.1 is released** (COMPLETED.md): Lir's ordered delivery, Dagda's dropped payloads back to
+the pool, BufferPool::bound() and floor(). Lir and Dagda pin it. Items 1 to 4 below are done.
+Queued for 0.12.0 (each changes the ABI, so none can go in a patch):
+- `WallClock::unix_us()` (Kvasir, 2026-11-23, for MySQL's NOW(6) and DATETIME(6)): microseconds
+  since the Unix epoch, a virtual beside unix_ms() with a default of unix_ms() * 1000 so
+  existing clocks still build; SystemWallClock reads the system clock in microseconds; the
+  stepped test wall clock steps in microseconds. Not urgent: Kvasir uses unix_ms meanwhile.
+- The notifying TimeSource and deferred requests bounded in bytes per peer (4, below).
+
+The earlier plan, kept for its record (2026-11-20 evening): **0.10.0 is released**. In order:
 1. **0.10.1, a patch, ABI kept:** `agree::MemoryStore::each_held`, agreed with Mimir so it can drop
    its own store:
    `void each_held(Slot, const std::optional<Name>& after, const std::function<bool(const Name&, const AcceptorState&)>& visit) const;`
