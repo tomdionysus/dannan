@@ -424,6 +424,9 @@ class SimNodes {
   // `lost` says its store lost its state (Wipe::store or Wipe::identity), and must not vote
   // until caught up, unless it is new.
   std::function<void(size_t i, Node& node, bool lost)> host;
+  // Called on node `i` after it is built and before it starts, every start included: where a
+  // hosted system registers its message types, before the routes freze (0.12.0; Mimir's ask).
+  std::function<void(size_t i, Node& node)> prepare;
   // Every node's log, kept for a test to look through rather than printed.
   std::shared_ptr<RecordingSink> log = std::make_shared<RecordingSink>();
 
@@ -438,6 +441,7 @@ class SimNodes {
       std::ofstream(settings.state_path / "node-id") << identity::to_string(_ids.at(i)) << "\n";
     }
     auto node = std::make_unique<Node>(_world.io, std::move(settings));
+    if (prepare) prepare(i, *node);
     node->start();
     _nodes.at(i) = std::move(node);
     if (host) host(i, *_nodes.at(i), lost);

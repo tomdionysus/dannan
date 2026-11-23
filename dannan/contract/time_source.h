@@ -61,12 +61,19 @@ class WallClock {
   virtual ~WallClock() = default;
   // Waits on nothing; thread-safe.
   virtual uint64_t unix_ms() const noexcept = 0;
+  // Microseconds since the Unix epoch (0.12.0; Kvasir, for MySQL's NOW(6) and DATETIME(6)). A
+  // clock that keeps only milliseconds answers unix_ms() * 1000, so every WallClock written
+  // before it still builds.
+  virtual uint64_t unix_us() const noexcept { return unix_ms() * 1000; }
 };
 
 class SystemWallClock final : public WallClock {
  public:
   uint64_t unix_ms() const noexcept override {
     return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+  }
+  uint64_t unix_us() const noexcept override {
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
   }
 };
 

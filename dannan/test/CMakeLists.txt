@@ -91,6 +91,7 @@ add_executable(dannan_tests
   sched_class_waits_test.cpp
   status_readiness_test.cpp
   status_thread_cpu_test.cpp
+  contract_wall_clock_test.cpp
   supervise_command_test.cpp
   supervise_test.cpp
   two_process_test.cpp
