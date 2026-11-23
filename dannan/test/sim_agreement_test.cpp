@@ -1228,6 +1228,28 @@ TEST(Simulation, ANodeWithAnotherSlotTableIsRefused) {
   EXPECT_EQ(std::count(even->accepted.begin(), even->accepted.end(), cluster.id(2)), 0);
 }
 
+// A founding has one deadline (the maintainer, 2026-11-23): with its genesis majority out of
+// reach, it is answered by that deadline, not by one per window of 16 slots (64 slots, four
+// windows, once took four).
+TEST(Simulation, AFoundingIsAnsweredByItsOneDeadline) {
+  World world(19);
+  Cluster cluster(world, 3, NetworkFaults{}, true, 3);
+  for (size_t i = 0; i < 3; ++i) cluster.restart_with_slots(i, 64);
+  cluster.block(0, 1);
+  cluster.block(0, 2);
+  const auto started = world.now_ms();
+  std::optional<agree::Outcome> out;
+  uint64_t answered = 0;
+  cluster.agreement(0).found(Cluster::space, 1000ms, world.io.get_executor(), [&](agree::Outcome outcome) {
+    out = std::move(outcome);
+    answered = world.now_ms();
+  });
+  ASSERT_TRUE(world.run_until([&] { return out.has_value(); }, 60'000));
+  EXPECT_FALSE(out->committed);
+  EXPECT_FALSE(out->why.empty());
+  EXPECT_LE(answered - started, 1100u) << "answered after " << answered - started << " ms";
+}
+
 // Finding a moved slot (Kvasir's review): each node's advert says which slots its records
 // serve, so a node never told where a slot went finds it there. The advert carries no
 // version, so a change on the hint with a guessed one is refused, told the set and its

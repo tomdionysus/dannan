@@ -143,7 +143,8 @@ class HybridClock final : public HlcClock {
   static constexpr std::chrono::milliseconds reserve{2000};
 
   // Begins after every stamp a run before could have issued: at the wall, or past the ceiling if
-  // the wall is not, and raises the ceiling past it before returning (one durable write).
+  // the wall is not. Writes nothing (0.12.0, Lir's finding): the first stamp raises the ceiling
+  // past itself before it is issued, so a node that never stamps never touches the file.
   HybridClock(const WallClock& wall, HlcCeiling& ceiling, std::chrono::milliseconds max_ahead = std::chrono::seconds(5));
 
   HlcStamp now() override;
@@ -154,8 +155,10 @@ class HybridClock final : public HlcClock {
   bool issuing() const override { return !_out_of_bounds.load(); }
   void set_out_of_bounds(bool out) override { _out_of_bounds.store(out); }
   HlcStats stats() const override;
-  // The roster loop's, each second: the ceiling raised to what was issued (or the wall, if later)
-  // plus the reserve, when it has fallen nearer than that. Waits on the state device.
+  // The roster loop's, each second: the ceiling raised to the last stamp issued plus the reserve,
+  // when it has fallen nearer than that. It follows the stamps, never the wall, so an idle node
+  // writes nothing (0.12.0; it once followed the wall and wrote every second). Waits on the
+  // state device when it writes.
   void keep_ahead();
   uint64_t ceiling() const noexcept { return _ceiling.load(); }
 
@@ -173,6 +176,9 @@ class HybridClock final : public HlcClock {
   std::atomic<uint64_t> _overflows{0};
   std::atomic<uint64_t> _raises_off_loop{0};
   std::atomic<bool> _out_of_bounds{false};
+  // Whether this run has issued a stamp (now, or a merge): until then keep_ahead has nothing to
+  // keep ahead of.
+  std::atomic<bool> _issued{false};
   // One raise at a time; never held by now() or receive() but to raise.
   Mutex _raising;
   mutable Mutex _peers_mutex;

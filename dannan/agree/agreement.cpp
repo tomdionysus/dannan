@@ -1107,21 +1107,34 @@ void Agreement::found(std::string space, std::chrono::milliseconds deadline, asi
   founding->left = table.slots;
   founding->out.committed = true;
   founding->done = std::move(done);
+  // One deadline for the whole founding (the maintainer, 2026-11-23): every slot's round ends by
+  // it, and a slot not begun when it passes is not tried.
+  const auto until = _core->time->now() + deadline;
   // A window of slots at a time, so a table of 8192 is not 8192 rounds in flight.
   constexpr uint32_t window = 16;
   auto step = std::make_shared<std::function<void()>>();
-  *step = [core = _core, founding, step = std::weak_ptr(step), space, deadline, executor, slots = table.slots, genesis = table.genesis]() {
+  *step = [core = _core, founding, step = std::weak_ptr(step), space, until, executor, slots = table.slots, genesis = table.genesis]() {
     Slot slot = 0;
-    {
-      std::lock_guard lock(founding->mutex);
-      if (founding->next == slots) return;
-      slot = founding->next++;
+    for (;;) {
+      {
+        std::lock_guard lock(founding->mutex);
+        if (founding->next == slots) return;
+        slot = founding->next++;
+        if (core->time->now() < until) break;
+        // Past the deadline: this slot is not tried, and is the first failure if none came yet.
+        if (founding->out.committed) {
+          founding->out.committed = false;
+          founding->out.why = "slot " + std::to_string(slot) + ": the founding's deadline passed before it was tried";
+        }
+        if (--founding->left != 0) continue;
+      }
+      return founding->done(std::move(founding->out));
     }
     const auto self = step.lock();
     auto make = [genesis, slot](Ballot ballot) {
       return Attempt(genesis, slot, ballot, {}, [](std::span<const std::optional<Bytes>>) { return Changed{}; }, {}, genesis);
     };
-    Run::start(std::make_shared<Run>(core, space, slot, std::move(make), core->time->now() + deadline, executor, [founding, self, slot](Outcome outcome) {
+    Run::start(std::make_shared<Run>(core, space, slot, std::move(make), until, executor, [founding, self, slot](Outcome outcome) {
       bool last = false;
       {
         std::lock_guard lock(founding->mutex);
