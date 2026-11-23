@@ -399,6 +399,28 @@ TEST(Frames, CarryTheirHeaderAndPayloadAcross) {
   EXPECT_EQ(fragment.payload, Bytes({1, 2, 3}));
 }
 
+// With a pool, a frame of any size from 16 KiB opens into a buffer of the session's largest frame,
+// one size that always fits the next, so frames go round the pool rather than through malloc
+// (Dagda's heaptrack: 1643 takes averaging 68 KiB, under the floor, never kept). A small one
+// (a ping) is a plain allocation.
+TEST(Frames, WithAPoolFramesOpenIntoBuffersOfTheLargestFrame) {
+  const auto pair = established();
+  const auto routes = std::make_shared<const RouteTable>(RouteTable::with_dannan_types());
+  auto pool = std::make_shared<sched::BufferPool>(16 * 1024 * 1024, 1024);
+  FrameSealer sealer(pair.client, routes);
+  FrameOpener opener(pair.server, routes, pool);
+  auto first = roundtrip(sealer, opener, 1, FrameType::control, message::members, Bytes(20 * 1024, 7));
+  EXPECT_EQ(first.payload.size(), 20u * 1024);
+  EXPECT_EQ(first.payload.capacity(), pair.server.max_frame);
+  const auto* block = first.payload.data();
+  pool->give(std::move(first.payload));
+  const auto second = roundtrip(sealer, opener, 2, FrameType::control, message::members, Bytes(40 * 1024, 9));
+  EXPECT_EQ(second.payload.data(), block);
+  EXPECT_EQ(second.payload, Bytes(40 * 1024, 9));
+  const auto small = roundtrip(sealer, opener, 3, FrameType::control, message::members, Bytes(100, 1));
+  EXPECT_EQ(small.payload.capacity(), 100u);
+}
+
 // A 28-byte header, a 12-byte nonce and a 16-byte tag around the payload;
 // the header opens with Dannan's magic, "DN" and the wire's number.
 TEST(Frames, OpenWithDannansMagic) {

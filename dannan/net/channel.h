@@ -244,6 +244,9 @@ class FrameSealer {
   std::function<std::array<uint8_t, 12>()> _nonces;
 };
 
+// The smallest frame opened into a pooled buffer; a smaller one (a ping) is a plain allocation.
+inline constexpr size_t pooled_frame_least = 16 * 1024;
+
 // Opens the other direction's frames, header first, so a bad frame is
 // refused before its body is read. Single owner: the session's reader.
 class FrameOpener {

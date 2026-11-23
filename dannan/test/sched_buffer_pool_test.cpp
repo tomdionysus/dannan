@@ -73,6 +73,27 @@ TEST(BufferPool, SmallBuffersAreNotKept) {
   EXPECT_EQ(pool.take(mib - 1).capacity(), mib - 1);
 }
 
+// Why each give was freed is counted, so a gate can say what it sees (Dagda).
+TEST(BufferPool, ItCountsWhyEachFreedBufferWasFreed) {
+  RetainedMemoryLedger ledger(64 * mib, 8 * mib, 8 * mib, 8 * mib, 8 * mib);
+  BufferPool pool(36 * mib, mib, &ledger);
+  pool.give(filled(mib / 2));
+  EXPECT_EQ(pool.stats().freed_small, 1u);
+  pool.give(filled(16 * mib));
+  pool.give(filled(16 * mib));
+  pool.give(filled(8 * mib));
+  EXPECT_EQ(pool.stats().freed_bound, 1u);
+  EXPECT_EQ(pool.stats().freed_ledger, 0u);
+  // 32 MiB of the ledger's 64 is held already: another 16 for speculative work is refused.
+  BufferPool tight(256 * mib, mib, &ledger);
+  tight.give(filled(16 * mib));
+  EXPECT_EQ(tight.stats().freed_ledger, 1u);
+  pool.detach();
+  pool.give(filled(16 * mib));
+  EXPECT_EQ(pool.stats().freed_detached, 1u);
+  EXPECT_EQ(pool.stats().freed, pool.stats().freed_small + pool.stats().freed_bound + pool.stats().freed_ledger + pool.stats().freed_detached);
+}
+
 TEST(BufferPool, WhatItHoldsStaysWithinItsBound) {
   BufferPool pool(40 * mib, mib);
   pool.give(filled(16 * mib));

@@ -25,9 +25,14 @@ struct BufferPoolStats {
   uint64_t taken = 0;
   // Takes answered from what was held.
   uint64_t reused = 0;
-  // Gives kept, and gives freed (too small, past the bound, refused by the ledger, detached).
+  // Gives kept, and gives freed, and why: under the floor, past the bound, refused by the ledger,
+  // or given after the pool was detached.
   uint64_t kept = 0;
   uint64_t freed = 0;
+  uint64_t freed_small = 0;
+  uint64_t freed_bound = 0;
+  uint64_t freed_ledger = 0;
+  uint64_t freed_detached = 0;
 };
 
 // The node's pool of large transfer buffers (0.11.0; Dagda's case): a block of an extent's size

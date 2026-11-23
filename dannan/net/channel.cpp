@@ -457,9 +457,10 @@ WireFragment FrameOpener::open(std::span<const uint8_t> body) {
   try {
     const std::span<const uint8_t, 12> nonce(body.data(), 12);
     const std::span<const uint8_t, 16> tag(body.data() + 12, 16);
-    if (_buffers) {
-      // Opened into a pooled buffer, which goes back once the message it joins is done with.
-      _pending.payload = _buffers->take(_pending_size);
+    if (_buffers && _pending_size >= pooled_frame_least) {
+      // Opened into a pooled buffer of the largest frame, one size that always fits the next, so
+      // frames go round the pool; it goes back once the message it joins is done with.
+      _pending.payload = _buffers->take(std::max(_pending_size, _max_frame));
       _pending.payload.resize(_pending_size);
       identity::aes_gcm_open_into(_key, nonce, tag, body.subspan(28), _pending.payload, _header);
     } else {
