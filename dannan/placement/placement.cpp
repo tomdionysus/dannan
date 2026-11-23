@@ -15,6 +15,7 @@
 #include <string>
 
 #include "dannan/identity/crypto.h"
+#include "dannan/status/readiness.h"
 
 namespace dannan::placement {
 namespace {
@@ -223,6 +224,25 @@ void sort_by_fallback(std::vector<Node>& nodes, std::span<const uint8_t> key, st
 
 std::vector<Node> ranked(std::span<const uint8_t> key, const std::vector<Node>& nodes, size_t count, const Scheme& scheme) {
   if (nodes.empty() || !count) return {};
+  if (!scheme.ignore_health) {
+    // Item 7: nodes advertising draining, then not_ready, follow the ready and degraded ones as
+    // fallbacks while there are enough of those, each part in its own placement order.
+    std::vector<Node> healthy, draining, unready;
+    for (const auto node : nodes) {
+      const auto health = status::health_of(*node);
+      (health == status::Health::draining ? draining : health == status::Health::not_ready ? unready : healthy).push_back(node);
+    }
+    if (healthy.size() < nodes.size() && healthy.size() >= std::min(count, nodes.size())) {
+      auto plain = scheme;
+      plain.ignore_health = true;
+      auto out = ranked(key, healthy, count, plain);
+      for (const auto* part : {&draining, &unready}) {
+        const auto spill = ranked(key, *part, part->size(), plain);
+        out.insert(out.end(), spill.begin(), spill.end());
+      }
+      return out;
+    }
+  }
   if (scheme.demote_relay_only) {
     std::vector<Node> reachable;
     std::vector<Node> relayed;
@@ -283,7 +303,15 @@ std::vector<Node> pointers(const std::vector<NodeRecord>& nodes) {
 
 uint64_t capacity_of(const NodeRecord& node, const std::string& advert) { return advert.empty() ? 0 : node.advert_u64(advert).value_or(0); }
 
-std::vector<NodeRecord> rendezvous(std::span<const uint8_t> key, const std::vector<NodeRecord>& nodes, size_t count) {
+std::vector<NodeRecord> rendezvous(std::span<const uint8_t> key, const std::vector<NodeRecord>& nodes, size_t count, bool ignore_health) {
+  if (!ignore_health) {
+    std::vector<NodeRecord> healthy, draining, unready;
+    for (const auto& node : nodes) {
+      const auto health = status::health_of(node);
+      (health == status::Health::draining ? draining : health == status::Health::not_ready ? unready : healthy).push_back(node);
+    }
+    if (healthy.size() < nodes.size() && healthy.size() >= std::min(count, nodes.size())) return rendezvous(key, healthy, count, true);
+  }
   std::vector<std::pair<identity::Hash256, const NodeRecord*>> scored;
   for (const auto& node : nodes) scored.emplace_back(identity::sha256(concat(key, node.id.bytes)), &node);
   std::sort(scored.begin(), scored.end(), [](const auto& a, const auto& b) { return a.first != b.first ? a.first > b.first : a.second->id > b.second->id; });

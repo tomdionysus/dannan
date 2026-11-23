@@ -447,8 +447,11 @@ class Context {
   virtual status::ScopedLogger logger(std::string scope) const = 0;
   // Monotonic counts per kind; topology is Dannan's.
   virtual status::NodeEvents& events() = 0;
-  // The planes a hosted system declares and reports ready.
+  // The planes a hosted system declares and reports ready, and the node's health after startup
+  // (0.12.0, item 7): the checks a hosted system pushes, the drain, and on_change. The const one
+  // reads (Macha's ask: no const_cast to read health on a const Context).
   virtual status::Readiness& readiness() = 0;
+  virtual const status::Readiness& readiness() const = 0;
   // When work of each class was last present; the node notes each request.
   virtual status::ActivityClocks& activity() = 0;
   // Measurement probes, written to the node's observation log.
@@ -458,6 +461,7 @@ class Context {
   virtual sched::WaitGuard& wait_guard() = 0;
   // The node's thread bodies, and the hosted system's, under one record.
   virtual supervise::SupervisedThreads& threads() = 0;
+  virtual const supervise::SupervisedThreads& threads() const = 0;
   // The node's pacing of loader and speculative work, one gate per class (P4): a
   // hosted loop holds its class's gate, and every pool runs its tasks through it,
   // so the class never takes more than its share however its work runs.
