@@ -3,6 +3,33 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
+## 0.11.0, 2026-11-23: transfer buffers, node settings, streams, JSON and the clock rules
+
+A new minor; the ABI changes (libdannan0.11). What shipped is in CHANGELOG.md. Each fix and
+addition was proven by a test that failed without it and passes with it, run red then green
+on the build cluster; where a test cannot fail without its change it is named a guard.
+- Relay and level 0: an end's close goes by CONTROL without its carrier (the far-end chunk-loss
+  failure on main); a crossed punch is tried again (proven by punch_target_hook; its cause, a
+  punch port given to another in the gap, caught by strace in hosted CI); one dial to a peer by
+  id or address; the session-loss tests keep a cut session cut.
+- Dagda's memory: exact-size reassembly; in-place AES-GCM; the transfer-buffer pool, with frames
+  of 16 KiB and up opened into buffers of the largest frame. Dagda's repair case, 20 rounds:
+  glibc's holding beyond the pools went from 402-621 MiB to 116-132 MiB, levelled, with
+  MALLOC_ARENA_MAX=4 (Macha's live setting); what is left is free space inside the per-thread
+  heaps, bounded by their number. Whether that is acceptable is with the maintainer.
+- Lir: the stream carrier, JSON, the shared node settings under cluster.*.
+- The agreed API, the TSan suppressions installed, liveness_time.
+
+The gate ran once, on 33c8113:
+- Hosted CI on 33c8113, every job green: check, release (x86-64, arm64), clang, ASan (both),
+  TSan (x86-64), package (both), coverage, abi (no earlier 0.11 release), deb (both).
+- TSan on arm64 on the build cluster: 1148 tests, one skipped as root, 36 __tsan_ symbols, no
+  reports.
+- fuzz: four targets, 60 s each, two at a time, all clean.
+- install-debs in a clean debian:trixie container: libdannan0.11 and libdannan-dev 0.11.0.
+
+Run on the build cluster; the logs are kept locally, outside the repository.
+
 ## 0.10.2, 2026-11-21: a request whose reply throws leaves nothing held; SteppedTime takes a poll
 
 A patch; the ABI is 0.10.1's (abidiff against 0.10.1 reports nothing). What shipped is in

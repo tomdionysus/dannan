@@ -181,6 +181,16 @@ TEST(Outcome, FromCarriesAFailureAcrossTypes) {
   EXPECT_EQ(carried.message, "no such user");
 }
 
+// A failure may keep the evidence it has beside its fault (agreed with Dagda for 0.11.0): which
+// replicas had a write that then timed out, say.
+TEST(Outcome, AFailureMayKeepItsEvidence) {
+  const auto late = Outcome<std::vector<int>>::failure(Fault::timed_out, "two of three answered", {1, 2});
+  EXPECT_FALSE(late.ok());
+  EXPECT_EQ(late.fault, Fault::timed_out);
+  EXPECT_EQ(late.message, "two of three answered");
+  EXPECT_EQ(late.value, (std::vector<int>{1, 2}));
+}
+
 TEST(Outcome, NothingIsTheDefaultValue) {
   const Outcome<> done = Outcome<>::success();
   EXPECT_TRUE(done.ok());
@@ -196,6 +206,13 @@ TEST(Fault, EveryKindHasItsName) {
   EXPECT_STREQ(fault_name(Fault::unavailable), "unavailable");
   EXPECT_STREQ(fault_name(Fault::timed_out), "timed_out");
   EXPECT_STREQ(fault_name(Fault::failed), "failed");
+  EXPECT_STREQ(fault_name(Fault::cancelled), "cancelled");
+}
+
+// Added last, so every kind before it keeps its number (agreed with Dagda for 0.11.0).
+TEST(Fault, CancelledComesLast) {
+  EXPECT_EQ(static_cast<int>(Fault::failed), 8);
+  EXPECT_EQ(static_cast<int>(Fault::cancelled), 9);
 }
 
 TEST(Fault, AValueOutOfRangeIsNamedUnknown) { EXPECT_STREQ(fault_name(static_cast<Fault>(200)), "unknown"); }

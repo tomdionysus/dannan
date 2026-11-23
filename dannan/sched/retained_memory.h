@@ -28,7 +28,8 @@ namespace dannan::sched {
 // `hosted_first` up, so the set of owners is open and a figure is never
 // Dannan's guess at a hosted system's shape.
 enum class MemoryOwner : uint16_t {
-  rpc_frame = 1,  // inbound frames being reassembled, and requests until their handler returns
+  rpc_frame = 1,         // inbound frames being reassembled, and requests until their handler returns
+  transfer_buffers = 2,  // large buffers the node's BufferPool holds for reuse
   hosted_first = 256,
 };
 

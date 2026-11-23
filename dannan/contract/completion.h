@@ -55,10 +55,13 @@ enum class Fault : uint8_t {
   refused,
   // Could not be reached, or failed inside before anything was changed.
   unavailable,
-  // The deadline passed first. A write may still land.
+  // The deadline passed first: the outcome is unknown, and a write may yet land.
   timed_out,
   // Failed, and nothing was changed that is not undone.
   failed,
+  // The caller cancelled it before it was answered; like timed_out, a write may yet land.
+  // Last, so every kind before it keeps its number.
+  cancelled,
 };
 
 const char* fault_name(Fault fault) noexcept;
@@ -79,6 +82,9 @@ struct Outcome {
 
   static Outcome success(T value = T{}) { return Outcome{Fault::none, {}, std::move(value)}; }
   static Outcome failure(Fault fault, std::string message) { return Outcome{fault, std::move(message), T{}}; }
+  // A failure that keeps what evidence it has beside the fault: which replicas had a write that
+  // then timed out, say.
+  static Outcome failure(Fault fault, std::string message, T evidence) { return Outcome{fault, std::move(message), std::move(evidence)}; }
 
   // The same failure, for an Outcome of another type.
   template <typename U>

@@ -33,6 +33,9 @@
 namespace dannan::listen {
 
 struct ListenerShared;
+namespace detail {
+struct ConnectAttempt;
+}
 
 // The CAs a connection's server is checked against, read once and kept in memory, so
 // a bad bundle is found when this is made, not at the first connection, and no
@@ -102,6 +105,13 @@ struct ConnectorConfig {
   std::function<void(const std::string& host, const std::string& port,
                      std::function<void(boost::system::error_code, boost::asio::ip::tcp::resolver::results_type)> done)>
       resolve;
+  // For a simulation (TODO/2026-11-20-stack-plan.md, item 17): reaches `host`:`port` in place of
+  // resolving and connecting over TCP, telling `done` the carrier made, or none and why (refused).
+  // One that never answers is cut by connect()'s deadline, as a TCP connect to a node cut off
+  // would be. Empty: TCP.
+  using Dial = std::function<void(const std::string& host, uint16_t port, boost::asio::any_io_executor executor,
+                                  std::function<void(std::unique_ptr<Carrier>, std::string why)> done)>;
+  Dial dial;
 };
 
 // An attempt that runs its steps ends in exactly one of connected, refused_resolve,
@@ -146,6 +156,16 @@ class StreamConnector {
   void connect(boost::asio::any_io_executor executor, std::string host, uint16_t port, std::optional<ClientTls> tls, std::chrono::milliseconds deadline,
                Connected done);
 
+  // A carrier already connected (StreamListener::inject's client end, a pipe of a test's own)
+  // made into this connector's Stream, with `tls`'s handshake as connect() takes it, within
+  // `deadline`; `done` posted to `executor` once. The stream runs on the carrier's executor.
+  void adopt(boost::asio::any_io_executor executor, std::unique_ptr<Carrier> carrier, std::optional<ClientTls> tls, std::chrono::milliseconds deadline,
+             Connected done);
+  // StartTLS from the client's side (Kvasir: MySQL's SSLRequest, then the handshake at once):
+  // `stream`, one of this connector's in plaintext, takes `tls`'s handshake within `deadline`;
+  // `done` on the stream's executor, empty when it completed. Refused for a stream already in TLS.
+  void upgrade(std::shared_ptr<Stream> stream, ClientTls tls, std::chrono::milliseconds deadline, std::function<void(std::string)> done);
+
   // Closes every connection it made, cleanly within the close bound.
   void close_all();
   // The same, and `done` posted to `executor` once every one of them has finished.
@@ -156,6 +176,14 @@ class StreamConnector {
 
  private:
   struct Attempts;
+
+  // TLS out as `tls` asks: the context, and the name its server must carry (`host` when the
+  // name is not given). Throws std::invalid_argument without trust, std::runtime_error when the
+  // context cannot be set up.
+  std::pair<std::shared_ptr<detail::ServerTls>, std::string> client_tls(const ClientTls& tls, const std::string& host) const;
+  // A connected carrier made a Stream of `attempt`'s, then its handshake with `context`, then told.
+  static void hand_over(const std::shared_ptr<detail::ConnectAttempt>& attempt, std::unique_ptr<Carrier> carrier, std::shared_ptr<detail::ServerTls> context,
+                        const std::string& name);
 
   const ConnectorConfig _config;
   std::shared_ptr<ListenerShared> _shared;

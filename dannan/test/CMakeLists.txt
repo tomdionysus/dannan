@@ -14,12 +14,15 @@ target_link_libraries(dannan_test_fixtures INTERFACE GTest::gtest Threads::Threa
 target_compile_definitions(dannan_test_fixtures INTERFACE DANNAN_TEST_TEMP_ROOT="${PROJECT_BINARY_DIR}/test-tmp")
 
 add_executable(dannan_tests
+  contract_hlc_admit_test.cpp
   contract_hlc_test.cpp
   agree_caspaxos_test.cpp
   agree_memory_store_test.cpp
   contract_completion_test.cpp
   contract_test.cpp
+  config_node_settings_test.cpp
   custody_tool_test.cpp
+  json_test.cpp
   fixtures_test.cpp
   fuzz_harness_test.cpp
   fuzz_smoke_test.cpp
@@ -35,9 +38,12 @@ add_executable(dannan_tests
   identity_sha1_test.cpp
   identity_signing_test.cpp
   listen_backoff_test.cpp
+  listen_memory_test.cpp
   listen_prefix_test.cpp
   listen_test.cpp
   membership_agreed_test.cpp
+  membership_clock_offsets_test.cpp
+  membership_stamp_test.cpp
   membership_test.cpp
   placement_test.cpp
   reach_paths_test.cpp
@@ -57,6 +63,7 @@ add_executable(dannan_tests
   net_scheduler_test.cpp
   net_server_test.cpp
   net_session_test.cpp
+  sched_buffer_pool_test.cpp
   sched_duty_share_test.cpp
   sched_memory_test.cpp
   sched_retry_unbounded_test.cpp
@@ -65,9 +72,11 @@ add_executable(dannan_tests
   sched_worker_pool_test.cpp
   sim_agreement_test.cpp
   sim_checkers_test.cpp
+  sim_clock_test.cpp
   sim_convergence_test.cpp
   sim_isolation_test.cpp
   sim_nodes_test.cpp
+  sim_streams_test.cpp
   storage_file_system_test.cpp
   status_log_injection_test.cpp
   status_log_test.cpp

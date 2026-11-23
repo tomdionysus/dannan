@@ -26,10 +26,70 @@ started from are never read for direction or edited.
    - the store's lock is held across the walk, so a visitor never calls back into the store;
    - order is stable while nothing is kept;
    - first test: a name removed between two pages is never skipped.
-2. **0.11.0:**
+   **The maintainer's rulings, 2026-11-22:** no patch release now: everything waits for 0.11.0
+   ("no pointless patch release"). Every fix is proven by a test that fails without it every
+   time: a run of thousands, or dozens, is no proof ("rethink this"). The doubled CONTROL dial
+   (3, below) is fixed before the release. Boost's template instances stay out of the ABI
+   comparison, as the standard library's are.
+2. **In 0.11.0, not a patch (Dagda, 2026-11-22):** in-place AES-GCM, so
+   Dagda serves and stores an object in one buffer (its live-a memory: glibc holding freed
+   16 MiB transfer buffers; the maintainer ruled out an allocator setting). Done on
+   feature/gcm-in-place (7861e10), red against stubs then green.
+   - `void aes_gcm_open_into(key, nonce, tag, ciphertext, std::span<uint8_t> out, associated = {})`:
+     out the size of ciphertext, may be exactly it; partial overlap refused; a bad tag throws as
+     aes_gcm_open does and zeroes out.
+   - `struct GcmSeal { nonce; tag; }`; `GcmSeal aes_gcm_seal_into(key, plaintext, out, associated = {})`
+     and the overload under a given nonce; out the size of plaintext, may be exactly it.
+   - Tests first: in and out of place agree with aes_gcm_seal and aes_gcm_open byte for byte; a
+     bad tag zeroes out; a size mismatch or partial overlap is refused.
+   - Reads into a caller's span are already `storage::File::read_at(offset, span)`.
+   - A pool of extent-sized buffers under Context::budget(): not now; only if a second project
+     needs it after Dagda measures the single-buffer paths.
+3. **Defect, found 2026-11-22 (level 0 hunts in hosted x86-64 ASan):** a starting node dials
+   a peer's CONTROL lane twice (the test logs show two "outbound ... lane=control" per node).
+   Both ends keep the same one of the pair, but while one end retires the loser the other can
+   be left a moment with no route, so a call then finds "no relay" or "the relay has no session
+   with the target". Find why the dials are not one (by endpoint and by id, say), prove it with
+   a test, and make it one. The move-up test waits its first echo out meanwhile; that wait goes
+   when the dial is one.
+   - Done (develop 719933d): a crossed punch is tried again from fresh ports, proven by
+     LevelZero.ACrossedPunchTriesAgainWithFreshPorts through PathsConfig::punch_target_hook.
+     Its cause, caught by strace in hosted x86-64 (2026-11-22): a punch's port is free between
+     its observation and its open, and 5 ms after one observation closed, the other node's
+     bind(0) was given the same port (39421); both opens then bound it and one connected to
+     itself. Only nodes sharing a host meet it. Holding the port from observation to open
+     (a placeholder socket, tried on feature/punch-flakes at 4b98d1b and taken back) would end
+     it; the maintainer ruled the retry enough.
+4. **0.11.0** (the maintainer, 2026-11-22, on its scope). On develop: the stream carrier, item 6,
+   JSON, in-place AES-GCM, exact-size reassembly, the relay, punch and dial fixes. To do:
+   - The shared node settings (asked by Lir, Kvasir, Louhi, Mimir; the maintainer: yes, in
+     0.11.0, under cluster.*): dannan/config/node_settings.h, add_node_settings(Reader&,
+     prefix) and node_config(Settings), keys cluster.key, .bootstrap, .state, .name, .domain,
+     .relay, .listen.{address,port,advertise,inbound}, .heartbeat_ms, .path_class, .punch_ms,
+     .reprobe_ms, .custody.{passphrase_env,credential,credentials_dir},
+     .identity.{ca,certificate,revocations,no_cluster_key}. node_config requires nothing
+     present (a caller's rule, Mimir's cluster of one), refuses only inconsistent pairs.
+     dannan-node uses it, with DANNAN_ variables; its own keys stay its own.
+   - (a) the API agreed with Dagda (below); (b) ship the TSan suppressions; (c)
+     NodeConfig::liveness_time. Deferred to 0.12.0: the notifying TimeSource and deferred
+     requests bounded in bytes per peer.
+   - ChildProcess::fill reads once when a deadline under a millisecond is not yet past (Lir).
+   - A pool of large transfer buffers (Dagda, with numbers; the maintainer: yes, in 0.11.0):
+     after exact-size reassembly glibc still held 400-620 MiB against 6 MiB in use on Dagda's
+     repair case, freed 16 MiB blocks raising glibc's mmap threshold so later ones land in the
+     per-thread arenas. sched::BufferPool, take(n) and give(Bytes), bounded in bytes held (default
+     256 MiB, floor 1 MiB), charged to the retained-memory ledger, one per node as
+     Context::buffers(); Dannan's frame opener and reassembly take from it, a payload goes back
+     when its handler returns. Gate: Dagda's case, glibc's holding near the pool's bound across
+     rounds.
    - the stream carrier (feature/stream-carrier, for Lir): its memory-pipe write test fails, and a
      run ended in a bus error;
    - item 6 (feature/clock-rules), its fixes re-gated;
+   - JSON, the Boost.JSON half of item 24, moved here from the second minor (the maintainer,
+     2026-11-22, in Lir's session; HTTP stays in 0.12.0). Boost.JSON becomes a Dannan
+     dependency, its compiled unit carried once in Dannan. Lir builds objects of strings, int64
+     and uint64 kept distinct, booleans and arrays, serialised to bytes; it parses nothing yet
+     (later: HTTP publish bodies, its rules engine).
    - then the plan's second minor (2026-11-20-stack-plan.md).
    - Agreed with Dagda for its matching minor:
      - `Outcome<T>::failure(Fault, message, T evidence)` keeps the evidence beside the fault;
@@ -57,10 +117,42 @@ started from are never read for direction or edited.
      250 ms meanwhile. In the next release, before that: `test::SteppedTime(poll = 5ms)` takes
      its wake_within poll as an optional constructor argument, so a fixture with many waiters
      can poll coarsely. Dagda wraps it meanwhile.
+   - Deferred requests bounded in bytes. This is the likely Dannan side of Macha's live-a OOM after
+     the cutover, 2026-11-21 and 2026-11-22: about 6 GB against a 768 MB budget, right after Dagda
+     DATA device-pressure onsets, with live-b repairing.
+     - Today `ServerLimits::max_deferred` is a count (4096 per work class, every peer together),
+       and a deferred Answer keeps only its request's bytes charged.
+     - A deferring handler that holds a reply-sized buffer while it waits is then charged nothing,
+       up to 4096 × the reply: 16 GiB at 4 MiB extents.
+     - The change: charge a deferred request its expected reply (or bound max_deferred in bytes
+       per class), and give each peer a share of a class's allowance.
+     - `ServerLimits` is in NodeConfig's layout, so it is a minor.
+     - Not live-a's cause, as the code stands: neither Dagda nor Macha binds a deferred handler,
+       and the node's ledger is enforced on its server and client. The gap is real for any
+       future deferring handler, so it stays planned.
    - Dagda's ask: `NodeConfig::liveness_time`, a TimeSource for liveness probes and call
      watchdogs that defaults to `time`. Today a test stepping a node's clock by more than
      dead_after/3 also gives up its links (client.cpp's await_ping).
-3. **Raise with the maintainer:** `found()` gives each slot its own deadline, counted from when that
+3. **Investigate, before 0.11.0's gate:** LevelZero.AChunkLostOnTheWayToTheFarEndEndsItWithinTheBound
+   failed once, in hosted CI's x86-64 ASan job on 0.10.2's release commit (run 44842230741).
+   - What failed: after the hub severed its data route to B mid-transfer, its data circuits did not
+     reach 0 within 20 s, and relay_ends_lost stayed 0.
+   - Where it passed: under ASan on a build node, under TSan, and in every other job.
+   - 0.10.2 touches no relay or circuit code.
+   - Find the mechanism, test first, before calling it timing.
+   - Done so far, 2026-11-22:
+     - not reproduced in 90 ASan runs on a build node, idle, pinned to one core, and two
+       copies sharing one core;
+     - on GitHub the transfer ended in about 3 s and the circuit then held for the whole 20 s;
+       on a build node the test takes 350 ms.
+   - Ruled out by reading the code:
+     - a held close is re-looked at every finish_wait (watch_close);
+     - sweep() needs a CONTROL route gone, and the test keeps it;
+     - a session that closes tells every in-flight and queued chunk "not sent" (abandon), so a
+       leg cannot stick at its pipeline limit that way.
+   - f2b6608 makes a failure print every node's level 0 counters, its circuits and the
+     transfer's outcome. The next failure names the way out that was not taken.
+4. **Raise with the maintainer:** `found()` gives each slot its own deadline, counted from when that
    slot's run starts, so with its node gone a founding's outcome takes a deadline per window of 16
    slots.
 4. **Dependencies:** read Boost's, OpenSSL's and yaml-cpp's newer releases against Dannan's code

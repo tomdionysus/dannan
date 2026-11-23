@@ -124,11 +124,12 @@ TEST(Hlc, AReceiveFarAheadThenACrashBeforeTheLoopRaisesIsStillAfter) {
   MemoryCeiling ceiling;
   HlcStamp received;
   {
-    HybridClock clock(wall, ceiling);
+    // A bound wide enough that the stamp 30 s ahead is merged: the case is the raise, not the bound.
+    HybridClock clock(wall, ceiling, std::chrono::minutes(1));
     received = clock.receive(HlcStamp::of(t0 + 30'000, 5)).local;
     EXPECT_EQ(clock.stats().raises_off_loop, 1u);
   }
-  HybridClock again(wall, ceiling);
+  HybridClock again(wall, ceiling, std::chrono::minutes(1));
   EXPECT_GT(again.now(), received);
 }
 

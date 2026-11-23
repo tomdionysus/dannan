@@ -61,10 +61,10 @@ Session::Session(Socket socket, Established established, Role role, std::shared_
       _routes(std::move(routes)),
       _handlers(std::move(handlers)),
       _options(options),
-      _opener(_established, _routes),
-      _assembler(options.max_incomplete_messages, options.max_incomplete_bytes, options.max_message_bytes, options.memory),
+      _opener(_established, _routes, options.buffers),
+      _assembler(options.max_incomplete_messages, options.max_incomplete_bytes, options.max_message_bytes, options.memory, options.buffers),
       _sealer(_established, _routes),
-      _queue(options.memory),
+      _queue(options.memory, options.buffers),
       _next_request(role == Role::dialler ? 1 : 2) {
 #ifdef SO_NOSIGPIPE
   // A peer that goes away must never end the process: whatever socket the

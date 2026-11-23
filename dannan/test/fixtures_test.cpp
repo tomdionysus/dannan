@@ -99,6 +99,16 @@ TEST(ChildProcess, ReadsLinesAndReportsHowItEnded) {
   EXPECT_THROW(ChildProcess({"/no/such/binary"}, dir.path() / "none.log"), std::runtime_error);
 }
 
+// A deadline less than a millisecond away still reads what is waiting (Lir: polling with
+// now + 1 ms read nothing in 595 looks, since the time left rounded down to zero).
+TEST(ChildProcess, AShortDeadlineStillReadsWhatIsWaiting) {
+  TempDir dir;
+  ChildProcess speaks({"/bin/sh", "-c", "echo ready"}, dir.path() / "speaks.log");
+  // Its output is all in the pipe once it has ended.
+  ASSERT_EQ(speaks.wait(std::chrono::steady_clock::now() + std::chrono::seconds(10)), 0);
+  EXPECT_EQ(speaks.line(std::chrono::steady_clock::now() + std::chrono::microseconds(300)), "ready");
+}
+
 // What process tests of a command need: its environment replaced, bytes on
 // its standard input, its raw output read to the end, a terminal for its
 // output, and any signal.

@@ -422,8 +422,8 @@ Bytes FrameSealer::seal(uint64_t request_id, sched::FrameType frame, MessageType
   return out;
 }
 
-FrameOpener::FrameOpener(const Established& session, std::shared_ptr<const RouteTable> routes)
-    : _key(session.keys.rx), _lane(session.lane), _max_frame(session.max_frame), _routes(std::move(routes)) {
+FrameOpener::FrameOpener(const Established& session, std::shared_ptr<const RouteTable> routes, std::shared_ptr<sched::BufferPool> buffers)
+    : _key(session.keys.rx), _lane(session.lane), _max_frame(session.max_frame), _routes(std::move(routes)), _buffers(std::move(buffers)) {
   if (!_routes) throw std::invalid_argument("FrameOpener: a route table is required");
 }
 
@@ -455,8 +455,17 @@ WireFragment FrameOpener::open(std::span<const uint8_t> body) {
   _have_header = false;
   if (body.size() != 12 + 16 + _pending_size) throw FrameRefused("frame body has the wrong length");
   try {
-    _pending.payload = identity::aes_gcm_open(_key, std::span<const uint8_t, 12>(body.data(), 12), std::span<const uint8_t, 16>(body.data() + 12, 16),
-                                              body.subspan(28), _header);
+    const std::span<const uint8_t, 12> nonce(body.data(), 12);
+    const std::span<const uint8_t, 16> tag(body.data() + 12, 16);
+    if (_buffers && _pending_size >= pooled_frame_least) {
+      // Opened into a pooled buffer of the largest frame, one size that always fits the next, so
+      // frames go round the pool; it goes back once the message it joins is done with.
+      _pending.payload = _buffers->take(std::max(_pending_size, _max_frame));
+      _pending.payload.resize(_pending_size);
+      identity::aes_gcm_open_into(_key, nonce, tag, body.subspan(28), _pending.payload, _header);
+    } else {
+      _pending.payload = identity::aes_gcm_open(_key, nonce, tag, body.subspan(28), _header);
+    }
   } catch (const std::runtime_error&) {
     throw FrameRefused("frame failed authentication");
   }

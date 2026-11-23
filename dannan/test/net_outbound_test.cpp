@@ -36,6 +36,22 @@ std::vector<uint64_t> drain(OutboundQueue& queue, size_t max_frame) {
   return order;
 }
 
+// A payload goes back to the node's pool once its last fragment is written, a request's and a
+// reply's alike, and as the session closes (Dagda: its reply rooms go round, 0.11.0).
+TEST(Outbound, AWrittenPayloadGoesBackToThePool) {
+  auto pool = std::make_shared<sched::BufferPool>(64 * 1024 * 1024, 1024);
+  OutboundQueue queue(nullptr, pool);
+  queue.register_inbound(2, FrameType::loader);
+  ASSERT_TRUE(queue.push(1, FrameType::loader, msg(300 * 1024), false));
+  ASSERT_TRUE(queue.push(2, FrameType::loader, msg(200 * 1024), true));
+  (void)drain(queue, 64 * 1024);
+  EXPECT_EQ(pool->stats().kept, 2u);
+  EXPECT_EQ(pool->stats().held_bytes, 500u * 1024);
+  ASSERT_TRUE(queue.push(3, FrameType::loader, msg(100 * 1024), false));
+  queue.abandon();
+  EXPECT_EQ(pool->stats().kept, 3u);
+}
+
 TEST(OutboundRefusal, AnEmptyQueueTakesEither) {
   EXPECT_EQ(outbound_refusal(0, 0, 1), nullptr);
   EXPECT_EQ(outbound_refusal(0, 0, small_message + 1), nullptr);

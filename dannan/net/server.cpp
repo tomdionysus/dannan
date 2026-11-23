@@ -239,6 +239,7 @@ void Server::established(const std::shared_ptr<Handshaking>& connection, std::ex
   };
   SessionOptions options;
   options.memory = _options.memory;
+  options.buffers = _options.buffers;
   options.traffic = _options.traffic;
   options.time = _options.time;
   options.log = _options.log;

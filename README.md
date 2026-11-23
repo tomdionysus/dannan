@@ -45,7 +45,7 @@ release keeps the ABI, so any later patch of the same minor is accepted and
 loads:
 
 ```cmake
-find_package(dannan 0.10.0 CONFIG REQUIRED)
+find_package(dannan 0.11.0 CONFIG REQUIRED)
 target_link_libraries(my_system PRIVATE dannan::dannan)
 ```
 
@@ -123,20 +123,23 @@ as one JSON object per line.
 
 ```
 printf '%s' 'a long shared secret' > cluster.key
-dannan-node --key cluster.key --state ./a --port 7437 --advertise 192.0.2.10
-dannan-node --key cluster.key --state ./b --port 7437 --advertise 192.0.2.11 \
-  --bootstrap 192.0.2.10:7437 --echo-ms 2000
+dannan-node --cluster-key cluster.key --cluster-state ./a --cluster-listen-port 7437 \
+  --cluster-listen-advertise 192.0.2.10
+dannan-node --cluster-key cluster.key --cluster-state ./b --cluster-listen-port 7437 \
+  --cluster-listen-advertise 192.0.2.11 --cluster-bootstrap 192.0.2.10:7437 --echo-ms 2000
 ```
 
 Every option can also come from a YAML file, with the flags winning over
-it: `--config node.yaml`, or `$DANNAN_NODE_CONFIG`. A `secrets.yaml` beside
+it: `--config node.yaml`, or `$DANNAN_CONFIG`. A `secrets.yaml` beside
 the file, in the same shape, wins over the file, and each option has a
-`DANNAN_NODE_*` variable that wins over both. `--port 7437` is
-`listen: {port: 7437}` in the file and `DANNAN_NODE_LISTEN_PORT` in the
-environment. This is `dannan::config` (`dannan/config/config.h`), the one
-settings reader every node binary in the stack shares;
-[`docs/config.md`](docs/config.md) has its layers and the naming rule every
-binary follows.
+`DANNAN_*` variable that wins over both. `--cluster-listen-port 7437` is
+`cluster: {listen: {port: 7437}}` in the file and `DANNAN_CLUSTER_LISTEN_PORT`
+in the environment. This is `dannan::config` (`dannan/config/config.h`), the
+one settings reader every node binary in the stack shares, and the `cluster.*`
+settings are every node binary's (`dannan/config/node_settings.h`), each under
+its own project's prefix; [`docs/config.md`](docs/config.md) has its layers and
+the naming rule every binary follows, and [`docs/running.md`](docs/running.md)
+what bounds a node's memory.
 
 ### Run a cluster on certificates
 
@@ -148,14 +151,15 @@ passphrase or a systemd credential.
 export CA_PASS=... NODE_PASS=...
 dannan-ca init --dir ./ca --name my-cluster --passphrase-env CA_PASS
 
-dannan-node --state ./a --init-custody --custody-passphrase-env NODE_PASS
-dannan-node --state ./a --show-identity --custody-passphrase-env NODE_PASS
+dannan-node --cluster-state ./a --init-custody --cluster-custody-passphrase-env NODE_PASS
+dannan-node --cluster-state ./a --show-identity --cluster-custody-passphrase-env NODE_PASS
 #   {"id":"<node id>","public_key":"<hex>"}
 dannan-ca issue --dir ./ca --passphrase-env CA_PASS \
   --node <node id> --public-key <hex> > ./a/node.pem
 
-dannan-node --state ./a --custody-passphrase-env NODE_PASS \
-  --ca ./ca/ca.pem --certificate ./a/node.pem --no-cluster-key ...
+dannan-node --cluster-state ./a --cluster-custody-passphrase-env NODE_PASS \
+  --cluster-identity-ca ./ca/ca.pem --cluster-identity-certificate ./a/node.pem \
+  --cluster-identity-no-cluster-key ...
 ```
 
 On a production node, `dannan-custody` makes custody under a systemd
@@ -177,7 +181,7 @@ reaches the rest within one gossip round:
 ```
 dannan-ca revoke --dir ./ca --passphrase-env CA_PASS --node <node id> \
   --reason "decommissioned" --out revocation.bin
-dannan-node ... --revocations revocation.bin
+dannan-node ... --cluster-identity-revocations revocation.bin
 ```
 
 ## Build from source
@@ -223,7 +227,7 @@ Dannan and, where they share state, share it through Dagda.
 
 ## Status
 
-Version 0.10.0. The library, wire versions 1 and 2, reachability, identity and
+Version 0.11.0. The library, wire versions 1 and 2, reachability, identity and
 agreement are complete and tested. Within a minor the ABI is kept; interfaces
 may change between minors while the hosted systems are built on them.
 

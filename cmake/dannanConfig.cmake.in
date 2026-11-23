@@ -14,3 +14,6 @@ find_dependency(Threads)
 
 include("${CMAKE_CURRENT_LIST_DIR}/dannanTargets.cmake")
 check_required_components(dannan)
+
+# The stack's one list of TSan suppressions: TSAN_OPTIONS=suppressions=${DANNAN_TSAN_SUPPRESSIONS}.
+set_and_check(DANNAN_TSAN_SUPPRESSIONS "@PACKAGE_DANNAN_TSAN_SUPPRESSIONS_INSTALLED@")

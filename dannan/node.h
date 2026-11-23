@@ -26,6 +26,7 @@
 #include "dannan/identity/node_identity.h"
 #include "dannan/identity/sealed_counters.h"
 #include "dannan/membership/agreed_roster.h"
+#include "dannan/membership/clock_offsets.h"
 #include "dannan/membership/membership.h"
 #include "dannan/net/client.h"
 #include "dannan/net/server.h"
@@ -120,6 +121,8 @@ struct NodeConfig {
   // with a session (none: dead_after), and, tests only, the chunks a relay drops.
   std::optional<std::chrono::milliseconds> relay_finish_wait;
   std::function<bool(uint64_t sequence, bool forwarding, bool toward_b)> relay_drop_hook;
+  // Tests only: reach::PathsConfig's punch_target_hook.
+  std::function<net::Endpoint(uint16_t local_port, const net::Endpoint& target)> punch_target_hook;
   std::chrono::milliseconds dial_back_min_interval{10000};
   std::chrono::milliseconds reprobe_while_capable = std::chrono::hours(1);
   std::chrono::milliseconds reprobe_while_incapable = std::chrono::minutes(10);
@@ -166,7 +169,15 @@ struct NodeConfig {
   // Context, to the hosted system.
   std::shared_ptr<status::LogSink> log = std::make_shared<status::ConsoleSink>();
 
+  // The node's transfer-buffer pool (Context::buffers): what it holds at most, and the smallest
+  // buffer it keeps (a 256 KiB frame is kept, so fragments go round too).
+  size_t transfer_buffers_bound = 256ull * 1024 * 1024;
+  size_t transfer_buffers_floor = 128 * 1024;
+
   const contract::TimeSource* time = &contract::steady_time_source();
+  // What the node's links judge liveness on (net::ClientOptions::liveness_time); none: `time`.
+  // Dagda's ask: a test stepping `time` past dead_after/3 no longer gives up its links.
+  const contract::TimeSource* liveness_time = nullptr;
   const contract::WallClock* wall = &contract::system_wall_clock();
 
   // Runs `task` once `after` has passed on `time` (the simulation harness's schedule, step 3
@@ -180,8 +191,11 @@ struct NodeConfig {
   // replays exactly. Empty: random.
   std::function<identity::NodeId()> fresh_id;
   // How far ahead of this node's wall time a received hybrid-clock stamp may be and still be
-  // merged (the HLC design: one minute).
-  std::chrono::milliseconds hlc_max_ahead = std::chrono::minutes(1);
+  // merged: five seconds, past the two-second offset bound a ready node keeps (the plan's item 6).
+  std::chrono::milliseconds hlc_max_ahead = std::chrono::seconds(5);
+  // How far this node's clock may be from a peer's before that peer counts against it; past it
+  // against more than half of the agreed roster, the node issues no hybrid-clock stamp (item 6).
+  std::chrono::milliseconds clock_offset_bound = std::chrono::seconds(2);
   // The network as the harness gives it (the transport seam, piece 2b): set, the node builds no
   // client, server or level 0 paths, and calls, sends and serves through what this returns,
   // given the node's hooks. Empty: sockets, as always.
@@ -285,6 +299,7 @@ class Node final : public Context {
   supervise::SupervisedThreads& threads() override { return _threads; }
   sched::ClassGates& gates() override { return _gates; }
   sched::WorkerPool& workers() override { return _workers; }
+  std::shared_ptr<sched::BufferPool> buffers() override { return _buffers; }
   agree::Agreement& agreement() override { return *_agreement; }
   contract::HlcClock& hlc() override { return *_hlc; }
   Diagnostics diagnostics() const override;
@@ -330,6 +345,11 @@ class Node final : public Context {
   // Forget the unseen, then exchange with each seed and known peer in turn.
   void membership_step(std::function<bool()> stopped, boost::asio::any_io_executor on, std::function<void()> done);
   void membership_next(const std::shared_ptr<MembershipPass>& pass);
+  // The clock probes after a membership pass: one to each active peer at once, then judge_clock(),
+  // then `done`.
+  void probe_clocks(boost::asio::any_io_executor on, std::function<void()> done);
+  // Out of bounds or back, from the offsets measured (item 6), told to the hybrid clock and the log.
+  void judge_clock();
   // One exchange of rosters, then of revocations; `done` with why it failed, or empty.
   void exchange(std::optional<membership::NodeRecord> peer, const net::Endpoint& endpoint, boost::asio::any_io_executor on,
                 std::function<void(std::string)> done);
@@ -401,6 +421,8 @@ class Node final : public Context {
   reach::InboundResolver _inbound;
   membership::Membership _members;
   // The roster as last agreed, which the partition reading counts (P2).
+  // Each peer's clock offset, from the probes (item 6).
+  membership::ClockOffsets _clock_offsets;
   membership::AgreedRoster _agreed;
   status::TelemetryStore _telemetry;
   status::NodeEvents _events;
@@ -414,6 +436,9 @@ class Node final : public Context {
   sched::WorkerPool _workers;
   sched::WaitGuard _wait_guard;
   sched::RetainedMemoryLedger _memory;
+  // After the ledger it charges; detached as the node goes, so a holder's late give frees.
+  const std::shared_ptr<sched::BufferPool> _buffers =
+      std::make_shared<sched::BufferPool>(_config.transfer_buffers_bound, _config.transfer_buffers_floor, &_memory);
   const std::shared_ptr<net::TransportTraffic> _traffic = std::make_shared<net::TransportTraffic>();
 
   // Hosted types' wire rules, written before start and read only after;

@@ -35,6 +35,7 @@
 #include "dannan/reach/connectivity.h"
 #include "dannan/reach/inbound.h"
 #include "dannan/reach/paths.h"
+#include "dannan/sched/buffer_pool.h"
 #include "dannan/sched/class_gate.h"
 #include "dannan/sched/retained_memory.h"
 #include "dannan/sched/work.h"
@@ -139,6 +140,13 @@ class Nodes {
   // The smoothed CONTROL round trip, from health pings only.
   virtual std::optional<std::chrono::milliseconds> latency(const identity::NodeId& node) const = 0;
   virtual std::map<identity::NodeId, std::chrono::milliseconds> latencies() const = 0;
+  // This node's clock offset to `node`, from the clock probes made each heartbeat (positive: the
+  // peer's clock is ahead); nothing before a probe has come back (the plan's item 6).
+  virtual std::optional<std::chrono::milliseconds> clock_offset(const identity::NodeId& node) const = 0;
+  // Whether this node's clock is within bounds: false while its offset is past
+  // NodeConfig::clock_offset_bound against more than half of the agreed roster, itself counted at
+  // zero, and then it issues no hybrid-clock stamp (hlc().now() throws ClockOutOfBounds).
+  virtual bool clock_in_bounds() const = 0;
   // Identity association resets: held, applied here (roster, telemetry,
   // routes), and propagated to every active peer, each asked within
   // `deadline`, their answers applied too.
@@ -457,6 +465,13 @@ class Context {
   // The node's worker pool, on the gates, started with the node. A hosted system
   // may build a pool of its own beside it, on gates() and threads().
   virtual sched::WorkerPool& workers() = 0;
+  // The node's pool of large transfer buffers (0.11.0): take a buffer of an extent's size from
+  // it and give it back when done, so blocks are reused rather than freed through malloc, whose
+  // sliding mmap threshold keeps them in per-thread arenas. Dannan's sessions take and give the
+  // same way: a reply or request payload goes back once written, an inbound request's once its
+  // handler has returned. Held by shared_ptr, so a buffer may be given back from any thread,
+  // after the node has gone too. The default keeps nothing, for a Context of a test's own.
+  virtual std::shared_ptr<sched::BufferPool> buffers() { return std::make_shared<sched::BufferPool>(0, 0); }
   // Leaderless per-key agreement over the cluster (0.9.0, TODO/2026-11-15-agreement-
   // design.md): a hosted system serves its space's acceptors from a store of its own
   // and changes registers from any node. the maintainer, 2026-11-15: anything in the stack that

@@ -36,6 +36,55 @@ TEST(Assembler, JoinsFragmentsIntoOneMessage) {
   EXPECT_EQ(assembler.incomplete_bytes(), 0u);
 }
 
+// A finished message holds exactly its own size, however many fragments it came in: no
+// fragment says how large the whole will be, and appending each grew the payload by doubling,
+// so a 16 MiB extent with Dagda's 36 bytes of header ended in a 32 MiB block, held as long as
+// the receiver kept the message (Dagda's heaptrack of its repair case, 2026-11-22). The bytes
+// arrive in order and intact.
+TEST(Assembler, AFinishedMessageHoldsExactlyItsSize) {
+  const size_t size = 16 * 1024 * 1024 + 36;
+  const size_t piece = 256 * 1024;
+  MessageAssembler assembler(4, 64 * 1024 * 1024, 64 * 1024 * 1024);
+  std::optional<Frame> done;
+  for (size_t at = 0; at < size; at += piece) {
+    const auto bytes = std::min(piece, size - at);
+    Bytes payload(bytes);
+    for (size_t i = 0; i < bytes; ++i) payload[i] = static_cast<uint8_t>((at + i) * 31);
+    done = assembler.push(WireFragment{7, FrameType::loader, MessageType{1029}, at == 0, at + bytes == size, std::move(payload)});
+  }
+  ASSERT_TRUE(done);
+  const auto& payload = done->message.payload;
+  ASSERT_EQ(payload.size(), size);
+  EXPECT_EQ(payload.capacity(), size);
+  for (size_t i = 0; i < size; i += 4099) ASSERT_EQ(payload[i], static_cast<uint8_t>(i * 31)) << i;
+  EXPECT_EQ(payload[size - 1], static_cast<uint8_t>((size - 1) * 31));
+  EXPECT_EQ(assembler.incomplete_bytes(), 0u);
+}
+
+// With the node's pool, a joined message's buffer comes from it and each fragment goes back to
+// it: a second message of the size of the first, its first given back, reuses its block.
+TEST(Assembler, WithAPoolTheJoinedBufferComesFromItAndTheFragmentsGoBack) {
+  const size_t piece = 256 * 1024;
+  auto pool = std::make_shared<sched::BufferPool>(64 * 1024 * 1024, 1024);
+  MessageAssembler assembler(4, 64 * 1024 * 1024, 64 * 1024 * 1024, nullptr, pool);
+  const auto deliver = [&](uint64_t id) {
+    std::optional<Frame> done;
+    for (size_t i = 0; i < 4; ++i) done = assembler.push(WireFragment{id, FrameType::loader, MessageType{1029}, i == 0, i == 3, Bytes(piece, 0x11)});
+    return done;
+  };
+  auto first = deliver(3);
+  ASSERT_TRUE(first);
+  EXPECT_EQ(first->message.payload.size(), 4 * piece);
+  // Its four fragments went back.
+  EXPECT_EQ(pool->stats().kept, 4u);
+  const auto* block = first->message.payload.data();
+  pool->give(std::move(first->message.payload));
+  auto second = deliver(5);
+  ASSERT_TRUE(second);
+  EXPECT_EQ(second->message.payload.data(), block);
+  EXPECT_EQ(second->message.payload, Bytes(4 * piece, 0x11));
+}
+
 TEST(Assembler, BoundsTheIncompleteMessagesTheirBytesAndEachMessage) {
   MessageAssembler assembler(2, 8, 16);
   EXPECT_FALSE(assembler.push(fragment(1, true, false, 3)));

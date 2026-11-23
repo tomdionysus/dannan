@@ -197,6 +197,8 @@ class Node::NodesNoun final : public Nodes {
   std::map<identity::NodeId, std::chrono::milliseconds> latencies() const override {
     return _node._net ? _node._net->peer_latencies() : decltype(latencies()){};
   }
+  std::optional<std::chrono::milliseconds> clock_offset(const identity::NodeId& node) const override { return _node._clock_offsets.offset(node); }
+  bool clock_in_bounds() const override { return _node._hlc->issuing(); }
   std::vector<membership::IdentityReset> identity_resets() const override { return _node._members.identity_resets(); }
   bool apply_identity_reset(const membership::IdentityReset& reset) override { return _node.apply_identity_reset(reset); }
   void refresh_public_connectivity(bool probe, bool force_probe, asio::any_io_executor executor,
@@ -294,9 +296,14 @@ class Node::RoutesNoun final : public Routes {
   }
   void bind(net::MessageType type, net::RequestHandler handler) override {
     if (!handler) return bind_deferred(type, {});
-    bind_deferred(type, [handler = std::move(handler)](const NodeRecord& peer, sched::FrameType frame, net::Message request, net::Answer&) {
-      return handler(peer, frame, request);
-    });
+    // A handler that answers by returning is done with the request when it returns: its buffer
+    // goes back to the node's pool.
+    bind_deferred(type,
+                  [handler = std::move(handler), buffers = _node._buffers](const NodeRecord& peer, sched::FrameType frame, net::Message request, net::Answer&) {
+                    auto handled = handler(peer, frame, request);
+                    buffers->give(std::move(request.payload));
+                    return handled;
+                  });
   }
   void bind_deferred(net::MessageType type, net::DeferringHandler handler) override {
     if (_node._table.is_core(type)) throw std::logic_error("message type " + std::to_string(static_cast<uint16_t>(type)) + " is one of Dannan's");
@@ -727,7 +734,10 @@ Node::Node(asio::io_context& io, NodeConfig config)
   for (const auto& reset : _members.identity_resets()) _telemetry.apply_identity_reset(reset);
 }
 
-Node::~Node() { stop(); }
+Node::~Node() {
+  stop();
+  _buffers->detach();
+}
 
 void Node::start() {
   // A cluster nobody could connect to is refused before anything listens.
@@ -761,6 +771,7 @@ void Node::start() {
     server_options.routes = _frozen;
     server_options.limits = _config.limits;
     server_options.memory = &_memory;
+    server_options.buffers = _buffers;
     server_options.traffic = _traffic;
     server_options.time = _config.time;
     server_options.log = _config.log;
@@ -782,8 +793,10 @@ void Node::start() {
     client_options.max_frame = _config.max_frame;
     client_options.routes = _frozen;
     client_options.memory = &_memory;
+    client_options.buffers = _buffers;
     client_options.traffic = _traffic;
     client_options.time = _config.time;
+    client_options.liveness_time = _config.liveness_time;
     client_options.connect_timeout = _config.connect_timeout;
     client_options.control_no_progress = _config.control_no_progress;
     client_options.data_no_progress = _config.data_no_progress;
@@ -826,6 +839,7 @@ void Node::start() {
     // Chunks that have not come within the liveness window are not coming.
     paths.finish_wait = _config.relay_finish_wait.value_or(_config.dead_after);
     paths.drop_hook = _config.relay_drop_hook;
+    paths.punch_target_hook = _config.punch_target_hook;
     _paths = std::make_unique<reach::Paths>(
         _io, paths, *_client, [this] { return _members.self(); }, [this] { return _members.active(); },
         [this](const NodeRecord& peer, net::MessageType type, net::Bytes payload, std::chrono::milliseconds deadline) {
@@ -1042,6 +1056,14 @@ net::Handled Node::handle(const NodeRecord& peer, sched::FrameType frame, net::M
   const auto type = request.type;
   _activity.note(frame, request.payload.size());
   if (type == m::ping) return net::Handled::processed();
+  if (type == m::clock_probe) {
+    try {
+      const auto sent = membership::decode_probe(request.payload);
+      return net::Handled::processed({m::clock_probe_reply, membership::encode_answer({sent, _config.wall->unix_ms()}), {}});
+    } catch (const net::DecodeError& error) {
+      return net::Handled::failed(400, "invalid_request", error.what());
+    }
+  }
   if (type == m::members) {
     // A pushed record (Nodes::advertise with a deadline): the sender's own, merged before
     // the answer, so the roster sent back shows whether it was taken. Empty: the plain
@@ -1630,7 +1652,62 @@ void Node::membership_next(const std::shared_ptr<MembershipPass>& pass) {
     _peers_active = pass->active;
     break;
   }
-  pass->done();
+  if (pass->stopped()) return pass->done();
+  probe_clocks(pass->on, std::move(pass->done));
+}
+
+void Node::probe_clocks(asio::any_io_executor on, std::function<void()> done) {
+  // As the membership pass: a peer that takes no inbound connection and has no session open to it
+  // is not dialled for a probe, so a probe never asks level 0 for a path.
+  std::vector<NodeRecord> peers;
+  for (auto& node : _members.active())
+    if (node.id != _identity.id && (node.inbound_capable() || _net->has_route(node.id, net::Lane::control))) peers.push_back(std::move(node));
+  struct Round {
+    std::atomic<size_t> left;
+    std::function<void()> done;
+  };
+  auto round = std::make_shared<Round>();
+  round->left = peers.size();
+  round->done = std::move(done);
+  const auto finish = [this, round] {
+    if (round->left.fetch_sub(1) != 1) return;
+    judge_clock();
+    round->done();
+  };
+  if (peers.empty()) {
+    judge_clock();
+    return round->done();
+  }
+  // Each probe is answered by the peer's fast pool; one that does not answer within the bound only
+  // misses this round.
+  const auto deadline = std::min(_config.heartbeat, std::chrono::milliseconds(2000));
+  for (const auto& peer : peers) {
+    const auto sent = _config.wall->unix_ms();
+    (void)place_call(peer, {peer.host, peer.port}, net::message::clock_probe, membership::encode_probe(sent), sched::FrameType::control, deadline, on,
+                     [this, id = peer.id, sent, finish](net::CallOutcome outcome) {
+                       if (outcome.reply && outcome.reply->type == net::message::clock_probe_reply) {
+                         try {
+                           const auto answer = membership::decode_answer(outcome.reply->payload);
+                           if (answer.sent == sent) _clock_offsets.record(id, sent, answer.answered, _config.wall->unix_ms());
+                         } catch (const net::DecodeError&) {
+                           // A peer that answers in another form gives no sample.
+                         }
+                       }
+                       finish();
+                     });
+  }
+}
+
+void Node::judge_clock() {
+  const auto out = _clock_offsets.out_of_bounds(_identity.id, _agreed.members(), _config.clock_offset_bound);
+  if (out == !_hlc->issuing()) return;
+  _hlc->set_out_of_bounds(out);
+  const status::ScopedLogger log(_config.log, "node");
+  if (out)
+    log.warn("this node's clock is more than " + std::to_string(_config.clock_offset_bound.count()) +
+             " ms off more than half of the agreed roster: it issues no hybrid-clock stamp until it is back");
+  else
+    log.info("this node's clock is back within bounds: it issues hybrid-clock stamps again");
 }
 
 void Node::telemetry_step(contract::TimePoint& last_gossip) {

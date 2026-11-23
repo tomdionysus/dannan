@@ -66,6 +66,8 @@ RouteTable RouteTable::with_dannan_types() {
   table.add_core(message::agree_settle, {"agree_settle", control, control_only, false});
   // A change waits on it, and its pieces are bounded (agree::max_piece).
   table.add_core(message::agree_fetch, {"agree_fetch", control, control_only, false});
+  // A clock probe is timed: answered by the fast pool, never behind other control work.
+  table.add_core(message::clock_probe, {"clock_probe", control, control_only, false, true});
   // Replies inherit their request's class.
   table.add_core(message::ok, {"ok", both, any, false});
   table.add_core(message::members_reply, {"members_reply", control, control_only, false});
@@ -82,6 +84,7 @@ RouteTable RouteTable::with_dannan_types() {
   table.add_core(message::agree_purge_reply, {"agree_purge_reply", control, control_only, false});
   table.add_core(message::agree_settle_reply, {"agree_settle_reply", control, control_only, false});
   table.add_core(message::agree_fetch_reply, {"agree_fetch_reply", control, control_only, false});
+  table.add_core(message::clock_probe_reply, {"clock_probe_reply", control, control_only, false});
   table.add_core(message::error, {"error", both, any, false});
   return table;
 }

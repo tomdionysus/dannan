@@ -109,6 +109,9 @@ inline constexpr uint64_t relay_credit_batch = 8;
 // How many of a circuit's chunks one hop hands its session at once: enough that
 // each hop is not one chunk's write behind the last.
 inline constexpr uint64_t relay_pipeline_chunks = 4;
+// How many punches through one broker a pair tries while each crosses (connects, then fails
+// its handshake) before it goes to the next broker.
+inline constexpr int punch_attempts = 3;
 
 net::Bytes encode(const PunchRequest&);
 net::Bytes encode(const PunchGo&);
@@ -173,6 +176,10 @@ struct PathsConfig {
   // false) or as it would forward it, as a session dying with it would; `toward_b` is the
   // chunk's way, to the end the circuit was opened to.
   std::function<bool(uint64_t sequence, bool forwarding, bool toward_b)> drop_hook;
+  // Tests only: where a punch this node asked for opens to, given its own punch port and the
+  // far end's endpoint the broker answered. A crossed punch (its own port as its target, the
+  // fault hosted CI met) is made on demand by answering the first with that port.
+  std::function<net::Endpoint(uint16_t local_port, const net::Endpoint& target)> punch_target_hook;
   // How long both ends keep trying a simultaneous open.
   std::chrono::milliseconds punch_window{3000};
   // Whether this node forwards circuits for others. CONTROL circuits are
@@ -323,8 +330,9 @@ class Paths {
   // The session toward one end is gone: the other end is told, after what
   // it is still owed.
   void lost(uint64_t circuit, bool toward_b);
-  // A control notification that must arrive: waits out a full queue, and gives
-  // up only when the route is gone.
+  // A control notification that must arrive: waits out a full queue, goes by CONTROL
+  // when `lane`'s route is gone, and gives up only when that is gone too (the relay's
+  // sweep then ends the circuit).
   void send_until_taken(identity::NodeId peer, net::Lane lane, net::Message message);
   // The lane a circuit's bytes take to `peer`: the one the circuit is for, so
   // bulk never waits in front of CONTROL's pings, or CONTROL with no route on it.

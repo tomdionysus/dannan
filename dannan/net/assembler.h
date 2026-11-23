@@ -14,6 +14,7 @@
 
 #include "dannan/net/channel.h"
 #include "dannan/net/message.h"
+#include "dannan/sched/buffer_pool.h"
 #include "dannan/sched/retained_memory.h"
 
 namespace dannan::net {
@@ -26,8 +27,10 @@ namespace dannan::net {
 // FrameRefused and the session ends. Single owner: the session's reader.
 class MessageAssembler {
  public:
-  // Throws std::invalid_argument for a zero bound. `memory` may be null.
-  MessageAssembler(size_t max_incomplete_messages, size_t max_incomplete_bytes, size_t max_message_bytes, sched::RetainedMemoryLedger* memory = nullptr);
+  // Throws std::invalid_argument for a zero bound. `memory` may be null. `buffers`, if given, is
+  // where a joined message comes from and where its fragments go back.
+  MessageAssembler(size_t max_incomplete_messages, size_t max_incomplete_bytes, size_t max_message_bytes, sched::RetainedMemoryLedger* memory = nullptr,
+                   std::shared_ptr<sched::BufferPool> buffers = {});
 
   // The finished message when `fragment` was its last, else empty.
   std::optional<Frame> push(WireFragment fragment);
@@ -45,7 +48,10 @@ class MessageAssembler {
   struct Partial {
     sched::FrameType frame = sched::FrameType::control;
     MessageType type{};
-    Bytes payload;
+    // The fragments as they came, joined once when the last arrives: no fragment says how
+    // large the whole will be, and growing one buffer would leave it up to twice the size.
+    std::vector<Bytes> pieces;
+    size_t size = 0;
     MemoryHold memory;
   };
 
@@ -57,6 +63,7 @@ class MessageAssembler {
   const size_t _max_bytes;
   const size_t _max_message;
   sched::RetainedMemoryLedger* _memory;
+  std::shared_ptr<sched::BufferPool> _buffers;
 };
 
 // The more urgent of two frame classes.

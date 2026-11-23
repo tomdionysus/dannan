@@ -11,6 +11,7 @@
 
 #include "dannan/fuzz/fuzz.h"
 #include "dannan/identity/certificate.h"
+#include "dannan/membership/clock_offsets.h"
 #include "dannan/membership/identity_reset.h"
 #include "dannan/membership/node_record.h"
 #include "dannan/net/fanout.h"
@@ -126,6 +127,23 @@ const Registration revocations(
 const Registration interest(
     "channel_interest", [](std::span<const uint8_t> data) { (void)net::decode_interest(data); },
     [] { return std::vector<net::Bytes>{net::encode_interest({"a/", "b/c/"})}; });
+
+// The clock probe and its answer (item 6): either may throw only net::DecodeError.
+const Registration clock_probe(
+    "clock_probe",
+    [](std::span<const uint8_t> data) {
+      try {
+        (void)membership::decode_probe(data);
+      } catch (const net::DecodeError&) {
+      }
+      try {
+        (void)membership::decode_answer(data);
+      } catch (const net::DecodeError&) {
+      }
+    },
+    [] {
+      return std::vector<net::Bytes>{membership::encode_probe(1'793'700'000'000ull), membership::encode_answer({1'793'700'000'000ull, 1'793'700'000'005ull})};
+    });
 
 }  // namespace
 }  // namespace dannan::fuzz

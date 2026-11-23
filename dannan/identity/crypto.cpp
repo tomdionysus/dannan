@@ -112,47 +112,54 @@ Secret hkdf_sha256_secret(std::span<const uint8_t> key, std::span<const uint8_t>
   return Secret(std::move(out));
 }
 
-SealedData aes_gcm_seal(std::span<const uint8_t, 32> key, std::span<const uint8_t> plaintext, std::span<const uint8_t> associated) {
+namespace {
+
+std::array<uint8_t, 12> random_nonce() {
   std::array<uint8_t, 12> nonce{};
   if (RAND_bytes(nonce.data(), static_cast<int>(nonce.size())) != 1) throw std::runtime_error("random nonce failed");
-  return aes_gcm_seal(key, nonce, plaintext, associated);
+  return nonce;
 }
 
-SealedData aes_gcm_seal(std::span<const uint8_t, 32> key, std::span<const uint8_t, 12> nonce, std::span<const uint8_t> plaintext,
-                        std::span<const uint8_t> associated) {
-  SealedData out;
-  std::copy(nonce.begin(), nonce.end(), out.nonce.begin());
-  out.ciphertext.resize(plaintext.size());
+// `out` is exactly `in`'s size, and either `in` itself or apart from it: the cipher
+// works in place, never across a partial overlap.
+void exact_or_apart(std::span<const uint8_t> in, std::span<uint8_t> out) {
+  if (out.size() != in.size()) throw std::invalid_argument("AES-GCM output is not the input's size");
+  if (in.empty() || out.data() == in.data()) return;
+  const auto* a = in.data();
+  const auto* b = out.data();
+  if (a < b + out.size() && b < a + in.size()) throw std::invalid_argument("AES-GCM output partly overlaps its input");
+}
+
+// AES-256-GCM over `in` into `out`, which is `in`'s size: GCM produces as many bytes as
+// it takes, and nothing more at the end.
+GcmSeal seal_core(std::span<const uint8_t, 32> key, std::span<const uint8_t, 12> nonce, std::span<const uint8_t> in, uint8_t* out,
+                  std::span<const uint8_t> associated) {
+  GcmSeal seal;
+  std::copy(nonce.begin(), nonce.end(), seal.nonce.begin());
   CipherContext context(EVP_CIPHER_CTX_new(), EVP_CIPHER_CTX_free);
   if (!context || EVP_EncryptInit_ex(context.get(), EVP_aes_256_gcm(), nullptr, nullptr, nullptr) != 1 ||
       EVP_CIPHER_CTX_ctrl(context.get(), EVP_CTRL_GCM_SET_IVLEN, 12, nullptr) != 1 ||
-      EVP_EncryptInit_ex(context.get(), nullptr, nullptr, key.data(), out.nonce.data()) != 1)
+      EVP_EncryptInit_ex(context.get(), nullptr, nullptr, key.data(), seal.nonce.data()) != 1)
     throw std::runtime_error("AES-GCM init failed");
   int produced = 0;
   if (!associated.empty() && EVP_EncryptUpdate(context.get(), nullptr, &produced, associated.data(), length(associated.size())) != 1)
     throw std::runtime_error("AES-GCM associated data failed");
   int total = 0;
-  if (!plaintext.empty()) {
-    if (EVP_EncryptUpdate(context.get(), out.ciphertext.data(), &produced, plaintext.data(), length(plaintext.size())) != 1)
-      throw std::runtime_error("AES-GCM encrypt failed");
+  if (!in.empty()) {
+    if (EVP_EncryptUpdate(context.get(), out, &produced, in.data(), length(in.size())) != 1) throw std::runtime_error("AES-GCM encrypt failed");
     total = produced;
   }
   std::array<uint8_t, 16> tail{};
-  if (EVP_EncryptFinal_ex(context.get(), out.ciphertext.empty() ? tail.data() : out.ciphertext.data() + total, &produced) != 1)
-    throw std::runtime_error("AES-GCM final failed");
-  out.ciphertext.resize(static_cast<size_t>(total + produced));
-  if (EVP_CIPHER_CTX_ctrl(context.get(), EVP_CTRL_GCM_GET_TAG, 16, out.tag.data()) != 1) throw std::runtime_error("AES-GCM tag failed");
-  return out;
+  if (EVP_EncryptFinal_ex(context.get(), in.empty() ? tail.data() : out + total, &produced) != 1) throw std::runtime_error("AES-GCM final failed");
+  if (static_cast<size_t>(total + produced) != in.size()) throw std::runtime_error("AES-GCM produced the wrong length");
+  if (EVP_CIPHER_CTX_ctrl(context.get(), EVP_CTRL_GCM_GET_TAG, 16, seal.tag.data()) != 1) throw std::runtime_error("AES-GCM tag failed");
+  return seal;
 }
 
-namespace {
-
-// AES-256-GCM open into a buffer of the ciphertext's size, whatever memory
-// it is; resized to what was produced.
-template <class Buffer>
-Buffer open_into(std::span<const uint8_t, 32> key, std::span<const uint8_t, 12> nonce, std::span<const uint8_t, 16> tag, std::span<const uint8_t> ciphertext,
-                 std::span<const uint8_t> associated) {
-  Buffer out(ciphertext.size());
+// The open's counterpart: throws when the message does not authenticate, `out` then
+// holding unauthenticated bytes for the caller to clear.
+void open_core(std::span<const uint8_t, 32> key, std::span<const uint8_t, 12> nonce, std::span<const uint8_t, 16> tag, std::span<const uint8_t> in,
+               uint8_t* out, std::span<const uint8_t> associated) {
   CipherContext context(EVP_CIPHER_CTX_new(), EVP_CIPHER_CTX_free);
   if (!context || EVP_DecryptInit_ex(context.get(), EVP_aes_256_gcm(), nullptr, nullptr, nullptr) != 1 ||
       EVP_CIPHER_CTX_ctrl(context.get(), EVP_CTRL_GCM_SET_IVLEN, 12, nullptr) != 1 ||
@@ -162,20 +169,40 @@ Buffer open_into(std::span<const uint8_t, 32> key, std::span<const uint8_t, 12> 
   if (!associated.empty() && EVP_DecryptUpdate(context.get(), nullptr, &produced, associated.data(), length(associated.size())) != 1)
     throw std::runtime_error("AES-GCM associated data failed");
   int total = 0;
-  if (!ciphertext.empty()) {
-    if (EVP_DecryptUpdate(context.get(), out.data(), &produced, ciphertext.data(), length(ciphertext.size())) != 1)
-      throw std::runtime_error("AES-GCM decrypt failed");
+  if (!in.empty()) {
+    if (EVP_DecryptUpdate(context.get(), out, &produced, in.data(), length(in.size())) != 1) throw std::runtime_error("AES-GCM decrypt failed");
     total = produced;
   }
   if (EVP_CIPHER_CTX_ctrl(context.get(), EVP_CTRL_GCM_SET_TAG, 16, const_cast<uint8_t*>(tag.data())) != 1) throw std::runtime_error("AES-GCM tag failed");
   std::array<uint8_t, 16> tail{};
-  if (EVP_DecryptFinal_ex(context.get(), out.empty() ? tail.data() : out.data() + total, &produced) != 1)
-    throw std::runtime_error("AES-GCM authentication failed");
-  out.resize(static_cast<size_t>(total + produced));
+  if (EVP_DecryptFinal_ex(context.get(), in.empty() ? tail.data() : out + total, &produced) != 1) throw std::runtime_error("AES-GCM authentication failed");
+  if (static_cast<size_t>(total + produced) != in.size()) throw std::runtime_error("AES-GCM produced the wrong length");
+}
+
+// Open into a new buffer of the ciphertext's size, whatever memory it is.
+template <class Buffer>
+Buffer open_into(std::span<const uint8_t, 32> key, std::span<const uint8_t, 12> nonce, std::span<const uint8_t, 16> tag, std::span<const uint8_t> ciphertext,
+                 std::span<const uint8_t> associated) {
+  Buffer out(ciphertext.size());
+  open_core(key, nonce, tag, ciphertext, out.data(), associated);
   return out;
 }
 
 }  // namespace
+
+SealedData aes_gcm_seal(std::span<const uint8_t, 32> key, std::span<const uint8_t> plaintext, std::span<const uint8_t> associated) {
+  return aes_gcm_seal(key, random_nonce(), plaintext, associated);
+}
+
+SealedData aes_gcm_seal(std::span<const uint8_t, 32> key, std::span<const uint8_t, 12> nonce, std::span<const uint8_t> plaintext,
+                        std::span<const uint8_t> associated) {
+  SealedData out;
+  out.ciphertext.resize(plaintext.size());
+  const auto seal = seal_core(key, nonce, plaintext, out.ciphertext.data(), associated);
+  out.nonce = seal.nonce;
+  out.tag = seal.tag;
+  return out;
+}
 
 Bytes aes_gcm_open(std::span<const uint8_t, 32> key, std::span<const uint8_t, 12> nonce, std::span<const uint8_t, 16> tag, std::span<const uint8_t> ciphertext,
                    std::span<const uint8_t> associated) {
@@ -185,6 +212,28 @@ Bytes aes_gcm_open(std::span<const uint8_t, 32> key, std::span<const uint8_t, 12
 SecureBuffer aes_gcm_open_secure(std::span<const uint8_t, 32> key, std::span<const uint8_t, 12> nonce, std::span<const uint8_t, 16> tag,
                                  std::span<const uint8_t> ciphertext, std::span<const uint8_t> associated) {
   return open_into<SecureBuffer>(key, nonce, tag, ciphertext, associated);
+}
+
+GcmSeal aes_gcm_seal_into(std::span<const uint8_t, 32> key, std::span<const uint8_t> plaintext, std::span<uint8_t> out, std::span<const uint8_t> associated) {
+  return aes_gcm_seal_into(key, random_nonce(), plaintext, out, associated);
+}
+
+GcmSeal aes_gcm_seal_into(std::span<const uint8_t, 32> key, std::span<const uint8_t, 12> nonce, std::span<const uint8_t> plaintext, std::span<uint8_t> out,
+                          std::span<const uint8_t> associated) {
+  exact_or_apart(plaintext, out);
+  return seal_core(key, nonce, plaintext, out.data(), associated);
+}
+
+void aes_gcm_open_into(std::span<const uint8_t, 32> key, std::span<const uint8_t, 12> nonce, std::span<const uint8_t, 16> tag,
+                       std::span<const uint8_t> ciphertext, std::span<uint8_t> out, std::span<const uint8_t> associated) {
+  exact_or_apart(ciphertext, out);
+  try {
+    open_core(key, nonce, tag, ciphertext, out.data(), associated);
+  } catch (...) {
+    // Nothing unauthenticated is left behind, in place or not.
+    if (!out.empty()) OPENSSL_cleanse(out.data(), out.size());
+    throw;
+  }
 }
 
 X25519KeyPair x25519_generate() {

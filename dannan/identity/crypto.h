@@ -77,7 +77,22 @@ SealedData aes_gcm_seal(std::span<const uint8_t, 32> key, std::span<const uint8_
                         std::span<const uint8_t> associated = {});
 Bytes aes_gcm_open(std::span<const uint8_t, 32> key, std::span<const uint8_t, 12> nonce, std::span<const uint8_t, 16> tag, std::span<const uint8_t> ciphertext,
                    std::span<const uint8_t> associated = {});
-// As above, the plaintext into secure memory: for a record holding secrets.
+// Into the caller's buffer, so a large message needs no second one (Dagda's object paths).
+// `out` is exactly the input's size, and either the input itself (in place) or apart from it;
+// anything else is std::invalid_argument. A message that does not authenticate throws as
+// aes_gcm_open does and leaves `out` zeroed.
+struct GcmSeal {
+  std::array<uint8_t, 12> nonce{};
+  std::array<uint8_t, 16> tag{};
+};
+GcmSeal aes_gcm_seal_into(std::span<const uint8_t, 32> key, std::span<const uint8_t> plaintext, std::span<uint8_t> out,
+                          std::span<const uint8_t> associated = {});
+// Under the nonce given: see aes_gcm_seal's.
+GcmSeal aes_gcm_seal_into(std::span<const uint8_t, 32> key, std::span<const uint8_t, 12> nonce, std::span<const uint8_t> plaintext, std::span<uint8_t> out,
+                          std::span<const uint8_t> associated = {});
+void aes_gcm_open_into(std::span<const uint8_t, 32> key, std::span<const uint8_t, 12> nonce, std::span<const uint8_t, 16> tag,
+                       std::span<const uint8_t> ciphertext, std::span<uint8_t> out, std::span<const uint8_t> associated = {});
+// As aes_gcm_open, the plaintext into secure memory: for a record holding secrets.
 SecureBuffer aes_gcm_open_secure(std::span<const uint8_t, 32> key, std::span<const uint8_t, 12> nonce, std::span<const uint8_t, 16> tag,
                                  std::span<const uint8_t> ciphertext, std::span<const uint8_t> associated = {});
 X25519KeyPair x25519_generate();

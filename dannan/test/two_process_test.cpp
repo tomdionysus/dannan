@@ -56,19 +56,19 @@ TEST(TwoProcess, ANodeProcessAndANodeHereFormOneCluster) {
   test::TempDir dir;
   std::ofstream(dir.path() / "cluster.key") << "two process";
   test::ChildProcess child({DANNAN_NODE_BINARY,
-                            "--key",
+                            "--cluster-key",
                             (dir.path() / "cluster.key").string(),
-                            "--state",
+                            "--cluster-state",
                             (dir.path() / "child").string(),
-                            "--listen",
+                            "--cluster-listen-address",
                             "127.0.0.1",
-                            "--advertise",
+                            "--cluster-listen-advertise",
                             "127.0.0.1",
-                            "--port",
+                            "--cluster-listen-port",
                             "0",
-                            "--inbound",
+                            "--cluster-listen-inbound",
                             "yes",
-                            "--heartbeat-ms",
+                            "--cluster-heartbeat-ms",
                             "200",
                             "--status-ms",
                             "200",
@@ -155,17 +155,17 @@ TEST(TwoProcess, ANodeProcessAndANodeHereFormOneCluster) {
 // dannan-node takes its settings from a file, secrets.yaml beside it and
 // the environment as well as flags, through the stack's one reader: the
 // file's port 1 (privileged, so binding it would fail) is overridden by
-// DANNAN_NODE_LISTEN_PORT=0, and the key's path comes from secrets.yaml.
+// DANNAN_CLUSTER_LISTEN_PORT=0, and the key's path comes from secrets.yaml.
 // A value that cannot be used stops it, naming the file.
 TEST(TwoProcess, TheNodeReadsAConfigurationFile) {
   test::TempDir dir;
   std::ofstream(dir.path() / "cluster.key") << "a two-process cluster key";
   const auto config = (dir.path() / "node.yaml").string();
-  std::ofstream(config) << "node:\n  state: " << (dir.path() / "state").string()
-                        << "\nlisten:\n  address: 127.0.0.1\n  advertise: 127.0.0.1\n  port: 1\n  inbound: \"yes\"\ntiming:\n  seconds: 30\n";
+  std::ofstream(config) << "cluster:\n  state: " << (dir.path() / "state").string()
+                        << "\n  listen:\n    address: 127.0.0.1\n    advertise: 127.0.0.1\n    port: 1\n    inbound: \"yes\"\nseconds: 30\n";
   std::ofstream(dir.path() / "secrets.yaml") << "cluster:\n  key: " << (dir.path() / "cluster.key").string() << "\n";
   test::ChildOptions options;
-  options.environment = std::vector<std::string>{"DANNAN_NODE_LISTEN_PORT=0"};
+  options.environment = std::vector<std::string>{"DANNAN_CLUSTER_LISTEN_PORT=0"};
   {
     test::ChildProcess node({DANNAN_NODE_BINARY, "--config", config}, dir.path() / "node.log", options);
     bool listening = false;
@@ -179,7 +179,7 @@ TEST(TwoProcess, TheNodeReadsAConfigurationFile) {
     }
     EXPECT_TRUE(listening) << "see " << (dir.path() / "node.log");
   }
-  std::ofstream(config) << "node:\n  state: " << (dir.path() / "state").string() << "\nlisten:\n  port: seventy\n";
+  std::ofstream(config) << "cluster:\n  state: " << (dir.path() / "state").string() << "\n  listen:\n    port: seventy\n";
   // Without the variable, which would win over the file's bad port.
   test::ChildOptions plain;
   plain.environment = std::vector<std::string>{};
@@ -187,7 +187,7 @@ TEST(TwoProcess, TheNodeReadsAConfigurationFile) {
   EXPECT_EQ(refused.wait(std::chrono::steady_clock::now() + 30s), 2);
   std::ifstream log(dir.path() / "refused.log");
   const std::string said((std::istreambuf_iterator<char>(log)), std::istreambuf_iterator<char>());
-  EXPECT_NE(said.find(config + ": listen.port is a number, 0 to 65535, not \"seventy\""), std::string::npos) << said;
+  EXPECT_NE(said.find(config + ": cluster.listen.port is a number, 0 to 65535, not \"seventy\""), std::string::npos) << said;
 }
 
 TEST(TwoProcess, AnOperatorCertifiesTwoNodesThatMeetOnCertificatesAlone) {
@@ -210,9 +210,12 @@ TEST(TwoProcess, AnOperatorCertifiesTwoNodesThatMeetOnCertificatesAlone) {
   std::vector<std::string> ids;
   for (const auto* name : {"one", "two"}) {
     const auto state = (dir.path() / name).string();
-    ASSERT_EQ(run({DANNAN_NODE_BINARY, "--state", state, "--init-custody", "--custody-passphrase-env", "NODE_PASS"}, std::string(name) + "-init.log").first, 0);
-    const auto [shown, identity_json] =
-        run({DANNAN_NODE_BINARY, "--state", state, "--show-identity", "--custody-passphrase-env", "NODE_PASS"}, std::string(name) + "-show.log");
+    ASSERT_EQ(
+        run({DANNAN_NODE_BINARY, "--cluster-state", state, "--init-custody", "--cluster-custody-passphrase-env", "NODE_PASS"}, std::string(name) + "-init.log")
+            .first,
+        0);
+    const auto [shown, identity_json] = run({DANNAN_NODE_BINARY, "--cluster-state", state, "--show-identity", "--cluster-custody-passphrase-env", "NODE_PASS"},
+                                            std::string(name) + "-show.log");
     ASSERT_EQ(shown, 0);
     std::smatch match;
     ASSERT_TRUE(std::regex_search(identity_json, match, std::regex(R"re("id":"([0-9a-f]{32})","public_key":"([0-9a-f]+)")re"))) << identity_json;
@@ -229,17 +232,17 @@ TEST(TwoProcess, AnOperatorCertifiesTwoNodesThatMeetOnCertificatesAlone) {
   running.environment = env;
   const auto node_args = [&](size_t which, const std::string& extra_port, std::vector<std::string> more) {
     std::vector<std::string> argv{DANNAN_NODE_BINARY,
-                                  "--state",
+                                  "--cluster-state",
                                   (dir.path() / (which == 0 ? "one" : "two")).string(),
-                                  "--listen",
+                                  "--cluster-listen-address",
                                   "127.0.0.1",
-                                  "--advertise",
+                                  "--cluster-listen-advertise",
                                   "127.0.0.1",
-                                  "--port",
+                                  "--cluster-listen-port",
                                   extra_port,
-                                  "--inbound",
+                                  "--cluster-listen-inbound",
                                   "yes",
-                                  "--heartbeat-ms",
+                                  "--cluster-heartbeat-ms",
                                   "200",
                                   "--status-ms",
                                   "200",
@@ -247,13 +250,13 @@ TEST(TwoProcess, AnOperatorCertifiesTwoNodesThatMeetOnCertificatesAlone) {
                                   "200",
                                   "--seconds",
                                   "60",
-                                  "--custody-passphrase-env",
+                                  "--cluster-custody-passphrase-env",
                                   "NODE_PASS",
-                                  "--ca",
+                                  "--cluster-identity-ca",
                                   ca_dir + "/ca.pem",
-                                  "--certificate",
+                                  "--cluster-identity-certificate",
                                   certificates[which],
-                                  "--no-cluster-key"};
+                                  "--cluster-identity-no-cluster-key"};
     argv.insert(argv.end(), more.begin(), more.end());
     return argv;
   };
@@ -268,7 +271,7 @@ TEST(TwoProcess, AnOperatorCertifiesTwoNodesThatMeetOnCertificatesAlone) {
     }
   }
   ASSERT_NE(port, 0) << "node one did not start; its log is " << (dir.path() / "one.log");
-  test::ChildProcess two(node_args(1, "0", {"--bootstrap", "127.0.0.1:" + std::to_string(port)}), dir.path() / "two.log", running);
+  test::ChildProcess two(node_args(1, "0", {"--cluster-bootstrap", "127.0.0.1:" + std::to_string(port)}), dir.path() / "two.log", running);
   bool met = false;
   std::string last;
   const auto meeting = deadline();

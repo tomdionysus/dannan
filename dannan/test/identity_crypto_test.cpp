@@ -102,6 +102,85 @@ TEST(Crypto, AesGcmRefusesAnyAlteration) {
   EXPECT_THROW(aes_gcm_open(key, sealed.nonce, sealed.tag, sealed.ciphertext, Bytes{8}), std::runtime_error);
 }
 
+// Sealing and opening into the caller's buffer (Dagda's single-buffer object paths): the
+// same bytes as the allocating forms, out of place or exactly in place.
+TEST(Crypto, AesGcmSealIntoMatchesSealInAndOutOfPlace) {
+  const auto key = array_hex<32>("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
+  const auto nonce = array_hex<12>("0f0e0d0c0b0a090807060504");
+  Bytes plain(70000);
+  for (size_t i = 0; i < plain.size(); ++i) plain[i] = static_cast<uint8_t>(i * 7);
+  const Bytes aad{4, 5, 6};
+  const auto sealed = aes_gcm_seal(key, nonce, plain, aad);
+  Bytes out(plain.size());
+  const auto apart = aes_gcm_seal_into(key, nonce, plain, out, aad);
+  EXPECT_EQ(out, sealed.ciphertext);
+  EXPECT_EQ(apart.nonce, sealed.nonce);
+  EXPECT_EQ(apart.tag, sealed.tag);
+  auto buffer = plain;
+  const auto in_place = aes_gcm_seal_into(key, nonce, buffer, buffer, aad);
+  EXPECT_EQ(buffer, sealed.ciphertext);
+  EXPECT_EQ(in_place.tag, sealed.tag);
+  // A fresh nonce each time, and what it seals opens.
+  auto fresh = plain;
+  const auto random = aes_gcm_seal_into(key, fresh, fresh, aad);
+  EXPECT_NE(random.nonce, sealed.nonce);
+  EXPECT_EQ(aes_gcm_open(key, random.nonce, random.tag, fresh, aad), plain);
+}
+
+TEST(Crypto, AesGcmOpenIntoMatchesOpenInAndOutOfPlace) {
+  const auto key = array_hex<32>("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
+  Bytes plain(70000);
+  for (size_t i = 0; i < plain.size(); ++i) plain[i] = static_cast<uint8_t>(i * 13);
+  const Bytes aad{7};
+  const auto sealed = aes_gcm_seal(key, plain, aad);
+  Bytes out(plain.size());
+  aes_gcm_open_into(key, sealed.nonce, sealed.tag, sealed.ciphertext, out, aad);
+  EXPECT_EQ(out, plain);
+  auto buffer = sealed.ciphertext;
+  aes_gcm_open_into(key, sealed.nonce, sealed.tag, buffer, buffer, aad);
+  EXPECT_EQ(buffer, plain);
+}
+
+TEST(Crypto, AesGcmIntoHandlesAnEmptyMessage) {
+  const auto key = array_hex<32>("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
+  const Bytes aad{1, 2};
+  Bytes nothing;
+  const auto seal = aes_gcm_seal_into(key, nothing, nothing, aad);
+  EXPECT_TRUE(aes_gcm_open(key, seal.nonce, seal.tag, nothing, aad).empty());
+  EXPECT_NO_THROW(aes_gcm_open_into(key, seal.nonce, seal.tag, nothing, nothing, aad));
+}
+
+// A message that does not authenticate leaves no plaintext behind: out is zeroed, in place
+// or not, and the refusal is the one aes_gcm_open gives.
+TEST(Crypto, AesGcmOpenIntoZeroesItsOutputOnAnyAlteration) {
+  const auto key = array_hex<32>("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
+  const Bytes plain(4096, 0x33);
+  const Bytes aad{9};
+  auto sealed = aes_gcm_seal(key, plain, aad);
+  sealed.tag[0] ^= 1;
+  Bytes out(plain.size(), 0xee);
+  EXPECT_THROW(aes_gcm_open_into(key, sealed.nonce, sealed.tag, sealed.ciphertext, out, aad), std::runtime_error);
+  EXPECT_EQ(out, Bytes(plain.size(), 0));
+  auto buffer = sealed.ciphertext;
+  EXPECT_THROW(aes_gcm_open_into(key, sealed.nonce, sealed.tag, buffer, buffer, aad), std::runtime_error);
+  EXPECT_EQ(buffer, Bytes(plain.size(), 0));
+}
+
+// The output is exactly the input's size, and either the input itself or apart from it.
+TEST(Crypto, AesGcmIntoRefusesAWrongSizeOrAPartialOverlap) {
+  const auto key = array_hex<32>("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
+  Bytes buffer(64, 1);
+  Bytes small(63);
+  EXPECT_THROW(aes_gcm_seal_into(key, buffer, small), std::invalid_argument);
+  const auto seal = aes_gcm_seal_into(key, buffer, buffer);
+  EXPECT_THROW(aes_gcm_open_into(key, seal.nonce, seal.tag, buffer, small), std::invalid_argument);
+  Bytes wide(80, 1);
+  const auto front = std::span<uint8_t>(wide).first(64);
+  const auto shifted = std::span<uint8_t>(wide).subspan(8, 64);
+  EXPECT_THROW(aes_gcm_seal_into(key, front, shifted), std::invalid_argument);
+  EXPECT_THROW(aes_gcm_open_into(key, seal.nonce, seal.tag, front, shifted), std::invalid_argument);
+}
+
 TEST(Crypto, ConstantTimeEqualComparesLengthAndContent) {
   EXPECT_TRUE(constant_time_equal(Bytes{1, 2}, Bytes{1, 2}));
   EXPECT_FALSE(constant_time_equal(Bytes{1, 2}, Bytes{1, 3}));

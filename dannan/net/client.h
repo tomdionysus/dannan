@@ -117,9 +117,14 @@ struct ClientOptions {
   size_t max_frame = 256 * 1024;
   std::shared_ptr<const RouteTable> routes;
   sched::RetainedMemoryLedger* memory = nullptr;
+  // The node's transfer buffers, for its sessions; none, plain allocation.
+  std::shared_ptr<sched::BufferPool> buffers;
   // Shared with the node's server: the node's whole cluster traffic.
   std::shared_ptr<TransportTraffic> traffic;
   const contract::TimeSource* time = &contract::steady_time_source();
+  // What liveness is judged on: the heartbeat's pings, a call's no-progress watch, a session's
+  // path progress. None: `time`. A test that steps `time` far ahead keeps its links on another.
+  const contract::TimeSource* liveness_time = nullptr;
   InboundHandlers inbound;
   // Bounds a dial (resolve, connect, handshake), and a call's wait for one.
   std::chrono::milliseconds connect_timeout{5000};
@@ -168,6 +173,9 @@ struct ClientOptions {
 
 struct ClientStats {
   uint64_t dials = 0;
+  // Calls that waited on a dial already on its way to their peer, by its id or its address,
+  // rather than starting one.
+  uint64_t dials_joined = 0;
   // Dials that became sessions, counted once the peer's identity has been checked.
   uint64_t connections_created = 0;
   // Routes usable now, whichever end dialled them: a lane to a peer counts once.
@@ -332,6 +340,8 @@ class Client {
     int reroutes = 0;
     std::shared_ptr<CallHandle> handle;
     CallWatch watch{};
+    // The node the call named, if it did: a dial it joined by address may reach another.
+    std::optional<identity::NodeId> expect;
   };
   struct Target {
     std::optional<identity::NodeId> id;
@@ -393,6 +403,8 @@ class Client {
   void observe_dial_locked(const std::string& key, bool success) DANNAN_REQUIRES(_mutex);
   size_t notify_routes(const Message& message, sched::FrameType frame, bool wait);
   std::vector<std::shared_ptr<Session>> control_routes_locked() const DANNAN_REQUIRES(_mutex);
+  // What liveness is judged on: liveness_time, else time. Backoff stays on time.
+  const contract::TimeSource* liveness_time() const noexcept { return _options.liveness_time ? _options.liveness_time : _options.time; }
   // The health loop, on its strand.
   void arm_heartbeat();
   void await_heartbeat();
@@ -449,6 +461,9 @@ class Client {
   // Dials in flight by peer (or address) and lane, with the calls waiting
   // on each.
   std::map<std::string, std::vector<Call>> _dials DANNAN_GUARDED_BY(_mutex);
+  // Each dial in flight under its address and lane too, to its key in _dials: a call by id
+  // and a bootstrap by address share one dial to one peer, whichever came first.
+  std::map<std::string, std::string> _dials_at DANNAN_GUARDED_BY(_mutex);
   // Calls a fault holds (ClientOptions::call_fault), by the order they came; one
   // that ended (its watch, a cancel) stays listed until released or stopped.
   std::map<uint64_t, std::shared_ptr<Stalled>> _stalled DANNAN_GUARDED_BY(_mutex);

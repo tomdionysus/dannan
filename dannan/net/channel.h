@@ -24,6 +24,7 @@
 #include "dannan/membership/node_record.h"
 #include "dannan/net/codec.h"
 #include "dannan/net/routes.h"
+#include "dannan/sched/buffer_pool.h"
 #include "dannan/sched/work.h"
 
 // The authenticated channel, without I/O: the handshake and its sealed
@@ -243,11 +244,15 @@ class FrameSealer {
   std::function<std::array<uint8_t, 12>()> _nonces;
 };
 
+// The smallest frame opened into a pooled buffer; a smaller one (a ping) is a plain allocation.
+inline constexpr size_t pooled_frame_least = 16 * 1024;
+
 // Opens the other direction's frames, header first, so a bad frame is
 // refused before its body is read. Single owner: the session's reader.
 class FrameOpener {
  public:
-  FrameOpener(const Established& session, std::shared_ptr<const RouteTable> routes);
+  // `buffers`, if given, is where an opened frame's bytes come from.
+  FrameOpener(const Established& session, std::shared_ptr<const RouteTable> routes, std::shared_ptr<sched::BufferPool> buffers = {});
   ~FrameOpener();
   // Checks a header and returns the bytes that follow it (nonce, tag and
   // payload). Throws FrameRefused.
@@ -262,6 +267,7 @@ class FrameOpener {
   Lane _lane;
   size_t _max_frame;
   std::shared_ptr<const RouteTable> _routes;
+  std::shared_ptr<sched::BufferPool> _buffers;
   uint64_t _counter = 0;
   std::array<uint8_t, frame_header_size> _header{};
   WireFragment _pending;

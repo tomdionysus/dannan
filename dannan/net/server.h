@@ -45,6 +45,8 @@ struct ServerOptions {
   std::shared_ptr<const RouteTable> routes;
   ServerLimits limits;
   sched::RetainedMemoryLedger* memory = nullptr;
+  // The node's transfer buffers, for its sessions; none, plain allocation.
+  std::shared_ptr<sched::BufferPool> buffers;
   std::shared_ptr<TransportTraffic> traffic;
   const contract::TimeSource* time = &contract::steady_time_source();
   // Where the server writes its journal lines; none, nowhere.
