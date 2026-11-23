@@ -53,6 +53,41 @@ TEST(SimNodes, FiveNodesJoinAndEveryOneKnowsEveryOther) {
   ASSERT_TRUE(world.run_until([&] { return everyone_knows_everyone(nodes); }, 2'000'000));
 }
 
+// An ordered channel across the world (0.11.1, Lir's MQTT 5.0 ordered QoS 0): what arrives from
+// one origin is strictly in order whatever the network does, at most once. On links that keep
+// their order, as one session does (NetworkFaults::in_order), all of it arrives; on links where
+// messages overtake each other, a late one is dropped rather than delivered out of order.
+std::vector<uint64_t> ordered_across(bool in_order) {
+  World world(7);
+  NetworkFaults faults;
+  faults.max_delay_ms = 20;
+  faults.in_order = in_order;
+  SimNodes nodes(world, 2, faults);
+  EXPECT_TRUE(world.run_until([&] { return everyone_knows_everyone(nodes); }, 2'000'000));
+  for (size_t i = 0; i < 2; ++i) nodes.node(i).context().channels().open("q0", net::Delivery::ordered, 0);
+  std::vector<uint64_t> got;
+  nodes.node(1).context().channels().subscribe("q0", "", world.io.get_executor(), [&](net::ChannelMessage m) { got.push_back(m.payload.at(0)); });
+  const auto listening = [&] {
+    for (const auto& record : nodes.node(0).context().nodes().active())
+      if (record.id == nodes.id(1) && record.advert(net::interest_advert("q0"))) return true;
+    return false;
+  };
+  EXPECT_TRUE(world.run_until(listening, 2'000'000));
+  for (uint8_t i = 1; i <= 20; ++i) nodes.node(0).context().channels().publish("q0", "t", net::Bytes{i});
+  world.run_until([] { return false; }, 2'000);
+  return got;
+}
+
+TEST(SimNodes, AnOrderedChannelDeliversInOrderAtMostOnce) {
+  const auto overtaking = ordered_across(false);
+  EXPECT_FALSE(overtaking.empty());
+  EXPECT_TRUE(std::is_sorted(overtaking.begin(), overtaking.end()));
+  EXPECT_EQ(std::adjacent_find(overtaking.begin(), overtaking.end()), overtaking.end()) << "a message delivered twice";
+  std::vector<uint64_t> all;
+  for (uint64_t i = 1; i <= 20; ++i) all.push_back(i);
+  EXPECT_EQ(ordered_across(true), all);
+}
+
 // The world's time at which everyone first knows everyone: the same for the same seed.
 uint64_t joined_at(uint64_t seed) {
   World world(seed);

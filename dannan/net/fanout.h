@@ -41,8 +41,12 @@ namespace dannan::net {
 //   buffer no longer holds reported to the subscriber as lost.
 // bulk: DATA, backpressured; each destination acknowledges, and the
 //   publisher is told who did.
+// ordered: CONTROL, at most once and in order per origin (0.11.1; Lir's MQTT 5.0 ordered QoS
+//   0): a sequence per origin and destination, as stream's, but a message not newer than the
+//   last one delivered from its origin is dropped, never held or refilled; no replay buffer,
+//   nothing asked for, and dropped under pressure as notify is.
 // There is no exactly-once contract and no ordering across origins.
-enum class Delivery : uint8_t { notify = 1, stream = 2, bulk = 3 };
+enum class Delivery : uint8_t { notify = 1, stream = 2, bulk = 3, ordered = 4 };
 const char* delivery_name(Delivery) noexcept;
 
 struct ChannelMessage {
@@ -53,8 +57,8 @@ struct ChannelMessage {
   std::string channel;
   std::string topic;
   Bytes payload;
-  // stream: this message's sequence from its origin to this node; zero for
-  // the others.
+  // stream and ordered: this message's sequence from its origin to this node; zero for the
+  // others.
   uint64_t sequence = 0;
   // stream: messages before this one that the origin no longer held when
   // this node asked for them.
@@ -169,6 +173,8 @@ class Fanout : public std::enable_shared_from_this<Fanout> {
   std::vector<membership::NodeRecord> destinations(const std::string& channel, const std::string& topic) const;
   bool local_interest(const std::string& channel, const std::string& topic) const DANNAN_REQUIRES(_mutex);
   void deliver_locally(ChannelMessage message) DANNAN_EXCLUDES(_mutex);
+  // The same, posted under the lock, so two messages accepted in order are posted in order.
+  void deliver_locally_locked(const ChannelMessage& message) DANNAN_REQUIRES(_mutex);
   // Who to tell, and by when, that a readvertise was pushed.
   struct Push {
     std::chrono::milliseconds deadline;
@@ -192,6 +198,8 @@ class Fanout : public std::enable_shared_from_this<Fanout> {
   mutable contract::Mutex _mutex;
   std::map<std::string, Channel> _channels DANNAN_GUARDED_BY(_mutex);
   std::map<uint64_t, Subscription> _subscriptions DANNAN_GUARDED_BY(_mutex);
+  // stream's per origin and channel; an ordered channel's too, its `expected` the least sequence
+  // still taken (nothing held, nothing asked for).
   std::map<InboundKey, Inbound> _inbound DANNAN_GUARDED_BY(_mutex);
   uint64_t _next_subscription DANNAN_GUARDED_BY(_mutex) = 1;
 };

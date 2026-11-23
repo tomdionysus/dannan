@@ -45,6 +45,9 @@ struct Pair {
   NodeRecord a, b;
   std::shared_ptr<Fanout> fa, fb;
   std::function<bool(const ChannelMessage&)> drop_to_b = [](const ChannelMessage&) { return false; };
+  // Held on the way to b, for the test to deliver later: a reordering.
+  std::function<bool(const ChannelMessage&)> hold_to_b = [](const ChannelMessage&) { return false; };
+  std::vector<Message> held;
 
   Fanout::Hooks hooks(NodeRecord& self, NodeRecord& other, std::shared_ptr<Fanout>& peer, bool sender) {
     Fanout::Hooks out;
@@ -80,6 +83,10 @@ struct Pair {
         (void)reader.fixed<16>();
         peek.sequence = reader.u64();
         if (drop_to_b(peek)) return true;  // sent, and lost on the way
+        if (hold_to_b(peek)) {
+          held.push_back(message);
+          return true;
+        }
       }
       (void)peer->on_publish(self, message);
       return true;
@@ -155,6 +162,31 @@ TEST(Channels, APublishGoesOnlyWhereSomeoneListens) {
   EXPECT_EQ(inbox.messages[0].topic, "a/x");
   EXPECT_EQ(inbox.messages[0].payload, Bytes{7});
   EXPECT_EQ(inbox.messages[0].sequence, 0u);
+}
+
+// ordered (0.11.1, for Lir's MQTT 5.0 ordered QoS 0): at most once and in order per origin. A
+// message older than the last one delivered from its origin is dropped, never held or refilled,
+// and nothing is asked for.
+TEST(Channels, AnOrderedChannelDropsAMessageOlderThanTheLastDelivered) {
+  Pair pair;
+  for (auto* f : {pair.fa.get(), pair.fb.get()}) f->open("q0", Delivery::ordered, 0);
+  Inbox inbox;
+  pair.fb->subscribe("q0", "", pair.io.context.get_executor(), inbox.handler());
+  pair.hold_to_b = [](const ChannelMessage& m) { return m.sequence == 2; };
+  for (uint8_t i = 1; i <= 4; ++i) pair.fa->publish("q0", "t", Bytes{i});
+  ASSERT_EQ(pair.held.size(), 1u);
+  // Seq 2 arrives after 3 and 4: too late, so dropped.
+  (void)pair.fb->on_publish(pair.a, pair.held.front());
+  pair.fa->publish("q0", "t", Bytes{5});
+  ASSERT_TRUE(inbox.wait_for(4));
+  std::vector<uint64_t> sequences;
+  for (const auto& m : inbox.messages) {
+    sequences.push_back(m.sequence);
+    EXPECT_EQ(m.payload, Bytes{static_cast<uint8_t>(m.sequence)});
+    EXPECT_EQ(m.lost, 0u);
+  }
+  EXPECT_EQ(sequences, (std::vector<uint64_t>{1, 3, 4, 5}));
+  EXPECT_STREQ(delivery_name(Delivery::ordered), "ordered");
 }
 
 // A stream numbers each origin's messages to each destination; a gap is
