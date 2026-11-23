@@ -32,6 +32,7 @@ add_executable(dannan_tests
   identity_durable_file_test.cpp
   identity_key_custody_test.cpp
   identity_node_identity_test.cpp
+  identity_password_test.cpp
   identity_sealed_counters_test.cpp
   identity_random_id_test.cpp
   identity_secure_memory_test.cpp
@@ -40,6 +41,7 @@ add_executable(dannan_tests
   listen_backoff_test.cpp
   listen_memory_test.cpp
   listen_prefix_test.cpp
+  listen_rate_limiter_test.cpp
   listen_test.cpp
   membership_agreed_test.cpp
   membership_clock_offsets_test.cpp

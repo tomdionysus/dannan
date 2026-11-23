@@ -24,6 +24,7 @@ add_library(dannan SHARED
   identity/key_custody.cpp
   identity/node_id.cpp
   identity/node_identity.cpp
+  identity/password.cpp
   identity/sealed_counters.cpp
   identity/revocations.cpp
   identity/secure_memory.cpp
@@ -62,6 +63,7 @@ add_library(dannan SHARED
   listen/limits.cpp
   listen/memory.cpp
   listen/listener.cpp
+  listen/rate_limiter.cpp
   listen/stream.cpp
   sched/buffer_pool.cpp
   sched/class_gate.cpp

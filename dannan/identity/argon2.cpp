@@ -31,7 +31,11 @@ Secret argon2id(std::span<const uint8_t> password, std::span<const uint8_t> salt
   uint32_t memory = costs.memory_kib;
   uint32_t threads = 1;
   std::vector<OSSL_PARAM> params;
-  params.push_back(OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_PASSWORD, const_cast<uint8_t*>(password.data()), password.size()));
+  // An empty password is a password (RFC 9106 allows length 0), but an empty span's data may be
+  // null, which OpenSSL refuses whatever the length: point it at a byte, length 0.
+  static const uint8_t none = 0;
+  const auto* password_data = password.empty() ? &none : password.data();
+  params.push_back(OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_PASSWORD, const_cast<uint8_t*>(password_data), password.size()));
   params.push_back(OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_SALT, const_cast<uint8_t*>(salt.data()), salt.size()));
   params.push_back(OSSL_PARAM_construct_uint32(OSSL_KDF_PARAM_ITER, &iterations));
   params.push_back(OSSL_PARAM_construct_uint32(OSSL_KDF_PARAM_ARGON2_LANES, &lanes));

@@ -196,6 +196,10 @@ struct NodeConfig {
   // How far this node's clock may be from a peer's before that peer counts against it; past it
   // against more than half of the agreed roster, the node issues no hybrid-clock stamp (item 6).
   std::chrono::milliseconds clock_offset_bound = std::chrono::seconds(2);
+  // How long a worse health must hold before this node's record advertises it (item 7): a check
+  // that flaps does not move placement. Draining, and any change back towards ready, is
+  // advertised at once.
+  std::chrono::milliseconds health_hold = std::chrono::seconds(10);
   // The network as the harness gives it (the transport seam, piece 2b): set, the node builds no
   // client, server or level 0 paths, and calls, sends and serves through what this returns,
   // given the node's hooks. Empty: sockets, as always.
@@ -293,10 +297,12 @@ class Node final : public Context {
   status::ScopedLogger logger(std::string scope) const override { return {_config.log, std::move(scope)}; }
   status::NodeEvents& events() override { return _events; }
   status::Readiness& readiness() override { return _readiness; }
+  const status::Readiness& readiness() const override { return _readiness; }
   status::ActivityClocks& activity() override { return _activity; }
   status::Observations& observations() override { return _observations; }
   sched::WaitGuard& wait_guard() override { return _wait_guard; }
   supervise::SupervisedThreads& threads() override { return _threads; }
+  const supervise::SupervisedThreads& threads() const override { return _threads; }
   sched::ClassGates& gates() override { return _gates; }
   sched::WorkerPool& workers() override { return _workers; }
   std::shared_ptr<sched::BufferPool> buffers() override { return _buffers; }
@@ -356,6 +362,9 @@ class Node final : public Context {
   void exchange_revocations(std::optional<membership::NodeRecord> peer, const net::Endpoint& endpoint, std::chrono::milliseconds deadline,
                             boost::asio::any_io_executor on, std::function<void()> done);
   void telemetry_step(contract::TimePoint& last_gossip);
+  // Dannan's own checks, then the advert of this node's health on its record after the hold (item
+  // 7). Run by the telemetry step.
+  void health_step();
   void roster_step();
   // Refreshes asked for, the path class when due, the circuits' sweep, and the dial-back probe
   // when due.
@@ -428,6 +437,10 @@ class Node final : public Context {
   status::NodeEvents _events;
   status::Surface _surface;
   status::Readiness _readiness;
+  // The health this node's record advertises, and since when a worse one has waited out
+  // health_hold: the telemetry step's own, which runs one at a time.
+  status::Health _advertised_health = status::Health::ready;
+  std::optional<contract::TimePoint> _worse_since;
   status::ActivityClocks _activity;
   status::Observations _observations;
   supervise::SupervisedThreads _threads;

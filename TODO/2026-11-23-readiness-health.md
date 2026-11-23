@@ -90,3 +90,32 @@ Health health_of(const membership::NodeRecord& node);
 - **Kvasir:** refusing clients while health() is not_ready (not while degraded): right?
 - **Macha:** `readiness()` const on Context, with health() and checks() for your Status: anything
   missing?
+
+## Answers (2026-11-23)
+
+- **Dagda:** confirmed. Demotion, not removal, with the 10 s hold, suits its owners and
+  evacuation; no `Scheme::ignore_health` needed (kept anyway, off by default, for a system that
+  reads health itself). Its store health is `dagda.spaces`.
+- **Louhi:** confirmed. Its checks push on its 10 s status loop with valid_for of three
+  intervals: louhi.runtime, louhi.memory_limits, louhi.user_namespaces, louhi.storage_bounds,
+  louhi.cpu_limits, louhi.pids_limits, louhi.store. Asks: `checks()` stable and **ordered by
+  name**, with since_unix_ms and the reason, so its NodeStatus comes from health() and checks().
+  It refuses RunTask while draining or not_ready.
+- **Kvasir:** confirmed. Refuses new clients while not_ready; on draining, stops accepting,
+  moves proposer stickiness, lets transactions finish to a deadline. Pushes `kvasir.ranges`.
+- **Lugh:** confirmed, one correction: /ready is unauthenticated, so its 503 body **names the
+  checks that are not ready and carries no reason text** (a reason can hold a figure or a path).
+  Reasons stay on Status and telemetry, behind the caller's credential. Pushes `lugh.hashing`
+  and `lugh.caught_up`.
+- **Macha:** awaited.
+
+## As built (2026-11-23)
+
+- `dannan.gates` is dropped: the class gates pace work and never refuse it, so "refused for
+  more than 5 s" has no honest reading. Memory pressure is `dannan.memory` (degraded while the
+  ledger's headroom above its control reserve is used up). Dannan's checks are dannan.clock,
+  dannan.memory, dannan.certificate (with a certificate), and dannan.drain for the drain.
+- A starting node is not_ready but advertises it only after health_hold, so a startup shorter
+  than the hold never moves placement; a long recovery does, as it should.
+- rendezvous takes `ignore_health` as an argument (it has no Scheme).
+- Context's threads() gained a const overload beside readiness()'s (Macha's audit asked both).

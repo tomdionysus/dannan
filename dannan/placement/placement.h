@@ -43,6 +43,10 @@ struct Scheme {
   // enough other nodes can be; it comes first among the fallbacks. Off by
   // default, so level 0 does not leak into placement unless asked.
   bool demote_relay_only = false;
+  // Nodes advertising draining, then not_ready (status::health_of, item 7), follow the ready and
+  // degraded ones as fallbacks, never removed, while there are at least `count` of those: on by
+  // default from 0.12.0. Set, placement reads no health, for a system that judges it itself.
+  bool ignore_health = false;
 };
 
 // A node's capacity under `advert`; zero without it.
@@ -50,8 +54,9 @@ uint64_t capacity_of(const NodeRecord& node, const std::string& advert);
 
 // Plain rendezvous (highest random weight) over SHA-256(key, node id), for
 // placement that ignores capacity: up to `count` nodes, distinct failure
-// domains first, in rendezvous order.
-std::vector<NodeRecord> rendezvous(std::span<const uint8_t> key, const std::vector<NodeRecord>& nodes, size_t count);
+// domains first, in rendezvous order. Nodes advertising draining or not_ready are passed over
+// while at least `count` others are ready or degraded (item 7), unless `ignore_health`.
+std::vector<NodeRecord> rendezvous(std::span<const uint8_t> key, const std::vector<NodeRecord>& nodes, size_t count, bool ignore_health = false);
 
 // Capacity-aware placement: the first `count` (at most every node) are the
 // preferred owners, distinct failure domains first, each node's share of

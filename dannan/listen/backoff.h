@@ -15,6 +15,8 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 #include "dannan/contract/thread_safety.h"
 #include "dannan/contract/time_source.h"
@@ -39,9 +41,11 @@ class Backoff {
     std::chrono::seconds forget_after{std::chrono::hours(1)};
   };
 
-  // Above this many keys, forgotten ones are dropped: callers choose the keys, and a stream
-  // of made-up names must not grow the map without bound.
-  explicit Backoff(Rules rules, std::size_t prune_above = 100000) : _rules(rules), _prune_above(prune_above) {}
+  // At most this many keys (0.12.0: a hard bound; item 10, Kvasir's proof). Callers choose the
+  // keys, so a stream of made-up names must not grow the map. At the bound, forgotten keys go
+  // first, then those with the fewest failures, the oldest of them first: a flood of names that
+  // fail once each never evicts a name under a real attack, which has failed many times.
+  explicit Backoff(Rules rules, std::size_t max_keys = 100000) : _rules(rules), _max_keys(std::max<std::size_t>(max_keys, 1)) {}
 
   // How long until `key` may try again; nothing when it may now.
   std::optional<std::chrono::seconds> wait(const std::string& key, contract::TimePoint now) const {
@@ -55,7 +59,7 @@ class Backoff {
 
   void failed(const std::string& key, contract::TimePoint now) {
     contract::Lock lock(_mutex);
-    if (_keys.size() > _prune_above) prune(now);
+    if (!_keys.contains(key) && _keys.size() >= _max_keys) make_room(now);
     auto& state = _keys[key];
     if (forgotten(state, now)) state.failures = 0;
     ++state.failures;
@@ -87,12 +91,26 @@ class Backoff {
     return std::min(out, _rules.longest);
   }
 
-  void prune(contract::TimePoint now) DANNAN_REQUIRES(_mutex) {
+  // An eighth of the bound freed at a time, so a flood costs a sweep per eighth, not per key.
+  void make_room(contract::TimePoint now) DANNAN_REQUIRES(_mutex) {
+    const std::size_t target = _max_keys - std::max<std::size_t>(_max_keys / 8, 1);
     for (auto it = _keys.begin(); it != _keys.end();) it = forgotten(it->second, now) ? _keys.erase(it) : std::next(it);
+    if (_keys.size() <= target) return;
+    std::vector<std::pair<const State*, const std::string*>> order;
+    order.reserve(_keys.size());
+    for (const auto& [name, state] : _keys) order.emplace_back(&state, &name);
+    const auto evict = _keys.size() - target;
+    std::nth_element(order.begin(), order.begin() + static_cast<std::ptrdiff_t>(evict - 1), order.end(), [](const auto& a, const auto& b) {
+      return a.first->failures != b.first->failures ? a.first->failures < b.first->failures : a.first->last < b.first->last;
+    });
+    std::vector<std::string> gone;
+    gone.reserve(evict);
+    for (std::size_t i = 0; i < evict; ++i) gone.push_back(*order[i].second);
+    for (const auto& name : gone) _keys.erase(name);
   }
 
   const Rules _rules;
-  const std::size_t _prune_above;
+  const std::size_t _max_keys;
   mutable contract::Mutex _mutex;
   std::unordered_map<std::string, State> _keys DANNAN_GUARDED_BY(_mutex);
 };
