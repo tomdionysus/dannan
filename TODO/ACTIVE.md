@@ -1,19 +1,26 @@
 # Dannan - Active Work
 
-Last updated: 2026-11-23, after 0.11.1's release. `COMPLETED.md` is the record; move items across as
+Last updated: 2026-11-24, after 0.12.1's release. `COMPLETED.md` is the record; move items across as
 they land, with what shipped and the gate counts. The Cluster Stack's items are numbered as in
 [`2026-11-20-stack-plan.md`](2026-11-20-stack-plan.md); the library's design is the maintainer's,
 2026-11-02, in [`2026-11-02-dannan-plan.md`](2026-11-02-dannan-plan.md). These copies are the
 masters (the maintainer, 2026-11-04); the Claude Docs the projects started from are never read for
 direction or edited.
 
-## Resume here (2026-11-23)
+## Resume here (2026-11-24)
 
-**0.12.1 is the last release** (2026-11-24, the watchdog fix; 0.12.0 before it: item 1 below is done). Before it,
-**0.11.1** (tag on main's merge fe57fa9; every release from 0.5.6 to 0.11.1 is on
-the apt repository, checked against the live Packages files). Lir, Dagda and Lugh are moving to it;
-Mimir pins 0.10.1 until its 0.2.0. AthenaSIP becomes a direct consumer (the maintainer, 2026-11-23: a
-dagda:// datastore and a dannan:// event system, one Dannan per node).
+**0.12.1 is the last release** (2026-11-24, tag on main's merge 9dba83b): a patch on 0.12.0's ABI,
+the call watchdog's fix. **0.12.0** (2026-11-24, tag on b9a5609) shipped item 1 below, four days
+ahead of its target; its arm64 package build failed on the watchdog race, so 0.12.0 has x86-64
+packages only and 0.12.1 has both. Both are staged for the apt repository (0.11.1 and earlier are
+on it, checked against the live Packages files). Consumers move their pins from 0.11.1 or 0.12.0
+to 0.12.1, which changes nothing else; Mimir pins 0.10.1 until its 0.2.0. AthenaSIP is a direct
+consumer (the maintainer, 2026-11-23: a dagda:// datastore and a dannan:// event system, one
+Dannan per node).
+
+**Next:** the register layer (2), first in 0.13.0, then atomic commit's code the day it is on
+develop (the maintainer's reprioritisation, 2026-11-24, below); the backfill's first part
+alongside.
 
 Shipped since the stack plan, so no longer to do: items 1, 6, 9, 12, 13, 15, 16, 17 (the fuzz
 export, the stream carrier), 19, 28, 24's JSON half, the shared node settings under cluster.*, the
@@ -23,7 +30,7 @@ suppressions, Delivery::ordered (0.11.1).
 **The order** (the coordinator's survey, 2026-11-23, of who waits on what; most-waited first,
 then what the next one builds on). Each minor changes the ABI; within one, only additions.
 
-1. **0.12.0, target 2026-11-28:**
+1. **0.12.0, shipped 2026-11-24** (target was 2026-11-28; COMPLETED.md), with 0.12.1 after it:
    - Readiness and health (7): Lugh, Louhi, Macha, Kvasir, Dagda's store health; HTTP's health
      route and the node-program helper's drain build on it, so it goes first.
    - Keyed limits (10) and the Argon2id credential (11): Lugh, Mimir, Kvasir, Macha, Louhi's
@@ -38,7 +45,15 @@ then what the next one builds on). Each minor changes the ABI; within one, only 
      fix, never shipped: `keep_ahead()` still follows the wall, hlc.cpp:159).
 2. **0.13.0, target 2026-12-05** (with Manannan's four small asks, 2026-11-23, relayed by the
    coordinating session; Manannan's 0.5.0 waits on 0.13.0's HTTP server anyway, and depends on
-   nothing it does not ask for here):
+   nothing it does not ask for here). **The register layer goes first** (the maintainer's
+   reprioritisation, 2026-11-24, from the coordinator's critical-path pass): it heads the longest
+   chain in the group (the register layer, atomic commit in 0.14.0, Mimir's multi-key writes,
+   AthenaSIP's Mimir scripts; Kvasir's cluster, its step 4, needs atomic commit too). Its shape
+   fixed, atomic commit's design goes to Mimir and Kvasir at once, and atomic commit's code starts
+   on its own branch the day the register layer is on develop, before 0.13.0 is tagged. The HTTP
+   core follows within 0.13.0: it unblocks four dashboards and Manannan's API, none of which chain
+   further. Then the DNS client, slow peers, Manannan's asks and the watchdog seam.
+   - The register layer (2), first: Lugh P8.6, Mimir, Louhi, Kvasir.
    - Named-slot placement: a pure function filling N named slots (ns1 to ns4) from a candidate
      set, distinct nodes, each slot moving only when its own node leaves the set; recomputed on
      Nodes::watch.
@@ -49,7 +64,6 @@ then what the next one builds on). Each minor changes the ABI; within one, only 
      one external address PublicConnectivityStatus has now.
    - The HTTP core (24): Lir, Louhi, Kvasir and Mimir's dashboards, and Lugh; the health route
      behind 7.
-   - The register layer (2): Lugh P8.6, Mimir, Louhi, Kvasir.
    - A ClientOptions seam called after a call is handed to its session and before its watchdog
      arms, and the test 0.12.1's fix waited for: the clock moved exactly in that gap, the first
      notice still on time (a test that fails every run on 0.12.0's watchdog).
@@ -100,8 +114,9 @@ then what the next one builds on). Each minor changes the ABI; within one, only 
    MQTT5. The package is built and staged before 0.14.0's work begins, so each project can try it.
 4. **0.14.0, target mid-December:** the Boost move above, and atomic commit across replica sets (26): Kvasir step 3 and
    every multi-key write in Mimir. Its intents live in register values, so it needs 2. Its design
-   (Mimir's proposal with Kvasir's corrections) is drawn and sent to both during 0.13.0, so code
-   starts the day 2 lands; earlier than the plan's "after 3".
+   (Mimir's proposal with Kvasir's corrections) goes to both as soon as the register layer's shape
+   is fixed, and its code starts the day 2 is on develop, before 0.13.0 is tagged (the maintainer,
+   2026-11-24); earlier than the plan's "after 3".
 5. **Then:** selective channel interest (31: Lir), and the
    stack plan's third minor (3, 4, 5, 22). After those, the earlier list, unless a waiting
    project says one blocks it: DTLS and UDP for `dannan::listen`; the peer-witnessed high-water
@@ -125,19 +140,21 @@ and run as tests, quoted by the guides. No identifying data in any example. The 
 1. The machinery: docs/Doxyfile.in, `-DDANNAN_BUILD_DOCS=ON` and a `docs` target, `tools/ci.sh
    docs` and its CI job, examples/ with `-DDANNAN_BUILD_EXAMPLES=ON`, each example run by a test.
    The Doxygen input is the list of headers held to the gate, growing with the backfill, so the
-   gate is whole for what it covers from the first day. Target 2026-11-24.
+   gate is whole for what it covers from the first day. Done, in 0.12.0.
 2. 0.12.0's own additions, under the gate: readiness and health, RateLimiter and Backoff, the
    stored password, ProcessCommands, the node-program helper, TimeWait and TimeSource::watch,
    unix_us, Answer::hold and the per-peer share, placement's health, BufferPool's bound, and
-   Delivery::ordered. 0.12.0 is tagged once these pass, about 2026-11-29.
-3. The backfill, first part (target 2026-11-26): node.h and NodeConfig, context.h; config, the
-   node settings and docs/config.md; contract/ (Outcome, Fault, Completion); net/ fanout,
-   routes and Delivery; the clocks and TimeSource; BufferPool; the HLC.
+   Delivery::ordered. Done, in 0.12.0.
+3. The backfill, first part (target 2026-11-26, on track): node.h and NodeConfig, context.h
+   (Outcome, Fault, Routes and Delivery are declared there), config, the node settings and
+   docs/config.md, contract/completion.h, net/fanout.h, the clocks and TimeSource, BufferPool and
+   the HLC are on the gate (docs/CMakeLists.txt), shipped in 0.12.0. Left: net/routes.h.
 4. The concept guides, with the first part: the model (nodes and identity, membership and the
-   agreed roster, founding, the clocks, the delivery kinds, settings, faults and evidence).
+   agreed roster, founding, the clocks, the delivery kinds, settings, faults and evidence). Done,
+   in 0.12.0 (docs/guide/).
 5. The examples, with the guides: founding a cluster of three, routes and message types, each
    delivery kind, a hosted system on Context, settings, deadlines and Outcome, the simulated
-   nodes in a test.
+   nodes in a test. Done, in 0.12.0 (examples/, run by dannan_tests).
 6. The rest of the public API, header by header, each joining the gate's input as it is done.
 
 **Outcomes of earlier open items:**
