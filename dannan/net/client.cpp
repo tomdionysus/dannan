@@ -95,12 +95,25 @@ struct Watchdog : std::enable_shared_from_this<Watchdog> {
 
   std::string age() const { return std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(time->now() - placed).count()); }
 
-  // Waits until, with `quiet` gone already, the deadline or the next notice could be reached.
-  void arm(std::chrono::milliseconds quiet = std::chrono::milliseconds(0)) {
+  // Waits until, with `quiet` gone already, the deadline or the next notice could be reached. The
+  // first arm reads the quiet itself: the call was made before the watchdog, and its request may
+  // already be at the peer, so time may have moved since; due is counted from the call's own last
+  // progress, never from the arm (0.12.1: a stepped clock moved in that gap put the notice an
+  // interval late).
+  void arm(std::optional<std::chrono::milliseconds> already = std::nullopt) {
+    auto quiet = std::chrono::milliseconds(0);
+    if (already) {
+      quiet = *already;
+    } else {
+      const auto since = idle();
+      if (!since) return;
+      quiet = std::chrono::duration_cast<std::chrono::milliseconds>(*since);
+    }
     auto remaining = std::chrono::milliseconds::max();
     if (deadline.count() > 0) remaining = std::min(remaining, deadline - quiet);
     if (notice.count() > 0) remaining = std::min(remaining, next_notice - quiet);
-    remaining = std::max(remaining, std::chrono::milliseconds(1));
+    // Already due: checked now. A millisecond on would never come on a frozen stepped clock.
+    remaining = std::max(remaining, std::chrono::milliseconds(0));
     contract::Lock lock(mutex);
     if (stopped || finished->load()) return;
     // The wait holds the watchdog until it fires or is cancelled, as a timer's handler would.

@@ -3,6 +3,22 @@
 What has landed, newest first, with what shipped and the gate counts it
 left green. `ACTIVE.md` is the plan and this is the record.
 
+## 0.12.1, 2026-11-24: a call's watchdog counts from the call, not from its arming
+
+A patch; the ABI is 0.12.0's. 0.12.0's arm64 package build failed
+Journal.ATypesOwnNoticeReplacesItsLanes: the watchdog armed after its call was handed to the
+session and counted its first wait from the arm, so a stepped clock moved in that gap put the
+first notice an interval late. It counts from the call's own last progress now, and a check
+already due runs at once. A second suspected bug (the watchdog waiting on another clock than
+idleness is measured on) was not one: the session measures on the liveness clock too. Proven by
+construction (the maintainer's ruling); the deterministic test needs a ClientOptions seam and is
+queued for 0.13.0. 0.12.0 has x86-64 packages only; 0.12.1 has both.
+
+The gate, on f9b0e47 (the branch's f342a0f for the build cluster's runs):
+- Hosted CI, every job green, abi against 0.12.0 and the arm64 deb included.
+- ASan on the build cluster, a fresh clone: 1229 passed, one skipped as root.
+- TSan on arm64, a fresh clone: 1229 passed, one skipped as root, no reports.
+
 ## 0.12.0, 2026-11-24: readiness and health, the node-program helper, limits, passwords, a process runner, and documentation
 
 A new minor; the ABI changes (libdannan0.12). The first release under the documentation gate. What

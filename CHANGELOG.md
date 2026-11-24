@@ -1,5 +1,19 @@
 # Current release
 
+## 0.12.1: a call's watchdog counts from the call, not from its arming
+
+A patch: the ABI is 0.12.0's.
+
+Fixed: 0.12.0's call watchdog counted its first wait from when it armed, which is after its call
+is handed to the session; a stepped test clock moved in that gap (the request already at the
+peer) put the first stall notice or no-progress deadline a whole interval late. It counts from the
+call's own last progress now, and a check already due runs at once. On the real clock the gap is
+microseconds; with a stepped clock it failed `Journal.ATypesOwnNoticeReplacesItsLanes` in 0.12.0's
+arm64 package build, so 0.12.0 has packages for x86-64 only and 0.12.1 is its arm64 release too.
+Proven by the code's construction (the maintainer's ruling, 2026-11-24); a test that moves the
+clock exactly in that gap needs a new ClientOptions seam, which changes its layout, and comes
+with 0.13.0.
+
 ## 0.12.0: readiness and health, the node-program helper, limits, passwords, a process runner, and documentation
 
 A new minor: the ABI changes, so move a pin from 0.11.x to 0.12.0 in one step. The library

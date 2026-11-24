@@ -9,7 +9,7 @@ direction or edited.
 
 ## Resume here (2026-11-23)
 
-**0.12.0 is the last release** (2026-11-24: COMPLETED.md; item 1 below is done). Before it,
+**0.12.1 is the last release** (2026-11-24, the watchdog fix; 0.12.0 before it: item 1 below is done). Before it,
 **0.11.1** (tag on main's merge fe57fa9; every release from 0.5.6 to 0.11.1 is on
 the apt repository, checked against the live Packages files). Lir, Dagda and Lugh are moving to it;
 Mimir pins 0.10.1 until its 0.2.0. AthenaSIP becomes a direct consumer (the maintainer, 2026-11-23: a
@@ -50,6 +50,9 @@ then what the next one builds on). Each minor changes the ABI; within one, only 
    - The HTTP core (24): Lir, Louhi, Kvasir and Mimir's dashboards, and Lugh; the health route
      behind 7.
    - The register layer (2): Lugh P8.6, Mimir, Louhi, Kvasir.
+   - A ClientOptions seam called after a call is handed to its session and before its watchdog
+     arms, and the test 0.12.1's fix waited for: the clock moved exactly in that gap, the first
+     notice still on time (a test that fails every run on 0.12.0's watchdog).
    - A DNS client (the maintainer, 2026-11-23), beside the HTTP client, which needs it: asynchronous
      on the caller's executor with a deadline (getaddrinfo blocks a thread), A, AAAA, SRV and TXT,
      its answers cached by TTL, servers from the system's resolv.conf or named, over UDP with TCP
@@ -84,11 +87,22 @@ then what the next one builds on). Each minor changes the ABI; within one, only 
        (a request to the inside is refused, never made). Negative answers cached briefly (the
        SOA minimum, capped).
    - Slow peers (8): Lir, Dagda's joiner survey.
-3. **0.14.0, target mid-December:** atomic commit across replica sets (26): Kvasir step 3 and
+3. **The stack's Boost** (the maintainer's yes, 2026-11-24, on AthenaSIP's proposal; settled
+   with Dagda): the stack moves past Debian 13's 1.83 to **1.92.0**, current and stable (released
+   August 2026), pinned exactly. Dannan builds and packages it, as the base: Boost's headers only
+   (Asio, Beast, MQTT5, and Boost.JSON's source, which libdannan compiles once), as a Debian
+   package of the stack's own, installed beside Debian's libboost-dev under a prefix of its own
+   with Boost's CMake config, in the tomcully.com apt repository; built from the release tarball
+   checked against Boost's published SHA-256. libdannan-dev then depends on it rather than
+   libboost-dev, DANNAN_BOOST_MINIMUM becomes 1.92.0, and CI and the Pis install it. Boost types
+   are in Dannan's ABI, so it rides a minor: **0.14.0**, with atomic commit, so the stack repins
+   once. Dagda follows on that Dannan (about a day and a gate), then AthenaSIP drops its vendored
+   MQTT5. The package is built and staged before 0.14.0's work begins, so each project can try it.
+4. **0.14.0, target mid-December:** the Boost move above, and atomic commit across replica sets (26): Kvasir step 3 and
    every multi-key write in Mimir. Its intents live in register values, so it needs 2. Its design
    (Mimir's proposal with Kvasir's corrections) is drawn and sent to both during 0.13.0, so code
    starts the day 2 lands; earlier than the plan's "after 3".
-4. **Then:** selective channel interest (31: Lir), and the
+5. **Then:** selective channel interest (31: Lir), and the
    stack plan's third minor (3, 4, 5, 22). After those, the earlier list, unless a waiting
    project says one blocks it: DTLS and UDP for `dannan::listen`; the peer-witnessed high-water
    mark (it also covers the hybrid clock's restore without custody); loader promotion at the peer
