@@ -50,6 +50,9 @@ then what the next one builds on). Each minor changes the ABI; within one, only 
    - The HTTP core (24): Lir, Louhi, Kvasir and Mimir's dashboards, and Lugh; the health route
      behind 7.
    - The register layer (2): Lugh P8.6, Mimir, Louhi, Kvasir.
+   - A ClientOptions seam called after a call is handed to its session and before its watchdog
+     arms, and the test 0.12.1's fix waited for: the clock moved exactly in that gap, the first
+     notice still on time (a test that fails every run on 0.12.0's watchdog).
    - A DNS client (the maintainer, 2026-11-23), beside the HTTP client, which needs it: asynchronous
      on the caller's executor with a deadline (getaddrinfo blocks a thread), A, AAAA, SRV and TXT,
      its answers cached by TTL, servers from the system's resolv.conf or named, over UDP with TCP
