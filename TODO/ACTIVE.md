@@ -100,7 +100,13 @@ then what the next one builds on). Each minor changes the ABI; within one, only 
        dial, so loopback, link-local and private ranges the operator has not allowed are refused
        (a request to the inside is refused, never made). Negative answers cached briefly (the
        SOA minimum, capped).
-   - Slow peers (8): Lir, Dagda's joiner survey.
+   - Slow peers (8): Lir, Dagda's joiner survey. It covers Lir's SUBACK hold, its L2 (asked
+     again 2026-11-24; Answer::hold in 0.12.0 is not it): Channels::subscribe and the other
+     advertise-with-deadline and bulk-publish calls take a per-peer bound beside the one deadline,
+     a peer past it never waited for, and Pushed (and each call's evidence) names the slow peers
+     apart from the failed ones. The bound used is the larger of the caller's per_peer and a
+     multiple of that peer's measured latency, so a caller's floor holds and a far peer is not
+     called slow for its distance.
 3. **The stack's Boost** (the maintainer's yes, 2026-11-24, on AthenaSIP's proposal; settled
    with Dagda): the stack moves past Debian 13's 1.83 to **1.92.0**, current and stable (released
    August 2026), pinned exactly. Dannan builds and packages it, as the base: Boost's headers only
