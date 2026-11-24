@@ -26,6 +26,7 @@ set(DANNAN_DOC_HEADERS
   listen/rate_limiter.h
   node.h
   net/fanout.h
+  net/routes.h
   net/scheduler.h
   placement/placement.h
   sched/buffer_pool.h

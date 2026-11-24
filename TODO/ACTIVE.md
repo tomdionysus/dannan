@@ -106,7 +106,10 @@ then what the next one builds on). Each minor changes the ABI; within one, only 
      a peer past it never waited for, and Pushed (and each call's evidence) names the slow peers
      apart from the failed ones. The bound used is the larger of the caller's per_peer and a
      multiple of that peer's measured latency, so a caller's floor holds and a far peer is not
-     called slow for its distance.
+     called slow for its distance. A slow peer is only not waited for: its push still goes
+     out, and when it lands that peer holds the interest as any other does, so publishes reach
+     the subscriber from then on (Lir, 2026-11-24, whose evidence rests on it; the signature goes
+     to Lir before it is coded).
 3. **The stack's Boost** (the maintainer's yes, 2026-11-24, on AthenaSIP's proposal; settled
    with Dagda): the stack moves past Debian 13's 1.83 to **1.92.0**, current and stable (released
    August 2026), pinned exactly. Dannan builds and packages it, as the base: Boost's headers only
@@ -154,7 +157,7 @@ and run as tests, quoted by the guides. No identifying data in any example. The 
 3. The backfill, first part (target 2026-11-26, on track): node.h and NodeConfig, context.h
    (Outcome, Fault, Routes and Delivery are declared there), config, the node settings and
    docs/config.md, contract/completion.h, net/fanout.h, the clocks and TimeSource, BufferPool and
-   the HLC are on the gate (docs/CMakeLists.txt), shipped in 0.12.0. Left: net/routes.h.
+   the HLC are on the gate (docs/CMakeLists.txt), shipped in 0.12.0; net/routes.h joined it on 2026-11-24. Done.
 4. The concept guides, with the first part: the model (nodes and identity, membership and the
    agreed roster, founding, the clocks, the delivery kinds, settings, faults and evidence). Done,
    in 0.12.0 (docs/guide/).
